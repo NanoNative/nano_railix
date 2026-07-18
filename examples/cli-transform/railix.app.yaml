@@ -1,0 +1,32 @@
+app:
+  id: example.cli-transform
+  name: CLI Transform
+  version: 0.1.0
+  dependencies:
+    - { id: railix.std.trigger, version: 0.1.0 }
+    - { id: railix.std.data, version: 0.1.0 }
+  flows:
+    - id: normalize-user
+      trigger: cli
+      steps:
+        - id: cli
+          use: railix.std.trigger.CliTrigger
+          config:
+            stdinMode: json
+          next: normalize
+        - id: normalize
+          use: railix.std.data.DataTransform
+          config:
+            mappings:
+              - target: ctx.user.email
+                expression:
+                  op: lower
+                  input:
+                    op: trim
+                    input:
+                      path: payload.user.email
+              - target: reply.mode
+                expression: { const: immediate }
+              - target: reply.payload.user.email
+                expression: { path: ctx.user.email }
+          next: end

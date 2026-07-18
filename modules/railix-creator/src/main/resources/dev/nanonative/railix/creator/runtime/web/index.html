@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Railix Creator Shell</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath fill='%231b1a17' d='M8 8h48v48H8z'/%3E%3Cpath fill='%23f4efe5' d='M20 18h14c9 0 14 4 14 12 0 5-3 9-8 11l9 13H38l-7-11h-1v11H20V18zm10 8v9h4c3 0 5-2 5-5s-2-4-5-4h-4z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Slice 10 / Remote Execution Boundary</p>
+        <h1>Railix Creator Shell</h1>
+      </div>
+      <div class="status-cluster">
+        <div class="status-pill">
+          <span class="status-label">Run Attach</span>
+          <strong id="control-endpoint-status">Creator-owned live control sessions</strong>
+        </div>
+        <div class="status-pill">
+          <span class="status-label">Workspace</span>
+          <strong id="workspace-root">Loading…</strong>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace-grid">
+      <aside class="rail left-rail card">
+        <section>
+          <p class="section-kicker">Dependency Browser</p>
+          <h2>Installed Packs</h2>
+          <ul id="pack-list" class="stack-list"></ul>
+        </section>
+        <section>
+          <p class="section-kicker">Step Palette</p>
+          <h2>Reachable Steps</h2>
+          <ul id="step-list" class="chip-list"></ul>
+        </section>
+      </aside>
+
+      <section class="canvas card">
+        <div class="canvas-header">
+          <div>
+            <p class="section-kicker">Graph Editor Shell</p>
+            <h2>Flow Workspace</h2>
+          </div>
+          <div id="graph-shell-note" class="shell-note">
+            Read-only graph activity from bounded timeline evidence. No fake drag-and-drop mythology today.
+          </div>
+        </div>
+        <div class="graph-shell">
+          <div id="graph-node-trigger" class="node trigger" data-state="pending">
+            <strong>Run started</strong>
+            <span>Waiting for a real run.started signal.</span>
+          </div>
+          <div id="graph-node-step" class="node transform" data-state="pending">
+            <strong>Step activity</strong>
+            <span>Waiting for a real step.started signal.</span>
+          </div>
+          <div id="graph-node-patch" class="node validate" data-state="pending">
+            <strong>Context patched</strong>
+            <span>Waiting for a real context.patched signal.</span>
+          </div>
+          <div id="graph-node-reply" class="node route" data-state="pending">
+            <strong>Reply produced</strong>
+            <span>Waiting for a real reply.produced signal.</span>
+          </div>
+          <div id="graph-node-finish" class="node run" data-state="pending">
+            <strong>Run finished</strong>
+            <span>Waiting for a real run.finished signal.</span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="rail right-rail card">
+        <section>
+          <p class="section-kicker">Launch Surface</p>
+          <h2>Launch Persisted Run</h2>
+          <p class="muted">Real launcher boundary only: explicit built-app <code>plan.json</code> and <code>envelope.json</code> inputs, the shipped narrow YAML bridge, export of committed example specs into persisted JSON pairs, and a narrow example-scoped create flow. Creator still does not own a general app compiler or free-form spec generator.</p>
+          <div class="launch-prep">
+            <p id="launch-prep-guidance" class="muted">Scanning workspace for runnable persisted inputs, supported authoring specs, and packaging evidence…</p>
+            <div id="launch-prep-runnable" class="launch-prep-list"></div>
+            <div id="launch-prep-specs" class="launch-prep-list"></div>
+            <div id="launch-prep-reports" class="launch-prep-list"></div>
+          </div>
+          <form id="launch-form" class="launch-form">
+            <label>
+              <span>Plan JSON path</span>
+              <input id="launch-plan" name="planLocation" type="text" placeholder="/absolute/path/plan.json" required>
+            </label>
+            <label>
+              <span>Envelope JSON path</span>
+              <input id="launch-envelope" name="envelopeLocation" type="text" placeholder="/absolute/path/envelope.json" required>
+            </label>
+            <label>
+              <span>Settings JSON path (optional)</span>
+              <input id="launch-settings" name="settingsLocation" type="text" placeholder="/absolute/path/settings.json">
+            </label>
+            <label>
+              <span>Profile (optional)</span>
+              <input id="launch-profile" name="profileName" type="text" placeholder="dev">
+            </label>
+            <label>
+              <span>Run id (optional)</span>
+              <input id="launch-run-id" name="runId" type="text" placeholder="run-creator-manual-1">
+            </label>
+            <button id="launch-submit" class="launch-button" type="submit">Start Live Session</button>
+          </form>
+          <pre id="launch-result" class="launch-result">Control endpoint idle.</pre>
+        </section>
+        <section>
+          <p class="section-kicker">Step Inspector</p>
+          <h2 id="inspector-title">Waiting for pack metadata</h2>
+          <p id="inspector-summary" class="muted">The first real Creator slice loads pack and step metadata from the local workspace.</p>
+        </section>
+        <section>
+          <p class="section-kicker">Settings Tree</p>
+          <h2>Runtime Surface</h2>
+          <ul class="setting-list">
+            <li><span>Repo root</span><code id="repo-root">Loading…</code></li>
+            <li><span>Runs root</span><code id="runs-root">Loading…</code></li>
+            <li><span>Runs loaded</span><code id="run-count">0</code></li>
+          </ul>
+        </section>
+        <section>
+          <p class="section-kicker">Multi-instance Foundation</p>
+          <h2>Instance Discovery</h2>
+          <p id="instance-summary" class="muted">Loading discovery-only heartbeat evidence…</p>
+          <div id="instance-list" class="run-list"></div>
+        </section>
+      </aside>
+
+      <section class="signals card">
+        <p class="section-kicker">Authoring Surface</p>
+        <h2>Authoring Spec Editor</h2>
+        <p class="muted">Create stays narrow and honest: one example directory under <code>examples/</code>, one runnable <code>railix.app.yaml</code>, and one sample envelope beside it.</p>
+        <form id="authoring-spec-create-form" class="launch-form">
+          <label>
+            <span>Example directory</span>
+            <input id="authoring-spec-create-example-id" name="exampleId" type="text" placeholder="fresh-hello" required>
+          </label>
+          <label>
+            <span>App id</span>
+            <input id="authoring-spec-create-app-id" name="appId" type="text" placeholder="example.fresh-hello" required>
+          </label>
+          <label>
+            <span>App name</span>
+            <input id="authoring-spec-create-app-name" name="appName" type="text" placeholder="Fresh Hello" required>
+          </label>
+          <label>
+            <span>Flow id</span>
+            <input id="authoring-spec-create-flow-id" name="flowId" type="text" placeholder="hello" required>
+          </label>
+          <div class="editor-actions">
+            <button id="authoring-spec-create-submit" class="launch-button" type="submit">Create Example Spec</button>
+          </div>
+        </form>
+        <pre id="authoring-spec-create-result" class="launch-result">No example spec created yet.</pre>
+        <p id="authoring-spec-summary" class="muted">Loading discovered authoring specs…</p>
+        <form id="authoring-spec-form" class="launch-form">
+          <label>
+            <span>Spec path</span>
+            <input id="authoring-spec-path" name="path" type="text" readonly>
+          </label>
+          <label class="editor-label">
+            <span>Raw railix.app.yaml</span>
+            <textarea id="authoring-spec-content" name="content" class="editor-textarea" spellcheck="false" placeholder="Select a discovered railix.app.yaml to edit it here."></textarea>
+          </label>
+          <div class="editor-actions">
+            <button id="authoring-spec-reload" class="launch-button" type="button">Reload Spec</button>
+            <button id="authoring-spec-export" class="launch-button" type="button">Export JSON</button>
+            <button id="authoring-spec-save" class="launch-button" type="submit">Save Spec</button>
+          </div>
+        </form>
+        <pre id="authoring-spec-result" class="launch-result">No authoring spec selected yet.</pre>
+      </section>
+
+      <section class="timeline card">
+        <p class="section-kicker">Live Run Timeline</p>
+        <h2>Creator Control Sessions</h2>
+        <p id="control-session-summary" class="muted">Loading live Creator session state…</p>
+        <div id="control-session-list" class="run-list"></div>
+        <h2>Recent Runs</h2>
+        <form id="run-query-form" class="launch-form">
+          <label>
+            <span>App id filter</span>
+            <input id="run-query-app-id" name="appId" type="text" placeholder="demo-app">
+          </label>
+          <label>
+            <span>Flow id filter</span>
+            <input id="run-query-flow-id" name="flowId" type="text" placeholder="demo-flow">
+          </label>
+          <label>
+            <span>Outcome filter</span>
+            <input id="run-query-outcome" name="outcome" type="text" placeholder="ok">
+          </label>
+          <label>
+            <span>Summary status</span>
+            <select id="run-query-summary-read-status" name="summaryReadStatus">
+              <option value="">Any</option>
+              <option value="complete">complete</option>
+              <option value="invalid">invalid</option>
+              <option value="missing">missing</option>
+            </select>
+          </label>
+          <label>
+            <span>Limit</span>
+            <input id="run-query-limit" name="limit" type="number" min="1" max="50" value="5">
+          </label>
+          <button class="launch-button" type="submit">Query Runs</button>
+        </form>
+        <p id="run-query-summary" class="muted">Loading bounded historical run query…</p>
+        <button id="run-query-load-more" class="launch-button" type="button" hidden>Load Older Runs</button>
+        <div id="run-list" class="run-list"></div>
+        <h2>Latest Timeline</h2>
+        <p id="timeline-summary" class="muted">Loading bounded timeline evidence…</p>
+        <div id="timeline-events" class="run-list"></div>
+      </section>
+
+      <section class="diff card">
+        <p class="section-kicker">Context Diff Viewer</p>
+        <h2>Changed Paths</h2>
+        <p id="context-diff-summary" class="muted">Loading changed-path evidence…</p>
+        <ul id="context-diff-list" class="diff-path-list"></ul>
+        <div class="diff-callout">
+          <strong>Real now:</strong> static assets, pack browser stub, Creator-owned live run sessions, recent runs including summary-missing persisted artifacts, structured timeline/context evidence, signal preview, persisted HTTP traffic inspection.<br>
+          <strong>Still blocked:</strong> external runtime attach, editable flow graph, repo-root-free packaged Creator launch.
+        </div>
+      </section>
+
+      <section class="signals card">
+        <p class="section-kicker">Run Signal Viewer</p>
+        <h2>Latest Signals</h2>
+        <pre id="signal-viewer" class="signal-viewer">Loading…</pre>
+      </section>
+
+      <section class="signals card">
+        <p class="section-kicker">Metric Evidence</p>
+        <h2>Latest Metrics</h2>
+        <p id="metrics-summary" class="muted">Loading metric evidence…</p>
+        <div id="metrics-list" class="run-list"></div>
+      </section>
+
+      <section class="signals card">
+        <p class="section-kicker">Audit Evidence</p>
+        <h2>Latest Audits</h2>
+        <p id="audits-summary" class="muted">Loading audit evidence…</p>
+        <div id="audits-list" class="run-list"></div>
+      </section>
+
+      <section class="traffic card">
+        <p class="section-kicker">Remote Execution Boundary</p>
+        <h2>Recent Remote Requests</h2>
+        <p id="remote-request-summary" class="muted">Loading artifact-backed remote request history…</p>
+        <div id="remote-request-list" class="run-list"></div>
+      </section>
+
+      <section class="traffic card">
+        <p class="section-kicker">Traffic Evidence</p>
+        <h2>Recent HTTP Traffic</h2>
+        <p id="traffic-summary" class="muted">Loading artifact-backed traffic evidence…</p>
+        <div id="traffic-list" class="traffic-list"></div>
+      </section>
+    </main>
+  </div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

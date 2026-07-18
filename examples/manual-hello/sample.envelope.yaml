@@ -1,0 +1,10 @@
+envelope:
+  source: creator.manual
+  protocol: manual
+  payload:
+    name: Ada
+  metadata:
+    actor: developer
+  replyChannel:
+    supported: true
+    modes: [immediate]

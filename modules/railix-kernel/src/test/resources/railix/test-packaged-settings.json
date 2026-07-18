@@ -1,0 +1,29 @@
+{
+  "description": "Packaged defaults",
+  "entries": [
+    {
+      "path": "settings.app.mode",
+      "type": "string",
+      "value": {
+        "kind": "plain",
+        "value": {
+          "kind": "string",
+          "value": "packaged-default"
+        }
+      },
+      "required": true,
+      "secret": false,
+      "encrypted": false,
+      "source": "packaged-defaults.json",
+      "visibility": "NORMAL",
+      "audit": "NEVER",
+      "overridePolicy": "ALLOW"
+    }
+  ],
+  "scopes": [
+    "APP"
+  ],
+  "precedence": [
+    "PACKAGED_DEFAULTS"
+  ]
+}

@@ -1,0 +1,3 @@
+License intentionally not selected in this blueprint.
+
+Choose a license before publishing the implementation repository.

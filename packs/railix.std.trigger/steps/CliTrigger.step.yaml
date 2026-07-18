@@ -1,0 +1,16 @@
+id: railix.std.trigger.CliTrigger
+version: 0.1.0
+kind: trigger
+displayName: CLI Trigger
+summary: Creates an envelope from command-line arguments, stdin, files, or properties.
+outputs:
+  envelope: { type: envelope }
+outcomes:
+  triggered: {}
+config:
+  argsShape: { type: shape, required: false }
+  stdinMode: { type: enum, values: [none, text, json, binary], default: none }
+reply:
+  supportedModes: [none, immediate, file, stream]
+ui:
+  editor: trigger.cli

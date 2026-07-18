@@ -1,0 +1,16 @@
+id: railix.std.trigger.ManualTrigger
+version: 0.1.0
+kind: trigger
+displayName: Manual Trigger
+summary: Creates an envelope from manual UI/dev input.
+outputs:
+  envelope: { type: envelope }
+outcomes:
+  triggered: {}
+config:
+  inputShape: { type: shape, required: false }
+  form: { type: ui-form, required: false }
+reply:
+  supportedModes: [none, immediate, file]
+ui:
+  editor: trigger.manual

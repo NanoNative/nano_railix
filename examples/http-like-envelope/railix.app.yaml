@@ -1,0 +1,42 @@
+app:
+  id: example.http-like
+  name: HTTP-like Generic Envelope
+  version: 0.1.0
+  dependencies:
+    - { id: railix.std.http, version: 0.1.0 }
+    - { id: railix.std.data, version: 0.1.0 }
+  flows:
+    - id: create-user
+      trigger: http-create-user
+      steps:
+        - id: http-create-user
+          use: railix.std.http.HttpTrigger
+          config:
+            method: POST
+            path: /users
+          next: map-request
+        - id: map-request
+          use: railix.std.data.DataTransform
+          config:
+            mappings:
+              - target: ctx.user.email
+                expression:
+                  op: lower
+                  input:
+                    op: trim
+                    input: { path: payload.customer.email }
+              - target: ctx.user.id
+                expression:
+                  op: template
+                  template: "user-${ctx.user.email}"
+              - target: reply.mode
+                expression: { const: immediate }
+              - target: reply.status
+                expression: { const: 201 }
+              - target: reply.metadata.contentType
+                expression: { const: application/json }
+              - target: reply.payload.user.id
+                expression: { path: ctx.user.id }
+              - target: reply.payload.user.email
+                expression: { path: ctx.user.email }
+          next: end

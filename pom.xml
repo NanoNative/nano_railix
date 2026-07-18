@@ -1,0 +1,42 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>dev.nanonative.railix</groupId>
+    <artifactId>railix-ii-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>modules/railix-kernel</module>
+        <module>modules/railix-creator</module>
+        <module>modules/railix-std-data</module>
+        <module>modules/railix-std-trigger</module>
+        <module>modules/railix-std-store</module>
+        <module>modules/railix-std-metrics</module>
+        <module>modules/railix-std-audit</module>
+        <module>modules/railix-std-file</module>
+        <module>modules/railix-std-http</module>
+    </modules>
+
+    <properties>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <junit.version>6.0.1</junit.version>
+        <assertj.version>3.27.6</assertj.version>
+        <maven.surefire.version>3.5.4</maven.surefire.version>
+        <jacoco.version>0.8.13</jacoco.version>
+    </properties>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven.surefire.version}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

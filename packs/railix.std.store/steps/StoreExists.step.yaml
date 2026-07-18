@@ -1,0 +1,21 @@
+id: railix.std.store.StoreExists
+version: 0.1.0
+kind: normal
+displayName: StoreExists
+summary: Generic value store operation.
+inputs:
+  key: { type: string, required: true }
+outputs:
+  result: { type: any }
+outcomes:
+  ok: {}
+  miss: {}
+  error: {}
+permissions:
+  requested:
+    store.read: []
+    store.write: []
+cache:
+  default: { mode: none }
+ui:
+  editor: store.operation

@@ -1,0 +1,23 @@
+protocolPack:
+  id: railix.std.http
+  version: 0.1.0
+  provides:
+    sourceSteps:
+      - railix.std.http.HttpTrigger
+    replyAdapters:
+      - railix.std.http.HttpReplyAdapter
+    resourceRefs:
+      - http.session
+      - http.upload
+    trafficPanels:
+      - railix.std.http.TrafficPanel
+    settings:
+      - settings.http.port
+      - settings.http.host
+      - settings.http.tls.enabled
+  contract:
+    sourceStepCreates: envelope
+    replyAdapterConsumes: reply
+  rule:
+    - protocol pack translates protocol details at boundary
+    - flow remains generic and works with payload, metadata, ctx, settings, refs, and reply

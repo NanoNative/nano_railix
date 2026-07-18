@@ -1,0 +1,29 @@
+{
+  "description": "Packaged defaults",
+  "scopes": [
+    "APP"
+  ],
+  "precedence": [
+    "PACKAGED_DEFAULTS"
+  ],
+  "entries": [
+    {
+      "path": "settings.app.mode",
+      "type": "string",
+      "value": {
+        "kind": "plain",
+        "value": {
+          "kind": "string",
+          "value": "packaged-default"
+        }
+      },
+      "required": true,
+      "secret": false,
+      "encrypted": false,
+      "source": "railix/settings/defaults.json",
+      "visibility": "normal",
+      "audit": "on-read",
+      "overridePolicy": "allow"
+    }
+  ]
+}

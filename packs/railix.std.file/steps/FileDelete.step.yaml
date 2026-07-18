@@ -1,0 +1,13 @@
+id: railix.std.file.FileDelete
+version: 0.1.0
+kind: normal
+displayName: File Delete
+summary: Deletes a stable-JSON file under the configured root.
+inputs:
+  path: { type: string, required: false }
+  ref: { type: file-ref, required: false }
+outcomes:
+  ok: {}
+  miss: {}
+ui:
+  editor: file.delete

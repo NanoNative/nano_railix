@@ -1,0 +1,19 @@
+id: railix.std.data.DataAggregate
+version: 0.1.0
+kind: normal
+displayName: Data Aggregate
+summary: Aggregate selector results into count, sum, min, max, and collected ctx values.
+inputs:
+  payload: { type: document, required: false }
+  ctx: { type: document, required: false }
+outputs:
+  patches: { type: patch-list }
+outcomes:
+  ok: {}
+  empty: {}
+config:
+  selector: { type: selector, required: true }
+  as: { type: string, default: item }
+  aggregations: { type: aggregation-list, editor: dataworkbench.aggregate }
+ui:
+  editor: dataworkbench.aggregate

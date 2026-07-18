@@ -1,0 +1,5 @@
+id: railix.std.metrics
+version: 0.1.0
+name: Railix Standard Metrics Pack
+steps:
+  - steps/MetricEmit.step.yaml

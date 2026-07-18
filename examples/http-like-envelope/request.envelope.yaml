@@ -1,0 +1,14 @@
+envelope:
+  source: http.default
+  protocol: http
+  payload:
+    customer:
+      email: " USER@EXAMPLE.COM "
+  metadata:
+    method: POST
+    path: /users
+    headers:
+      content-type: application/json
+  replyChannel:
+    supported: true
+    modes: [immediate, file, stream, deferred]

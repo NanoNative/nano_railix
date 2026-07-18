@@ -1,0 +1,15 @@
+operators:
+  - id: railix.op.value.const
+    config: { value: { type: any, required: true } }
+    outputs: { result: { type: any } }
+  - id: railix.op.value.path
+    config: { path: { type: path, required: true } }
+    outputs: { result: { type: any } }
+  - id: railix.op.value.coalesce
+    inputs: { values: { type: list<any>, dynamic: true, min: 1 } }
+    outputs: { result: { type: any } }
+  - id: railix.op.value.default
+    inputs:
+      value: { type: any, required: false }
+      default: { type: any, required: true }
+    outputs: { result: { type: any } }

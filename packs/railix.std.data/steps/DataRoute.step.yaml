@@ -1,0 +1,18 @@
+id: railix.std.data.DataRoute
+version: 0.1.0
+kind: controller
+displayName: Data Route
+summary: Choose next outcome from predicate expressions over payload, ctx, settings, metadata, or reply.
+inputs:
+  payload: { type: document, required: false }
+  ctx: { type: document, required: false }
+outcomes:
+  dynamic: true
+config:
+  routes:
+    type: route-list
+    editor: dataworkbench.route
+cache:
+  default: { mode: none }
+ui:
+  editor: dataworkbench.route

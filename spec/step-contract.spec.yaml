@@ -1,0 +1,65 @@
+stepContract:
+  id: railix.std.data.DataTransform
+  version: 0.1.0
+  displayName: Data Transform
+  description: Map, transform, and patch nested data.
+  kind: normal|trigger|controller|adapter
+  inputs:
+    - name: payload
+      type: document
+      source: payload
+      required: false
+    - name: ctx
+      type: document
+      source: ctx
+      required: false
+  outputs:
+    - name: patches
+      type: patch-list
+      target: ctx|reply|refs|store
+    - name: outcome
+      type: enum
+      values: [ok, invalid, error]
+  outcomes:
+    ok:
+      description: Transform completed.
+    invalid:
+      description: Input did not match required shape.
+    error:
+      description: Unexpected failure.
+  settings:
+    requested: []
+  permissions:
+    requested:
+      settings.read: []
+      settings.secret: []
+      store.read: []
+      store.write: []
+      net.outbound: []
+      resource.create: []
+  timeout:
+    default: PT30S
+  retry:
+    default:
+      maxAttempts: 1
+  cache:
+    default:
+      mode: none
+  resources:
+    limits:
+      memory: optional
+      cpu: optional
+  metrics:
+    emitted:
+      - name: step.duration
+        type: duration
+        unit: ms
+        labels: [step]
+      - name: transform.fieldsChanged
+        type: counter
+        unit: fields
+        labels: [step]
+  ui:
+    editor: dataworkbench.transform
+    icon: transform
+    colorHint: neutral

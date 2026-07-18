@@ -1,0 +1,9 @@
+reply:
+  mode: immediate
+  status: 201
+  metadata:
+    contentType: application/json
+  payload:
+    user:
+      id: user-user@example.com
+      email: user@example.com

@@ -1,0 +1,34 @@
+app:
+  id: example.store-cache
+  name: Store Cache Example
+  version: 0.1.0
+  dependencies:
+    - { id: railix.std.trigger, version: 0.1.0 }
+    - { id: railix.std.store, version: 0.1.0 }
+    - { id: railix.std.data, version: 0.1.0 }
+  flows:
+    - id: remember-customer
+      trigger: manual
+      steps:
+        - id: manual
+          use: railix.std.trigger.ManualTrigger
+          next: write-customer
+        - id: write-customer
+          use: railix.std.store.StoreWrite
+          config:
+            key:
+              op: template
+              template: "customer/${payload.customer.id}"
+            value:
+              path: payload.customer
+            ttl: PT24H
+          next: build-reply
+        - id: build-reply
+          use: railix.std.data.DataTransform
+          config:
+            mappings:
+              - target: reply.mode
+                expression: { const: immediate }
+              - target: reply.payload.ok
+                expression: { const: true }
+          next: end

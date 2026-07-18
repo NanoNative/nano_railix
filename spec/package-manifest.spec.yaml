@@ -1,0 +1,28 @@
+packManifest:
+  id: railix.std.data
+  version: 0.1.0
+  name: Railix Standard Data Pack
+  description: Data transform, validate, route, foreach, aggregate, merge, template.
+  requires:
+    railixKernel: ">=0.1.0"
+  steps:
+    - steps/DataTransform.step.yaml
+    - steps/DataValidate.step.yaml
+    - steps/DataRoute.step.yaml
+    - steps/DataForEach.step.yaml
+    - steps/DataAggregate.step.yaml
+  operators:
+    - operators/string.yaml
+    - operators/math.yaml
+    - operators/list.yaml
+    - operators/object.yaml
+  ui:
+    editors:
+      - dataworkbench.transform
+      - dataworkbench.validate
+      - dataworkbench.route
+      - dataworkbench.foreach
+      - dataworkbench.aggregate
+  packaging:
+    includeWhenReachable: true
+    unusedStepsExcluded: true

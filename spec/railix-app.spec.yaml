@@ -1,0 +1,45 @@
+app:
+  id: com.example.order-tool
+  name: Order Tool
+  version: 0.1.0
+  profiles:
+    - dev
+    - prod
+  dependencies:
+    - id: railix.std.trigger
+      version: 0.1.0
+    - id: railix.std.data
+      version: 0.1.0
+    - id: railix.std.store
+      version: 0.1.0
+  settings:
+    schema: settings/schema.yaml
+    defaults: settings/app.yaml
+  flows:
+    - id: process-order
+      trigger: manual-order
+      steps:
+        - id: manual-order
+          use: railix.std.trigger.ManualTrigger
+          next: normalize-order
+        - id: normalize-order
+          use: railix.std.data.DataTransform
+          next: validate-order
+        - id: validate-order
+          use: railix.std.data.DataValidate
+          next:
+            valid: route-order
+            invalid: build-invalid-reply
+        - id: route-order
+          use: railix.std.data.DataRoute
+          next:
+            approval: request-approval
+            auto: write-order
+        - id: write-order
+          use: railix.std.store.StoreWrite
+          next: build-success-reply
+  packaging:
+    modes: [headless, ui]
+    java:
+      jlink: true
+      jpackage: true

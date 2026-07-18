@@ -1,0 +1,48 @@
+path:
+  examples:
+    - payload.customer.email
+    - payload.orders[0].items[1].sku
+    - ctx.user.id
+    - reply.payload.user.email
+  rules:
+    - dot-separated object keys
+    - bracket indexes for list positions
+    - root namespace is required
+    - escaping rules must be defined for keys containing dot or bracket characters
+
+selector:
+  examples:
+    - payload.orders[*]
+    - payload.orders[*].items[*]
+    - payload.orders[*].items[*].sku
+  rules:
+    - wildcard selects repeated list positions
+    - selector can be used by DataForEach, DataTransform, DataAggregate, DataRoute
+    - selected result preserves parent references for mapping
+
+patch:
+  operations:
+    set:
+      fields: [path, value|expr]
+    remove:
+      fields: [path]
+    append:
+      fields: [path, value|expr]
+    merge:
+      fields: [path, value|expr, strategy]
+    copy:
+      fields: [from, to]
+    move:
+      fields: [from, to]
+    clear:
+      fields: [path]
+  example:
+    - op: set
+      path: ctx.customer.email
+      value:
+        expr:
+          op: lower
+          input:
+            op: trim
+            input:
+              path: payload.customer.email

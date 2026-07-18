@@ -1,0 +1,45 @@
+stepInvocation:
+  id: normalize-order
+  use: railix.std.data.DataTransform
+  config:
+    mappings:
+      - target: ctx.customer.email
+        expression:
+          op: lower
+          input:
+            op: trim
+            input:
+              path: payload.customer.email
+      - repeat:
+          selector: payload.orders[*].items[*]
+          as: item
+          parentAliases:
+            order: payload.orders[*]
+          mappings:
+            - target: ctx.items[*].sku
+              expression:
+                path: item.sku
+            - target: ctx.items[*].quantity
+              expression:
+                op: toInt
+                input:
+                  path: item.qty
+            - target: ctx.items[*].lineTotal
+              expression:
+                op: multiply
+                left:
+                  path: item.qty
+                right:
+                  path: item.price
+            - target: ctx.items[*].orderId
+              expression:
+                path: order.id
+      - target: reply.mode
+        expression:
+          const: immediate
+      - target: reply.status
+        expression:
+          const: 201
+      - target: reply.payload.customer.email
+        expression:
+          path: ctx.customer.email

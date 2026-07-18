@@ -1,0 +1,23 @@
+id: railix.std.http.HttpTrigger
+version: 0.1.0
+kind: trigger
+displayName: HTTP Trigger
+summary: Converts HTTP requests into generic Railix envelopes.
+outputs:
+  envelope: { type: envelope }
+outcomes:
+  request: {}
+settings:
+  requested:
+    - settings.http.host
+    - settings.http.port
+reply:
+  supportedModes: [immediate]
+metadataShape:
+  method: string
+  path: string
+  headers: object
+  query: object
+  remoteAddress: string
+ui:
+  editor: trigger.http

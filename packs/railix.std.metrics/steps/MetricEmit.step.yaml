@@ -1,0 +1,15 @@
+id: railix.std.metrics.MetricEmit
+version: 0.1.0
+kind: normal
+displayName: Emit Metric
+summary: Emits a custom metric run signal.
+inputs:
+  name: { type: string, required: true }
+  value: { type: number, required: true }
+  unit: { type: string, required: false }
+  labels: { type: object, required: false }
+outcomes:
+  ok: {}
+  error: {}
+ui:
+  editor: metrics.emit

@@ -1,0 +1,58 @@
+operatorContract:
+  id: railix.op.string.trim
+  version: 0.1.0
+  displayName: Trim
+  category: string
+  inputs:
+    value:
+      type: string
+      required: true
+  config: {}
+  outputs:
+    result:
+      type: string
+  ui:
+    compact: true
+    render: pipe-chip
+---
+operatorContract:
+  id: railix.op.math.binary
+  version: 0.1.0
+  displayName: Binary Operation
+  category: math
+  inputs:
+    left:
+      type: number
+      required: true
+    right:
+      type: number
+      required: true
+  config:
+    op:
+      type: enum
+      values: [add, subtract, multiply, divide, equals, greaterThan, lessThan]
+      required: true
+  outputs:
+    result:
+      type: number|boolean
+  ui:
+    compact: false
+    dynamicFields: false
+---
+operatorContract:
+  id: railix.op.value.coalesce
+  version: 0.1.0
+  displayName: Coalesce
+  category: value
+  inputs:
+    values:
+      type: list<any>
+      required: true
+      dynamic: true
+      min: 1
+  outputs:
+    result:
+      type: any
+  ui:
+    compact: false
+    dynamicFields: true

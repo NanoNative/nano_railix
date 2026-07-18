@@ -1,0 +1,5 @@
+reply:
+  mode: immediate
+  status: ok
+  payload:
+    message: Hello Ada

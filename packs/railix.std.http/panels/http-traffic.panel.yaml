@@ -1,0 +1,14 @@
+id: railix.std.http.TrafficPanel
+version: 0.1.0
+title: HTTP Traffic
+query:
+  source: runArtifacts
+  artifact: http-capture.json
+visualization:
+  type: table
+  columns:
+    - timestamp
+    - method
+    - path
+    - status
+    - durationMs

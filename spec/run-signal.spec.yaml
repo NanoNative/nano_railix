@@ -1,0 +1,36 @@
+runSignal:
+  commonFields:
+    signalId: string
+    timestamp: instant
+    app: string
+    flow: string
+    run: string
+    step: string|null
+    attempt: int|null
+  types:
+    run.started:
+      fields: [inputEnvelopeSummary]
+    step.started:
+      fields: [stepId, attempt]
+    step.finished:
+      fields: [stepId, attempt, outcome, durationMs]
+    step.failed:
+      fields: [stepId, attempt, errorSummary]
+    context.patched:
+      fields: [patchSummary, changedPaths]
+    permission.decided:
+      fields: [permission, resource, decision, reason]
+    setting.read:
+      fields: [path, secret, materialized]
+    metric.emitted:
+      fields: [name, value, unit, labels]
+    audit.emitted:
+      fields: [eventName, data]
+      constraints:
+        data: object
+    resource.created:
+      fields: [refId, refType, metadata]
+    reply.produced:
+      fields: [mode, status, metadata]
+    run.finished:
+      fields: [outcome, durationMs]

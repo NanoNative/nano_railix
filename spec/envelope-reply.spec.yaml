@@ -1,0 +1,47 @@
+envelope:
+  source: string
+  protocol: string
+  payload: railixValue.object
+  metadata: railixValue.object
+  refs:
+    type: object
+    values: resourceRef
+  replyChannel:
+    supported: boolean
+    modes:
+      - none
+      - immediate
+      - file
+      - stream
+      - deferred
+      - session
+      - broadcast
+
+reply:
+  mode: none|immediate|file|stream|deferred|session|broadcast
+  status: string|int|null
+  metadata: object
+  payload: railixValue
+  file: fileRef|null
+  stream: streamRef|null
+  session: sessionRef|null
+  deferred: deferredRef|null
+  examples:
+    immediate:
+      mode: immediate
+      status: 201
+      metadata:
+        contentType: application/json
+      payload:
+        user:
+          id: u-123
+    file:
+      mode: file
+      file:
+        id: file.invoicePdf
+        mediaType: application/pdf
+    deferred:
+      mode: deferred
+      status: 202
+      payload:
+        runId: run-123

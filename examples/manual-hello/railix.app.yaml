@@ -1,0 +1,32 @@
+app:
+  id: example.manual-hello
+  name: Manual Hello
+  version: 0.1.0
+  dependencies:
+    - { id: railix.std.trigger, version: 0.1.0 }
+    - { id: railix.std.data, version: 0.1.0 }
+  flows:
+    - id: hello
+      trigger: manual
+      steps:
+        - id: manual
+          use: railix.std.trigger.ManualTrigger
+          next: build-reply
+        - id: build-reply
+          use: railix.std.data.DataTransform
+          config:
+            mappings:
+              - target: ctx.name
+                expression:
+                  op: default
+                  value: { path: payload.name }
+                  default: { const: World }
+              - target: reply.mode
+                expression: { const: immediate }
+              - target: reply.status
+                expression: { const: ok }
+              - target: reply.payload.message
+                expression:
+                  op: template
+                  template: "Hello ${ctx.name}"
+          next: end

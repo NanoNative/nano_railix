@@ -1,0 +1,50 @@
+railixValue:
+  description: Canonical value model used by payload, ctx, settings, reply, refs, store, metrics, and audit.
+  variants:
+    null:
+      yaml: null
+    bool:
+      yaml: true|false
+    number:
+      representation: decimal-string-or-json-number
+      note: Implement exact decimal or string-backed number first; do not lose money in float goblin fire.
+    string:
+      yaml: string
+    list:
+      items: railixValue
+    object:
+      keys: string
+      values: railixValue
+    blobRef:
+      fields:
+        id: string
+        mediaType: string
+        digest: string
+        size: long
+    fileRef:
+      fields:
+        id: string
+        path: string
+        mediaType: string
+        digest: string
+        size: long
+    streamRef:
+      fields:
+        id: string
+        itemType: string
+        metadata: object
+    sessionRef:
+      fields:
+        id: string
+        protocol: string
+        metadata: object
+    deferredRef:
+      fields:
+        id: string
+        statusPath: string
+        metadata: object
+    secretRef:
+      fields:
+        path: string
+        materialized: false
+        audit: on-access
