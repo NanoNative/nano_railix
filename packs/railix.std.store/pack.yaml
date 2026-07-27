@@ -1,9 +1,0 @@
-id: railix.std.store
-version: 0.1.0
-name: Railix Standard Store Pack
-steps:
-  - steps/StoreRead.step.yaml
-  - steps/StoreWrite.step.yaml
-  - steps/StoreDelete.step.yaml
-  - steps/StoreExists.step.yaml
-  - steps/StoreList.step.yaml

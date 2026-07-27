@@ -1,0 +1,30 @@
+package dev.nanonative.railix.core.fixtures;
+
+public final class FlowFixtures {
+    private FlowFixtures() {
+    }
+
+    public static String lowercaseFlow() {
+        return """
+                {
+                  "id": "lowercase-app",
+                  "triggers": [],
+                  "entry": "lowercase",
+                  "inputs": { "text": "string" },
+                  "outputs": { "text": "string" },
+                  "steps": [
+                    {
+                      "id": "lowercase",
+                      "use": "text.lowercase",
+                      "config": {},
+                      "on": { "ok": "end" }
+                    }
+                  ],
+                  "connections": [
+                    { "from": "input.text", "to": "lowercase.text" },
+                    { "from": "lowercase.text", "to": "output.text" }
+                  ]
+                }
+                """;
+    }
+}

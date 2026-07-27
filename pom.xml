@@ -8,24 +8,31 @@
     <packaging>pom</packaging>
 
     <modules>
-        <module>modules/railix-kernel</module>
+        <module>modules/railix-core</module>
+        <module>modules/railix-stdlib</module>
         <module>modules/railix-creator</module>
-        <module>modules/railix-std-data</module>
-        <module>modules/railix-std-trigger</module>
-        <module>modules/railix-std-store</module>
-        <module>modules/railix-std-metrics</module>
-        <module>modules/railix-std-audit</module>
-        <module>modules/railix-std-file</module>
-        <module>modules/railix-std-http</module>
     </modules>
+
+    <profiles>
+        <profile>
+            <id>trusted-step-monolith</id>
+            <modules>
+                <module>examples/trusted-step-monolith</module>
+            </modules>
+        </profile>
+    </profiles>
 
     <properties>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.build.outputTimestamp>2000-01-01T00:00:00Z</project.build.outputTimestamp>
         <junit.version>6.0.1</junit.version>
         <assertj.version>3.27.6</assertj.version>
         <maven.surefire.version>3.5.4</maven.surefire.version>
         <jacoco.version>0.8.13</jacoco.version>
+        <maven.shade.version>3.6.1</maven.shade.version>
+        <playwright.version>1.61.0</playwright.version>
+        <jacocoArgLine></jacocoArgLine>
     </properties>
 
     <build>
@@ -35,6 +42,58 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven.surefire.version}</version>
+                    <configuration>
+                        <argLine>@{jacocoArgLine}</argLine>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco.version}</version>
+                    <executions>
+                        <execution>
+                            <id>coverage-agent</id>
+                            <goals>
+                                <goal>prepare-agent</goal>
+                            </goals>
+                            <configuration>
+                                <propertyName>jacocoArgLine</propertyName>
+                            </configuration>
+                        </execution>
+                        <execution>
+                            <id>coverage-report</id>
+                            <phase>verify</phase>
+                            <goals>
+                                <goal>report</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>coverage-check</id>
+                            <phase>verify</phase>
+                            <goals>
+                                <goal>check</goal>
+                            </goals>
+                            <configuration>
+                                <rules>
+                                    <rule>
+                                        <element>BUNDLE</element>
+                                        <limits>
+                                            <limit>
+                                                <counter>LINE</counter>
+                                                <value>COVEREDRATIO</value>
+                                                <minimum>0.95</minimum>
+                                            </limit>
+                                            <limit>
+                                                <counter>BRANCH</counter>
+                                                <value>COVEREDRATIO</value>
+                                                <minimum>0.90</minimum>
+                                            </limit>
+                                        </limits>
+                                    </rule>
+                                </rules>
+                            </configuration>
+                        </execution>
+                    </executions>
                 </plugin>
             </plugins>
         </pluginManagement>

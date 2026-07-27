@@ -1,5 +1,0 @@
-{"type":"run.started","run":"run-001","flow":"process-order","timestamp":"2026-06-26T10:00:00Z"}
-{"type":"step.started","run":"run-001","flow":"process-order","step":"normalize-order","attempt":1,"timestamp":"2026-06-26T10:00:01Z"}
-{"type":"context.patched","run":"run-001","step":"normalize-order","changedPaths":["ctx.customer.email","ctx.items[0].sku","ctx.items[0].lineTotal"],"timestamp":"2026-06-26T10:00:01Z"}
-{"type":"step.finished","run":"run-001","step":"normalize-order","outcome":"ok","durationMs":7,"timestamp":"2026-06-26T10:00:01Z"}
-{"type":"run.finished","run":"run-001","outcome":"ok","durationMs":21,"timestamp":"2026-06-26T10:00:02Z"}

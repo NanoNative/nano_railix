@@ -11,30 +11,96 @@
     <artifactId>railix-creator</artifactId>
     <packaging>jar</packaging>
 
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>${maven.shade.version}</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <outputFile>${project.build.directory}/railix.jar</outputFile>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>dev.nanonative.railix.creator.RailixMain</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>${maven.surefire.version}</version>
+                <executions>
+                    <execution>
+                        <id>desktop-and-package</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                        </goals>
+                        <configuration>
+                            <promoteUserPropertiesToSystemProperties>false</promoteUserPropertiesToSystemProperties>
+                            <reportsDirectory>${project.build.directory}/failsafe-reports-desktop</reportsDirectory>
+                            <summaryFile>${project.build.directory}/failsafe-reports-desktop/failsafe-summary.xml</summaryFile>
+                            <systemPropertyVariables>
+                                <railix.browser.viewport.width>1280</railix.browser.viewport.width>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>mobile-browser</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                        </goals>
+                        <configuration>
+                            <includes>
+                                <include>**/RailixCreatorBrowserIT.java</include>
+                            </includes>
+                            <promoteUserPropertiesToSystemProperties>false</promoteUserPropertiesToSystemProperties>
+                            <reportsDirectory>${project.build.directory}/failsafe-reports-mobile</reportsDirectory>
+                            <summaryFile>${project.build.directory}/failsafe-reports-mobile/failsafe-summary.xml</summaryFile>
+                            <systemPropertyVariables>
+                                <railix.browser.viewport.width>320</railix.browser.viewport.width>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>verify-all</id>
+                        <goals>
+                            <goal>verify</goal>
+                        </goals>
+                        <configuration>
+                            <summaryFile>${project.build.directory}/failsafe-reports-desktop/failsafe-summary.xml</summaryFile>
+                            <summaryFiles>
+                                <summaryFile>${project.build.directory}/failsafe-reports-mobile/failsafe-summary.xml</summaryFile>
+                            </summaryFiles>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
     <dependencies>
         <dependency>
             <groupId>dev.nanonative.railix</groupId>
-            <artifactId>railix-kernel</artifactId>
+            <artifactId>railix-core</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>dev.nanonative.railix</groupId>
-            <artifactId>railix-std-http</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>dev.nanonative.railix</groupId>
-            <artifactId>railix-std-data</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>dev.nanonative.railix</groupId>
-            <artifactId>railix-std-store</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>dev.nanonative.railix</groupId>
-            <artifactId>railix-std-trigger</artifactId>
+            <artifactId>railix-stdlib</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
@@ -47,6 +113,12 @@
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
             <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.microsoft.playwright</groupId>
+            <artifactId>playwright</artifactId>
+            <version>${playwright.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

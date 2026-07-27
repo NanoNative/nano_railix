@@ -1,6 +1,7 @@
 # Java
 /target/
 /modules/*/target/
+/examples/*/target/
 /build/
 *.class
 *.jar
@@ -10,6 +11,7 @@
 node_modules/
 dist/
 .playwright-cli/
+/output/playwright/
 
 # OS/IDE
 .DS_Store

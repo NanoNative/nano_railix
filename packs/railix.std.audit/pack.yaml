@@ -1,5 +1,0 @@
-id: railix.std.audit
-version: 0.1.0
-name: Railix Standard Audit Pack
-steps:
-  - steps/AuditCustom.step.yaml

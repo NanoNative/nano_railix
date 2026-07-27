@@ -1,6 +1,0 @@
-id: railix.std.trigger
-version: 0.1.0
-name: Railix Standard Trigger Pack
-steps:
-  - steps/ManualTrigger.step.yaml
-  - steps/CliTrigger.step.yaml

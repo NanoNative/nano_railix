@@ -1,1 +1,0 @@
-{"appId":"railix-classpath-app","flowId":"order-flow","triggerStepId":"capture","permissions":{"requested":{},"granted":{},"decisions":[]},"steps":[{"id":"capture","use":"test.bootstrap.capture","next":{}}]}

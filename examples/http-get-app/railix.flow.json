@@ -1,0 +1,49 @@
+{
+  "id": "http-get-app",
+  "triggers": [],
+  "entry": "request",
+  "inputs": {
+    "url": "string",
+    "headers": "object"
+  },
+  "outputs": {
+    "status": "number",
+    "body": "any"
+  },
+  "steps": [
+    {
+      "id": "request",
+      "use": "http.get",
+      "config": {
+        "format": "json",
+        "timeoutMillis": 5000
+      },
+      "on": {
+        "success": "end",
+        "redirect": "end",
+        "client-error": "end",
+        "server-error": "end",
+        "other": "end",
+        "rejected": "end"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "input.url",
+      "to": "request.url"
+    },
+    {
+      "from": "input.headers",
+      "to": "request.headers"
+    },
+    {
+      "from": "request.status",
+      "to": "output.status"
+    },
+    {
+      "from": "request.body",
+      "to": "output.body"
+    }
+  ]
+}
