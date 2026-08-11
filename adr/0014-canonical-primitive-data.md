@@ -20,17 +20,24 @@ constrained block YAML, and typed XML normalize to the same value model and cano
 JSON. Unsupported syntax, malformed input, depth, size, number, and encoding failures return
 stable diagnostics. Railix never guesses a format or silently drops document semantics.
 
+`NUMBER` is an exact `BigDecimal` whose unsigned canonical plain magnitude is at most 1,024
+characters. An optional leading minus is syntax rather than magnitude, so negating a valid
+number cannot leave the domain. Serialized transport limits still count every byte, including
+that minus. JSON, YAML, XML, canonical writing, and successful Step output use this one rule.
+
 ## Invariants
 
 - Every Step input/output and flow event uses `RailixValue`.
 - Canonical JSON is the stable serialized representation.
 - Normalization is bounded before untrusted input can become runtime state.
+- A successful numeric Step output must fit the canonical number domain before preview
+  capture or workflow-context mutation.
 - Unsupported YAML/XML syntax rejects instead of approximating another structure.
 
 ## Consequences
 
-Cross-format data is predictable, while full YAML and arbitrary document-shaped XML remain
-outside the supported grammar.
+Cross-format data and numeric closure are predictable, while full YAML and arbitrary
+document-shaped XML remain outside the supported grammar.
 
 ## Rejected Alternatives
 

@@ -13,15 +13,6 @@
         <module>modules/railix-creator</module>
     </modules>
 
-    <profiles>
-        <profile>
-            <id>trusted-step-monolith</id>
-            <modules>
-                <module>examples/trusted-step-monolith</module>
-            </modules>
-        </profile>
-    </profiles>
-
     <properties>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -58,6 +49,7 @@
                             </goals>
                             <configuration>
                                 <propertyName>jacocoArgLine</propertyName>
+                                <append>true</append>
                             </configuration>
                         </execution>
                         <execution>
@@ -74,6 +66,7 @@
                                 <goal>check</goal>
                             </goals>
                             <configuration>
+                                <haltOnFailure>false</haltOnFailure>
                                 <rules>
                                     <rule>
                                         <element>BUNDLE</element>

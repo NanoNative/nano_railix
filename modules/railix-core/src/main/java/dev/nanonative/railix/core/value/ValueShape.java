@@ -10,18 +10,6 @@ public enum ValueShape {
     ARRAY,
     OBJECT;
 
-    public static ValueShape string() {
-        return STRING;
-    }
-
-    public static ValueShape number() {
-        return NUMBER;
-    }
-
-    public boolean accepts(final ValueShape source) {
-        return this == ANY || this == source;
-    }
-
     public boolean accepts(final RailixValue value) {
         return this == ANY || this == shapeOf(value);
     }

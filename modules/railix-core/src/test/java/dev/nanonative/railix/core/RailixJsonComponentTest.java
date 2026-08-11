@@ -48,6 +48,16 @@ class RailixJsonComponentTest {
     }
 
     @Test
+    void utf8FitCheckAcceptsTheExactCanonicalLimitWithoutWritingJson() {
+        assertThat(RailixJson.fitsUtf8(RailixValue.string("\u20ac"), 5)).isTrue();
+    }
+
+    @Test
+    void utf8FitCheckRejectsCanonicalJsonOneByteOverTheLimit() {
+        assertThat(RailixJson.fitsUtf8(RailixValue.string("\u20ac"), 4)).isFalse();
+    }
+
+    @Test
     void boundedWriterRequiresAPositiveByteLimit() {
         assertThatThrownBy(() -> RailixJson.write(RailixValue.nullValue(), 0))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -62,6 +72,41 @@ class RailixJsonComponentTest {
                         1,
                         1_026
                 ));
+    }
+
+    @Test
+    void jsonParserAcceptsAMinusBeforeTheMaximumMagnitude() {
+        final String source = "-" + "1".repeat(1_024);
+
+        assertThat(RailixJson.parse(source))
+                .isEqualTo(new RailixJson.Parsed(RailixValue.number(new BigDecimal(source))));
+    }
+
+    @Test
+    void jsonParserRejectsANegativeMagnitudeOverTheLimit() {
+        assertThat(RailixJson.parse("-" + "1".repeat(1_025)))
+                .isEqualTo(new RailixJson.Invalid(
+                        "JSON number exceeds the 1024-character source limit.",
+                        1,
+                        1_027
+                ));
+    }
+
+    @Test
+    void jsonWriterAcceptsAMinusBeforeTheMaximumMagnitude() {
+        final String source = "-" + "1".repeat(1_024);
+
+        assertThat(RailixJson.write(RailixValue.number(new BigDecimal(source))))
+                .isEqualTo(source);
+    }
+
+    @Test
+    void boundedJsonWriterCountsTheMinusAsATransportByte() {
+        final String source = "-" + "1".repeat(1_024);
+        final RailixValue.NumberValue value = RailixValue.number(new BigDecimal(source));
+
+        assertThat(RailixJson.write(value, 1_024)).isEmpty();
+        assertThat(RailixJson.write(value, 1_025)).contains(source);
     }
 
     @Test

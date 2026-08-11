@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted on 2026-07-27.
+Accepted on 2026-07-27; release distribution clarified on 2026-08-11.
 
 ## Context
 
@@ -19,8 +19,15 @@ application lifecycle, packaging, CLI, HTTP APIs, and UI.
 
 There are no JPMS descriptors, reflection, runtime scanning, framework runtime, or
 third-party runtime dependencies. Maven, JUnit, AssertJ, JaCoCo, Shade, and Playwright are
-build/test tools only. Distribution is currently one shaded JAR; the root launcher never
-starts a build implicitly.
+build/test tools only. Distribution is currently one shaded JAR; the permanent tracked root
+launcher never starts a build implicitly and Maven never creates, changes, or removes it.
+
+That JAR and launcher are the development distribution. Roadmap Item 8 owns the production
+distribution: `jdeps` determines the required JDK modules, `jlink` creates one minimal
+runtime image, and `jpackage` combines that image with Creator into each supported
+platform's application and installer. The resulting application must not require Maven or
+a separately installed JDK. GraalVM native-image is a later target after the Java contracts
+and application are stable; it is not a development-time constraint.
 
 ## Invariants
 
@@ -28,6 +35,9 @@ starts a build implicitly.
 - Transport and Step implementation details stay outside core.
 - Registration and dependency wiring remain explicit.
 - The production runtime remains independent of Node and native libraries.
+- The development launcher is tracked source and remains present across every Maven lifecycle.
+- The final Creator distribution includes its Java runtime and launches without Maven or an
+  ambient JDK.
 
 ## Consequences
 
@@ -37,7 +47,8 @@ be implemented only when a current public behavior requires them.
 ## Rejected Alternatives
 
 The former multi-pack/module layout, speculative interfaces, service loading, framework
-containers, runtime frontend tooling, and mandatory `jlink`/`jpackage` are rejected.
+containers, runtime frontend tooling, and running release packaging during normal
+development builds are rejected.
 
 ## Evidence
 
@@ -45,14 +56,15 @@ containers, runtime frontend tooling, and mandatory `jlink`/`jpackage` are rejec
 - [`modules/railix-core/pom.xml`](../modules/railix-core/pom.xml)
 - [`modules/railix-stdlib/pom.xml`](../modules/railix-stdlib/pom.xml)
 - [`modules/railix-creator/pom.xml`](../modules/railix-creator/pom.xml)
-- [`railix`](../railix)
+- [`development launcher`](../railix)
 
 `jdeps --print-module-deps modules/railix-creator/target/railix.jar` reports only
-`java.base,java.xml,jdk.httpserver`.
+`java.base,java.desktop,java.net.http,jdk.httpserver`.
 
 ## Deferred Decisions
 
-Installers, signing, cross-host packaging, and other release formats remain Item 10.
+Exact installer formats, signing, cross-host packaging, and clean-machine release proof
+remain Roadmap Item 8. GraalVM native-image compatibility follows the stable Java distribution.
 
 ## Historical Disposition
 

@@ -19,6 +19,14 @@ dist/
 .vscode/
 
 # Railix local
+/brainstorming/
+/railix.project.json
+/railix.creator.json
 .railix/run/
 .railix/cache/
 .railix/tmp/
+
+# AI
+CLAUDE.md
+AGENTS.md
+.claude

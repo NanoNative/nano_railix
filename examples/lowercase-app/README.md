@@ -1,21 +1,24 @@
-# Lowercase App
+# Lowercase CLI App
 
-This is the smallest complete Railix application: one flow input, one named Step, one
-explicit outcome transition, and one flow output.
+This is the smallest loadable Creator project:
+
+```text
+App -> CLI -> lowercase context.payload.arguments[0] -> context.result -> End
+```
+
+Build and open it:
 
 ```sh
-mvn -q verify
-./railix run examples/lowercase-app
+mvn clean verify
+./railix creator examples/lowercase-app/railix.project.json
 ```
 
-Expected output:
+Select the CLI Trigger. Creator automatically sends its committed payload to the rolling-built
+application and shows `context.result = "hello railix"`.
 
-```json
-{"text":"hello railix"}
+Run the same project through the real CLI boundary:
+
+```sh
+cd examples/lowercase-app
+../../railix run "Hello RAILIX"
 ```
-
-Files:
-
-- `railix.flow.json` defines the flow and all mappings.
-- `input.json` is the invocation input used by the public launcher.
-- `text.lowercase` is provided by `modules/railix-stdlib`.

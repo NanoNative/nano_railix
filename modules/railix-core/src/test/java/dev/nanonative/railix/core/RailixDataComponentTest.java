@@ -14,6 +14,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RailixDataComponentTest {
     @Test
@@ -884,6 +885,73 @@ class RailixDataComponentTest {
     }
 
     @Test
+    void canonicalNumberPredicateAcceptsTheMaximumMagnitude() {
+        assertThat(RailixData.fitsCanonicalNumber(new BigDecimal("1".repeat(1_024))))
+                .isTrue();
+    }
+
+    @Test
+    void canonicalNumberPredicateRejectsAMagnitudeOverTheLimit() {
+        assertThat(RailixData.fitsCanonicalNumber(new BigDecimal("1".repeat(1_025))))
+                .isFalse();
+    }
+
+    @Test
+    void canonicalNumberPredicateRejectsJavaNull() {
+        assertThatThrownBy(() -> RailixData.fitsCanonicalNumber(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Number candidate cannot be Java null.");
+    }
+
+    @Test
+    void yamlAcceptsAMinusBeforeTheMaximumMagnitude() {
+        final String source = "-" + "1".repeat(1_024);
+
+        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes(source)))
+                .isEqualTo(new RailixData.Normalized(
+                        RailixValue.number(new BigDecimal(source))
+                ));
+    }
+
+    @Test
+    void yamlRejectsANegativeMagnitudeOverTheLimit() {
+        assertThat(RailixData.normalize(
+                RailixData.Format.YAML,
+                bytes("-" + "1".repeat(1_025))
+        )).isEqualTo(new RailixData.Invalid(
+                "DATA_NUMBER_LIMIT_EXCEEDED",
+                "Number exceeds the 1024-character canonical limit.",
+                0,
+                0
+        ));
+    }
+
+    @Test
+    void xmlAcceptsAMinusBeforeTheMaximumMagnitude() {
+        final String source = "-" + "1".repeat(1_024);
+
+        assertThat(RailixData.normalize(
+                RailixData.Format.XML,
+                bytes("<number>" + source + "</number>")
+        )).isEqualTo(new RailixData.Normalized(
+                RailixValue.number(new BigDecimal(source))
+        ));
+    }
+
+    @Test
+    void xmlRejectsANegativeMagnitudeOverTheLimit() {
+        assertThat(RailixData.normalize(
+                RailixData.Format.XML,
+                bytes("<number>-" + "1".repeat(1_025) + "</number>")
+        )).isEqualTo(new RailixData.Invalid(
+                "DATA_NUMBER_LIMIT_EXCEEDED",
+                "Number exceeds the 1024-character canonical limit.",
+                0,
+                0
+        ));
+    }
+
+    @Test
     void jsonScaleOverflowReturnsTheCanonicalNumberLimitDiagnostic() {
         assertThat(RailixData.normalize(RailixData.Format.JSON, bytes("100e2147483647")))
                 .isEqualTo(new RailixData.Invalid(
@@ -955,9 +1023,9 @@ class RailixDataComponentTest {
                 bytes("1".repeat(1_025))
         )).isEqualTo(new RailixData.Invalid(
                 "DATA_NUMBER_LIMIT_EXCEEDED",
-                "JSON number exceeds the 1024-character source limit.",
-                1,
-                1_026
+                "Number exceeds the 1024-character canonical limit.",
+                0,
+                0
         ));
     }
 

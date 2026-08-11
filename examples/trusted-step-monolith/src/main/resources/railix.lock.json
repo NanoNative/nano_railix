@@ -1,1 +1,0 @@
-{"flow":"sha256:79e2f03d7667105ed482f9db6ebf6dbce406844d0c0043b81deb833ea9a6c365","format":1,"steps":[{"contract":"sha256:e3b26896c22100616f912b1556c982061620b702d6bc73b47eea12d4607a3e13","id":"example.text.prefix","version":"1.0.0"},{"contract":"sha256:a0b776b0cc309b371be2fc6ba7e6a60bb8f66a5838e601b0c7664a20b10cbb0d","id":"text.lowercase","version":"1.2.0"}]}

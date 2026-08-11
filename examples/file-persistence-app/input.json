@@ -1,7 +1,0 @@
-{
-  "path": "examples/file-persistence-app/value.json",
-  "value": {
-    "active": true,
-    "name": "Railix"
-  }
-}

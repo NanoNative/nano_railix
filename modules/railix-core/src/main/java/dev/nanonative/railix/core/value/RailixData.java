@@ -12,11 +12,12 @@ import java.util.TreeMap;
 
 /** Normalizes supported primitive documents into one canonical Railix value. */
 public final class RailixData {
-    /** Default direct-document limit used by flow and event ingress. */
+    /** Default direct-document limit used by project and workflow-context ingress. */
     public static final int DEFAULT_MAX_SOURCE_BYTES = 1_048_576;
     /** Hard ceiling available to explicitly bounded enclosing transport documents. */
     public static final int MAX_SOURCE_BYTES = 8_388_608;
     public static final int DEFAULT_MAX_DEPTH = 64;
+    /** Maximum unsigned canonical number magnitude; an optional minus is transport syntax. */
     public static final int MAX_CANONICAL_NUMBER_CHARACTERS = 1_024;
 
     private RailixData() {
@@ -129,14 +130,10 @@ public final class RailixData {
         checkJsonDepth(source, maxDepth);
         return switch (RailixJson.parse(source, maxDepth)) {
             case RailixJson.Parsed parsed -> parsed.value();
-            case RailixJson.Invalid invalid -> throw failure(
-                    RailixJson.NUMBER_SOURCE_LIMIT_MESSAGE.equals(invalid.message())
-                            ? "DATA_NUMBER_LIMIT_EXCEEDED"
-                            : "DATA_JSON_INVALID",
-                    invalid.message(),
-                    invalid.line(),
-                    invalid.column()
-            );
+            case RailixJson.Invalid invalid when RailixJson.NUMBER_SOURCE_LIMIT_MESSAGE.equals(invalid.message()) ->
+                    throw numberLimitExceeded();
+            case RailixJson.Invalid invalid ->
+                    throw failure("DATA_JSON_INVALID", invalid.message(), invalid.line(), invalid.column());
         };
     }
 
@@ -210,39 +207,42 @@ public final class RailixData {
     }
 
     private static RailixValue.NumberValue canonicalNumber(final BigDecimal source) {
+        if (!fitsCanonicalNumber(source)) {
+            throw numberLimitExceeded();
+        }
+        return RailixValue.number(source.signum() == 0 ? BigDecimal.ZERO : source.stripTrailingZeros());
+    }
+
+    /**
+     * Reports whether a number fits the bounded canonical magnitude domain.
+     *
+     * @param source exact number candidate
+     * @return true when its unsigned canonical plain representation has at most 1,024 characters
+     * @throws IllegalArgumentException when source is Java null
+     */
+    public static boolean fitsCanonicalNumber(final BigDecimal source) {
+        if (source == null) {
+            throw new IllegalArgumentException("Number candidate cannot be Java null.");
+        }
         if (source.signum() != 0
                 && source.scale() <= 0
                 && canonicalNumberLength(source) > MAX_CANONICAL_NUMBER_CHARACTERS) {
-            throw failure(
-                    "DATA_NUMBER_LIMIT_EXCEEDED",
-                    "Number exceeds the " + MAX_CANONICAL_NUMBER_CHARACTERS + "-character canonical limit.",
-                    0,
-                    0
-            );
+            return false;
         }
         final BigDecimal value = source.signum() == 0 ? BigDecimal.ZERO : source.stripTrailingZeros();
-        if (canonicalNumberLength(value) > MAX_CANONICAL_NUMBER_CHARACTERS) {
-            throw failure(
-                    "DATA_NUMBER_LIMIT_EXCEEDED",
-                    "Number exceeds the " + MAX_CANONICAL_NUMBER_CHARACTERS + "-character canonical limit.",
-                    0,
-                    0
-            );
-        }
-        return RailixValue.number(value);
+        return canonicalNumberLength(value) <= MAX_CANONICAL_NUMBER_CHARACTERS;
     }
 
     static long canonicalNumberLength(final BigDecimal value) {
         final int precision = value.precision();
         final int scale = value.scale();
-        final long sign = value.signum() < 0 ? 1 : 0;
         if (scale <= 0) {
-            return sign + precision - (long) scale;
+            return precision - (long) scale;
         }
         if (scale >= precision) {
-            return sign + scale + 2L;
+            return scale + 2L;
         }
-        return sign + precision + 1L;
+        return precision + 1L;
     }
 
     private static Invalid invalid(
@@ -261,6 +261,15 @@ public final class RailixData {
             final int column
     ) {
         return new Failure(code, message, line, column);
+    }
+
+    static Failure numberLimitExceeded() {
+        return failure(
+                "DATA_NUMBER_LIMIT_EXCEEDED",
+                "Number exceeds the " + MAX_CANONICAL_NUMBER_CHARACTERS + "-character canonical limit.",
+                0,
+                0
+        );
     }
 
     /** A normalization result. */

@@ -64,15 +64,36 @@ public final class RailixJson {
      * @throws IllegalArgumentException when the value is Java null or the limit is below one
      */
     public static Optional<String> write(final RailixValue value, final int maxBytes) {
+        final JsonOutput json = bounded(value, maxBytes, true);
+        return json.exceeded() ? Optional.empty() : Optional.of(json.value());
+    }
+
+    /**
+     * Reports whether canonical JSON fits a UTF-8 byte limit without materializing the JSON.
+     *
+     * @param value canonical value to measure
+     * @param maxBytes maximum UTF-8 bytes, including JSON syntax
+     * @return true when the complete canonical JSON fits
+     * @throws IllegalArgumentException when the value is Java null or the limit is below one
+     */
+    public static boolean fitsUtf8(final RailixValue value, final int maxBytes) {
+        return !bounded(value, maxBytes, false).exceeded();
+    }
+
+    private static JsonOutput bounded(
+            final RailixValue value,
+            final int maxBytes,
+            final boolean capture
+    ) {
         if (value == null) {
             throw new IllegalArgumentException("Railix JSON value cannot be Java null.");
         }
         if (maxBytes < 1) {
             throw new IllegalArgumentException("Maximum JSON bytes must be at least 1.");
         }
-        final JsonOutput json = new JsonOutput(maxBytes);
+        final JsonOutput json = new JsonOutput(maxBytes, capture);
         writeValue(value, json, 0);
-        return json.exceeded() ? Optional.empty() : Optional.of(json.value());
+        return json;
     }
 
     private static void writeValue(final RailixValue value, final JsonOutput json, final int depth) {
@@ -84,23 +105,14 @@ public final class RailixJson {
             case RailixValue.BooleanValue bool -> json.append(bool.value());
             case RailixValue.NumberValue number -> {
                 final BigDecimal source = number.value();
-                if (source.signum() != 0
-                        && source.scale() <= 0
-                        && RailixData.canonicalNumberLength(source)
-                                > RailixData.MAX_CANONICAL_NUMBER_CHARACTERS) {
+                if (!RailixData.fitsCanonicalNumber(source)) {
                     throw new IllegalArgumentException(
                             "Number exceeds the " + RailixData.MAX_CANONICAL_NUMBER_CHARACTERS
                                     + "-character canonical limit."
                     );
                 }
-                final BigDecimal canonical = source.signum() == 0 ? BigDecimal.ZERO : source.stripTrailingZeros();
-                if (RailixData.canonicalNumberLength(canonical)
-                        > RailixData.MAX_CANONICAL_NUMBER_CHARACTERS) {
-                    throw new IllegalArgumentException(
-                            "Number exceeds the " + RailixData.MAX_CANONICAL_NUMBER_CHARACTERS
-                                    + "-character canonical limit."
-                    );
-                }
+                final BigDecimal canonical =
+                        source.signum() == 0 ? BigDecimal.ZERO : source.stripTrailingZeros();
                 json.append(canonical.toPlainString());
             }
             case RailixValue.StringValue string -> writeString(string.value(), json);
@@ -176,11 +188,17 @@ public final class RailixJson {
     private static final class JsonOutput {
         private final StringBuilder value = new StringBuilder();
         private final int maxBytes;
+        private final boolean capture;
         private int bytes;
         private boolean exceeded;
 
         private JsonOutput(final int maxBytes) {
+            this(maxBytes, true);
+        }
+
+        private JsonOutput(final int maxBytes, final boolean capture) {
             this.maxBytes = maxBytes;
+            this.capture = capture;
         }
 
         private void append(final boolean source) {
@@ -205,7 +223,9 @@ public final class RailixJson {
                 exceeded = true;
                 return;
             }
-            value.appendCodePoint(codePoint);
+            if (capture) {
+                value.appendCodePoint(codePoint);
+            }
             bytes += added;
         }
 
@@ -370,7 +390,8 @@ public final class RailixJson {
             digits();
         }
         final String encoded = source.substring(start, index);
-        if (encoded.length() > RailixData.MAX_CANONICAL_NUMBER_CHARACTERS) {
+        final int magnitudeCharacters = encoded.length() - (encoded.charAt(0) == '-' ? 1 : 0);
+        if (magnitudeCharacters > RailixData.MAX_CANONICAL_NUMBER_CHARACTERS) {
             throw failure(NUMBER_SOURCE_LIMIT_MESSAGE);
         }
         try {

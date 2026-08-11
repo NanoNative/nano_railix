@@ -197,7 +197,10 @@ final class RailixYaml {
         if (first == '-' || asciiDigit(first)) {
             return switch (RailixJson.parse(source)) {
                 case RailixJson.Parsed parsed -> parsed.value();
-                default -> throw invalid("Invalid YAML number.", line, column);
+                case RailixJson.Invalid invalid
+                        when RailixJson.NUMBER_SOURCE_LIMIT_MESSAGE.equals(invalid.message()) ->
+                        throw RailixData.numberLimitExceeded();
+                case RailixJson.Invalid ignored -> throw invalid("Invalid YAML number.", line, column);
             };
         }
         throw unsupported(

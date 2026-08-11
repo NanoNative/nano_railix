@@ -2,7 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-JAR=${RAILIX_JAR:-"$ROOT/modules/railix-creator/target/railix.jar"}
+JAR="$ROOT/modules/railix-creator/target/railix.jar"
 
 if [ ! -f "$JAR" ]; then
   printf '%s\n' '{"error":{"code":"PACKAGE_MISSING","message":"Build with mvn -q -pl modules/railix-creator -am verify"},"status":"launcher-rejected"}' >&2

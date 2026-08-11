@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted on 2026-07-27.
+Superseded on 2026-07-29 by [ADR 0020](0020-creator-first-application-graph.md).
 
 ## Context
 

@@ -208,6 +208,9 @@ final class RailixXml {
         }
         return switch (RailixJson.parse(source)) {
             case RailixJson.Parsed parsed when parsed.value() instanceof RailixValue.NumberValue -> parsed.value();
+            case RailixJson.Invalid invalid
+                    when RailixJson.NUMBER_SOURCE_LIMIT_MESSAGE.equals(invalid.message()) ->
+                    throw RailixData.numberLimitExceeded();
             default -> throw invalid("Invalid XML number.", position);
         };
     }
