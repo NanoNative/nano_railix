@@ -6,6 +6,7 @@ import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
+import com.microsoft.playwright.TimeoutError;
 import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -22,6 +24,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -37,6 +40,11 @@ final class RailixCreatorBrowserIT {
     private static final int VIEWPORT_WIDTH = Integer.getInteger("railix.browser.viewport.width", 1_280);
     private static Playwright playwright;
     private static Browser browser;
+    private static String templateProject;
+    private static String templateCreator;
+
+    @TempDir
+    static Path template;
 
     @TempDir
     Path directory;
@@ -47,12 +55,20 @@ final class RailixCreatorBrowserIT {
     private final List<String> pageErrors = new ArrayList<>();
 
     @BeforeAll
-    static void startBrowser() {
+    static void startBrowser() throws Exception {
         playwright = Playwright.create(new Playwright.CreateOptions().setEnv(Map.of(
                 "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
                 "1"
         )));
         browser = launchBrowser();
+        try (CreatorServer ignored = CreatorServer.start(
+                0,
+                template.resolve("project.json"),
+                template.resolve("railix-home")
+        )) {
+            templateProject = Files.readString(template.resolve("project.json"));
+            templateCreator = Files.readString(template.resolve("railix.creator.json"));
+        }
     }
 
     private static Browser launchBrowser() {
@@ -70,8 +86,12 @@ final class RailixCreatorBrowserIT {
 
     @BeforeEach
     void openCreator() throws Exception {
+        pageErrors.clear();
         Files.createDirectories(directory.resolve("railix-home/icons"));
         Files.writeString(directory.resolve("railix-home/icons/bolt.svg"), "<svg/>");
+        Files.writeString(directory.resolve("project.json"), templateProject);
+        Files.writeString(directory.resolve("railix.creator.json"), templateCreator);
+        copyTree(template.resolve(".railix/build"), directory.resolve(".railix/build"));
         creator = CreatorServer.start(0, directory.resolve("project.json"), directory.resolve("railix-home"));
         context = browser.newContext(new Browser.NewContextOptions().setViewportSize(
                 VIEWPORT_WIDTH,
@@ -157,6 +177,25 @@ final class RailixCreatorBrowserIT {
 
         assertThat(page.locator(".trigger-node").evaluate("node => node === document.activeElement"))
                 .isEqualTo(true);
+    }
+
+    @Test
+    void queuedRollingBuildSkipsASupersededProjectSnapshot() {
+        delayFirstProjectWriteAndRecordIds();
+        page.locator("#project-id").fill("first-snapshot");
+        page.locator("#project-id").press("Tab");
+        page.waitForFunction("window.__railixProjectWriteStarted === true");
+
+        page.locator("#project-id").fill("superseded-snapshot");
+        page.locator("#project-id").press("Tab");
+        page.waitForTimeout(250);
+        page.locator("#project-id").fill("current-snapshot");
+        page.locator("#project-id").press("Tab");
+        page.evaluate("window.__railixReleaseProjectWrite()");
+        waitForText("#build-state", "Built");
+
+        assertThat(page.locator("body").evaluate("() => window.__railixProjectWrites"))
+                .isEqualTo(List.of("first-snapshot", "current-snapshot"));
     }
 
     @Test
@@ -726,10 +765,11 @@ final class RailixCreatorBrowserIT {
         openProject(branchProject("choice-pipeline", "choice", "railix.choice", """
                 [[{
                   "option":"literal","inputs":{"value":["one","two"]},
-                  "when":[
-                    {"use":"list.size","inputs":{}},
+                  "when":{"transforms":[
+                    {"use":"list.size","inputs":{}}
+                  ],"all":[[
                     {"use":"number.greater-or-equal","inputs":{"than":2}}
-                  ]
+                  ]]}
                 }]]
                 """));
         selectTrigger();
@@ -1140,7 +1180,7 @@ final class RailixCreatorBrowserIT {
     }
 
     @Test
-    void controlStepIsNotOfferedInsideAnExistingGroup() {
+    void branchStepCanBeAddedInsideAnExistingGroup() {
         openProject(fourStepProject());
         groupSteps(0, 1);
         page.locator("#open-group").click();
@@ -1148,14 +1188,19 @@ final class RailixCreatorBrowserIT {
 
         page.locator("#add-next-step").click();
         page.locator("#step-search").fill("filter");
+        page.locator("[data-add-step='railix.filter']").click();
+        waitForText("#build-state", "Built");
 
-        assertThat(page.locator("[data-add-step='railix.filter']").count()).isZero();
-        assertThat(page.locator("#step-options .empty-options").textContent())
-                .isEqualTo("Branch Steps cannot be added inside a group.");
+        assertThat(page.locator("[data-select-step]").count()).isEqualTo(3);
+        assertThat(page.locator("[data-branch-outcome='otherwise']").count()).isEqualTo(1);
+        assertThat(page.evaluate("""
+                async () => Object.keys((await (await fetch('/api/project')).json())
+                  .creator.groups[0].occurrences[0].steps).length
+                """)).isEqualTo(3);
     }
 
     @Test
-    void branchStepCannotBeGroupedUntilBranchAwareEditingExists() {
+    void branchGroupCollapsesWithoutHidingAnExit() {
         addFilterAfterTrigger();
         page.locator("[data-add-outcome='match']").click();
         page.locator("#step-search").fill("field");
@@ -1173,18 +1218,136 @@ final class RailixCreatorBrowserIT {
         page.locator("[data-inspector-mode='groups']").click();
         page.locator("#new-group").click();
         page.locator("[data-select-step='" + filter + "']").click();
-        page.locator("[data-select-step='" + manipulation + "']").click();
+        clickAndWaitForCreatorSave(() ->
+                page.locator("[data-select-step='" + manipulation + "']").click());
 
-        assertThat(page.locator("[data-select-step='" + filter + "']").getAttribute("class"))
-                .contains("issue-error");
-        assertThat(page.locator(".issues").textContent())
-                .contains(
-                        "CREATOR_GROUP_BRANCH_UNSUPPORTED",
-                        "This Step has multiple routes. Group one route at a time so no exit is hidden."
-                );
+        assertThat(page.locator("[data-select-group]").count()).isEqualTo(1);
+        assertThat(page.locator("[data-select-step='" + filter + "']").count()).isZero();
+        assertThat(page.locator("[data-select-step='" + manipulation + "']").count()).isZero();
+        assertThat(page.locator("[data-branch-source='" + filter
+                + "'][data-branch-outcome='otherwise']").count()).isEqualTo(1);
+        assertThat(page.locator("[data-branch-source='" + manipulation
+                + "'][data-branch-outcome='next']").count()).isEqualTo(1);
+    }
+
+    @Test
+    void deletingABranchGroupPreservesTheFlatProjectAndApplication() throws Exception {
+        openProject(choiceProject());
+        groupSteps("choice", "otherwise");
+        final String project = Files.readString(directory.resolve("project.json"));
+        final String pid = applicationPid();
+
+        page.locator("[data-select-group]").click();
+        clickAndWaitForCreatorSave(() -> page.locator("#delete-group").click());
+
+        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
+        assertThat(applicationPid()).isEqualTo(pid);
+        assertThat(page.locator("[data-select-step]").count()).isEqualTo(3);
+    }
+
+    @Test
+    void reverseBoundariesCreateAGroupOnTheSecondaryBranch() {
+        openProject(choiceProject());
+
+        page.locator("[data-inspector-mode='groups']").click();
+        page.locator("#new-group").click();
+        page.locator("[data-select-step='otherwise']").click();
+        clickAndWaitForCreatorSave(() -> page.locator("[data-select-step='choice']").click());
+
+        assertThat(page.locator("[data-select-group]").textContent()).contains("2 Steps");
+        assertThat(page.locator("[data-branch-source='choice'][data-branch-outcome='match']").count())
+                .isEqualTo(1);
+        assertThat(page.locator("[data-branch-source='otherwise'][data-branch-outcome='next']").count())
+                .isEqualTo(1);
+    }
+
+    @Test
+    void siblingBranchBoundariesAreRejectedAsDifferentPaths() {
+        openProject(choiceProject());
+
+        page.locator("[data-inspector-mode='groups']").click();
+        page.locator("#new-group").click();
+        page.locator("[data-select-step='matched']").click();
+        page.locator("[data-select-step='otherwise']").click();
+
+        assertThat(page.locator(".issues").textContent()).contains(
+                "CREATOR_GROUP_PATH_INVALID",
+                "Group start and end must share one path in one flow."
+        );
         assertThat(page.evaluate("""
                 async () => (await (await fetch('/api/project')).json()).creator.groups.length
                 """)).isEqualTo(0);
+    }
+
+    @Test
+    void singletonBranchGroupRoutesEachOutcomeToItsExactExternalStep() {
+        openProject(choiceProject());
+
+        groupSteps("choice", "choice");
+
+        assertThat(page.locator("[data-branch-source='choice'][data-branch-outcome='match'] "
+                + "[data-select-step='matched']").count()).isEqualTo(1);
+        assertThat(page.locator("[data-branch-source='choice'][data-branch-outcome='otherwise'] "
+                + "[data-select-step='otherwise']").count()).isEqualTo(1);
+    }
+
+    @Test
+    void insertingOnAnInternalSecondaryRouteKeepsTheStepInsideTheGroup() {
+        openProject(choiceProject());
+        groupSteps("choice", "otherwise");
+        page.locator("[data-select-group]").click();
+        page.locator("#open-group").click();
+        page.locator("[data-select-step='choice']").click();
+
+        page.locator("[data-add-outcome='otherwise']").click();
+        page.locator("#step-search").fill("field");
+        page.locator("[data-add-step='railix.field-manipulation']").click();
+        waitForText("#build-state", "Built");
+        page.reload();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const payload = await (await fetch('/api/project')).json();
+                  const occurrence = payload.creator.groups[0].occurrences[0];
+                  const inserted = payload.project.links.find(link => link.from === 'choice.otherwise').to;
+                  return [
+                    Object.keys(occurrence.steps).length,
+                    Object.values(occurrence.steps).includes(inserted),
+                    payload.project.links.find(link => link.from === inserted + '.next')?.to
+                  ].join('|');
+                }
+                """)).isEqualTo("3|true|otherwise");
+    }
+
+    @Test
+    void openingABranchGroupShowsItsStepsAndEveryBoundaryExit() {
+        openProject(choiceProject());
+        final String metadata = """
+                {"format":1,"steps":{},"groups":[{"id":"group-one","name":"Decision","occurrences":[{
+                  "id":"occurrence-one","flow":"command","parent":null,
+                  "steps":{"slot-choice":"choice","slot-match":"matched","slot-other":"otherwise"}
+                }]}]}
+                """;
+        assertThat(page.evaluate("""
+                async metadata => (await fetch('/api/creator', {
+                  method: 'POST', headers: mutationHeaders(), body: metadata
+                })).status
+                """, metadata)).isEqualTo(200);
+        page.reload();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.locator("[data-select-group]").textContent()).contains("3 Steps");
+        assertThat(page.locator("[data-branch-source='matched'][data-branch-outcome='next']").count())
+                .isEqualTo(1);
+        assertThat(page.locator("[data-branch-source='otherwise'][data-branch-outcome='next']").count())
+                .isEqualTo(1);
+
+        page.locator("[data-select-group]").click();
+        page.locator("#open-group").click();
+
+        assertThat(page.locator("[data-select-step]").count()).isEqualTo(3);
+        assertThat(page.locator("[data-group-exit]").count()).isEqualTo(2);
     }
 
     @Test
@@ -2003,6 +2166,22 @@ final class RailixCreatorBrowserIT {
     }
 
     @Test
+    void groupNameIsRenderedAsTextInsideTheOpenGroupTrail() {
+        createLowercaseJourney();
+        groupSteps(0, 1);
+        final String name = "<img src=x onerror=\"window.__railixInjected=true\">";
+        presentationName().fill(name);
+        clickAndWaitForCreatorSave(() -> presentationName().press("Tab"));
+
+        page.locator("[data-select-group]").click();
+        page.locator("#open-group").click();
+
+        assertThat(page.locator(".flow-scope-header span").textContent()).isEqualTo(name);
+        assertThat(page.locator(".flow-scope-header img").count()).isZero();
+        assertThat(page.evaluate("() => window.__railixInjected === true")).isEqualTo(false);
+    }
+
+    @Test
     void groupColorPersistsAcrossReloadWithoutRestarting() {
         createLowercaseJourney();
         groupSteps(0, 1);
@@ -2143,7 +2322,7 @@ final class RailixCreatorBrowserIT {
                   project.links = project.links.filter(link => !link.from.startsWith('one.'));
                   project.links.find(link => link.from === 'command.next').to = 'two';
                   return (await fetch('/api/project', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    method: 'POST', headers: mutationHeaders(),
                     body: JSON.stringify(project)
                   })).status;
                 }
@@ -2211,6 +2390,57 @@ final class RailixCreatorBrowserIT {
                   ].join('|');
                 }
                 """)).isEqualTo("true|railix.field-manipulation|railix.field-manipulation|true|true|true|true");
+    }
+
+    @Test
+    void updateAllInsertsOneBranchStepIntoEveryOccurrence() {
+        prepareSharedGroup();
+        openSharedStep(1, 0);
+
+        page.locator("[data-shared-action='all']").click();
+        page.locator("#add-next-step").click();
+        page.locator("#step-search").fill("filter");
+        page.locator("[data-add-step='railix.filter']").click();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const payload = await (await fetch('/api/project')).json();
+                  const filters = payload.project.nodes.filter(node => node.use === 'railix.filter');
+                  const links = payload.project.links;
+                  return [
+                    filters.length,
+                    payload.creator.groups[0].occurrences
+                      .map(occurrence => Object.keys(occurrence.steps).length).join(','),
+                    filters.every(filter => links.find(link => link.from === filter.id + '.otherwise')?.to === 'end'),
+                    filters.every(filter => links.find(link => link.from === filter.id + '.match')?.to !== 'end')
+                  ].join('|');
+                }
+                """)).isEqualTo("2|3,3|true|true");
+    }
+
+    @Test
+    void detachingANestedSharedOccurrenceReparentsItsChildGroup() throws Exception {
+        prepareSharedGroup();
+        page.locator("[data-inspector-mode='groups']").click();
+        page.locator("[data-manage-occurrence]").first().click();
+        page.locator("#open-group").click();
+        groupSteps("one", "one");
+        page.locator("[data-select-group]").click();
+        page.locator("#open-group").click();
+        page.locator("[data-select-step='one']").click();
+        final String project = Files.readString(directory.resolve("project.json"));
+        final String pid = applicationPid();
+
+        clickAndWaitForCreatorSave(() -> page.locator("[data-shared-action='detach']").click());
+
+        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
+        assertThat(applicationPid()).isEqualTo(pid);
+        assertThat(page.evaluate("""
+                async () => (await (await fetch('/api/project')).json()).creator.groups
+                  .flatMap(group => group.occurrences)
+                  .find(occurrence => Object.values(occurrence.steps).includes('one')).parent
+                """)).isNull();
     }
 
     @Test
@@ -3660,6 +3890,38 @@ final class RailixCreatorBrowserIT {
     }
 
     @Test
+    void runtimeShapeRefreshesWritablePathControlsWithoutReplacingThePicker() {
+        addTrigger();
+        exampleContext().fill("{\"payload\":{\"dynamic\":{}}}");
+        exampleContext().press("Tab");
+        waitForText("#build-state", "Built");
+        addManipulationAfterSelected();
+        choosePath("field", "payload", "dynamic");
+        page.locator("#value-0-option").selectOption("literal");
+        page.locator("#value-0-literal-value").fill("[]");
+        page.locator("#value-0-literal-value").press("Tab");
+        waitForText("#build-state", "Built");
+        addManipulationAfterSelected();
+        waitForText("#build-state", "Built");
+        delayNextPreview();
+
+        page.locator("#value-0-option").selectOption("literal");
+        page.locator("#field-path").click();
+        page.locator("[data-path-depth='0']").click();
+        page.locator("[data-path-part='payload']").click();
+        page.locator("[data-path-part='dynamic']").click();
+        page.locator("#append-path-field").waitFor();
+        page.waitForFunction("window.__previewStarted === true");
+        page.evaluate("window.__releasePreview()");
+        page.locator("#append-path-index").waitFor();
+
+        assertThat(List.of(
+                page.locator("#append-path-field").count(),
+                page.locator("#append-path-index").count()
+        )).containsExactly(0, 1);
+    }
+
+    @Test
     void scalarTargetCannotBeExtended() {
         openFieldBuilder("{\"payload\":{\"name\":\"Ada\"}}", "payload", "name");
 
@@ -3762,16 +4024,7 @@ final class RailixCreatorBrowserIT {
     void completedRunCannotOverwriteANewerDraft() {
         createLowercaseJourney();
         selectTrigger();
-        page.evaluate("""
-                window.actualRailixFetch = window.fetch.bind(window);
-                window.railixRunDelayed = false;
-                window.fetch = (input, options) => String(input).includes("/api/run/")
-                  && !window.railixRunDelayed ? new Promise(resolve => {
-                      window.railixRunDelayed = true;
-                      window.releaseRailixRun = () => window.actualRailixFetch(input, options).then(resolve);
-                    })
-                  : window.actualRailixFetch(input, options);
-                """);
+        delayNextRun();
 
         exampleContext().fill("{\"payload\":{\"text\":\"Delayed\"}}");
         exampleContext().press("Tab");
@@ -3787,16 +4040,7 @@ final class RailixCreatorBrowserIT {
     void completedExampleRunPreservesTheOpenStepPicker() {
         addTrigger();
         waitForText("#build-state", "Built");
-        page.evaluate("""
-                window.actualRailixFetch = window.fetch.bind(window);
-                window.railixRunDelayed = false;
-                window.fetch = (input, options) => String(input).includes("/api/run/")
-                  && !window.railixRunDelayed ? new Promise(resolve => {
-                      window.railixRunDelayed = true;
-                      window.releaseRailixRun = () => window.actualRailixFetch(input, options).then(resolve);
-                    })
-                  : window.actualRailixFetch(input, options);
-                """);
+        delayNextRun();
         openInspectorTab("examples");
         examplePayload().fill("[\"delayed\"]");
         examplePayload().press("Tab");
@@ -3822,16 +4066,7 @@ final class RailixCreatorBrowserIT {
     void invalidExampleDraftCannotPublishOlderRunResult() {
         addTrigger();
         waitForText("#build-state", "Built");
-        page.evaluate("""
-                window.actualRailixFetch = window.fetch.bind(window);
-                window.railixRunDelayed = false;
-                window.fetch = (input, options) => String(input).includes("/api/run/")
-                  && !window.railixRunDelayed ? new Promise(resolve => {
-                      window.railixRunDelayed = true;
-                      window.releaseRailixRun = () => window.actualRailixFetch(input, options).then(resolve);
-                    })
-                  : window.actualRailixFetch(input, options);
-                """);
+        delayNextRun();
 
         examplePayload().fill("[\"Delayed\"]");
         examplePayload().press("Tab");
@@ -3847,6 +4082,22 @@ final class RailixCreatorBrowserIT {
                 """);
 
         assertThat(page.locator(".run-result").count()).isZero();
+    }
+
+    @Test
+    void invalidExampleDraftAbortsTheOlderRunRequest() {
+        addTrigger();
+        waitForText("#build-state", "Built");
+        delayNextRun();
+        examplePayload().fill("[\"Delayed\"]");
+        examplePayload().press("Tab");
+        page.waitForFunction("() => typeof window.releaseRailixRun === 'function'");
+
+        examplePayload().fill("[");
+        examplePayload().press("Tab");
+        page.waitForFunction("window.railixRunAborted === true");
+
+        assertThat(page.evaluate("window.railixRunAborted")).isEqualTo(true);
     }
 
     @Test
@@ -3871,6 +4122,7 @@ final class RailixCreatorBrowserIT {
     }
 
     @Test
+    @Tag("responsive")
     void inspectorFitsDesktopAndMobileViewport() {
         final double viewport = ((Number) page.evaluate("window.innerWidth")).doubleValue();
         final var box = page.locator("#inspector").boundingBox();
@@ -4166,7 +4418,9 @@ final class RailixCreatorBrowserIT {
         return branchProject("filter-browser", "filter", "railix.filter", """
                 [{
                   "option":"field","inputs":{"field":["context","payload","value"]},
-                  "when":[{"use":"value.equals","inputs":{"expected":"allow"}}]
+                  "when":{"transforms":[],"all":[[
+                    {"use":"value.equals","inputs":{"expected":"allow"}}
+                  ]]}
                 }]
                 """);
     }
@@ -4175,7 +4429,9 @@ final class RailixCreatorBrowserIT {
         return branchProject("choice-browser", "choice", "railix.choice", """
                 [[{
                   "option":"field","inputs":{"field":["context","payload","value"]},
-                  "when":[{"use":"value.equals","inputs":{"expected":"allow"}}]
+                  "when":{"transforms":[],"all":[[
+                    {"use":"value.equals","inputs":{"expected":"allow"}}
+                  ]]}
                 }]]
                 """);
     }
@@ -4306,7 +4562,7 @@ final class RailixCreatorBrowserIT {
         openProject(branchProject("choice-size", "choice", "railix.choice", """
                 [[{
                   "option":"literal","inputs":{"value":%s},
-                  "when":[]
+                  "when":{"transforms":[],"all":[]}
                 }]]
         """.formatted(numberList(size))));
         page.locator("[data-select-step='choice']").click();
@@ -4355,7 +4611,7 @@ final class RailixCreatorBrowserIT {
         final Number status = (Number) page.evaluate("""
                 source => fetch('/api/project', {
                   method: 'POST',
-                  headers: {'Content-Type': 'application/json'},
+                  headers: mutationHeaders(),
                   body: source
                 }).then(response => response.status)
                 """, source);
@@ -4369,21 +4625,17 @@ final class RailixCreatorBrowserIT {
                 .isEqualTo("Built");
     }
 
-    private void restartCreator(final Path project, final String source) throws Exception {
-        context.close();
-        context = null;
-        creator.close();
-        creator = null;
-        Files.createDirectories(project.getParent());
-        Files.writeString(project, source);
-        creator = CreatorServer.start(0, project, directory.resolve("railix-home"));
-        context = browser.newContext(new Browser.NewContextOptions().setViewportSize(
-                VIEWPORT_WIDTH,
-                VIEWPORT_WIDTH <= 560 ? 720 : 800
-        ));
-        page = context.newPage();
-        page.navigate(creator.baseUri().toString());
-        waitForText("#build-state", "Built");
+    private static void copyTree(final Path source, final Path target) throws IOException {
+        try (var paths = Files.walk(source)) {
+            for (final Path path : paths.toList()) {
+                final Path destination = target.resolve(source.relativize(path));
+                if (Files.isDirectory(path)) {
+                    Files.createDirectories(destination);
+                } else {
+                    Files.copy(path, destination);
+                }
+            }
+        }
     }
 
     private void delayNextProjectWrite() {
@@ -4408,6 +4660,82 @@ final class RailixCreatorBrowserIT {
                       });
                     }
                     return original(input, options);
+                  };
+                }
+                """);
+    }
+
+    private void delayFirstProjectWriteAndRecordIds() {
+        page.evaluate("""
+                () => {
+                  const request = window.fetch.bind(window);
+                  window.__railixProjectWrites = [];
+                  window.__railixProjectWriteStarted = false;
+                  window.fetch = (input, options = {}) => {
+                    const url = typeof input === 'string' ? input : input.url;
+                    if (!url.endsWith('/api/project') || options.method !== 'POST') {
+                      return request(input, options);
+                    }
+                    window.__railixProjectWrites.push(JSON.parse(options.body).id);
+                    if (window.__railixProjectWrites.length > 1) {
+                      return request(input, options);
+                    }
+                    window.__railixProjectWriteStarted = true;
+                    return new Promise((resolve, reject) => {
+                      window.__railixReleaseProjectWrite = () =>
+                        request(input, options).then(resolve, reject);
+                    });
+                  };
+                }
+                """);
+    }
+
+    private void delayNextPreview() {
+        page.evaluate("""
+                () => {
+                  const request = window.fetch.bind(window);
+                  let delayed = false;
+                  window.__previewStarted = false;
+                  window.fetch = async (...arguments) => {
+                    const response = await request(...arguments);
+                    if (!delayed && String(arguments[0]).startsWith('/api/preview/')) {
+                      delayed = true;
+                      window.__previewStarted = true;
+                      await new Promise(resolve => window.__releasePreview = resolve);
+                    }
+                    return response;
+                  };
+                }
+                """);
+    }
+
+    private void delayNextRun() {
+        page.evaluate("""
+                () => {
+                  const request = window.fetch.bind(window);
+                  let delayed = false;
+                  window.railixRunAborted = false;
+                  window.fetch = (input, options = {}) => {
+                    if (delayed || !String(input).includes('/api/run/')) {
+                      return request(input, options);
+                    }
+                    delayed = true;
+                    return new Promise((resolve, reject) => {
+                      const abort = () => {
+                        window.railixRunAborted = true;
+                        window.releaseRailixRun = () => {};
+                        reject(new DOMException('Aborted', 'AbortError'));
+                      };
+                      if (options.signal?.aborted) {
+                        abort();
+                        return;
+                      }
+                      options.signal?.addEventListener('abort', abort, {once: true});
+                      window.releaseRailixRun = () => {
+                        options.signal?.removeEventListener('abort', abort);
+                        request(input, options).then(resolve, reject);
+                      };
+                    });
                   };
                 }
                 """);
@@ -4556,10 +4884,22 @@ final class RailixCreatorBrowserIT {
     }
 
     private void waitForText(final String selector, final String text) {
-        page.waitForFunction(
-                "expected => document.querySelector(expected.selector)?.textContent === expected.text",
-                Map.of("selector", selector, "text", text)
-        );
+        try {
+            page.waitForFunction(
+                    "expected => document.querySelector(expected.selector)?.textContent === expected.text",
+                    Map.of("selector", selector, "text", text)
+            );
+        } catch (final TimeoutError timeout) {
+            final String actual = page.locator(selector).count() == 0
+                    ? "<missing>"
+                    : page.locator(selector).textContent();
+            throw new AssertionError(
+                    "Expected " + selector + " to contain '" + text + "' but was '" + actual
+                            + "'. Browser errors: " + pageErrors
+                            + ". Inspector: " + page.locator("#inspector").textContent(),
+                    timeout
+            );
+        }
     }
 
     private static void stopProcess(final long pid) {

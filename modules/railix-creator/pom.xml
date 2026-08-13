@@ -26,6 +26,14 @@
                         <configuration>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
                             <outputFile>${project.build.directory}/railix.jar</outputFile>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/MANIFEST.MF</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>dev.nanonative.railix.creator.RailixMain</mainClass>
@@ -36,11 +44,40 @@
                 </executions>
             </plugin>
             <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.6.2</version>
+                <executions>
+                    <execution>
+                        <id>package-app-image</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>sh</executable>
+                            <workingDirectory>${project.basedir}/../..</workingDirectory>
+                            <arguments>
+                                <argument>scripts/package-creator-app.sh</argument>
+                                <argument>${java.home}</argument>
+                                <argument>${project.build.directory}/railix.jar</argument>
+                                <argument>${project.build.directory}/runtime</argument>
+                                <argument>${project.build.directory}/app-image</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <version>${maven.surefire.version}</version>
                 <configuration>
-                    <argLine>@{jacocoArgLine}</argLine>
+                    <failIfNoTests>true</failIfNoTests>
+                    <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+                    <systemPropertyVariables>
+                        <junit.jupiter.execution.timeout.lifecycle.method.default>60 s</junit.jupiter.execution.timeout.lifecycle.method.default>
+                    </systemPropertyVariables>
                 </configuration>
                 <executions>
                     <execution>
@@ -49,6 +86,7 @@
                             <goal>integration-test</goal>
                         </goals>
                         <configuration>
+                            <argLine>@{jacocoDesktopArgLine}</argLine>
                             <promoteUserPropertiesToSystemProperties>false</promoteUserPropertiesToSystemProperties>
                             <reportsDirectory>${project.build.directory}/failsafe-reports-desktop</reportsDirectory>
                             <summaryFile>${project.build.directory}/failsafe-reports-desktop/failsafe-summary.xml</summaryFile>
@@ -63,6 +101,8 @@
                             <goal>integration-test</goal>
                         </goals>
                         <configuration>
+                            <argLine>@{jacocoMobileArgLine}</argLine>
+                            <groups>responsive</groups>
                             <includes>
                                 <include>**/RailixCreatorBrowserIT.java</include>
                             </includes>
@@ -91,6 +131,48 @@
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>coverage-desktop-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                        <configuration>
+                            <propertyName>jacocoDesktopArgLine</propertyName>
+                            <destFile>${project.build.directory}/jacoco-desktop.exec</destFile>
+                            <append>false</append>
+                            <includes>
+                                <include>dev.nanonative.railix.*</include>
+                            </includes>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>coverage-mobile-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                        <configuration>
+                            <propertyName>jacocoMobileArgLine</propertyName>
+                            <destFile>${project.build.directory}/jacoco-mobile.exec</destFile>
+                            <append>false</append>
+                            <includes>
+                                <include>dev.nanonative.railix.*</include>
+                            </includes>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>coverage-aggregate</id>
+                        <goals>
+                            <goal>report-aggregate</goal>
+                        </goals>
+                        <configuration>
+                            <includeCurrentProject>true</includeCurrentProject>
+                            <dataFileIncludes>
+                                <dataFileInclude>**/jacoco-*.exec</dataFileInclude>
+                            </dataFileIncludes>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

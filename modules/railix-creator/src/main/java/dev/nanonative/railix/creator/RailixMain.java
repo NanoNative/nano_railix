@@ -1,23 +1,23 @@
 package dev.nanonative.railix.creator;
 
 import dev.nanonative.railix.core.project.CompileResult;
-import dev.nanonative.railix.core.project.CompiledProject;
 import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.project.ProjectCompiler;
-import dev.nanonative.railix.core.runtime.RunResult;
+import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.value.RailixData;
-import dev.nanonative.railix.core.value.RailixJson;
-import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.stdlib.StandardLibrary;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
-/** Starts Railix Creator or its Creator-owned development application. */
+/** Starts Railix Creator. Generated project applications are independent executable JARs. */
 public final class RailixMain {
     private static final int DEFAULT_PORT = 0;
     private static final String CREATOR_USAGE = "Usage: railix creator [project-file] [port]";
@@ -39,62 +39,84 @@ public final class RailixMain {
         }
         return switch (arguments[0]) {
             case "creator" -> creator(arguments);
-            case "run" -> runProject(List.of(arguments).subList(1, arguments.length));
-            case "application" -> application(arguments);
+            case "run" -> runApplication(arguments);
             default -> reject("Unknown Railix command: " + arguments[0] + ".");
         };
     }
 
-    private static int runProject(final List<String> arguments) {
+    private static int runApplication(final String[] arguments) {
         final Path project = Path.of("railix.project.json");
-        final String source;
         try {
-            if (Files.size(project) > RailixData.DEFAULT_MAX_SOURCE_BYTES) {
-                return reject("Project exceeds the 1048576-byte limit.");
+            final String source = readApplicationProject(project);
+            final Path absoluteProject = project.toAbsolutePath().normalize();
+            final Path dependencyLock = absoluteProject.resolveSibling("railix.dependencies.lock.json");
+            final StepCatalog catalog = Files.exists(dependencyLock)
+                    ? StandardLibrary.catalog().install(
+                            dependencyLock,
+                            Path.of(System.getProperty("user.home"), ".railix", "artifacts")
+                    )
+                    : StandardLibrary.catalog();
+            final CompileResult result = ProjectCompiler.compileApplication(source, catalog);
+            if (result instanceof CompileResult.Rejected rejected) {
+                final Diagnostic diagnostic = rejected.diagnostics().getFirst();
+                return reject(diagnostic.code() + " " + diagnostic.path() + " " + diagnostic.message());
             }
-            source = Files.readString(project, StandardCharsets.UTF_8);
+            final Path jar = ApplicationBuilder.buildProduction(
+                    absoluteProject,
+                    (CompileResult.Compiled) result
+            ).jar();
+            final List<String> command = new ArrayList<>();
+            command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
+            command.add("-jar");
+            command.add(jar.toString());
+            command.addAll(List.of(arguments).subList(1, arguments.length));
+            return waitFor(new ProcessBuilder(command).inheritIO().start());
         } catch (final IOException exception) {
-            return reject("Cannot read project: " + exception.getMessage());
+            return reject(exception.getMessage());
         }
-        final CompileResult compiled = ProjectCompiler.compile(source, StandardLibrary.catalog());
-        if (compiled instanceof CompileResult.Rejected rejected) {
-            return reject(rejected.diagnostics());
-        }
-        final CompiledProject.SourceResult sourceResult = ((CompileResult.Compiled) compiled).project().runSource(
-                "application.arguments",
-                Map.of("arguments", RailixValue.array(arguments.stream()
-                        .<RailixValue>map(RailixValue::string)
-                        .toList()))
-        );
-        return switch (sourceResult.result()) {
-            case RunResult.Succeeded ignored -> succeeded(sourceResult.responses());
-            case RunResult.Rejected rejected -> reject(rejected.diagnostics());
-            case RunResult.Failed failed -> reject(
-                    failed.failure().code() + " " + failed.failure().stepId() + " "
-                            + failed.failure().message(),
-                    1
-            );
-            case RunResult.Cancelled ignored -> 130;
-        };
     }
 
-    private static int succeeded(final Map<String, RailixValue> responses) {
-        final RailixValue exitCode = responses.get("status");
-        if (!(exitCode instanceof RailixValue.NumberValue number)) {
-            return reject("CLI exit code must be a number.");
+    private static String readApplicationProject(final Path project) throws IOException {
+        if (!Files.isRegularFile(project)) {
+            throw new IOException("Cannot read project: " + project);
         }
+        if (Files.size(project) > RailixData.DEFAULT_MAX_SOURCE_BYTES) {
+            throw new IOException("Project exceeds the 1048576-byte limit.");
+        }
+        final byte[] source = Files.readAllBytes(project);
         try {
-            final int value = number.value().intValueExact();
-            if (value < 0 || value > 255) {
-                return reject("CLI exit code must be from 0 through 255.");
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(source))
+                    .toString();
+        } catch (final CharacterCodingException exception) {
+            throw new IOException("Project is not valid UTF-8.", exception);
+        }
+    }
+
+    private static int waitFor(final Process process) throws IOException {
+        final Thread shutdown = Thread.ofPlatform()
+                .name("railix-run-shutdown")
+                .unstarted(process::destroyForcibly);
+        Runtime.getRuntime().addShutdownHook(shutdown);
+        try {
+            return process.waitFor();
+        } catch (final InterruptedException exception) {
+            process.destroyForcibly();
+            try {
+                process.waitFor();
+            } catch (final InterruptedException cleanup) {
+                exception.addSuppressed(cleanup);
             }
-            final RailixValue result = responses.get("output");
-            if (!(result instanceof RailixValue.NullValue)) {
-                System.out.println(RailixJson.write(result));
+            Thread.currentThread().interrupt();
+            return 130;
+        } finally {
+            try {
+                Runtime.getRuntime().removeShutdownHook(shutdown);
+            } catch (final IllegalStateException ignored) {
+                // JVM shutdown owns the child from this point.
             }
-            return value;
-        } catch (final ArithmeticException exception) {
-            return reject("CLI exit code must be an integer.");
         }
     }
 
@@ -129,22 +151,8 @@ public final class RailixMain {
         }
     }
 
-    private static int application(final String[] arguments) {
-        if (arguments.length != 3) {
-            return reject("Invalid Creator application command.");
-        }
-        return DevelopmentRuntime.run(Path.of(arguments[1]), arguments[2]);
-    }
-
     private static int reject(final String message) {
         return reject(message, 2);
-    }
-
-    private static int reject(final List<Diagnostic> diagnostics) {
-        diagnostics.forEach(diagnostic ->
-                System.err.println(diagnostic.code() + " " + diagnostic.path() + " " + diagnostic.message())
-        );
-        return 2;
     }
 
     private static int reject(final String message, final int status) {

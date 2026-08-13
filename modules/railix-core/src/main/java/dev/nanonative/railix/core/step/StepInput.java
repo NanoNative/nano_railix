@@ -10,6 +10,15 @@ import java.util.Optional;
 public final class StepInput {
     @FunctionalInterface
     public interface Program {
+        /**
+         * Runs the declared nested Steps synchronously.
+         * Runtime-provided programs are valid only on the owning invocation thread and until the
+         * enclosing {@link StepHandler#run(StepInput)} call returns.
+         *
+         * @return the nested outcome and optional value
+         * @throws InterruptedException when nested execution is cancelled
+         * @throws IllegalStateException when the runtime program is used outside its invocation
+         */
         ProgramResult run() throws InterruptedException;
     }
 
@@ -125,7 +134,16 @@ public final class StepInput {
         return selected;
     }
 
-    /** Runs the nested program with the value relationship declared by its {@link StepDefinition}. */
+    /**
+     * Runs the nested program with the value relationship declared by its {@link StepDefinition}.
+     * Runtime programs are synchronous and invocation-scoped as documented by {@link Program#run()}.
+     *
+     * @param name declared nested-Step input name
+     * @return the nested outcome and optional value
+     * @throws IllegalArgumentException when the name is blank or unavailable
+     * @throws IllegalStateException when a runtime program is used outside its invocation
+     * @throws InterruptedException when nested execution is cancelled
+     */
     public ProgramResult run(final String name) throws InterruptedException {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("Nested Step input name must be a non-blank string.");

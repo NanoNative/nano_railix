@@ -187,6 +187,40 @@ final class CreatorServerE2eTest {
     }
 
     @Test
+    void creatorMetadataPersistsAValidPortableStepIconWithoutRestartingTheApplication() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final Path metadata = directory.resolve("railix.creator.json");
+        Files.writeString(project, CreatorProjects.grouping(), StandardCharsets.UTF_8);
+        final String source = """
+                {"format":1,"steps":{"lowercase-text":{"icon":{
+                  "media_type":"image/svg+xml","data":"PHN2Zy8+"
+                }}},"groups":[]}
+                """;
+
+        try (CreatorServer creator = start(project)) {
+            final long pid = number(application(creator.baseUri()), "pid");
+
+            final HttpResponse<String> saved = request(
+                    creator.baseUri(),
+                    "POST",
+                    "/api/creator",
+                    source
+            );
+
+            assertThat(saved.statusCode()).isEqualTo(200);
+            assertThat(saved.body()).contains(
+                    "\"media_type\":\"image/svg+xml\"",
+                    "\"data\":\"PHN2Zy8+\""
+            );
+            assertThat(Files.readString(metadata, StandardCharsets.UTF_8)).contains(
+                    "\"media_type\":\"image/svg+xml\"",
+                    "\"data\":\"PHN2Zy8+\""
+            );
+            assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+        }
+    }
+
+    @Test
     void creatorMetadataRejectsMalformedJsonWithoutChangingTheRunningApplication() throws Exception {
         assertCreatorMetadataRejected("{", "CREATOR_JSON_INVALID", "");
     }
@@ -274,6 +308,159 @@ final class CreatorServerE2eTest {
     }
 
     @Test
+    void creatorPresentationNameMustBeText() throws Exception {
+        assertCreatorMetadataRejected(
+                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"name\":1}},\"groups\":[]}",
+                "CREATOR_PRESENTATION_NAME_INVALID",
+                "steps.lowercase-text.name"
+        );
+    }
+
+    @Test
+    void creatorPresentationNameIsBounded() throws Exception {
+        assertCreatorMetadataRejected(
+                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"name\":\"%s\"}},\"groups\":[]}"
+                        .formatted("x".repeat(129)),
+                "CREATOR_PRESENTATION_NAME_INVALID",
+                "steps.lowercase-text.name"
+        );
+    }
+
+    @Test
+    void creatorPresentationColorMustBeText() throws Exception {
+        assertCreatorMetadataRejected(
+                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"color\":1}},\"groups\":[]}",
+                "CREATOR_PRESENTATION_COLOR_INVALID",
+                "steps.lowercase-text.color"
+        );
+    }
+
+    @Test
+    void creatorPresentationIconRejectsUnknownFields() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{"lowercase-text":{"icon":{
+                  "media_type":"image/svg+xml","data":"PHN2Zy8+","noise":true
+                }}},"groups":[]}
+                """,
+                "CREATOR_PRESENTATION_ICON_INVALID",
+                "steps.lowercase-text.icon.noise"
+        );
+    }
+
+    @Test
+    void creatorPresentationIconRequiresBothFields() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{"lowercase-text":{"icon":{
+                  "media_type":"image/svg+xml"
+                }}},"groups":[]}
+                """,
+                "CREATOR_PRESENTATION_ICON_INVALID",
+                "steps.lowercase-text.icon"
+        );
+    }
+
+    @Test
+    void creatorPresentationIconMediaTypeMustBeText() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{"lowercase-text":{"icon":{
+                  "media_type":1,"data":"PHN2Zy8+"
+                }}},"groups":[]}
+                """,
+                "CREATOR_PRESENTATION_ICON_INVALID",
+                "steps.lowercase-text.icon"
+        );
+    }
+
+    @Test
+    void creatorPresentationIconDataMustBeText() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{"lowercase-text":{"icon":{
+                  "media_type":"image/svg+xml","data":1
+                }}},"groups":[]}
+                """,
+                "CREATOR_PRESENTATION_ICON_INVALID",
+                "steps.lowercase-text.icon"
+        );
+    }
+
+    @Test
+    void creatorPresentationIconMediaTypeMustBeSupported() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{"lowercase-text":{"icon":{
+                  "media_type":"image/jpeg","data":"PHN2Zy8+"
+                }}},"groups":[]}
+                """,
+                "CREATOR_PRESENTATION_ICON_INVALID",
+                "steps.lowercase-text.icon"
+        );
+    }
+
+    @Test
+    void creatorPresentationIconDataMustBeBase64() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{"lowercase-text":{"icon":{
+                  "media_type":"image/svg+xml","data":"%%%"
+                }}},"groups":[]}
+                """,
+                "CREATOR_PRESENTATION_ICON_INVALID",
+                "steps.lowercase-text.icon.data"
+        );
+    }
+
+    @Test
+    void creatorPresentationIconDataMustNotBeEmpty() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{"lowercase-text":{"icon":{
+                  "media_type":"image/svg+xml","data":""
+                }}},"groups":[]}
+                """,
+                "CREATOR_PRESENTATION_ICON_INVALID",
+                "steps.lowercase-text.icon.data"
+        );
+    }
+
+    @Test
+    void creatorPresentationIconDataMustMatchItsMediaType() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{"lowercase-text":{"icon":{
+                  "media_type":"image/svg+xml","data":"PGJhZC8+"
+                }}},"groups":[]}
+                """,
+                "CREATOR_PRESENTATION_ICON_INVALID",
+                "steps.lowercase-text.icon.data"
+        );
+    }
+
+    @Test
+    void creatorPresentationIconDataIsBounded() throws Exception {
+        final String data = Base64.getEncoder().encodeToString(new byte[65_537]);
+
+        assertCreatorMetadataRejected(
+                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"icon\":{"
+                        + "\"media_type\":\"image/png\",\"data\":\"" + data + "\"}}},\"groups\":[]}",
+                "CREATOR_PRESENTATION_ICON_INVALID",
+                "steps.lowercase-text.icon.data"
+        );
+    }
+
+    @Test
+    void creatorStepPresentationRejectsUnknownFields() throws Exception {
+        assertCreatorMetadataRejected(
+                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"noise\":true}},\"groups\":[]}",
+                "CREATOR_PRESENTATION_FIELD_UNKNOWN",
+                "steps.lowercase-text.noise"
+        );
+    }
+
+    @Test
     void creatorGroupMustBeAnObject() throws Exception {
         assertCreatorMetadataRejected(
                 "{\"format\":1,\"steps\":{},\"groups\":[true]}",
@@ -292,6 +479,16 @@ final class CreatorServerE2eTest {
     }
 
     @Test
+    void creatorGroupPresentationRejectsInvalidColors() throws Exception {
+        assertCreatorMetadataRejected(
+                "{\"format\":1,\"steps\":{},\"groups\":[{"
+                        + "\"id\":\"group-one\",\"color\":\"red\",\"occurrences\":[]}]}",
+                "CREATOR_PRESENTATION_COLOR_INVALID",
+                "groups[0].color"
+        );
+    }
+
+    @Test
     void creatorGroupOccurrenceMustBeAnObject() throws Exception {
         assertCreatorMetadataRejected(
                 "{\"format\":1,\"steps\":{},\"groups\":[{\"id\":\"group-one\",\"occurrences\":[true]}]}",
@@ -301,11 +498,102 @@ final class CreatorServerE2eTest {
     }
 
     @Test
+    void creatorGroupOccurrencesMustBeAnArray() throws Exception {
+        assertCreatorMetadataRejected(
+                "{\"format\":1,\"steps\":{},\"groups\":[{\"id\":\"group-one\",\"occurrences\":true}]}",
+                "CREATOR_GROUP_OCCURRENCES_REQUIRED",
+                "groups[0].occurrences"
+        );
+    }
+
+    @Test
+    void creatorOccurrenceRejectsUnknownFields() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
+                  "id":"occurrence-one","flow":"command","parent":null,
+                  "steps":{"slot-one":"lowercase-text"},"noise":true
+                }]}]}
+                """,
+                "CREATOR_OCCURRENCE_FIELD_UNKNOWN",
+                "groups[0].occurrences[0].noise"
+        );
+    }
+
+    @Test
+    void creatorOccurrenceIdMustBeNonBlank() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
+                  "id":"","flow":"command","parent":null,
+                  "steps":{"slot-one":"lowercase-text"}
+                }]}]}
+                """,
+                "CREATOR_ID_INVALID",
+                "groups[0].occurrences[0].id"
+        );
+    }
+
+    @Test
+    void creatorOccurrenceFlowMustBeAnId() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
+                  "id":"occurrence-one","flow":4,"parent":null,
+                  "steps":{"slot-one":"lowercase-text"}
+                }]}]}
+                """,
+                "CREATOR_ID_INVALID",
+                "groups[0].occurrences[0].flow"
+        );
+    }
+
+    @Test
+    void creatorOccurrenceStepsMustBeAnObject() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
+                  "id":"occurrence-one","flow":"command","parent":null,"steps":[]
+                }]}]}
+                """,
+                "CREATOR_OCCURRENCE_STEPS_REQUIRED",
+                "groups[0].occurrences[0].steps"
+        );
+    }
+
+    @Test
+    void creatorOccurrenceStepsMustNotBeEmpty() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
+                  "id":"occurrence-one","flow":"command","parent":null,"steps":{}
+                }]}]}
+                """,
+                "CREATOR_OCCURRENCE_STEPS_REQUIRED",
+                "groups[0].occurrences[0].steps"
+        );
+    }
+
+    @Test
     void creatorOccurrenceParentMustBeNullOrAnId() throws Exception {
         assertCreatorMetadataRejected(
                 """
                 {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
                   "id":"occurrence-one","flow":"command","parent":4,
+                  "steps":{"slot-one":"lowercase-text"}
+                }]}]}
+                """,
+                "CREATOR_OCCURRENCE_PARENT_INVALID",
+                "groups[0].occurrences[0].parent"
+        );
+    }
+
+    @Test
+    void creatorOccurrenceParentMustNotBeBlank() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
+                  "id":"occurrence-one","flow":"command","parent":" ",
                   "steps":{"slot-one":"lowercase-text"}
                 }]}]}
                 """,
@@ -325,6 +613,35 @@ final class CreatorServerE2eTest {
                 """,
                 "CREATOR_OCCURRENCE_STEP_INVALID",
                 "groups[0].occurrences[0].steps."
+        );
+    }
+
+    @Test
+    void creatorOccurrenceStepMustBeAnId() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
+                  "id":"occurrence-one","flow":"command","parent":null,
+                  "steps":{"slot-one":4}
+                }]}]}
+                """,
+                "CREATOR_OCCURRENCE_STEP_INVALID",
+                "groups[0].occurrences[0].steps.slot-one"
+        );
+    }
+
+    @ParameterizedTest(name = "Creator occurrence rejects reserved node {0}")
+    @ValueSource(strings = {"app", "command"})
+    void creatorOccurrenceCannotReferenceReservedNodes(final String node) throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
+                  "id":"occurrence-one","flow":"command","parent":null,
+                  "steps":{"slot-one":"%s"}
+                }]}]}
+                """.formatted(node),
+                "CREATOR_OCCURRENCE_STEP_UNKNOWN",
+                "groups[0].occurrences[0].steps.slot-one"
         );
     }
 
@@ -398,9 +715,112 @@ final class CreatorServerE2eTest {
     }
 
     @Test
+    void creatorMetadataAcceptsAConnectedBranchRegionWithOneEntry() throws Exception {
+        final Path project = directory.resolve("project.json");
+        Files.writeString(project, branchGroupProject(), StandardCharsets.UTF_8);
+
+        try (CreatorServer creator = start(project)) {
+            final HttpResponse<String> response = request(
+                    creator.baseUri(),
+                    "POST",
+                    "/api/creator",
+                    """
+                    {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
+                      "id":"occurrence-one","flow":"command","parent":null,
+                      "steps":{"slot-choice":"choice","slot-match":"matched","slot-other":"otherwise"}
+                    }]}]}
+                    """
+            );
+
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains(
+                    "\"id\":\"group-one\"",
+                    "\"slot-choice\":\"choice\"",
+                    "\"slot-match\":\"matched\"",
+                    "\"slot-other\":\"otherwise\""
+            );
+        }
+    }
+
+    @Test
+    void creatorMetadataRejectsDisconnectedBranchMembers() throws Exception {
+        final Path project = directory.resolve("project.json");
+        final Path metadata = directory.resolve("railix.creator.json");
+        Files.writeString(project, branchGroupProject(), StandardCharsets.UTF_8);
+
+        try (CreatorServer creator = start(project)) {
+            final long pid = number(application(creator.baseUri()), "pid");
+            final String originalMetadata = Files.readString(metadata, StandardCharsets.UTF_8);
+            final HttpResponse<String> response = request(
+                    creator.baseUri(),
+                    "POST",
+                    "/api/creator",
+                    """
+                    {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
+                      "id":"occurrence-one","flow":"command","parent":null,
+                      "steps":{"slot-match":"matched","slot-other":"otherwise"}
+                    }]}]}
+                    """
+            );
+
+            assertThat(response.statusCode()).isEqualTo(422);
+            assertThat(response.body()).contains("CREATOR_OCCURRENCE_RANGE_INVALID");
+            assertThat(Files.readString(metadata, StandardCharsets.UTF_8)).isEqualTo(originalMetadata);
+            assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+        }
+    }
+
+    @Test
+    void creatorMetadataAcceptsSharedOccurrencesWithTheSameBranchTopology() throws Exception {
+        final Path project = directory.resolve("project.json");
+        Files.writeString(project, sharedBranchGroupProject(), StandardCharsets.UTF_8);
+
+        try (CreatorServer creator = start(project)) {
+            final HttpResponse<String> response = request(
+                    creator.baseUri(),
+                    "POST",
+                    "/api/creator",
+                    sharedBranchMetadata(false)
+            );
+
+            assertThat(response.statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void creatorMetadataRejectsSharedOccurrencesWithDifferentBranchTopology() throws Exception {
+        final Path project = directory.resolve("project.json");
+        Files.writeString(project, sharedBranchGroupProject(), StandardCharsets.UTF_8);
+
+        try (CreatorServer creator = start(project)) {
+            final HttpResponse<String> response = request(
+                    creator.baseUri(),
+                    "POST",
+                    "/api/creator",
+                    sharedBranchMetadata(true)
+            );
+
+            assertThat(response.statusCode()).isEqualTo(422);
+            assertThat(response.body()).contains(
+                    "CREATOR_OCCURRENCE_TOPOLOGY_MISMATCH",
+                    "groups[0].occurrences[1].steps"
+            );
+        }
+    }
+
+    @Test
     void creatorMetadataRejectsUnsupportedFormats() throws Exception {
         assertCreatorMetadataRejected(
                 "{\"format\":2,\"steps\":{},\"groups\":[]}",
+                "CREATOR_FORMAT_UNSUPPORTED",
+                "format"
+        );
+    }
+
+    @Test
+    void creatorMetadataRequiresAFormat() throws Exception {
+        assertCreatorMetadataRejected(
+                "{\"steps\":{},\"groups\":[]}",
                 "CREATOR_FORMAT_UNSUPPORTED",
                 "format"
         );
@@ -505,6 +925,20 @@ final class CreatorServerE2eTest {
                 """
                 {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
                   "id":"occurrence-one","flow":"command","parent":"missing",
+                  "steps":{"slot-one":"lowercase-text"}
+                }]}]}
+                """,
+                "CREATOR_OCCURRENCE_PARENT_UNKNOWN",
+                "groups[0].occurrences[0].parent"
+        );
+    }
+
+    @Test
+    void creatorMetadataRejectsASelfParentOccurrence() throws Exception {
+        assertCreatorMetadataRejected(
+                """
+                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
+                  "id":"occurrence-one","flow":"command","parent":"occurrence-one",
                   "steps":{"slot-one":"lowercase-text"}
                 }]}]}
                 """,
@@ -1449,7 +1883,7 @@ final class CreatorServerE2eTest {
     }
 
     @Test
-    void falliblePreviewReturnsTheActualInvalidOutcomeFromTheChildApplication() throws Exception {
+    void falliblePreviewCapturesTheInvalidNestedOutcomeAndCompletesTheFlow() throws Exception {
         try (CreatorServer creator = startFallibleJourney()) {
             final HttpResponse<String> response = request(
                     creator.baseUri(),
@@ -1462,7 +1896,8 @@ final class CreatorServerE2eTest {
                     .containsExactly(
                             200,
                             "{\"context\":{\"exit_code\":0,\"payload\":{\"value\":\"not-a-number\"},"
-                                    + "\"result\":null,\"runtime\":{\"test\":true,\"trigger\":\"command\"}},"
+                                    + "\"result\":\"not-a-number\",\"runtime\":{\"test\":true,"
+                                    + "\"trigger\":\"command\"}},"
                                     + "\"preview\":{\"input_context\":{\"exit_code\":0,"
                                     + "\"payload\":{\"value\":\"not-a-number\"},\"result\":null,"
                                     + "\"runtime\":{\"test\":true,\"trigger\":\"command\"}},"
@@ -1474,7 +1909,8 @@ final class CreatorServerE2eTest {
                                     + "\"use\":\"text.to-number\"}],\"step\":\"convert\"},"
                                     + "\"status\":\"succeeded\",\"steps\":["
                                     + "{\"id\":\"text.to-number\",\"outcome\":\"invalid\"},"
-                                    + "{\"id\":\"convert\",\"outcome\":\"next\"}]}"
+                                    + "{\"id\":\"convert\",\"outcome\":\"next\"},"
+                                    + "{\"id\":\"number-result\",\"outcome\":\"next\"}]}"
                     );
         }
     }
@@ -1604,6 +2040,50 @@ final class CreatorServerE2eTest {
     }
 
     @Test
+    void laterProjectMutationWinsWhenAnEarlierRequestBodyFinishesLast() throws Exception {
+        final Path project = directory.resolve("ordered-project.json");
+        final String first = CreatorProjects.empty("earlier-delayed");
+        final String second = CreatorProjects.empty("later-complete");
+        try (CreatorServer creator = start(project);
+             Socket delayed = new Socket()) {
+            final URI uri = creator.baseUri();
+            final byte[] firstBytes = first.getBytes(StandardCharsets.UTF_8);
+            delayed.connect(new InetSocketAddress(uri.getHost(), uri.getPort()));
+            delayed.setSoTimeout(15_000);
+            delayed.getOutputStream().write(("""
+                    POST /api/project HTTP/1.1\r
+                    Host: %s:%d\r
+                    Content-Type: application/json\r
+                    X-Railix-Creator-Token: %s\r
+                    Content-Length: %d\r
+                    Connection: close\r
+                    \r
+                    """.formatted(
+                    uri.getHost(),
+                    uri.getPort(),
+                    tokenOrIncorrect(uri),
+                    firstBytes.length
+            )).getBytes(StandardCharsets.US_ASCII));
+            delayed.getOutputStream().write(firstBytes, 0, 1);
+            delayed.getOutputStream().flush();
+            Thread.sleep(100);
+
+            final HttpResponse<String> later = request(uri, "POST", "/api/project", second);
+            delayed.getOutputStream().write(firstBytes, 1, firstBytes.length - 1);
+            delayed.getOutputStream().flush();
+            delayed.shutdownOutput();
+            final String earlier = new String(delayed.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+            assertThat(later.statusCode()).isEqualTo(200);
+            assertThat(earlier).contains(" 409 ", "\"status\":\"superseded\"");
+            assertThat(Files.readString(project)).contains("later-complete").doesNotContain("earlier-delayed");
+            assertThat(request(uri, "GET", "/api/project", "").body())
+                    .contains("later-complete")
+                    .doesNotContain("earlier-delayed");
+        }
+    }
+
+    @Test
     void rejectedProjectChangeKeepsRunningApplication() throws Exception {
         try (CreatorServer creator = startJourney()) {
             final RailixValue.ObjectValue before = application(creator.baseUri());
@@ -1696,6 +2176,213 @@ final class CreatorServerE2eTest {
     }
 
     @Test
+    void mutationWithoutCreatorTokenIsRejectedBeforeProjectStateChanges() throws Exception {
+        final Path project = directory.resolve("missing-token.json");
+        try (CreatorServer creator = start(project);
+             HttpClient client = HttpClient.newHttpClient()) {
+            final long pid = number(application(creator.baseUri()), "pid");
+            final String persisted = Files.readString(project);
+            final HttpResponse<String> response = client.send(
+                    HttpRequest.newBuilder(creator.baseUri().resolve("/api/project"))
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(
+                                    CreatorProjects.empty("unauthorized-change"),
+                                    StandardCharsets.UTF_8
+                            ))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+
+            assertThat(response.statusCode()).isEqualTo(401);
+            assertThat(response.body()).isEqualTo("{\"status\":\"unauthorized\"}");
+            assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+            assertThat(Files.readString(project)).isEqualTo(persisted);
+        }
+    }
+
+    @Test
+    void readWithoutCreatorTokenIsRejected() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("missing-read-token.json"));
+             HttpClient client = HttpClient.newHttpClient()) {
+            final HttpResponse<String> response = client.send(
+                    HttpRequest.newBuilder(creator.baseUri().resolve("/api/project"))
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+
+            assertThat(response.statusCode()).isEqualTo(401);
+            assertThat(response.body()).isEqualTo("{\"status\":\"unauthorized\"}");
+        }
+    }
+
+    @Test
+    void foreignHostIsRejectedBeforeCreatorDataIsRead() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("foreign-host.json"));
+             Socket socket = new Socket()) {
+            final URI uri = creator.baseUri();
+            socket.connect(new InetSocketAddress(uri.getHost(), uri.getPort()));
+            socket.setSoTimeout(5_000);
+            socket.getOutputStream().write(("""
+                    GET /api/project HTTP/1.1\r
+                    Host: foreign.invalid\r
+                    X-Railix-Creator-Token: %s\r
+                    Connection: close\r
+                    \r
+                    """.formatted(tokenOrIncorrect(uri))).getBytes(StandardCharsets.US_ASCII));
+            socket.shutdownOutput();
+
+            final String response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+            assertThat(response).contains(" 403 ", "{\"status\":\"forbidden-host\"}");
+        }
+    }
+
+    @Test
+    void mutationWithIncorrectCreatorTokenIsRejected() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("wrong-token.json"));
+             HttpClient client = HttpClient.newHttpClient()) {
+            final HttpResponse<String> response = client.send(
+                    HttpRequest.newBuilder(creator.baseUri().resolve("/api/project"))
+                            .header("Content-Type", "application/json")
+                            .header("X-Railix-Creator-Token", "incorrect")
+                            .POST(HttpRequest.BodyPublishers.ofString(
+                                    CreatorProjects.empty("wrong-token-change"),
+                                    StandardCharsets.UTF_8
+                            ))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+
+            assertThat(response.statusCode()).isEqualTo(401);
+            assertThat(response.body()).isEqualTo("{\"status\":\"unauthorized\"}");
+        }
+    }
+
+    @Test
+    void mutationFromForeignBrowserOriginIsRejectedEvenWithTheCreatorToken() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("foreign-origin.json"));
+             HttpClient client = HttpClient.newHttpClient()) {
+            final HttpResponse<String> response = client.send(
+                    HttpRequest.newBuilder(creator.baseUri().resolve("/api/project"))
+                            .header("Content-Type", "application/json")
+                            .header("Origin", "https://foreign.invalid")
+                            .header("X-Railix-Creator-Token", tokenOrIncorrect(creator.baseUri()))
+                            .POST(HttpRequest.BodyPublishers.ofString(
+                                    CreatorProjects.empty("foreign-origin-change"),
+                                    StandardCharsets.UTF_8
+                            ))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+
+            assertThat(response.statusCode()).isEqualTo(403);
+            assertThat(response.body()).isEqualTo("{\"status\":\"forbidden-origin\"}");
+        }
+    }
+
+    @Test
+    void mutationWithoutJsonMediaTypeIsRejectedBeforeReadingTheBody() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("content-type.json"));
+             HttpClient client = HttpClient.newHttpClient()) {
+            final HttpResponse<String> response = client.send(
+                    HttpRequest.newBuilder(creator.baseUri().resolve("/api/project"))
+                            .header("Content-Type", "text/plain")
+                            .header("X-Railix-Creator-Token", tokenOrIncorrect(creator.baseUri()))
+                            .POST(HttpRequest.BodyPublishers.ofString(
+                                    CreatorProjects.empty("plain-text-change"),
+                                    StandardCharsets.UTF_8
+                            ))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+
+            assertThat(response.statusCode()).isEqualTo(415);
+            assertThat(response.body()).isEqualTo("{\"status\":\"unsupported-media-type\"}");
+        }
+    }
+
+    @Test
+    void mutationAcceptsCaseInsensitiveJsonMediaType() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("case-content-type.json"))) {
+            final HttpResponse<String> response = creatorMutation(creator.baseUri(), "Application/JSON");
+
+            assertThat(response.statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void mutationAcceptsCaseInsensitiveUtf8Charset() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("charset-content-type.json"))) {
+            final HttpResponse<String> response = creatorMutation(
+                    creator.baseUri(),
+                    "application/json; Charset=UTF-8"
+            );
+
+            assertThat(response.statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void mutationRejectsUnknownJsonCharset() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("unknown-charset.json"))) {
+            final HttpResponse<String> response = creatorMutation(
+                    creator.baseUri(),
+                    "application/json; charset=us-ascii"
+            );
+
+            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(415, "{\"status\":\"unsupported-media-type\"}");
+        }
+    }
+
+    @Test
+    void mutationRejectsExtraJsonMediaTypeParameter() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("extra-content-type.json"))) {
+            final HttpResponse<String> response = creatorMutation(
+                    creator.baseUri(),
+                    "application/json; charset=utf-8; profile=creator"
+            );
+
+            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(415, "{\"status\":\"unsupported-media-type\"}");
+        }
+    }
+
+    @Test
+    void stalledMutationBodyIsClosedWithinTheReadDeadlineAndCreatorRecovers() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("body-deadline.json"));
+             Socket socket = new Socket()) {
+            final URI uri = creator.baseUri();
+            socket.connect(new InetSocketAddress(uri.getHost(), uri.getPort()));
+            socket.setSoTimeout(8_000);
+            socket.getOutputStream().write(("""
+                    POST /api/project HTTP/1.1\r
+                    Host: %s:%d\r
+                    Content-Type: application/json\r
+                    X-Railix-Creator-Token: %s\r
+                    Content-Length: 100\r
+                    Connection: close\r
+                    \r
+                    {
+                    """.formatted(uri.getHost(), uri.getPort(), tokenOrIncorrect(uri)))
+                    .getBytes(StandardCharsets.UTF_8));
+            socket.getOutputStream().flush();
+            final long started = System.nanoTime();
+
+            final String response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(7));
+            assertThat(response).contains(
+                    " 408 ",
+                    "\"code\":\"REQUEST_BODY_TIMEOUT\"",
+                    "\"status\":\"rejected\""
+            );
+            assertThat(request(creator.baseUri(), "GET", "/api/project", "").statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
     void abandonedProjectUploadReturnsFailureAndKeepsCreatorAvailable() throws Exception {
         try (CreatorServer creator = start(directory.resolve("project.json"))) {
             final URI uri = creator.baseUri();
@@ -1707,11 +2394,13 @@ final class CreatorServerE2eTest {
                         POST /api/project HTTP/1.1\r
                         Host: %s:%d\r
                         Content-Type: application/json\r
+                        X-Railix-Creator-Token: %s\r
                         Content-Length: 100\r
                         Connection: close\r
                         \r
                         {
-                        """.formatted(uri.getHost(), uri.getPort())).getBytes(StandardCharsets.UTF_8));
+                        """.formatted(uri.getHost(), uri.getPort(), tokenOrIncorrect(uri)))
+                        .getBytes(StandardCharsets.UTF_8));
                 socket.shutdownOutput();
                 raw = new String(socket.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             }
@@ -1734,10 +2423,12 @@ final class CreatorServerE2eTest {
                         POST /api/project HTTP/1.1\r
                         Host: %s:%d\r
                         Content-Type: application/json\r
+                        X-Railix-Creator-Token: %s\r
                         Content-Length: 1048576\r
                         Connection: close\r
                         \r
-                        """.formatted(uri.getHost(), uri.getPort())).getBytes(StandardCharsets.UTF_8));
+                        """.formatted(uri.getHost(), uri.getPort(), tokenOrIncorrect(uri)))
+                        .getBytes(StandardCharsets.UTF_8));
                 socket.getOutputStream().write("x".repeat(1_000_000).getBytes(StandardCharsets.UTF_8));
                 socket.getOutputStream().flush();
             }
@@ -1859,6 +2550,23 @@ final class CreatorServerE2eTest {
     }
 
     @Test
+    void occupiedCreatorPortReleasesTheProjectLease() throws Exception {
+        final Path project = directory.resolve("project.json");
+        try (ServerSocket socket = new ServerSocket(
+                0,
+                1,
+                InetAddress.getByAddress(new byte[]{127, 0, 0, 1})
+        )) {
+            assertThatThrownBy(() -> CreatorServer.start(socket.getLocalPort(), project))
+                    .isInstanceOf(IOException.class);
+        }
+
+        try (CreatorServer creator = start(project)) {
+            assertThat(creator.baseUri().getPort()).isPositive();
+        }
+    }
+
+    @Test
     void invalidProjectParentIsRejectedBeforeApplicationStart() throws Exception {
         final Path parent = directory.resolve("not-a-directory");
         Files.writeString(parent, "occupied", StandardCharsets.UTF_8);
@@ -1947,7 +2655,7 @@ final class CreatorServerE2eTest {
     }
 
     @Test
-    void developmentStartFailureKeepsRunningApplication() throws Exception {
+    void rollingBuildIgnoresTheAmbientJavaClasspath() throws Exception {
         try (CreatorServer creator = start(directory.resolve("project.json"))) {
             final RailixValue.ObjectValue before = application(creator.baseUri());
             final String classPath = System.getProperty("java.class.path");
@@ -1964,9 +2672,10 @@ final class CreatorServerE2eTest {
                 System.setProperty("java.class.path", classPath);
             }
 
-            assertThat(response.statusCode()).isEqualTo(503);
-            assertThat(response.body()).contains("\"message\":\"Development application did not start.\"");
-            assertThat(application(creator.baseUri())).isEqualTo(before);
+            final RailixValue.ObjectValue after = application(creator.baseUri());
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(string(after, "state")).isEqualTo("running");
+            assertThat(string(after, "fingerprint")).isNotEqualTo(string(before, "fingerprint"));
         }
     }
 
@@ -2340,14 +3049,37 @@ final class CreatorServerE2eTest {
             final String path,
             final HttpRequest.BodyPublisher body
     ) throws IOException, InterruptedException {
-        final HttpRequest request = HttpRequest.newBuilder(baseUri.resolve(path))
+        final HttpRequest.Builder builder = HttpRequest.newBuilder(baseUri.resolve(path))
                 .timeout(Duration.ofSeconds(15))
                 .header("Content-Type", "application/json")
-                .method(method, body)
+                .header("X-Railix-Creator-Token", tokenOrIncorrect(baseUri))
+                .method(method, body);
+        final HttpRequest request = builder.build();
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            return client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        }
+    }
+
+    private static HttpResponse<String> creatorMutation(
+            final URI baseUri,
+            final String contentType
+    ) throws IOException, InterruptedException {
+        final HttpRequest request = HttpRequest.newBuilder(baseUri.resolve("/api/creator"))
+                .timeout(Duration.ofSeconds(15))
+                .header("Content-Type", contentType)
+                .header("X-Railix-Creator-Token", tokenOrIncorrect(baseUri))
+                .POST(HttpRequest.BodyPublishers.ofString(CreatorDocument.EMPTY, StandardCharsets.UTF_8))
                 .build();
         try (HttpClient client = HttpClient.newHttpClient()) {
             return client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         }
+    }
+
+    private static String tokenOrIncorrect(final URI baseUri) {
+        final String fragment = baseUri.getRawFragment();
+        return fragment != null && fragment.startsWith("token=")
+                ? fragment.substring("token=".length())
+                : "incorrect";
     }
 
     private static RailixValue.ObjectValue application(final URI baseUri) throws Exception {
@@ -2520,6 +3252,72 @@ final class CreatorServerE2eTest {
                   {"from":"three.next","to":"end"}
                 ]}
                 """;
+    }
+
+    private static String branchGroupProject() {
+        return """
+                {"format":1,"id":"branch-group","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
+                    "name":"example","payload":[],"context":{"payload":{}}
+                  }]},
+                  {"id":"choice","use":"railix.choice","inputs":{"conditions":[]}},
+                  {"id":"matched","use":"railix.field-manipulation","inputs":{}},
+                  {"id":"otherwise","use":"railix.field-manipulation","inputs":{}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"choice"},
+                  {"from":"choice.match","to":"matched"},
+                  {"from":"choice.otherwise","to":"otherwise"},
+                  {"from":"matched.next","to":"end"},
+                  {"from":"otherwise.next","to":"end"}
+                ]}
+                """;
+    }
+
+    private static String sharedBranchGroupProject() {
+        return """
+                {"format":1,"id":"shared-branch-group","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
+                    "name":"example","payload":[],"context":{"payload":{}}
+                  }]},
+                  {"id":"split","use":"railix.choice","inputs":{"conditions":[]}},
+                  {"id":"choice-a","use":"railix.choice","inputs":{"conditions":[]}},
+                  {"id":"a-match","use":"railix.field-manipulation","inputs":{}},
+                  {"id":"a-other","use":"railix.field-manipulation","inputs":{}},
+                  {"id":"choice-b","use":"railix.choice","inputs":{"conditions":[]}},
+                  {"id":"b-match","use":"railix.field-manipulation","inputs":{}},
+                  {"id":"b-other","use":"railix.field-manipulation","inputs":{}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"split"},
+                  {"from":"split.match","to":"choice-a"},
+                  {"from":"split.otherwise","to":"choice-b"},
+                  {"from":"choice-a.match","to":"a-match"},
+                  {"from":"choice-a.otherwise","to":"a-other"},
+                  {"from":"a-match.next","to":"end"},
+                  {"from":"a-other.next","to":"end"},
+                  {"from":"choice-b.match","to":"b-match"},
+                  {"from":"choice-b.otherwise","to":"b-other"},
+                  {"from":"b-match.next","to":"end"},
+                  {"from":"b-other.next","to":"end"}
+                ]}
+                """;
+    }
+
+    private static String sharedBranchMetadata(final boolean swapSecondLeaves) {
+        return """
+                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[
+                  {"id":"occurrence-a","flow":"command","parent":null,"steps":{
+                    "slot-choice":"choice-a","slot-match":"a-match","slot-other":"a-other"}},
+                  {"id":"occurrence-b","flow":"command","parent":null,"steps":{
+                    "slot-choice":"choice-b","slot-match":"%s","slot-other":"%s"}}
+                ]}]}
+                """.formatted(
+                swapSecondLeaves ? "b-other" : "b-match",
+                swapSecondLeaves ? "b-match" : "b-other"
+        );
     }
 
     private CreatorServer startFallibleJourney() throws IOException {

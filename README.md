@@ -1,6 +1,34 @@
 # Railix II
 
-Railix Creator turns one visual project into one Java monolith. The current real journey is:
+## What Railix Is
+
+Railix is being built as a product-building system for cross-functional teams. People author an
+application as visual **Flows** of **Steps** in Creator; a successful Railix build will compile
+that static model into one immutable monolithic application. Java is Railix's current
+implementation language, not its product boundary.
+
+Railix is neither diagram-to-code nor a runtime-interpreted workflow engine. Creator groups,
+Blueprints, and Templates help people author and reuse patterns, but the compiler sees only
+materialized Flows and Steps. It builds one fixed application with no reflection, runtime Step
+scanning, hidden coercion, or production graph editing.
+
+Railix calls its end-to-end model **Railway-Oriented Programming**: the application path from an
+external trigger through policy, processing, and storage is made from Flows and Steps. Local
+Examples are intended to be the build gate; every declared example must pass before the production
+artifact exists. Test-only behavior uses real test services or explicit test-client Steps that may
+be omitted from that artifact.
+
+The product direction is to use that same executable model for local verification, build,
+operations, and eventually distributed operation. External protocols and security still exist;
+Railix aims to express and wire them through Flows and Steps, reducing hand-managed infrastructure
+configuration rather than pretending it is unnecessary. Platform user authorization and encrypted
+environment-secret delivery are a protected boundary: application Flows may enforce product
+policy, but cannot grant themselves project, build, deployment, or production-observation access.
+The exact planned operating model and its status live in [ROADMAP.md](ROADMAP.md).
+
+## Current Implemented Journey
+
+The current accepted journey is deliberately smaller than that direction:
 
 ```text
 Application -> CLI Trigger -> Lowercase -> End
@@ -27,15 +55,24 @@ Requirements:
 - Java 25
 - Maven 3.9 or newer
 - Google Chrome for browser E2Es
+- macOS or Linux for the current host-native Creator image
 
-Build everything:
+Use the root Maven project in an IDE; it imports the three production modules without extra setup.
+The normal code/test loop is:
+
+```sh
+mvn test
+```
+
+Before opening or merging a pull request, build and verify every generated application, package,
+and desktop/mobile browser scenario:
 
 ```sh
 mvn clean verify
 ```
 
-The repository provides the development launcher, and the build creates the executable Creator
-JAR:
+The repository provides the development launcher. The build creates both the executable Creator
+JAR and a host-native Creator application image:
 
 ```text
 modules/railix-creator/target/railix.jar
@@ -43,7 +80,8 @@ modules/railix-creator/target/railix.jar
 ```
 
 `railix.jar` is Creator itself, not the final environment-specific monolith. Self-contained
-`jlink`/`jpackage` application output remains roadmap work.
+Creator output already uses `jlink` and `jpackage`; minimal environment-specific images and
+installers for applications generated from a project remain Roadmap Item 8.
 
 Start Creator with its default project file and an automatically selected loopback port:
 
@@ -58,8 +96,12 @@ Or select both:
 ```
 
 Creator prints the URL to open. `Ctrl-C` stops Creator and its owned development-application JVM.
-`mvn clean` removes the generated JAR but never the tracked root launcher. Railix has only Java
-runtime dependencies. Playwright is test-only.
+`mvn clean` removes the generated JAR and application image but never the tracked root launcher.
+Railix has no third-party runtime libraries. Playwright is test-only.
+
+The printed URL contains a random Creator token in its fragment. Every Creator API request requires
+that token and the exact loopback `Host`; the browser client supplies both without storing the token
+in project files. Treat the complete local URL as a credential while Creator is running.
 
 ## Create The First Flow
 
@@ -87,6 +129,11 @@ that payload at `context.payload.arguments`; the Lowercase Step reads element `0
 The compiler validates and canonicalizes this flat graph. Link order owns execution; JSON object
 key order does not. Creator-generated graph IDs are opaque UUID-backed values created once and
 never encode visual order. The mandatory Application keeps the reserved node ID `app`.
+
+The current generated-code boundary accepts at most 16,384 total nodes and 512 Trigger nodes in one
+application. Production and development artifacts are built at the exact Trigger boundary in E2E;
+larger Trigger sets are rejected by the compiler before source allocation instead of failing later
+inside `javac`.
 
 Every invocation owns one mutable workflow context. `payload`, `header`, `metadata`, `result`, and
 `exit_code` are ordinary keys. Projects may add any JSON-compatible key. Only `context.runtime` is
@@ -172,7 +219,21 @@ The definition uses only the generic recursive input grammar available to third 
                 .fromOwned("source")
 ).defaultCandidate("current"))
 .input("steps", Input.steps(StepDefinition.ValueSource.from("value")))
-.run(input -> input.run("steps").writeWhenPresent("field"));
+.run(ChangeField.class);
+```
+
+Its implementation uses only the declared input names:
+
+```java
+public final class ChangeField implements StepHandler {
+    public ChangeField() {
+    }
+
+    @Override
+    public StepResult run(final StepInput input) throws InterruptedException {
+        return input.run("steps").writeWhenPresent("field");
+    }
+}
 ```
 
 `JSON`, `PATH`, `OPTIONS`, `CANDIDATES`, Boolean `MATCHER_GROUPS`, and ordered `STEPS` are generic
@@ -216,21 +277,24 @@ A small value operation is an ordinary `STEP` with one receive, one return, and 
 primary outcome when `next` is not suitable:
 
 ```java
-public final class LowercaseStep {
-    private LowercaseStep() {
+public final class Lowercase implements StepHandler {
+    public Lowercase() {
     }
 
-    public static StepDefinition definition() {
-        return StepDefinition.named("text.lowercase", "1")
-                .primaryOutcome("ok")
-                .receive("value", ValueShape.STRING)
-                .returns("value", ValueShape.STRING)
-                .run(input -> StepResult.outcome("ok").output(
-                        "value",
-                        RailixValue.string(input.string("value").toLowerCase(Locale.ROOT))
-                ));
+    @Override
+    public StepResult run(final StepInput input) {
+        return StepResult.outcome("ok").output(
+                "value",
+                RailixValue.string(input.string("value").toLowerCase(Locale.ROOT))
+        );
     }
 }
+
+StepDefinition.named("text.lowercase", "1")
+        .primaryOutcome("ok")
+        .receive("value", ValueShape.STRING)
+        .returns("value", ValueShape.STRING)
+        .run(Lowercase.class);
 ```
 
 Register definitions explicitly in a `StepCatalog`; Railix never discovers classes through
@@ -241,29 +305,57 @@ Optional `.displayName(...)` and `.searchTerms(...)` values affect only Creator 
 search; compiler and runtime behavior remains entirely in the functional contract.
 
 [ADR 0021](adr/0021-total-and-fallible-primitives.md) owns the finite built-in unary catalog and
-its exact semantics. External dependency loading and the reusable Step template remain roadmap
-Item 4.
+its exact semantics. Immutable locked Step bundles are implemented; repository acquisition and
+the reusable Step template remain roadmap Item 4.
 
 ## Modules
 
-- `railix-core`: canonical primitive data, flat project compiler, and stateless stream execution.
+- `railix-core`: canonical values, Step contracts, project validation, Java application generation,
+  generated-application runtime contracts, and stateless workflow execution.
 - `railix-stdlib`: App, CLI Trigger, Field Manipulation, Filter, Choice, and built-in total or
   explicitly fallible unary Steps.
-- `railix-creator`: Creator HTTP/UI, optional presentation metadata, rolling child JVM, launcher,
-  and executable shaded JAR.
+- `railix-creator`: Creator HTTP/UI, optional development-only run and preview HTTP capability,
+  rolling child JVM, launcher, and executable shaded JAR.
 
-The reactor has exactly these three production modules and no third-party runtime dependency.
+The reactor has three production modules and no third-party runtime library.
+
+## Pull Requests
+
+Import and build the root `pom.xml`; there is no second build system or module-specific setup.
+Change the smallest owning module, and keep contracts in core, built-in implementations in stdlib,
+and authoring/development behavior in Creator. Do not add a module, runtime dependency, execution
+path, compatibility layer, or abstraction without current public behavior that requires it.
+
+Each behavior or rejection belongs in its own highest-practical public-entrypoint test. During work,
+run `mvn test`; before requesting review, run `mvn clean verify`. Run `scripts/coverage.sh` only when
+updating the advisory coverage report. Do not commit `target`, `.railix`, IDE state, local project
+files, or `brainstorming`; all are ignored. GitHub Actions runs the same clean verification for every
+pull request, so the local and hosted acceptance commands are identical.
 
 ## Unsupported Scope
 
-The current implementation does not claim additional Trigger/I/O catalogs, external dependency
-resolution, branch-aware grouping, Switch/Merge/Split/Loop Steps, global reusable groups, test
-fixtures/assertions, live metrics, remote attachment, queues, permissions, sharding, or final
+The current implementation does not claim additional Trigger/I/O catalogs, dependency acquisition
+from remote repositories, Switch/Merge/Split/Loop Steps, global reusable groups, assertions, live
+metrics, remote attachment, queues, permissions, sharding, or final per-project minimal
 `jlink`/`jpackage` application output. These remain explicit roadmap checkpoints.
 
 ## Verification
 
 `mvn clean verify` runs compiler, runtime, HTTP, packaged-JAR, desktop Chrome, and mobile Chrome
-public-entrypoint tests. JaCoCo reports the 95% line and 90% branch targets without failing a
-developer build; test, compilation, and packaging failures still fail verification. Exact accepted
-counts and aggregate coverage are recorded once in [ROADMAP.md](ROADMAP.md).
+public-entrypoint tests. Required suites reject zero discovered tests. Coverage reporting is kept
+outside that lifecycle, so it cannot turn a successful developer build into a failure.
+
+Browser E2Es use the system `chrome` channel by default. Set `RAILIX_BROWSER_CHANNEL` to another
+installed Playwright Chromium channel when required by the contributor host. The single GitHub
+Actions workflow runs the same clean verification on every pull request.
+
+`scripts/coverage.sh` first runs that clean verification and then creates the advisory aggregate at
+`modules/railix-creator/target/site/jacoco-aggregate/index.html`. Its 95% line and 90% branch targets
+cover authored Java production files in the three modules. Generated per-project application
+classes and the Creator browser client are proven through generated-artifact and browser E2Es but
+are not part of the JaCoCo denominator. Exact accepted counts and aggregate coverage are recorded
+in [ROADMAP.md](ROADMAP.md).
+
+## License
+
+Railix is licensed under the [Apache License 2.0](LICENSE).

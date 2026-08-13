@@ -1,5 +1,18 @@
 "use strict";
 
+const creatorToken = new URLSearchParams(window.location.hash.slice(1)).get("token") || "";
+const browserFetch = window.fetch.bind(window);
+window.fetch = (input, options = {}) => {
+  const url = new URL(input instanceof Request ? input.url : input, window.location.href);
+  if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/")) {
+    return browserFetch(input, options);
+  }
+  const headers = new Headers(input instanceof Request ? input.headers : options.headers);
+  new Headers(options.headers).forEach((value, name) => headers.set(name, value));
+  headers.set("X-Railix-Creator-Token", creatorToken);
+  return browserFetch(input, { ...options, headers });
+};
+
 const state = {
   project: null,
   builtProject: null,
@@ -29,6 +42,7 @@ const state = {
   writePromise: Promise.resolve(),
   runResult: "",
   runRevision: 0,
+  runController: null,
   preview: null,
   previewCases: [],
   pathPreview: null,
@@ -49,6 +63,13 @@ const nouns = [
   "quark", "relay", "signal", "thread", "vault", "vector"
 ];
 boot();
+
+function mutationHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "X-Railix-Creator-Token": creatorToken
+  };
+}
 
 async function boot() {
   try {
@@ -98,8 +119,7 @@ function render() {
   document.querySelector("#project-title").textContent = currentGroup()
     ? groupName(currentGroup().group)
     : state.project.id;
-  document.querySelector("#build-state").textContent = state.build;
-  document.body.dataset.build = state.build.toLowerCase().replace(" ", "-");
+  renderBuildStatus();
   const flows = triggerNodes();
   document.querySelector("#flow-count").textContent = count(
     workspaceCount("flow_count", flows.length),
@@ -124,6 +144,70 @@ function render() {
   }
 }
 
+function renderBuildStatus() {
+  document.querySelector("#build-state").textContent = state.build;
+  document.body.dataset.build = state.build.toLowerCase().replace(" ", "-");
+}
+
+function refreshPathPicker() {
+  const current = document.querySelector(".path-browser");
+  const operation = state.selection.type === "step" ? selectedOperation() : null;
+  if (!current || !operation || !state.pathPicker) {
+    return false;
+  }
+  const template = document.createElement("template");
+  template.innerHTML = pathBrowser(
+    state.pathPicker.input,
+    operation,
+    state.pathPicker.locator
+  ).trim();
+  const desired = template.content.firstElementChild;
+  const currentChoices = current.querySelector(".path-choices");
+  const desiredChoices = desired?.querySelector(".path-choices");
+  if (!currentChoices || !desiredChoices) {
+    return false;
+  }
+  const existing = new Map([...currentChoices.querySelectorAll(".path-choice")]
+    .map(choice => [choice.dataset.pathDraftJson, choice]));
+  const retained = new Set();
+  desiredChoices.querySelectorAll(".path-choice").forEach(choice => {
+    const key = choice.dataset.pathDraftJson;
+    const rendered = existing.get(key) || choice;
+    rendered.innerHTML = choice.innerHTML;
+    currentChoices.append(rendered);
+    retained.add(key);
+  });
+  existing.forEach((choice, key) => {
+    if (!retained.has(key)) {
+      choice.remove();
+    }
+  });
+  currentChoices.querySelectorAll(".path-choices-label, .path-hint").forEach(element => element.remove());
+  const label = desiredChoices.querySelector(".path-choices-label");
+  const hint = desiredChoices.querySelector(".path-hint");
+  if (label) {
+    currentChoices.prepend(label);
+  }
+  if (hint) {
+    currentChoices.append(hint);
+  }
+  const currentCreate = current.querySelector(".path-create");
+  const desiredCreate = desired.querySelector(".path-create");
+  const createMode = element => element?.querySelector("#new-path-index") ? "index"
+    : element ? "field" : "";
+  if (createMode(currentCreate) !== createMode(desiredCreate)) {
+    if (currentCreate && desiredCreate) {
+      currentCreate.replaceWith(desiredCreate);
+    } else if (currentCreate) {
+      currentCreate.remove();
+    } else if (desiredCreate) {
+      current.querySelector(".path-actions").before(desiredCreate);
+    }
+  }
+  current.querySelector("#apply-path").disabled = desired.querySelector("#apply-path").disabled;
+  return true;
+}
+
 function graph(flows) {
   const routes = routeView();
   const scoped = currentGroup();
@@ -133,7 +217,7 @@ function graph(flows) {
       <section class="flow-scope">
         <header class="flow-scope-header">
           <button class="button" type="button" id="close-group">Back</button>
-          <span>${state.groupStack.map(id => groupName(groupOccurrence(id)?.group)).join(" / ")}</span>
+          <span>${state.groupStack.map(id => html(groupName(groupOccurrence(id)?.group))).join(" / ")}</span>
         </header>
         ${trigger ? flowLane(trigger, changedIds(), routes) : ""}
       </section>`;
@@ -166,12 +250,11 @@ function flowLane(trigger, changed, routes) {
   const triggerIssues = nodeIssues(trigger.id);
   const triggerClass = nodeClasses(triggerSelected, changed.has(trigger.id), triggerIssues);
   const scope = currentGroup();
-  const rendered = scope ? null : renderRoutes(trigger, changed, routes);
-  const branching = rendered?.branching || false;
-  const items = scope ? laneItems(trigger) : [];
+  const rendered = renderRoutes(trigger, changed, routes, scope);
+  const branching = rendered.branching;
   return `
     <section class="flow-lane${branching ? " branching-flow" : ""}" data-flow="${html(trigger.id)}">
-      <span class="lane-connector"></span>
+      ${scope ? "" : `<span class="lane-connector"></span>
       <article class="node trigger-node${triggerClass}" data-node-id="${html(trigger.id)}"
                ${presentation.color ? `style="--node-accent:${html(presentation.color)}"` : ""}
                data-select-node="${html(trigger.id)}" role="button" tabindex="0"
@@ -183,10 +266,8 @@ function flowLane(trigger, changed, routes) {
         }</div>
         <h2>${html(presentation.name || stepName(definition))}</h2>
         <p>${html(trigger.id)} · ${count(trigger.examples.length, "example")}</p>
-      </article>
-      ${rendered?.html || `${items.map(item => item.type === "group"
-          ? groupNode(item.group, item.occurrence, changed)
-          : stepNode(item.operation, changed)).join("")}${terminalNode(trigger.id)}`}
+      </article>`}
+      ${rendered.html}
     </section>`;
 }
 
@@ -198,16 +279,15 @@ function routeView() {
     links.set(link.from, outgoing);
   });
   const groups = new Map();
-  if (!currentGroup()) {
-    state.creator.groups.forEach(group => group.occurrences
-      .filter(occurrence => occurrence.parent === null)
-      .forEach(occurrence => {
-        const operations = occurrenceSteps(occurrence);
-        if (operations.length && operations.every(operation => outcomes(operation).length === 1)) {
-          groups.set(operations[0].id, { group, occurrence, operations });
-        }
-      }));
-  }
+  const parent = currentGroup()?.occurrence.id || null;
+  state.creator.groups.forEach(group => group.occurrences
+    .filter(occurrence => occurrence.parent === parent)
+    .forEach(occurrence => {
+      const region = occurrenceRegion(occurrence);
+      if (region.entry) {
+        groups.set(region.entry.id, { group, occurrence, ...region });
+      }
+    }));
   return {
     nodes: new Map(state.project.nodes.map(operation => [operation.id, operation])),
     definitions: new Map(state.catalog.map(definition => [definition.id, definition])),
@@ -216,9 +296,13 @@ function routeView() {
   };
 }
 
-function renderRoutes(trigger, changed, routes) {
+function renderRoutes(trigger, changed, routes, scope = null) {
   const fragments = [];
-  const pending = [{ source: trigger.id, outcome: primaryOutcome(trigger) }];
+  const scopeRegion = scope ? occurrenceRegion(scope.occurrence) : null;
+  const allowed = scopeRegion ? new Set(scopeRegion.operations.map(operation => operation.id)) : null;
+  const pending = scopeRegion?.entry
+    ? [{ target: scopeRegion.entry.id }]
+    : [{ source: trigger.id, outcome: primaryOutcome(trigger) }];
   const seen = new Set();
   let branching = false;
   while (pending.length) {
@@ -227,17 +311,24 @@ function renderRoutes(trigger, changed, routes) {
       fragments.push(frame.html);
       continue;
     }
-    const route = frame.source + "." + frame.outcome;
-    const outgoing = routes.links.get(route) || [];
-    if (outgoing.length !== 1) {
-      fragments.push(routeErrorNode(
-        frame.source,
-        frame.outcome,
-        outgoing.length ? "Multiple links" : "Missing link"
-      ));
+    let target = frame.target;
+    if (target === undefined) {
+      const route = frame.source + "." + frame.outcome;
+      const outgoing = routes.links.get(route) || [];
+      if (outgoing.length !== 1) {
+        fragments.push(routeErrorNode(
+          frame.source,
+          frame.outcome,
+          outgoing.length ? "Multiple links" : "Missing link"
+        ));
+        continue;
+      }
+      target = outgoing[0].to;
+    }
+    if (allowed && (target === "end" || !allowed.has(target))) {
+      fragments.push(groupExitNode(frame.source, frame.outcome, target));
       continue;
     }
-    const target = outgoing[0].to;
     if (target === "end") {
       fragments.push(terminalNode(frame.source + "-" + frame.outcome));
       continue;
@@ -260,8 +351,11 @@ function renderRoutes(trigger, changed, routes) {
       }
       grouped.operations.forEach(member => seen.add(member.id));
       fragments.push(groupNode(grouped.group, grouped.occurrence, changed));
-      const last = grouped.operations.at(-1);
-      pending.push({ source: last.id, outcome: primaryOutcome(last) });
+      if (grouped.exits.length === 1) {
+        pending.push(grouped.exits[0]);
+      } else {
+        branching = pushBranchRoutes(fragments, pending, grouped.exits) || branching;
+      }
       continue;
     }
     seen.add(operation.id);
@@ -276,19 +370,37 @@ function renderRoutes(trigger, changed, routes) {
       continue;
     }
     branching = true;
-    fragments.push(`<div class="branch-routes" style="--branch-start:${50 / declared.length}%">
-      <span class="branch-trunk" aria-hidden="true"></span>`);
-    pending.push({ html: "</div>" });
-    for (let index = declared.length - 1; index >= 0; index--) {
-      const outcome = declared[index];
-      pending.push({ html: "</section>" });
-      pending.push({ source: operation.id, outcome });
-      pending.push({ html: `
-        <section class="branch-route" data-branch-outcome="${html(outcome)}">
-          <strong class="branch-route-label">${html(inputLabel(outcome))}</strong>` });
-    }
+    pushBranchRoutes(fragments, pending, declared.map(outcome => ({ source: operation.id, outcome })));
   }
   return { branching, html: fragments.join("") };
+}
+
+function pushBranchRoutes(fragments, pending, routes) {
+  if (!routes.length) {
+    return false;
+  }
+  fragments.push(`<div class="branch-routes" style="--branch-start:${50 / routes.length}%">
+    <span class="branch-trunk" aria-hidden="true"></span>`);
+  pending.push({ html: "</div>" });
+  for (let index = routes.length - 1; index >= 0; index--) {
+    const route = routes[index];
+    pending.push({ html: "</section>" });
+    pending.push(route);
+    pending.push({ html: `
+      <section class="branch-route" data-branch-source="${html(route.source)}"
+               data-branch-outcome="${html(route.outcome)}">
+        <strong class="branch-route-label">${html(groupRouteLabel(route, routes))}</strong>` });
+  }
+  return routes.length > 1;
+}
+
+function groupRouteLabel(route, routes) {
+  if (routes.every(candidate => candidate.source === route.source)) {
+    return inputLabel(route.outcome);
+  }
+  const source = node(route.source);
+  const name = stepPresentation(route.source).name || stepName(definitionFor(source));
+  return name + " · " + inputLabel(route.outcome);
 }
 
 function terminalNode(route) {
@@ -297,6 +409,16 @@ function terminalNode(route) {
       <div class="node-kicker">Terminal</div>
       <h2>End</h2>
       <p>Trigger result</p>
+    </article>`;
+}
+
+function groupExitNode(source, outcome, target) {
+  return `<span class="lane-connector short"></span>
+    <article class="node end-node group-exit" data-node-id="exit-${html(source)}-${html(outcome)}"
+             data-group-exit="${html(source)}.${html(outcome)}">
+      <div class="node-kicker">Group exit</div>
+      <h2>${html(inputLabel(outcome))}</h2>
+      <p>${target === "end" ? "End" : html(target)}</p>
     </article>`;
 }
 
@@ -1113,20 +1235,7 @@ function conditionOf(value) {
       all: Array.isArray(value.all) ? value.all.filter(Array.isArray) : []
     };
   }
-  const legacy = Array.isArray(value) ? value : [];
-  if (!legacy.length) {
-    return { transforms: [], all: [] };
-  }
-  let predicateStart = 0;
-  legacy.forEach((step, index) => {
-    if (definitionOf(step.use)?.returns[0]?.shape !== "boolean") {
-      predicateStart = index + 1;
-    }
-  });
-  return {
-    transforms: legacy.slice(0, predicateStart),
-    all: [legacy.slice(predicateStart)]
-  };
+  return { transforms: [], all: [] };
 }
 
 function conditionEditor(operation, input, option, candidateLocator, condition, name, scopeInputs, scopeBase) {
@@ -1604,9 +1713,6 @@ function pickerOptions() {
   const matching = candidates
     .filter(definition => definitionMatchesQuery(definition, query));
   const options = matching.filter(definition => state.picker.mode === "trigger"
-    || definition.outcomes.length === 1
-    || !occurrenceMemberships(state.picker.anchor).length)
-    .filter(definition => state.picker.mode === "trigger"
       || automaticBindingsAvailable(state.picker.anchor, state.picker.outcome, definition));
   return options
     .map(definition => `
@@ -1619,12 +1725,7 @@ function pickerOptions() {
           ? ` · ${html(definition.receives.map(port => port.shape).join(" + ") || "context")} to ${html(
               definition.returns.map(port => port.shape).join(" + ") || "context"
             )}` : ""}</small>
-      </button>`).join("") || `<p class="empty-options">${
-        matching.some(definition => definition.outcomes.length > 1)
-          && occurrenceMemberships(state.picker.anchor).length
-          ? "Branch Steps cannot be added inside a group."
-          : "No installed Step matches."
-      }</p>`;
+      </button>`).join("") || '<p class="empty-options">No installed Step matches.</p>';
 }
 
 function openPicker(mode, anchor, outcome = "") {
@@ -1676,12 +1777,8 @@ function insertStep(afterId, definition, selectedOutcome = "") {
   if (!outcomes(after).includes(outcome)) {
     return false;
   }
-  const targets = outcome === primaryOutcome(after) ? structuralStepIds(afterId) : [afterId];
+  const targets = structuralStepIds(afterId);
   if (targets.some(target => !insertionAllowed(node(target), outcome))) {
-    return false;
-  }
-  if (definition.outcomes.length > 1
-      && targets.some(target => occurrenceMemberships(target).length)) {
     return false;
   }
   const bindings = new Map(targets.map(target => [target, graphBindings(node(target), definition)]));
@@ -1697,7 +1794,7 @@ function insertStep(afterId, definition, selectedOutcome = "") {
     bindings.get(target)
   ));
   const slots = new Map();
-  targets.filter(target => outcome === primaryOutcome(node(target))).forEach(target =>
+  targets.forEach(target =>
     occurrenceMemberships(target).forEach(membership => {
     const key = membership.group.id + "\u0000" + membership.slot;
     const slot = slots.get(key) || opaqueId("slot");
@@ -1756,7 +1853,7 @@ function automaticBindingsAvailable(afterId, selectedOutcome, definition) {
     return false;
   }
   const outcome = selectedOutcome || primaryOutcome(after);
-  const targets = outcome === primaryOutcome(after) ? structuralStepIds(afterId) : [afterId];
+  const targets = structuralStepIds(afterId);
   return targets.every(target => graphBindings(node(target), definition) !== null);
 }
 
@@ -1838,9 +1935,7 @@ function updateExample(field, source) {
     dirty();
   } catch (error) {
     state.exampleDraft = { trigger: trigger.id, example: state.exampleIndex, field, source };
-    state.runRevision++;
-    state.runResult = "";
-    clearPreview();
+    invalidateDraft();
     state.localDiagnostics = [{
       code: "PROJECT_TRIGGER_EXAMPLE_" + field.toUpperCase() + "_INVALID",
       message: error instanceof Error ? error.message : "Example value is invalid.",
@@ -1882,6 +1977,7 @@ function selectExample(index) {
   const trigger = node(state.selection.id);
   state.exampleIndex = Math.max(0, Math.min(index, trigger.examples.length - 1));
   state.exampleDraft = null;
+  cancelRuns();
   state.runResult = "";
   clearPreview();
   render();
@@ -2009,11 +2105,20 @@ function setJsonValue(locator, input, source) {
     dirty();
   } catch (error) {
     state.jsonDraft = { node: state.selection.id, locator, source };
-    clearPreview();
+    invalidateDraft();
     state.build = "Not built";
     state.localDiagnostics = [];
     render();
   }
+}
+
+function invalidateDraft() {
+  clearTimeout(state.saveTimer);
+  state.pendingProject = false;
+  state.revision++;
+  cancelRuns();
+  state.runResult = "";
+  clearPreview();
 }
 
 function jsonEditorValue(locator, value) {
@@ -2082,7 +2187,7 @@ function addMatcherGroup(locator, input, optionName) {
 }
 
 function authoredCandidate(option) {
-  return { option: option.name, inputs: defaultInputs(option.inputs), when: [] };
+  return { option: option.name, inputs: defaultInputs(option.inputs), when: conditionOf(null) };
 }
 
 function selectCandidate(locator, input, index, optionName) {
@@ -2095,7 +2200,7 @@ function selectCandidate(locator, input, index, optionName) {
   candidates[index] = {
     option: option.name,
     inputs: defaultInputs(option.inputs),
-    when: candidates[index].when || []
+    when: conditionOf(candidates[index].when)
   };
   dirty();
 }
@@ -2208,7 +2313,7 @@ function compactCondition(operation, locator) {
     candidate.when.all.splice(predicateIndex, 1);
   }
   if (!candidate.when.transforms.length && !candidate.when.all.length) {
-    candidate.when = [];
+    candidate.when = conditionOf(null);
   }
 }
 
@@ -2251,7 +2356,7 @@ function removePredicate(locator, index) {
   }
   predicates.splice(index, 1);
   if (!candidate.when.transforms.length && !predicates.length) {
-    candidate.when = [];
+    candidate.when = conditionOf(null);
   }
   clearInputQueries();
   dirty();
@@ -2301,7 +2406,9 @@ function defaultInput(input) {
   }
   if (input.type === "candidates") {
     const option = input.options.find(candidate => candidate.name === input.default);
-    return option ? [{ option: option.name, inputs: defaultInputs(option.inputs), when: [] }] : [];
+    return option
+      ? [{ option: option.name, inputs: defaultInputs(option.inputs), when: conditionOf(null) }]
+      : [];
   }
   if (input.type === "matcher_groups") {
     return [];
@@ -2808,7 +2915,8 @@ async function requestPreview() {
   clearPreview();
   if (state.build !== "Built"
       || state.selection.type !== "step"
-      || state.jsonDraft?.node === state.selection.id) {
+      || state.jsonDraft?.node === state.selection.id
+      || state.exampleDraft) {
     return;
   }
   const operation = selectedOperation();
@@ -2830,7 +2938,7 @@ async function requestPreview() {
     const cases = await Promise.all(trigger.examples.map(async (_example, index) => {
       const response = await fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: mutationHeaders(),
           body: JSON.stringify(exampleContext(trigger, index)),
           signal: controller.signal
         });
@@ -2865,7 +2973,10 @@ async function requestPreview() {
     };
   }
   if (state.pathPicker) {
-    render();
+    renderBuildStatus();
+    if (!refreshPathPicker()) {
+      render();
+    }
   } else {
     renderPreview();
     refreshNestedOptions();
@@ -3045,10 +3156,13 @@ function renderRunResult() {
 
 async function runExamples() {
   const triggers = triggerNodes();
-  if (!triggers.length) {
+  if (!triggers.length || state.jsonDraft || state.exampleDraft) {
     return;
   }
   const revision = state.revision;
+  state.runController?.abort();
+  const controller = new AbortController();
+  state.runController = controller;
   const runRevision = ++state.runRevision;
   state.runResult = "";
   renderRunResult();
@@ -3060,8 +3174,9 @@ async function runExamples() {
         const example = trigger.examples[index];
         const response = await fetch("/api/run/" + encodeURIComponent(trigger.id), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(exampleContext(trigger, index))
+          headers: mutationHeaders(),
+          body: JSON.stringify(exampleContext(trigger, index)),
+          signal: controller.signal
         });
         cases.push({ flow: stepPresentation(trigger.id).name || trigger.id,
           name: example.name, result: parseExact(await response.text()) });
@@ -3069,16 +3184,28 @@ async function runExamples() {
     }
     result = JSON.stringify(cases, null, 2);
   } catch (error) {
+    if (controller.signal.aborted) {
+      return;
+    }
     result = JSON.stringify({ status: "failed", message: "Run request failed." }, null, 2);
   }
-  if (revision !== state.revision || runRevision !== state.runRevision) {
+  if (revision !== state.revision || runRevision !== state.runRevision
+      || state.jsonDraft || state.exampleDraft) {
     return;
   }
+  state.runController = null;
   state.runResult = result;
   renderRunResult();
 }
 
+function cancelRuns() {
+  state.runController?.abort();
+  state.runController = null;
+  state.runRevision++;
+}
+
 function dirty(projectChanged = true) {
+  cancelRuns();
   if (projectChanged) {
     propagateSharedOperation();
     if (state.jsonDraft && !node(state.jsonDraft.node)) {
@@ -3115,12 +3242,15 @@ function enqueueWrite(task) {
 }
 
 async function save(revision, projectChanged, projectSource, creatorSource) {
+  if (revision !== state.revision) {
+    return false;
+  }
   try {
     let payload = null;
     if (projectChanged) {
       const projectResponse = await fetch("/api/project", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: mutationHeaders(),
         body: projectSource
       });
       payload = parseExact(await projectResponse.text());
@@ -3140,7 +3270,7 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     }
     const creatorResponse = await fetch("/api/creator", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: mutationHeaders(),
       body: creatorSource
     });
     payload = parseExact(await creatorResponse.text());
@@ -3164,7 +3294,14 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     state.workspace = payload.workspace;
     state.diagnostics = [];
     state.build = "Built";
-    render();
+    if (state.pathPicker) {
+      renderBuildStatus();
+      if (!refreshPathPicker()) {
+        render();
+      }
+    } else {
+      render();
+    }
     if (projectChanged) {
       requestPreview();
       runExamples();
@@ -3394,54 +3531,6 @@ function reachableSteps(trigger) {
   return values;
 }
 
-function linearSteps(trigger) {
-  const values = [];
-  let current = state.project.links.find(link =>
-    link.from === trigger.id + "." + primaryOutcome(trigger)
-  )?.to;
-  const seen = new Set();
-  while (current && current !== "end" && !seen.has(current)) {
-    seen.add(current);
-    const currentNode = node(current);
-    if (!currentNode) {
-      break;
-    }
-    values.push(currentNode);
-    current = state.project.links.find(link =>
-      link.from === currentNode.id + "." + primaryOutcome(currentNode)
-    )?.to;
-  }
-  return values;
-}
-
-function laneItems(trigger) {
-  const scope = currentGroup();
-  if (scope && scope.occurrence.flow !== trigger.id) {
-    return [];
-  }
-  const allowed = scope ? new Set(Object.values(scope.occurrence.steps)) : null;
-  const operations = linearSteps(trigger).filter(operation => !allowed || allowed.has(operation.id));
-  const parent = scope?.occurrence.id || null;
-  const occurrences = state.creator.groups.flatMap(group => group.occurrences
-    .filter(occurrence => occurrence.flow === trigger.id && occurrence.parent === parent)
-    .map(occurrence => ({ group, occurrence })));
-  const positions = new Map(operations.map((operation, index) => [operation.id, index]));
-  const starts = new Map();
-  const hidden = new Set();
-  occurrences.forEach(item => {
-    const ids = Object.values(item.occurrence.steps).filter(id => positions.has(id));
-    if (!ids.length) {
-      return;
-    }
-    ids.sort((left, right) => positions.get(left) - positions.get(right));
-    starts.set(ids[0], item);
-    ids.slice(1).forEach(id => hidden.add(id));
-  });
-  return operations.flatMap(operation => starts.has(operation.id)
-    ? [{ type: "group", ...starts.get(operation.id) }]
-    : hidden.has(operation.id) ? [] : [{ type: "step", operation }]);
-}
-
 function groupOccurrence(id) {
   for (const group of state.creator.groups) {
     const occurrence = group.occurrences.find(candidate => candidate.id === id);
@@ -3459,7 +3548,41 @@ function currentGroup() {
 function occurrenceSteps(occurrence) {
   const ids = new Set(Object.values(occurrence.steps));
   const trigger = node(occurrence.flow);
-  return trigger ? linearSteps(trigger).filter(candidate => ids.has(candidate.id)) : [];
+  return trigger ? reachableSteps(trigger).filter(candidate => ids.has(candidate.id)) : [];
+}
+
+function occurrenceRegion(occurrence) {
+  const operations = occurrenceSteps(occurrence);
+  const ids = new Set(operations.map(operation => operation.id));
+  const incoming = state.project.links.filter(link => ids.has(link.to) && !ids.has(linkNode(link)));
+  const exits = operations.flatMap(operation => outcomes(operation).flatMap(outcome => {
+    const destinations = outcomeDestinations(operation, outcome);
+    return destinations.length !== 1 || !ids.has(destinations[0])
+      ? [{ source: operation.id, outcome }]
+      : [];
+  }));
+  return {
+    operations,
+    entry: incoming.length === 1 ? node(incoming[0].to) : null,
+    exits
+  };
+}
+
+function occurrenceTopology(occurrence) {
+  const concreteSlots = new Map(Object.entries(occurrence.steps).map(([slot, id]) => [id, slot]));
+  const incoming = state.project.links.find(link =>
+    concreteSlots.has(link.to) && !concreteSlots.has(linkNode(link))
+  );
+  return JSON.stringify({
+    entry: concreteSlots.get(incoming?.to) || "",
+    nodes: Object.keys(occurrence.steps).sort().map(slot => {
+      const operation = node(occurrence.steps[slot]);
+      return [slot, operation?.use || "", outcomes(operation).map(outcome => [
+        outcome,
+        concreteSlots.get(outcomeTarget(operation, outcome)) || ""
+      ])];
+    })
+  });
 }
 
 function occurrenceSlots(occurrence) {
@@ -3501,20 +3624,10 @@ function chooseGroupBoundary(id) {
   const selection = groupRange(state.groupDraft.start, id);
   if (!selection.length) {
     state.localDiagnostics = [{
-      code: "CREATOR_GROUP_RANGE_INVALID",
-      message: "Group end must be reachable from its start in one flow.",
+      code: "CREATOR_GROUP_PATH_INVALID",
+      message: "Group start and end must share one path in one flow.",
       path: "groups",
       node: state.groupDraft.start
-    }];
-    render();
-    return true;
-  }
-  if (selection.some(step => outcomes(step).length > 1)) {
-    state.localDiagnostics = [{
-      code: "CREATOR_GROUP_BRANCH_UNSUPPORTED",
-      message: "This Step has multiple routes. Group one route at a time so no exit is hidden.",
-      path: "groups",
-      node: selection.find(step => outcomes(step).length > 1).id
     }];
     render();
     return true;
@@ -3547,11 +3660,25 @@ function chooseGroupBoundary(id) {
     render();
     return true;
   }
+  const mappedSteps = Object.fromEntries(selection.map((step, index) => [
+    slots[index] || opaqueId("slot"),
+    step.id
+  ]));
+  if (existing && occurrenceTopology(existing.occurrences[0]) !== occurrenceTopology({ steps: mappedSteps })) {
+    state.localDiagnostics = [{
+      code: "CREATOR_GROUP_TOPOLOGY_MISMATCH",
+      message: "This occurrence must have the same Steps and routes as the existing group.",
+      path: "groups",
+      node: selection[0].id
+    }];
+    render();
+    return true;
+  }
   const occurrence = {
     id: opaqueId("occurrence"),
     flow: trigger.id,
     parent: currentGroup()?.occurrence.id || null,
-    steps: Object.fromEntries(selection.map((step, index) => [slots[index] || opaqueId("slot"), step.id]))
+    steps: mappedSteps
   };
   if (existing) {
     existing.occurrences.push(occurrence);
@@ -3576,13 +3703,30 @@ function groupRange(startId, endId) {
   if (!trigger || flowTrigger(node(endId))?.id !== trigger.id) {
     return [];
   }
-  const steps = linearSteps(trigger);
-  const start = steps.findIndex(candidate => candidate.id === startId);
-  const end = steps.findIndex(candidate => candidate.id === endId);
-  if (start < 0 || end < 0) {
-    return [];
+  const direct = groupPath(startId, endId);
+  if (direct.length) {
+    return direct;
   }
-  return steps.slice(Math.min(start, end), Math.max(start, end) + 1);
+  return groupPath(endId, startId);
+}
+
+function groupPath(startId, endId) {
+  const path = [];
+  let current = endId;
+  const seen = new Set();
+  while (current && current !== "end" && seen.add(current)) {
+    const operation = node(current);
+    if (!operation || definitionFor(operation)?.kind !== "step") {
+      return [];
+    }
+    path.push(operation);
+    if (current === startId) {
+      return path.reverse();
+    }
+    const incoming = state.project.links.filter(link => link.to === current);
+    current = incoming.length === 1 ? linkNode(incoming[0]) : "";
+  }
+  return [];
 }
 
 function reachable(start, reverse) {
@@ -3709,6 +3853,13 @@ function chooseSharedAction(action) {
         name: groupName(membership.group) + " Variant",
         occurrences: [membership.occurrence]
       });
+    } else {
+      state.creator.groups.forEach(group => group.occurrences.forEach(occurrence => {
+        if (occurrence.parent === membership.occurrence.id) {
+          occurrence.parent = membership.occurrence.parent;
+        }
+      }));
+      state.groupStack = state.groupStack.filter(id => groupOccurrence(id));
     }
     state.editScope = "this";
     creatorDirty();

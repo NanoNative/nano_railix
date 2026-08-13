@@ -1,24 +1,21 @@
 package dev.nanonative.railix.core;
 
 import dev.nanonative.railix.core.project.CompileResult;
-import dev.nanonative.railix.core.project.CompiledProject;
 import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.project.ProjectCompiler;
-import dev.nanonative.railix.core.runtime.RunFailure;
-import dev.nanonative.railix.core.runtime.RunResult;
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.step.StepDefinition.Input;
-import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueRefinement;
 import dev.nanonative.railix.core.value.ValueShape;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
-import java.util.Map;
+import java.util.stream.Stream;
 
-import static dev.nanonative.railix.core.CreatorFirstProjectCompilationE2eTest.contextCatalog;
-import static dev.nanonative.railix.core.CreatorFirstProjectCompilationE2eTest.contextProject;
 import static dev.nanonative.railix.core.step.StepDefinition.PathAccess.READ;
 import static dev.nanonative.railix.core.step.StepDefinition.PathAccess.WRITE;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,7 +35,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
     @Test
     void missingStepCatalogIsRejectedAtTheCompilerBoundary() {
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> ProjectCompiler.compile(baseProject(inputs()), null))
+                .isThrownBy(() -> ProjectCompiler.compileApplication(baseProject(inputs()), null))
                 .withMessage("Step catalog cannot be Java null.");
     }
 
@@ -223,7 +220,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
     void stepInstanceLimitIsEnforced() {
         final StepDefinition limited = StepDefinition.named("example.step", "1")
                 .maximumInstances(1)
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
         final String source = """
                 {"format":1,"id":"limited-project","nodes":[
                   %s,
@@ -268,14 +265,75 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 "PROJECT_APP_CONTRACT_INVALID", "nodes[0].use");
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("malformedAppContracts")
+    void everyMalformedAppContractIsRejectedAtTheProjectBoundary(
+            final String scenario,
+            final StepDefinition malformed
+    ) {
+        final String source = baseProject(inputs()).replace(
+                "\"use\":\"railix.app\"",
+                "\"use\":\"" + malformed.id() + "\""
+        );
+
+        assertThat(scenario).isNotBlank();
+        assertRejected(source, catalog(malformed, trigger(), step(), primitive()),
+                "PROJECT_APP_CONTRACT_INVALID", "nodes[0].use");
+    }
+
     @Test
     void triggerMustDeclareASource() {
         final StepDefinition malformed = StepDefinition.named("example.trigger", "1")
                 .kind(StepDefinition.Kind.TRIGGER)
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
 
         assertRejected(baseProject(inputs()), catalog(app(), malformed, step(), primitive()),
                 "PROJECT_TRIGGER_CONTRACT_INVALID", "nodes[1].use");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("malformedTriggerContracts")
+    void everyMalformedTriggerContractIsRejectedAtTheProjectBoundary(
+            final String scenario,
+            final StepDefinition malformed
+    ) {
+        final String source = baseProject(inputs()).replace("example.trigger", malformed.id());
+
+        assertThat(scenario).isNotBlank();
+        assertRejected(source, catalog(app(), malformed, step(), primitive()),
+                "PROJECT_TRIGGER_CONTRACT_INVALID", "nodes[1].use");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("malformedGraphStepContracts")
+    void everyMalformedGraphStepContractIsRejectedAtTheProjectBoundary(
+            final String scenario,
+            final StepDefinition malformed
+    ) {
+        assertThat(scenario).isNotBlank();
+        assertRejected(simpleProject(malformed.id(), "{}"), catalog(app(), trigger(), malformed, primitive()),
+                "PROJECT_STEP_CONTRACT_INVALID", "nodes[2].use");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("malformedNestedStepContracts")
+    void everyMalformedNestedStepContractIsRejectedAtTheProjectBoundary(
+            final String scenario,
+            final StepDefinition malformed,
+            final String code
+    ) {
+        final StepDefinition pipeline = StepDefinition.named("example.pipeline", "1")
+                .input("field", Input.path(READ))
+                .input("steps", Input.steps(StepDefinition.ValueSource.from("field")))
+                .run(TestStepHandlers.PrimaryOutcome.class);
+
+        assertThat(scenario).isNotBlank();
+        assertRejected(
+                nestedProject("4").replace("text.lowercase", malformed.id()),
+                catalog(app(), trigger(), pipeline, malformed),
+                code,
+                "nodes[2].inputs.steps[0].use"
+        );
     }
 
     @Test
@@ -284,7 +342,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source("application.example")
                 .result("runtime", ValueShape.ANY, RailixValue.nullValue())
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
 
         assertRejected(baseProject(inputs()), catalog(app(), malformed, step(), primitive()),
                 "PROJECT_TRIGGER_RESULT_RESERVED", "nodes[1].use");
@@ -294,8 +352,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
     void graphStepRequiresExplicitReturnBindings() {
         final StepDefinition malformed = StepDefinition.named("example.step", "1")
                 .returns("value", ValueShape.STRING)
-                .run(input -> StepResult.outcome(input.primaryOutcome())
-                        .output("value", RailixValue.string("value")));
+                .run(TestStepHandlers.PrimaryConstantValue.class);
 
         assertRejected(simpleProject("example.step", "{}"), catalog(app(), trigger(), malformed, primitive()),
                 "PROJECT_NODE_RETURNS_OBJECT_REQUIRED", "nodes[2].returns");
@@ -303,8 +360,8 @@ final class CreatorFirstCompilerRejectionE2eTest {
 
     @Test
     void undeclaredInputIsRejected() {
-        assertRejected(contextProject().replace("\"steps\":[", "\"unknown\":true,\"steps\":["),
-                contextCatalog(), "PROJECT_INPUT_UNKNOWN", "nodes[2].inputs.unknown");
+        assertRejected(baseProject(inputs().replace("\"steps\":[", "\"unknown\":true,\"steps\":[")),
+                catalog(), "PROJECT_INPUT_UNKNOWN", "nodes[2].inputs.unknown");
     }
 
     @Test
@@ -329,7 +386,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
     void omittedOptionalJsonInputCompiles() {
         final StepDefinition optional = StepDefinition.named("example.step", "1")
                 .input("value", Input.json(ValueShape.STRING).optional())
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
 
         assertCompiled(simpleProject("example.step", "{}"), catalog(app(), trigger(), optional, primitive()));
     }
@@ -362,7 +419,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
     void writablePathCannotTargetRuntime() {
         final StepDefinition writer = StepDefinition.named("example.step", "1")
                 .input("target", Input.path(WRITE))
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
 
         assertRejected(simpleProject("example.step", "{\"target\":[\"context\",\"runtime\",\"value\"]}"),
                 catalog(app(), trigger(), writer, primitive()),
@@ -373,7 +430,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
     void omittedOptionalPathInputCompiles() {
         final StepDefinition optional = StepDefinition.named("example.step", "1")
                 .input("value", Input.path(READ).optional())
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
 
         assertCompiled(simpleProject("example.step", "{}"), catalog(app(), trigger(), optional, primitive()));
     }
@@ -390,6 +447,15 @@ final class CreatorFirstCompilerRejectionE2eTest {
         assertRejected(baseProject(inputs().replace(
                         "[\"context\",\"payload\",\"value\"]", "[\"context\",1.5]")),
                 catalog(), "PROJECT_CONTEXT_PATH_ELEMENT_INVALID", "nodes[2].inputs.path[1]");
+    }
+
+    @Test
+    void pathDeeperThanTheCanonicalContextLimitIsRejected() {
+        final String deepPath = "[\"context\"," + "\"field\",".repeat(63) + "\"field\"]";
+
+        assertRejected(baseProject(inputs().replace(
+                        "[\"context\",\"payload\",\"value\"]", deepPath)),
+                catalog(), "PROJECT_CONTEXT_PATH_TOO_DEEP", "nodes[2].inputs.path");
     }
 
     @Test
@@ -414,10 +480,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
     void omittedDefaultedOptionCompilesAndReachesTheStep() {
         final StepDefinition defaulted = StepDefinition.named("example.step", "1")
                 .input("choice", Input.options(Input.option("first")).defaultOption("first"))
-                .run(input -> {
-                    input.option("choice");
-                    return StepResult.outcome(input.primaryOutcome());
-                });
+                .run(TestStepHandlers.ReadChoice.class);
 
         assertCompiled(simpleProject("example.step", "{}"), catalog(app(), trigger(), defaulted, primitive()));
     }
@@ -426,7 +489,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
     void omittedOptionalOptionsInputCompiles() {
         final StepDefinition optional = StepDefinition.named("example.step", "1")
                 .input("choice", Input.options(Input.option("first")).optional())
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
 
         assertCompiled(simpleProject("example.step", "{}"), catalog(app(), trigger(), optional, primitive()));
     }
@@ -521,7 +584,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 .receive("left", ValueShape.NUMBER)
                 .receive("right", ValueShape.NUMBER)
                 .returns("result", ValueShape.NUMBER)
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
 
         assertRejected(baseProject(inputs()), catalog(app(), trigger(), step(), malformed),
                 "PROJECT_NESTED_STEP_CONTRACT_INVALID", "nodes[2].inputs.steps[0].use");
@@ -534,38 +597,10 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 .receive("value", ValueShape.NUMBER)
                 .returns("value", ValueShape.NUMBER)
                 .input("scale", Input.json(ValueShape.NUMBER))
-                .run(input -> StepResult.outcome(input.primaryOutcome()).output("value", input.value("value")));
+                .run(TestStepHandlers.PrimaryIdentity.class);
 
         assertRejected(baseProject(inputs()), catalog(app(), trigger(), step(), configured),
                 "PROJECT_INPUT_REQUIRED", "nodes[2].inputs.steps[0].inputs.scale");
-    }
-
-    @Test
-    void triggerExampleBeyondANestedStepDepthRefinementIsRejectedByTheApplication() {
-        final StepDefinition primitive = StepDefinition.named("text.lowercase", "1")
-                .primaryOutcome("ok")
-                .receive("value", ValueShape.ANY, ValueRefinement.canonical().withMaxDepth(1))
-                .returns("value", ValueShape.ANY, ValueRefinement.canonical().withMaxDepth(1))
-                .run(input -> StepResult.outcome("ok").output("value", input.value("value")));
-        final String source = contextProject().replace(
-                "\"name\":\"Hello RAILIX\"",
-                "\"name\":{\"nested\":{}}"
-        );
-
-        final CompileResult.Compiled compiled =
-                (CompileResult.Compiled) ProjectCompiler.compile(source, replaceContextPrimitive(primitive));
-
-        assertThat(compiled.project().run(
-                "command",
-                new CompiledProject.StreamItem(true, context(RailixValue.object(Map.of(
-                        "nested", RailixValue.object(Map.of())
-                ))))
-        )).isInstanceOfSatisfying(RunResult.Rejected.class, rejected ->
-                assertThat(rejected.diagnostics()).containsExactly(Diagnostic.atPath(
-                        "RUN_NESTED_INPUT_INCOMPATIBLE",
-                        "Nested Step text.lowercase rejects value: Value exceeds maximum container depth 1.",
-                        "nodes[2].inputs.steps[0]"
-                )));
     }
 
     @Test
@@ -574,33 +609,8 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.ANY, ValueRefinement.canonical().withMaxDepth(1))
                 .returns("value", ValueShape.ANY, ValueRefinement.canonical().withMaxDepth(1))
-                .run(input -> StepResult.outcome("ok").output("value", input.value("value")));
-        final String source = contextProject().replace("\"name\":\"Hello RAILIX\"", "\"name\":{}");
-
-        assertCompiled(source, replaceContextPrimitive(primitive));
-    }
-
-    @Test
-    void triggerExampleBeyondANestedStepByteRefinementIsRejectedByTheApplication() {
-        final StepDefinition primitive = StepDefinition.named("text.lowercase", "1")
-                .primaryOutcome("ok")
-                .receive("value", ValueShape.STRING, ValueRefinement.canonical().withMaxJsonBytes(13))
-                .returns("value", ValueShape.STRING, ValueRefinement.canonical().withMaxJsonBytes(13))
-                .run(input -> StepResult.outcome("ok").output("value", input.value("value")));
-
-        final CompileResult.Compiled compiled = (CompileResult.Compiled) ProjectCompiler.compile(
-                contextProject(), replaceContextPrimitive(primitive)
-        );
-
-        assertThat(compiled.project().run(
-                "command",
-                new CompiledProject.StreamItem(true, context(RailixValue.string("Hello RAILIX")))
-        )).isInstanceOfSatisfying(RunResult.Rejected.class, rejected ->
-                assertThat(rejected.diagnostics()).containsExactly(Diagnostic.atPath(
-                        "RUN_NESTED_INPUT_INCOMPATIBLE",
-                        "Nested Step text.lowercase rejects value: Canonical JSON exceeds 13 bytes.",
-                        "nodes[2].inputs.steps[0]"
-                )));
+                .run(TestStepHandlers.OkIdentity.class);
+        assertCompiled(nestedProject("{}"), nestedCatalog(primitive));
     }
 
     @Test
@@ -609,36 +619,9 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.STRING, ValueRefinement.canonical().withMaxJsonBytes(14))
                 .returns("value", ValueShape.STRING, ValueRefinement.canonical().withMaxJsonBytes(14))
-                .run(input -> StepResult.outcome("ok").output("value", input.value("value")));
+                .run(TestStepHandlers.OkIdentity.class);
 
-        assertCompiled(contextProject(), replaceContextPrimitive(primitive));
-    }
-
-    @Test
-    void refinedNestedOutputViolationFailsTheApplicationRun() {
-        final StepDefinition primitive = StepDefinition.named("text.lowercase", "1")
-                .primaryOutcome("ok")
-                .receive("value", ValueShape.STRING)
-                .returns("value", ValueShape.ANY, ValueRefinement.canonical().withMaxDepth(64))
-                .run(input -> StepResult.outcome("ok").output(
-                        "value",
-                        RailixValue.array(java.util.List.of(RailixValue.string("\uD800")))
-                ));
-
-        final CompileResult.Compiled compiled = (CompileResult.Compiled) ProjectCompiler.compile(
-                contextProject(), replaceContextPrimitive(primitive)
-        );
-
-        assertThat(compiled.project().run(
-                "command",
-                new CompiledProject.StreamItem(true, context(RailixValue.string("Hello RAILIX")))
-        )).isInstanceOfSatisfying(RunResult.Failed.class, failed ->
-                assertThat(failed.failure()).isEqualTo(new RunFailure(
-                        "STEP_OUTPUT_INVALID",
-                        "Nested Step returned an incompatible value: Value contains an unpaired Unicode surrogate.",
-                        "text.lowercase",
-                        "nodes[2].inputs.steps[0]"
-                )));
+        assertCompiled(nestedProject("\"Hello RAILIX\""), nestedCatalog(primitive));
     }
 
     @Test
@@ -716,7 +699,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
         final StepDefinition second = StepDefinition.named("example.trigger-two", "1")
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source("application.example")
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
 
         assertRejected(source, catalog(app(), trigger(), second, step(), primitive()),
                 "PROJECT_TRIGGER_SOURCE_DUPLICATE", "nodes[2].use");
@@ -729,12 +712,12 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 .receive("value", ValueShape.NUMBER)
                 .returns("value", ValueShape.NUMBER)
                 .outcome("invalid")
-                .run(input -> StepResult.outcome(input.primaryOutcome()).output("value", input.value("value")));
+                .run(TestStepHandlers.PrimaryIdentity.class);
         final StepDefinition step = StepDefinition.named("example.step", "1")
                 .input("value", Input.json(ValueShape.NUMBER).defaultValue(RailixValue.number(0)))
                 .input("steps", Input.steps(StepDefinition.ValueSource.from("value"))
                         .propagateOutcomes())
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
         final String source = simpleProject("example.step", "{\"steps\":[{\"use\":\"example.primitive\",\"inputs\":{}}]}");
 
         assertRejected(source, catalog(app(), trigger(), step, primitive),
@@ -748,13 +731,13 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 .receive("value", ValueShape.NUMBER)
                 .returns("value", ValueShape.NUMBER)
                 .outcome("invalid")
-                .run(input -> StepResult.outcome(input.primaryOutcome()).output("value", input.value("value")));
+                .run(TestStepHandlers.PrimaryIdentity.class);
         final StepDefinition step = StepDefinition.named("example.step", "1")
                 .outcome("invalid")
                 .input("value", Input.json(ValueShape.NUMBER).defaultValue(RailixValue.number(0)))
                 .input("steps", Input.steps(StepDefinition.ValueSource.from("value"))
                         .propagateOutcomes())
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
         final String source = simpleProject("example.step", "{\"steps\":[{\"use\":\"example.primitive\",\"inputs\":{}}]}");
 
         assertRejected(source, catalog(app(), trigger(), step, primitive),
@@ -905,38 +888,89 @@ final class CreatorFirstCompilerRejectionE2eTest {
         assertRejected(source, catalog(), "PROJECT_GRAPH_CYCLE", "nodes[2]");
     }
 
-    @Test
-    void missingRequiredTriggerResultIsRejectedWhenTheApplicationRuns() {
-        final StepDefinition trigger = StepDefinition.named("example.trigger", "1")
-                .kind(StepDefinition.Kind.TRIGGER)
-                .source("application.example")
-                .requiredResult("result", ValueShape.STRING)
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
-        final StepDefinition noOp = StepDefinition.named("example.step", "1")
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
-
-        final CompileResult.Compiled compiled = (CompileResult.Compiled) ProjectCompiler.compile(
-                simpleProject("example.step", "{}"),
-                catalog(app(), trigger, noOp, primitive())
+    private static Stream<Arguments> malformedAppContracts() {
+        return Stream.of(
+                Arguments.of("wrong reserved definition id", StepDefinition.named("example.app", "1")
+                        .kind(StepDefinition.Kind.APP).define()),
+                Arguments.of("wrong primary outcome", StepDefinition.named("railix.app", "1")
+                        .kind(StepDefinition.Kind.APP).primaryOutcome("next").define()),
+                Arguments.of("additional outcome", StepDefinition.named("railix.app", "1")
+                        .kind(StepDefinition.Kind.APP).outcome("extra").define()),
+                Arguments.of("received value", StepDefinition.named("railix.app", "1")
+                        .kind(StepDefinition.Kind.APP).receive("value", ValueShape.ANY).define()),
+                Arguments.of("returned value", StepDefinition.named("railix.app", "1")
+                        .kind(StepDefinition.Kind.APP).returns("value", ValueShape.ANY).define()),
+                Arguments.of("executable behavior", StepDefinition.named("railix.app", "1")
+                        .kind(StepDefinition.Kind.APP).run(TestStepHandlers.PrimaryOutcome.class)),
+                Arguments.of("Trigger result", StepDefinition.named("railix.app", "1")
+                        .kind(StepDefinition.Kind.APP)
+                        .result("result", ValueShape.ANY, RailixValue.nullValue())
+                        .define())
         );
-
-        assertThat(compiled.project().run(
-                "trigger",
-                new CompiledProject.StreamItem(true, RailixValue.object(Map.of(
-                        "payload", RailixValue.object(Map.of("value", RailixValue.number(4)))
-                )))
-        )).isInstanceOfSatisfying(RunResult.Rejected.class, rejected ->
-                assertThat(rejected.diagnostics()).containsExactly(Diagnostic.atPath(
-                        "RUN_RESULT_REQUIRED",
-                        "Trigger result is missing: result.",
-                        "context.result"
-                )));
     }
 
-    private static RailixValue.ObjectValue context(final RailixValue name) {
-        return RailixValue.object(Map.of(
-                "payload", RailixValue.object(Map.of("name", name))
-        ));
+    private static Stream<Arguments> malformedTriggerContracts() {
+        return Stream.of(
+                Arguments.of("additional outcome", StepDefinition.named("example.trigger.extra", "1")
+                        .kind(StepDefinition.Kind.TRIGGER)
+                        .source("application.example.extra")
+                        .outcome("extra")
+                        .run(TestStepHandlers.PrimaryOutcome.class)),
+                Arguments.of("returned value", StepDefinition.named("example.trigger.return", "1")
+                        .kind(StepDefinition.Kind.TRIGGER)
+                        .source("application.example.return")
+                        .returns("value", ValueShape.ANY)
+                        .run(TestStepHandlers.PrimaryOutcome.class)),
+                Arguments.of("missing executable behavior", StepDefinition.named("example.trigger.static", "1")
+                        .kind(StepDefinition.Kind.TRIGGER)
+                        .source("application.example.static")
+                        .define())
+        );
+    }
+
+    private static Stream<Arguments> malformedGraphStepContracts() {
+        return Stream.of(
+                Arguments.of("missing executable behavior", StepDefinition.named("example.static", "1").define()),
+                Arguments.of("Trigger result", StepDefinition.named("example.result", "1")
+                        .result("result", ValueShape.ANY, RailixValue.nullValue())
+                        .run(TestStepHandlers.PrimaryOutcome.class))
+        );
+    }
+
+    private static Stream<Arguments> malformedNestedStepContracts() {
+        return Stream.of(
+                Arguments.of("Trigger kind", StepDefinition.named("nested.trigger", "1")
+                        .kind(StepDefinition.Kind.TRIGGER)
+                        .source("application.nested")
+                        .receive("value", ValueShape.ANY)
+                        .returns("value", ValueShape.ANY)
+                        .run(TestStepHandlers.PrimaryOutcome.class), "PROJECT_NESTED_STEP_KIND_INVALID"),
+                Arguments.of("missing receive", StepDefinition.named("nested.no-receive", "1")
+                        .returns("value", ValueShape.ANY)
+                        .run(TestStepHandlers.PrimaryOutcome.class), "PROJECT_NESTED_STEP_CONTRACT_INVALID"),
+                Arguments.of("multiple receives", StepDefinition.named("nested.receives", "1")
+                        .receive("first", ValueShape.ANY)
+                        .receive("second", ValueShape.ANY)
+                        .returns("value", ValueShape.ANY)
+                        .run(TestStepHandlers.PrimaryOutcome.class), "PROJECT_NESTED_STEP_CONTRACT_INVALID"),
+                Arguments.of("missing return", StepDefinition.named("nested.no-return", "1")
+                        .receive("value", ValueShape.ANY)
+                        .run(TestStepHandlers.PrimaryOutcome.class), "PROJECT_NESTED_STEP_CONTRACT_INVALID"),
+                Arguments.of("multiple returns", StepDefinition.named("nested.returns", "1")
+                        .receive("value", ValueShape.ANY)
+                        .returns("first", ValueShape.ANY)
+                        .returns("second", ValueShape.ANY)
+                        .run(TestStepHandlers.PrimaryOutcome.class), "PROJECT_NESTED_STEP_CONTRACT_INVALID"),
+                Arguments.of("missing executable behavior", StepDefinition.named("nested.static", "1")
+                        .receive("value", ValueShape.ANY)
+                        .returns("value", ValueShape.ANY)
+                        .define(), "PROJECT_NESTED_STEP_CONTRACT_INVALID"),
+                Arguments.of("Trigger result", StepDefinition.named("nested.result", "1")
+                        .receive("value", ValueShape.ANY)
+                        .returns("value", ValueShape.ANY)
+                        .result("result", ValueShape.ANY, RailixValue.nullValue())
+                        .run(TestStepHandlers.PrimaryOutcome.class), "PROJECT_NESTED_STEP_CONTRACT_INVALID")
+        );
     }
 
     private static StepCatalog catalog(final StepDefinition... definitions) {
@@ -945,9 +979,31 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 : definitions);
     }
 
-    private static StepCatalog replaceContextPrimitive(final StepDefinition primitive) {
-        final var definitions = contextCatalog().definitions();
-        return StepCatalog.of(definitions.get(0), definitions.get(1), definitions.get(2), primitive);
+    private static StepCatalog nestedCatalog(final StepDefinition primitive) {
+        final StepDefinition pipeline = StepDefinition.named("example.pipeline", "1")
+                .input("field", Input.path(READ))
+                .input("steps", Input.steps(StepDefinition.ValueSource.from("field")))
+                .run(TestStepHandlers.PrimaryOutcome.class);
+        return StepCatalog.of(app(), trigger(), pipeline, primitive);
+    }
+
+    private static String nestedProject(final String exampleValue) {
+        return """
+                {"format":1,"id":"nested-boundary","nodes":[
+                  %s,
+                  {"id":"trigger","use":"example.trigger","inputs":{},"examples":[{
+                    "name":"boundary","payload":[],"context":{"payload":{"name":%s}}
+                  }]},
+                  {"id":"step","use":"example.pipeline","inputs":{
+                    "field":["context","payload","name"],
+                    "steps":[{"use":"text.lowercase","inputs":{}}]
+                  }}
+                ],"links":[
+                  {"from":"app.start","to":"trigger"},
+                  {"from":"trigger.next","to":"step"},
+                  {"from":"step.next","to":"end"}
+                ]}
+                """.formatted(appNode(), exampleValue);
     }
 
     private static StepDefinition app() {
@@ -958,7 +1014,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
         return StepDefinition.named("example.trigger", "1")
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source("application.example")
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
     }
 
     private static StepDefinition step() {
@@ -972,7 +1028,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
                                 .fromOwned("literal")
                 ))
                 .input("steps", Input.steps(StepDefinition.ValueSource.from("json")))
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
     }
 
     private static StepDefinition primitive() {
@@ -980,7 +1036,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.NUMBER)
                 .returns("value", ValueShape.NUMBER)
-                .run(input -> StepResult.outcome(input.primaryOutcome()).output("value", input.value("value")));
+                .run(TestStepHandlers.PrimaryIdentity.class);
     }
 
     private static String baseProject(final String stepInputs) {
@@ -1048,7 +1104,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
             final String code,
             final String path
     ) {
-        final CompileResult result = ProjectCompiler.compile(source, catalog);
+        final CompileResult result = ProjectCompiler.compileApplication(source, catalog);
         assertThat(result).isInstanceOf(CompileResult.Rejected.class);
         assertThat(((CompileResult.Rejected) result).diagnostics()).hasSize(1);
         final Diagnostic diagnostic = ((CompileResult.Rejected) result).diagnostics().getFirst();
@@ -1057,6 +1113,7 @@ final class CreatorFirstCompilerRejectionE2eTest {
     }
 
     private static void assertCompiled(final String source, final StepCatalog catalog) {
-        assertThat(ProjectCompiler.compile(source, catalog)).isInstanceOf(CompileResult.Compiled.class);
+        assertThat(ProjectCompiler.compileApplication(source, catalog))
+                .isInstanceOf(CompileResult.Compiled.class);
     }
 }

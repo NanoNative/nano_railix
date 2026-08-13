@@ -23,6 +23,7 @@ dist/
 /railix.project.json
 /railix.creator.json
 .railix/run/
+.railix/build/
 .railix/cache/
 .railix/tmp/
 

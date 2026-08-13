@@ -3,7 +3,6 @@ package dev.nanonative.railix.stdlib;
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.step.StepDefinition.Input;
-import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueShape;
 
@@ -61,8 +60,7 @@ public final class StandardLibrary {
                 .result("exit_code", ValueShape.NUMBER, RailixValue.number(0))
                 .response("output", "result")
                 .response("status", "exit_code")
-                .run(input -> StepResult.outcome(input.primaryOutcome())
-                        .write("target", input.value("arguments")));
+                .run(StandardStepHandlers.Cli.class);
     }
 
     private static StepDefinition fieldManipulation() {
@@ -80,7 +78,7 @@ public final class StandardLibrary {
                                 .fromOwned("source")
                 ).defaultCandidate("current"))
                 .input("steps", Input.steps(StepDefinition.ValueSource.from("value")))
-                .run(input -> input.run("steps").writeWhenPresent("field"));
+                .run(StandardStepHandlers.FieldManipulation.class);
     }
 
     private static StepDefinition filter() {
@@ -89,9 +87,7 @@ public final class StandardLibrary {
                 .primaryOutcome("match")
                 .input("conditions", Input.candidates(fieldOrLiteral()).defaultCandidate("field"))
                 .outcome("otherwise")
-                .run(input -> StepResult.outcome(
-                        input.optionalValue("conditions").isPresent() ? "match" : "otherwise"
-                ));
+                .run(StandardStepHandlers.Filter.class);
     }
 
     private static StepDefinition choice() {
@@ -100,9 +96,7 @@ public final class StandardLibrary {
                 .primaryOutcome("match")
                 .input("conditions", Input.matcherGroups(fieldOrLiteral()))
                 .outcome("otherwise")
-                .run(input -> StepResult.outcome(
-                        RailixValue.bool(true).equals(input.value("conditions")) ? "match" : "otherwise"
-                ));
+                .run(StandardStepHandlers.Choice.class);
     }
 
     private static StepDefinition.Option[] fieldOrLiteral() {

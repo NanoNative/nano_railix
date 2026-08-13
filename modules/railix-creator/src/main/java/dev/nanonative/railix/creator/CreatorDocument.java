@@ -170,13 +170,6 @@ final class CreatorDocument {
                 }
                 current = declared.get(current.parent());
             }
-            if (!seen.add(current.id())) {
-                return Result.rejected(
-                        "CREATOR_OCCURRENCE_PARENT_CYCLE",
-                        "Occurrence parents must not contain a cycle.",
-                        occurrence.path() + ".parent"
-                );
-            }
         }
         for (final Occurrence occurrence : declared.values()) {
             if (occurrence.parent().isEmpty()) {
@@ -251,6 +244,7 @@ final class CreatorDocument {
                 );
             }
             Set<String> slots = null;
+            OccurrenceShape shape = null;
             for (int occurrenceIndex = 0; occurrenceIndex < occurrences.values().size(); occurrenceIndex++) {
                 final String occurrencePath = path + ".occurrences[" + occurrenceIndex + "]";
                 final RailixValue occurrenceValue = occurrences.values().get(occurrenceIndex);
@@ -275,10 +269,17 @@ final class CreatorDocument {
                         .values().keySet();
                 if (slots == null) {
                     slots = Set.copyOf(occurrenceSlots);
+                    shape = declared.get(textValue(occurrence, "id")).shape();
                 } else if (!slots.equals(occurrenceSlots)) {
                     return Result.rejected(
                             "CREATOR_OCCURRENCE_SLOTS_MISMATCH",
                             "Every occurrence of a shared group must declare the same slots.",
+                            occurrencePath + ".steps"
+                    );
+                } else if (!shape.equals(declared.get(textValue(occurrence, "id")).shape())) {
+                    return Result.rejected(
+                            "CREATOR_OCCURRENCE_TOPOLOGY_MISMATCH",
+                            "Every occurrence of a shared group must have the same Step and route topology.",
                             occurrencePath + ".steps"
                     );
                 }
@@ -382,34 +383,72 @@ final class CreatorDocument {
                 );
             }
         }
-        if (!contiguous(referenced, graph.positions().getOrDefault(flow.value(), Map.of()))) {
-            return Result.rejected(
-                    "CREATOR_OCCURRENCE_RANGE_INVALID",
-                    "Occurrence Steps must form one contiguous range on the Trigger's primary route.",
-                    path + ".steps"
-            );
+        final Optional<Diagnostic> region = region(referenced, graph, path + ".steps");
+        if (region.isPresent()) {
+            return Result.rejected(region.get());
         }
         declared.put(id.value(), new Occurrence(
-                id.value(), flow.value(), parent, Set.copyOf(referenced), path
+                id.value(),
+                flow.value(),
+                parent,
+                Set.copyOf(referenced),
+                shape(steps, graph),
+                path
         ));
         return Result.accepted();
     }
 
-    private static boolean contiguous(
+    private static Optional<Diagnostic> region(
             final Set<String> referenced,
-            final Map<String, Integer> positions
+            final Graph graph,
+            final String path
     ) {
-        int first = Integer.MAX_VALUE;
-        int last = -1;
-        for (final String step : referenced) {
-            final Integer position = positions.get(step);
-            if (position == null) {
-                return false;
+        final Set<String> connected = new LinkedHashSet<>();
+        final List<String> pending = new ArrayList<>(List.of(referenced.iterator().next()));
+        for (int index = 0; index < pending.size(); index++) {
+            final String current = pending.get(index);
+            if (!connected.add(current)) {
+                continue;
             }
-            first = Math.min(first, position);
-            last = Math.max(last, position);
+            graph.neighbors().getOrDefault(current, Set.of()).stream()
+                    .filter(referenced::contains)
+                    .filter(candidate -> !connected.contains(candidate))
+                    .forEach(pending::add);
         }
-        return last - first + 1 == referenced.size();
+        if (connected.size() != referenced.size()) {
+            return Optional.of(Diagnostic.atPath(
+                    "CREATOR_OCCURRENCE_RANGE_INVALID",
+                    "Occurrence Steps must form one connected region.",
+                    path
+            ));
+        }
+        return Optional.empty();
+    }
+
+    private static OccurrenceShape shape(
+            final RailixValue.ObjectValue steps,
+            final Graph graph
+    ) {
+        final Map<String, String> concreteSlots = new LinkedHashMap<>();
+        steps.values().forEach((slot, value) ->
+                concreteSlots.put(((RailixValue.StringValue) value).value(), slot)
+        );
+        final String entry = concreteSlots.entrySet().stream()
+                .filter(candidate -> graph.incoming().getOrDefault(candidate.getKey(), List.of()).stream()
+                        .anyMatch(source -> !concreteSlots.containsKey(source)))
+                .map(Map.Entry::getValue)
+                .findFirst()
+                .orElse("");
+        final Map<String, NodeShape> nodes = new LinkedHashMap<>();
+        steps.values().forEach((slot, value) -> {
+            final String concrete = ((RailixValue.StringValue) value).value();
+            final Map<String, String> routes = new LinkedHashMap<>();
+            graph.outgoing().getOrDefault(concrete, Map.of()).forEach((outcome, target) ->
+                    routes.put(outcome, concreteSlots.getOrDefault(target, ""))
+            );
+            nodes.put(slot, new NodeShape(graph.uses().get(concrete), Map.copyOf(routes)));
+        });
+        return new OccurrenceShape(entry, Map.copyOf(nodes));
     }
 
     private static Optional<Diagnostic> presentation(
@@ -496,6 +535,10 @@ final class CreatorDocument {
         return new Read(text.value(), Optional.empty());
     }
 
+    private static String textValue(final RailixValue.ObjectValue object, final String field) {
+        return ((RailixValue.StringValue) object.values().get(field)).value();
+    }
+
     private static Optional<Diagnostic> unknown(
             final RailixValue.ObjectValue value,
             final Set<String> allowed,
@@ -522,54 +565,39 @@ final class CreatorDocument {
             final StepCatalog catalog
     ) {
         final Map<String, StepDefinition.Kind> kinds = new LinkedHashMap<>();
-        final Map<String, StepDefinition> definitions = new LinkedHashMap<>();
+        final Map<String, String> uses = new LinkedHashMap<>();
         final RailixValue.ArrayValue nodes = (RailixValue.ArrayValue) project.values().get("nodes");
         nodes.values().stream().map(RailixValue.ObjectValue.class::cast).forEach(node -> {
             final String id = ((RailixValue.StringValue) node.values().get("id")).value();
             final String use = ((RailixValue.StringValue) node.values().get("use")).value();
             final StepDefinition definition = catalog.find(use).orElseThrow();
             kinds.put(id, definition.kind());
-            definitions.put(id, definition);
+            uses.put(id, use);
         });
         final Map<String, List<String>> links = new LinkedHashMap<>();
-        final Map<String, String> primary = new LinkedHashMap<>();
+        final Map<String, List<String>> incoming = new LinkedHashMap<>();
+        final Map<String, Set<String>> neighbors = new LinkedHashMap<>();
+        final Map<String, Map<String, String>> outgoing = new LinkedHashMap<>();
         final RailixValue.ArrayValue projectLinks = (RailixValue.ArrayValue) project.values().get("links");
         projectLinks.values().stream().map(RailixValue.ObjectValue.class::cast).forEach(link -> {
             final String from = ((RailixValue.StringValue) link.values().get("from")).value();
             final String to = ((RailixValue.StringValue) link.values().get("to")).value();
             final int separator = from.lastIndexOf('.');
             final String node = from.substring(0, separator);
+            final String outcome = from.substring(separator + 1);
             links.computeIfAbsent(node, ignored -> new ArrayList<>()).add(to);
-            if (from.substring(separator + 1).equals(definitions.get(node).primaryOutcome())) {
-                primary.put(node, to);
+            outgoing.computeIfAbsent(node, ignored -> new LinkedHashMap<>()).put(outcome, to);
+            if (!"end".equals(to)) {
+                incoming.computeIfAbsent(to, ignored -> new ArrayList<>()).add(node);
+                neighbors.computeIfAbsent(node, ignored -> new LinkedHashSet<>()).add(to);
+                neighbors.computeIfAbsent(to, ignored -> new LinkedHashSet<>()).add(node);
             }
         });
         final Map<String, Set<String>> owners = new LinkedHashMap<>();
-        final Map<String, Map<String, Integer>> positions = new LinkedHashMap<>();
         kinds.entrySet().stream()
                 .filter(entry -> entry.getValue() == StepDefinition.Kind.TRIGGER)
-                .forEach(trigger -> {
-                    owners(trigger.getKey(), kinds, links, owners);
-                    positions.put(trigger.getKey(), positions(primary.get(trigger.getKey()), kinds, primary));
-                });
-        return new Graph(kinds, owners, positions);
-    }
-
-    private static Map<String, Integer> positions(
-            final String first,
-            final Map<String, StepDefinition.Kind> kinds,
-            final Map<String, String> primary
-    ) {
-        final Map<String, Integer> positions = new LinkedHashMap<>();
-        final Set<String> seen = new LinkedHashSet<>();
-        String current = first;
-        while (current != null && !"end".equals(current) && seen.add(current)) {
-            if (kinds.get(current) == StepDefinition.Kind.STEP) {
-                positions.put(current, positions.size());
-            }
-            current = primary.get(current);
-        }
-        return Map.copyOf(positions);
+                .forEach(trigger -> owners(trigger.getKey(), kinds, links, owners));
+        return new Graph(kinds, uses, owners, neighbors, incoming, outgoing);
     }
 
     private static void owners(
@@ -598,7 +626,7 @@ final class CreatorDocument {
     }
 
     private static boolean validId(final String value) {
-        return value != null && !value.isBlank() && value.length() <= MAX_ID_LENGTH;
+        return !value.isBlank() && value.length() <= MAX_ID_LENGTH;
     }
 
     record Result(String source, RailixValue.ObjectValue value, List<Diagnostic> diagnostics) {
@@ -624,8 +652,11 @@ final class CreatorDocument {
 
     private record Graph(
             Map<String, StepDefinition.Kind> kinds,
+            Map<String, String> uses,
             Map<String, Set<String>> owners,
-            Map<String, Map<String, Integer>> positions
+            Map<String, Set<String>> neighbors,
+            Map<String, List<String>> incoming,
+            Map<String, Map<String, String>> outgoing
     ) {
     }
 
@@ -634,7 +665,14 @@ final class CreatorDocument {
             String flow,
             String parent,
             Set<String> steps,
+            OccurrenceShape shape,
             String path
     ) {
+    }
+
+    private record OccurrenceShape(String entry, Map<String, NodeShape> nodes) {
+    }
+
+    private record NodeShape(String use, Map<String, String> routes) {
     }
 }

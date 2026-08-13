@@ -3,9 +3,12 @@ package dev.nanonative.railix.core;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepDefinition;
+import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
 import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
 
 import java.util.Arrays;
 import java.util.List;
@@ -13,6 +16,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.junit.jupiter.api.Assertions.assertTimeout;
 
 final class StepDeveloperApiContractE2eTest {
     @Test
@@ -184,6 +188,21 @@ final class StepDeveloperApiContractE2eTest {
     }
 
     @Test
+    void largeCatalogConstructionAndLookupRemainBounded() {
+        assertTimeout(Duration.ofSeconds(5), () -> {
+            final StepDefinition[] definitions = new StepDefinition[20_000];
+            for (int index = 0; index < definitions.length; index++) {
+                definitions[index] = StepDefinition.named("catalog.step-" + index, "1").define();
+            }
+            final StepCatalog catalog = StepCatalog.of(definitions);
+            for (int index = 0; index < 100_000; index++) {
+                final int target = Math.floorMod(index * 8191, definitions.length);
+                org.assertj.core.api.Assertions.assertThat(catalog.find("catalog.step-" + target)).isPresent();
+            }
+        });
+    }
+
+    @Test
     void JavaNullStepOutcomeIsRejected() {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> StepResult.outcome(null))
@@ -262,6 +281,13 @@ final class StepDeveloperApiContractE2eTest {
 
     private static StepDefinition definition() {
         return StepDefinition.named("example.step", "1")
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(NextHandler.class);
+    }
+
+    private static final class NextHandler implements StepHandler {
+        @Override
+        public StepResult run(final StepInput input) {
+            return StepResult.outcome(input.primaryOutcome());
+        }
     }
 }

@@ -148,10 +148,11 @@ final class CreatorProjects {
                   {"id":"change","use":"railix.field-manipulation","inputs":{
                     "field":["context","payload","value"],
                     "value":[
-                      {"option":"current","inputs":{},"when":[{
+                      {"option":"current","inputs":{},"when":{"transforms":[],"all":[[{
                         "use":"value.equals","inputs":{"expected":"different"}
-                      }]},
-                      {"option":"literal","inputs":{"literal":"fallback"},"when":[]}
+                      }]]}},
+                      {"option":"literal","inputs":{"literal":"fallback"},
+                       "when":{"transforms":[],"all":[]}}
                     ],
                     "steps":[]
                   }}

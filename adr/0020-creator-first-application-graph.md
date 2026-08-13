@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted on 2026-07-29. Refined through 2026-08-10 to separate the flat functional graph from
+Accepted on 2026-07-29. Refined through 2026-08-12 to separate the flat functional graph from
 optional Creator metadata, remove compiler-expanded reusable flows, and add generic explicit
 flow-control inputs.
 
@@ -150,9 +150,7 @@ stack, and inserts later Steps into the route selected in the Inspector. Missing
 unknown, or repeated links remain visible on their owning outcome and are never presented as End.
 Functional compilation rejects those malformed links before a project enters a Creator workspace;
 insertion is also disabled for any malformed transient route. Runtime executes exactly one
-successor. Existing non-branch groups stay collapsed, but creating a group containing a control
-Step or inserting a control Step inside a group is rejected until branch-aware group editing is
-implemented.
+successor. Control Steps can be grouped and inserted inside groups without changing the flat graph.
 
 ### Choice
 
@@ -211,11 +209,16 @@ group representation. Logical slot IDs and occurrence IDs are UUID-backed opaque
 once. Shared occurrences use exactly the same slot set; each occurrence maps those slots to its
 own concrete Step IDs.
 
-Creator currently groups only a contiguous range on one Trigger's deterministic primary route.
-Occurrences are non-empty, remain inside their parent range, cannot overlap siblings, and cannot
-form parent cycles. Shared occurrences must have equal size and matching logical slots. Branch
-grouping remains unsupported: a selected range containing a control Step and control-Step insertion
-inside a group are both rejected explicitly.
+Each occurrence is a non-empty connected region in one Trigger flow with one entry derived from the
+flat links. Occurrences remain inside their parent region, cannot overlap siblings, and cannot form
+parent cycles. Creator selects either end of one ancestor/descendant path, so reverse selection and
+secondary routes work while sibling boundaries on different paths are rejected explicitly. Valid
+metadata may represent a complete divergent region. A collapsed group renders every exact edge that
+leaves its region; opening it renders every member and boundary exit.
+
+Shared occurrences have equal logical slots and equivalent Step/route topology. Structural edits on
+primary or secondary outcomes preserve those slots. Detaching or deleting a parent occurrence
+reparents nested groups, and group deletion remains metadata-only.
 
 Opening a group adds one semantic-zoom level. Groups can nest without a depth-specific execution
 model because every contained Step already exists flat in `railix.project.json`. Deleting a group
@@ -302,8 +305,7 @@ debugging remain roadmap work. Current examples never sample production traffic.
 
 Compiler and runtime have one canonical model and one execution path. Visual groups can evolve or
 be lost independently. A newer Creator can still open the flat project even if presentation
-metadata is incompatible. The cost is that reusable/global groups do not yet cross projects and
-branch-aware semantic zoom remains planned rather than hidden behind partial compiler expansion.
+metadata is incompatible. The cost is that reusable/global groups do not yet cross projects.
 
 ## Rejected Alternatives
 
@@ -325,8 +327,9 @@ The mapped Lowercase invocation is an ordinary graph node. Its receive reads
 `context.payload.arguments[0]`, its return writes `context.result`, and its `ok` outcome links to
 End. The active control checkpoint additionally proves ordinary Filter and Choice definitions,
 generic ordered OR/AND matcher groups, explicit flat outcome links, deterministic branch layout,
-route-specific insertion and deletion, rolling-built example execution and previews, preserved
-existing groups, and separate desktop/mobile proof.
+route-specific insertion and deletion, branch-aware semantic zoom with exact boundary exits,
+rolling-built example execution and previews, preserved existing groups, and separate
+desktop/mobile proof.
 
 ## Supersedes
 

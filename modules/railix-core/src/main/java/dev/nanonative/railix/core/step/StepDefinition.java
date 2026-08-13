@@ -1,5 +1,6 @@
 package dev.nanonative.railix.core.step;
 
+import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueRefinement;
 import dev.nanonative.railix.core.value.ValueShape;
@@ -30,7 +31,7 @@ import java.util.Optional;
  *         .input("pipeline", Input.steps(
  *                 ValueSource.from("source")
  *                         .onMissing("missing")))
- *         .run(input -> input.run("pipeline").write("target"));
+ *         .run(ChangeField.class);
  * }
  *
  * <p>A unary Step uses the same authored-input grammar for its own configuration:</p>
@@ -40,9 +41,7 @@ import java.util.Optional;
  *         .input("prefix", Input.json(ValueShape.STRING)
  *                 .defaultValue(RailixValue.string("railix:")))
  *         .returns("value", ValueShape.STRING)
- *         .run(input -> StepResult.outcome(input.primaryOutcome())
- *                 .output("value", RailixValue.string(
- *                         input.string("prefix") + input.string("value"))));
+ *         .run(Prefix.class);
  * }
  */
 public final class StepDefinition {
@@ -412,8 +411,9 @@ public final class StepDefinition {
      * for example by binding a later {@link StepsInput} through
      * {@link ValueSource#onMissing(String)}.</p>
      *
-     * <p>A project candidate stores {@code option}, owned {@code inputs}, and {@code when}. An empty
-     * {@code when} array is the presence-only form. The canonical conditional form is:</p>
+     * <p>A project candidate stores {@code option}, owned {@code inputs}, and {@code when}. The
+     * presence-only form is {@code "when":{"transforms":[],"all":[]}}. The canonical conditional
+     * form is:</p>
      * <pre>{@code
      * "when": {
      *   "transforms": [{"use":"list.size","inputs":{}}],
@@ -708,6 +708,20 @@ public final class StepDefinition {
         }
     }
 
+    record ImplementationAddress(String sourceName, String classEntry) {
+        ImplementationAddress {
+            sourceName = implementationName(sourceName);
+            classEntry = implementationEntry(classEntry);
+            final String binaryName = classEntry.substring(0, classEntry.length() - ".class".length())
+                    .replace('/', '.');
+            if (!sourceName.equals(binaryName) && !sourceName.equals(binaryName.replace('$', '.'))) {
+                throw new IllegalArgumentException(
+                        "Step implementation class and JAR entry must identify the same Java class."
+                );
+            }
+        }
+    }
+
     private final String id;
     private final String version;
     private final String displayName;
@@ -722,9 +736,12 @@ public final class StepDefinition {
     private final String exampleTarget;
     private final int maximumInstances;
     private final Source source;
-    private final StepHandler handler;
+    private final ImplementationAddress implementation;
 
-    private StepDefinition(final Builder builder, final StepHandler handler) {
+    private StepDefinition(
+            final Builder builder,
+            final ImplementationAddress implementation
+    ) {
         id = requiredText(builder.id, "Step id");
         version = requiredText(builder.version, "Step version");
         displayName = builder.displayName == null ? displayName(id) : builder.displayName;
@@ -741,7 +758,7 @@ public final class StepDefinition {
         source = builder.sourceName == null
                 ? null
                 : new Source(builder.sourceName, builder.responses);
-        this.handler = handler;
+        this.implementation = implementation;
         distinct(receives.stream().map(Port::name).toList(), "Received value names");
         distinct(returns.stream().map(Port::name).toList(), "Returned value names");
         distinct(inputs.stream().map(Field::name).toList(), "Input names");
@@ -932,13 +949,13 @@ public final class StepDefinition {
         return Optional.ofNullable(source);
     }
 
-    /**
-     * Returns executable behavior when this kind owns code.
-     *
-     * @return handler, or empty for a structural definition
-     */
-    public Optional<StepHandler> handler() {
-        return Optional.ofNullable(handler);
+    /** Returns whether generated applications must construct executable behavior for this Step. */
+    public boolean executable() {
+        return implementation != null;
+    }
+
+    Optional<ImplementationAddress> implementationAddress() {
+        return Optional.ofNullable(implementation);
     }
 
     /**
@@ -1316,15 +1333,68 @@ public final class StepDefinition {
         /**
          * Completes an executable Trigger or ordinary Step definition.
          *
-         * @param handler stateless or thread-safe executable behavior
+         * <p>The implementation must be a named class with an accessible no-argument constructor
+         * so the compiler can emit a concrete constructor call without reflection. Railix stores
+         * only the immutable class address; it never constructs or retains a handler here.</p>
+         *
+         * @param implementation stateless or thread-safe executable behavior owned by a named Java class
          * @return immutable executable Step definition
          */
-        public StepDefinition run(final StepHandler handler) {
-            if (handler == null) {
-                throw new IllegalArgumentException("Step handler cannot be Java null.");
+        public StepDefinition run(final Class<? extends StepHandler> implementation) {
+            if (implementation == null) {
+                throw new IllegalArgumentException("Step implementation cannot be Java null.");
             }
-            return new StepDefinition(this, handler);
+            final String canonicalName = implementation.getCanonicalName();
+            if (canonicalName == null) {
+                throw new IllegalArgumentException(
+                        "Step implementation must be a named Java class so generated applications can call it."
+                );
+            }
+            return new StepDefinition(
+                    this,
+                    new ImplementationAddress(
+                            canonicalName,
+                            implementation.getName().replace('.', '/') + ".class"
+                    )
+            );
         }
+
+        /** Binds an implementation address while decoding a verified bundle manifest. */
+        StepDefinition implementedBy(final String className, final String classEntry) {
+            return new StepDefinition(
+                    this,
+                    new ImplementationAddress(className, classEntry)
+            );
+        }
+    }
+
+    private static String implementationName(final String className) {
+        final String value = requiredText(className, "Step implementation class");
+        final String[] parts = value.split("\\.", -1);
+        if (parts.length < 2) {
+            throw new IllegalArgumentException("Step implementation must be a canonical Java class name.");
+        }
+        for (final String part : parts) {
+            if (part.isEmpty() || !Character.isJavaIdentifierStart(part.charAt(0))) {
+                throw new IllegalArgumentException("Step implementation must be a canonical Java class name.");
+            }
+            for (int index = 1; index < part.length(); index++) {
+                if (!Character.isJavaIdentifierPart(part.charAt(index))) {
+                    throw new IllegalArgumentException("Step implementation must be a canonical Java class name.");
+                }
+            }
+        }
+        return value;
+    }
+
+    private static String implementationEntry(final String classEntry) {
+        final String value = requiredText(classEntry, "Step implementation entry");
+        if (!value.endsWith(".class") || value.startsWith("/") || value.contains("\\")
+                || java.util.Arrays.stream(value.split("/", -1)).anyMatch(part -> part.isEmpty()
+                || ".".equals(part) || "..".equals(part))) {
+            throw new IllegalArgumentException("Step implementation entry must be a safe JAR class entry.");
+        }
+        return value;
     }
 
     private static void validateReferences(final List<Field> fields) {
@@ -1401,6 +1471,11 @@ public final class StepDefinition {
                 || !(path.values().getFirst() instanceof RailixValue.StringValue root)
                 || !"context".equals(root.value())) {
             throw new IllegalArgumentException(label + " must start below context.");
+        }
+        if (path.values().size() > RailixData.DEFAULT_MAX_DEPTH) {
+            throw new IllegalArgumentException(
+                    label + " must not exceed " + RailixData.DEFAULT_MAX_DEPTH + " elements."
+            );
         }
         for (final RailixValue segment : path.values()) {
             final boolean field = segment instanceof RailixValue.StringValue string && !string.value().isBlank();

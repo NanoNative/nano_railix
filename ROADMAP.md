@@ -1,12 +1,14 @@
 # Railix II Roadmap
 
-Updated: 2026-08-11
+Updated: 2026-08-13
 
 ## Product Goal
 
-Railix Creator turns one visual project into one deployable Java monolith. The functional project
-is a complete flat graph beginning at one permanent Application Step. Optional Creator metadata
-adds semantic zoom and presentation without entering compilation or changing behavior.
+Railix is a product-building system for cross-functional teams. It turns one visual project into
+one immutable monolithic application. Java is Railix's current implementation language, not its
+product boundary. The functional project is a complete flat graph beginning at one permanent
+Application Step. Optional Creator metadata adds semantic zoom and presentation without entering
+compilation or changing behavior.
 
 Railix operates on JSON-compatible primitive values. The core remains plain Java,
 non-reflective, small, deterministic, and stateless per admitted item. Small unary operations and
@@ -17,17 +19,61 @@ different lifecycle remain distinct kinds.
 Creator contract. [ADR 0021](adr/0021-total-and-fallible-primitives.md) owns the finite built-in
 unary-operation catalog.
 
+### Target Operating Model — Planned
+
+The following is product direction, not current shipped behavior:
+
+- **One executable model.** Applications are expressed as Flows and Steps. HTTP, MQTT, storage,
+  access policy, rate limits, protocol handling, and other application concerns are modeled from
+  that same vocabulary. Creator-only Groups, Blueprints, and Templates are reusable authoring aids
+  that compile away; production understands only Flows and Steps.
+- **Railway-Oriented Programming.** Railix uses this term for the complete application path from
+  an external trigger through policy, processing, and storage—not only for success/failure control
+  flow. Every supported concern must be expressible through the same Flow and Step model.
+- **Example-gated builds.** Named local Examples are intended to be the build gate: every declared
+  example must pass before a production artifact can be built. Test-only behavior uses real test
+  services or explicit test-client Steps that may be omitted from the production artifact.
+  Examples are authored before build; production traffic is never captured as a new Example.
+- **Immutable application artifacts.** A built graph never changes in production. Artifacts will
+  carry timestamp versions and allow only the small set of environment settings selected at build.
+  Whether customers use Git for project persistence and change management remains their choice.
+- **Platform identity and secrets.** Railix will own users, roles, and authorization for project
+  visibility, editing, local Example execution, builds, deployment, and production attachment.
+  Application Flows may enforce product-level authentication and authorization, but cannot grant
+  themselves platform authority. Per-environment secrets will be stored as SOPS-encrypted project
+  material for explicitly authorized recipient keys or key groups, never as Flow values or
+  observability data.
+- **Read-only operational visibility.** When explicitly included at build and authorized, Creator
+  will attach read-only to an instance and display the executing Flow, throughput, bottlenecks,
+  metrics, queues, and errors. It will not edit or invoke production Flows.
+- **A decentralised application mesh.** In the intended multi-instance mode, every authorized
+  Railix instance can accept work and participate in balancing, restart recovery, and rolling
+  replacement. Users declare reachable compute and storage resources; Railix will own the
+  placement and operational plumbing. The unit of distributed work—an eligible Step, a Flow, or
+  another compiled boundary—has deliberately not been decided. Creator Groups never define that
+  boundary.
+
+Railix reduces hand-wired infrastructure configuration; it does not claim that certificates,
+authentication, external networks, storage, or operating-system process supervision cease to
+exist. The aim is one coherent model that makes those concerns explicit and buildable instead of
+spreading them across unconnected application, CI/CD, observability, and orchestration files.
+
 ## Progress
 
 - Accepted roadmap items: **2/8 (25%)**
-- Railix production certification: **0%**
+- Checkpoint-weighted Railix integration: **42%; 58% left**
+- Railix production certification: **0%**; the full product is not certified by one core gate
 - Current item: **5. Flow Control, Groups, And Flat Compilation**
 - Current item progress: **5/7 checkpoints complete (71%); 29% left**
-- Active checkpoint: **5.6 explicit flow-control Steps, 2/7 slices accepted (29%); 71% left**
+- Active delivery checkpoint: **PR Readiness And Contribution Simplification, 98% integrated;
+  2% left for commit, push, and PR publication**
+- Next roadmap feature: **5.6 Switch control slice, 0% integrated; 100% left**
+- Core/base certification checkpoint: **Complete, 6/6 gates (100%; 0% left)**
+- Feature roadmap: **resumed after the 2026-08-13 core/base clean gate passed**
 - Retained incomplete item: **3. Primitive Contract And Standard Library, 4/6 complete
   (67%); 33% left**
-- Latest completed milestone: **ordinary Choice Step plus ordered OR/AND matcher groups,
-  2026-08-10**
+- Latest completed core checkpoint: **single production execution path and truthful clean
+  certification, 2026-08-13**
 
 Completion percentages count accepted checkpoints, not lines written. A roadmap item reaches 100%
 only after its public acceptance gate, coverage report, complexity audit, stability checks,
@@ -37,7 +83,8 @@ documentation, and screenshot are complete.
 
 - immutable canonical `RailixValue` primitives;
 - bounded deterministic JSON, YAML, and XML normalization;
-- exactly three production modules: core, standard library, and Creator;
+- three explicit production modules: core contracts/compiler/runtime, standard library, and
+  Creator/development tooling;
 - explicit Step registration without reflection or runtime scanning;
 - one flat functional project model and one runtime execution path;
 - deterministic diagnostics and canonical JSON writing;
@@ -166,7 +213,11 @@ Current contract:
 - one occurrence maps logical slots to concrete flat Step IDs;
 - nested groups provide semantic zoom and deleting a group preserves every Step;
 - shared edits require **Update all**, **Detach this**, **Create variant**, or **Cancel**;
-- current grouping accepts only contiguous ranges on one deterministic primary route;
+- each group occurrence is one connected region with one derived entry; Creator authors a region
+  by selecting either end of one ancestor/descendant path and renders every boundary exit;
+- shared occurrences require the same logical slots, Step definitions, and internal route topology;
+- compilation builds one immutable authored-order node plan with integer destinations from one
+  linear graph index; runtime resolves IDs only at public Trigger, source, and preview boundaries;
 - `railix.filter` is an ordinary Step using generic ordered candidate predicates and explicit
   `match` / `otherwise` links;
 - `railix.choice` is an ordinary Step using generic ordered OR groups whose values pass through one
@@ -183,7 +234,8 @@ Checkpoints:
 
 1. **Done (2026-08-06): Flat functional graph.** Remove reusable-flow definitions,
    compiler-generated graph expansion, alternate executable source, and global blueprint storage.
-   Structural compilation never invokes handlers.
+   Structural compilation never invokes handlers. Hardened on 2026-08-12 with one O(V+E) graph
+   index, one immutable global node plan, and integer hot-path routing without per-Trigger copies.
 2. **Done (2026-08-06): Metadata isolation.** Persist grouping and appearance separately;
    missing/corrupt metadata opens the same functional graph flat and preserves invalid source.
 3. **Done (2026-08-06): Semantic zoom.** Create, open, close, nest, rename, recolor, re-icon, and
@@ -194,13 +246,16 @@ Checkpoints:
 5. **Done (2026-08-06): Public rejection and recovery proof.** Reject empty, unknown,
    non-contiguous, overlapping, cyclic, mismatched, and out-of-parent metadata; prove flat startup
    fallback, desktop/mobile UX, deterministic layout, reload, and functional-Step preservation.
-6. **Partial (2026-08-10, 2/7 control slices accepted):** Filter plus deterministic branch layout
-   and Choice plus ordered OR/AND matcher groups are accepted. Both are ordinary Steps with generic
-   inputs, explicit `match` / `otherwise` links, rolling-built execution and previews, iterative
-   route authoring, and preserved existing groups. Choice additionally proves ordered
+6. **Partial (2026-08-12, 3/7 control slices accepted):** Filter, Choice, and branch-aware groups
+   are accepted. Filter and Choice are ordinary Steps with generic inputs, explicit `match` /
+   `otherwise` links, rolling-built execution and previews, and iterative route authoring. Choice
+   additionally proves ordered
    short-circuiting, exact missing/present semantics, predicate failure propagation, restored UI,
-   and position-independent editor state. Remaining slices are Switch, Merge plus fan-in
-   cardinality, Split plus fan-out cardinality, bounded Loop, and branch-aware group editing.
+   and position-independent editor state. Branch-aware semantic zoom accepts control Steps,
+   reversible path boundaries, full connected branch regions through metadata, every exact external
+   route, non-primary insertion, topology-equivalent shared edits, nested detach, and metadata-only
+   deletion. Sibling boundaries on different paths are rejected explicitly. Remaining slices are
+   Switch, Merge plus fan-in cardinality, Split plus fan-out cardinality, and bounded Loop.
    Choice hardening on 2026-08-11 adds generic Step search aliases, contract-derived
    Matcher/Transform labels, buildable predicate defaults, `value.not-equals`, three CLI example
    templates, canonical shared Transforms plus independent AND Matcher programs, legacy program
@@ -211,49 +266,95 @@ Checkpoints:
 
 Current evidence:
 
-- clean `mvn clean verify`: **1,890/1,890 green**: core 760, standard library 379,
-  Creator HTTP and launcher lifecycle 150, packaged development runtime 36, desktop Chrome 270,
-  executable JAR 25, and mobile Chrome 270;
-- the permanent tracked `./railix` launcher survives clean/test lifecycles, rejects a missing JAR
-  deterministically, and starts the real packaged Creator without Maven writing outside `target`;
-- clean aggregate JaCoCo: **95.5689% lines** and **89.8162% branches**. Core is
-  95.7235%/90.2633%, standard library 99.7041%/97.1698%, and Creator 94.0050%/86.4097%
-  (line/branch). The line target is met; aggregate branches remain 0.1838 percentage points below
-  the visible non-blocking 90% target, with Creator owning the gap;
-- desktop and mobile Chrome prove nested groups, portable appearance, shared edits, deletion
-  preservation, stable IDs, deterministic relative layout, explicit branch authoring, valid and
-  malformed route presentation, a 6,000-Step branch without JavaScript call-stack growth, separate
-  Inspector/Appearance/Examples/Groups tabs, always-visible resettable target paths, payload plus
-  optional-context Examples, Example counts, unary operations as ordinary graph Steps, and generic
-  Choice group/matcher add, independent reorder/remove, reload, aliases, defaults,
-  contract-derived Matcher/Transform roles, shared Size plus `> 1` and `< 5` programs authored in
-  the UI and executed after reload at four boundary values, built-preview flows, three default CLI
-  examples, measured nested branch connectors, and an open picker surviving a delayed real Example
-  result without losing focus or input;
-- independent Gatekeeper reviews found recursive branch traversal, false End presentation,
-  duplicate connectors, hidden group diagnostics, missing Filter scenarios, and ambiguous malformed
-  route insertion, same-Step output leakage into its source picker, partial-Example required paths,
-  stale automatic Example results, incomplete matcher semantics/diagnostics, position-bound matcher
-  search, storage-only Choice reload proof, dead matcher binding state, missing complete not-equals
-  Creator proof, matcher UI/runtime separation, unmeasured branch drops, and automatic Example
-  completion replacing the active picker. Each reachable defect or proof gap was reproduced or
-  made explicit and closed;
-- the production audit remains three modules and 26 Java files at 10,198 lines. Choice hardening
-  added 277 production Java lines over the previous accepted gate. No
-  production file, interface, kind, compatibility layer, alternate engine, global store, or
-  third-party runtime dependency was added;
-- the final clean gate completed in 16 minutes 42 seconds. A settled three-second post-gate process
-  inspection found no Playwright, remote-debugging Chrome, Surefire, Failsafe, or test-created
-  Railix process; the same user-started Creator and development-child PIDs observed before the gate
-  remained running.
+- The old compiler-side `CompiledProject` executor is deleted; compilation now emits one generated
+  application and runtime behavior is being re-proven only through packaged child JVMs.
+- Step definitions retain one immutable class-literal-derived implementation address. Locked
+  third-party implementations must be owned by their root bundle and compile failures return stable
+  diagnostics without exposing `javac` output.
+- Production requests allocate no Step trace; explicit development test and preview requests alone
+  capture steps, resolved inputs, candidate selections, and nested stages.
+- Generated Trigger constants are initialized once. Each admitted item owns one shallow mutable
+  context root, lazily thaws only written containers, freezes only at observation/response
+  boundaries, and uses detached copy-on-write only for atomic multi-write Steps. Isolated owner
+  tokens prevent borrowed containers from retaining prior event frames.
+- Generated synchronous calls return primitive outcome indexes; one stored terminal `RunResult`
+  represents rejection, failure, or cancellation. No success-path routing object, exception,
+  future, or scheduler remains between a Step and its authored integer destination.
+- A real 129-Step production flow executes 322,500 verified Steps with zero traces. The clean gate
+  measures 155,624 allocated bytes and 68,344 median nanoseconds per call: 1,206 bytes and 529
+  nanoseconds per Step. A one-million-call soak stays inside a 64 MiB heap with 137,584 retained
+  bytes. The single-Step boundary measures 4,352 allocated bytes and 748 median nanoseconds per
+  call; escaped-result measurement remains bounded at 4,336 bytes per call.
+- The maximum 16,384-node generated monolith executes all 16,381 ordinary Steps exactly once in
+  authored order. Generated applications currently admit at most 512 Triggers; exact-boundary
+  production and development builds pass, while Trigger 513 is rejected before source allocation.
+  A depth-seven exhaustive branch tree resolves all 128 leaves uniquely, while 2,000 concurrent
+  contexts remain isolated and 2,000 external effects occur exactly once.
+- Cross-process application publication uses one project-local OS file lock outside the artifact
+  directory. Sixteen simultaneous packaged cold starts share the atomic cache without deleting
+  active staging or exposing partial output; abandoned staging and failed child startup remain
+  cleanup-proven.
+- Every Creator API read and mutation requires the per-process random token and exact loopback
+  `Host`; mutations additionally require same-origin browser requests and exact JSON content type.
+  Stored Creator presentation values are HTML-encoded, including nested group breadcrumbs.
+- Real-process lifecycle scenarios prove bounded Creator forwarding, graceful accepted-work drain,
+  synchronous and repeated close, interruption preservation, process-tree termination, port release,
+  bounded diagnostic retention, and object retention. The authenticated loopback startup protocol
+  rejects wrong-token, partial, oversized, and stalled callbacks before accepting the real generated
+  application callback. These cases use a locked third-party Step bundle and real child JVMs.
+- A complete test-boundary audit found zero fake or direct in-process runtime implementations:
+  compiler/model and generated-source checks remain structural, while runtime semantics use real
+  generated artifacts, child JVMs, HTTP, CLI, or browser boundaries. Five unique HTTP cases were
+  consolidated into the canonical generated-child suite; one duplicate 33-case integration suite,
+  two obsolete handler files, and 26 unreferenced nested test handlers were removed.
+- Clean `mvn clean verify` passes **2,049/2,049 tests** with no failure, error, or skip: core 739,
+  standard library 71, Creator Surefire 928, desktop browser 282, package 28, and mobile browser 1.
+  The complete local gate takes 16:16; the real packaged browser suite dominates at 10:32 and is a
+  measured contribution-speed target, not a reason to replace public-boundary proof with mocks.
+- Clean aggregate JaCoCo is **95.2310% lines (7,049/7,402)** and **90.0936% branches
+  (3,465/3,846)**. Core is 97.2090%/92.0061%, standard library 100%/97.2222%, and Creator
+  90.4762%/84.8785% (line/branch). The visible non-failing 95%/90% target is met without changing
+  the build into a coverage gate.
+- The generated development dispatch avoids the JDK 25 conditional-method-reference compiler
+  crash through one explicit observation branch. A source-shape regression guards that contract,
+  and clean desktop/mobile Failsafe reports contain no compiler exception, NPE, `LambdaToMethod`,
+  or conditional-tree crash.
+- Current production inventory is three modules, 33 Java files, and 15,659 Java lines with no
+  third-party Maven runtime dependency. The executable Creator JAR is 517,097 bytes. Its universal
+  application image includes every stable build-JDK module so Creator can compile and run arbitrary
+  locked Step bundles without ambient Java; unsupported incubator modules are excluded, and
+  per-project minimal images remain Item 8.
+- Clean concurrency proof completes 2,000 isolated calls and 2,000 external effects exactly once,
+  with all 64 workers overlapping and no production traces. Post-gate inspection found no owned
+  Railix application or browser process.
 
-Next control-flow slice: branch-aware groups must form a single-entry region and expose every edge
-that leaves the region, so collapsing a Choice never hides a route or changes the flat project.
+Next delivery sequence:
 
-Global reusable groups, automatic group suggestions, branch-aware grouping, and parameter
-suggestions remain unsupported. No Item 5 screenshot is current because the item is not 100%.
+1. **Done:** lower generated synchronous routing to direct integer ROP basic blocks and remove the
+   remaining per-Step routing result objects without changing the public Step contract;
+2. **Done:** prove every runtime assertion uses locked bundles, generated artifacts, child JVMs,
+   real HTTP, CLI, or browser boundaries rather than an alternate executor or application double;
+3. **Done:** remove duplicate runtime suites, obsolete support handlers, and stale test seams, then
+   run negative searches for alternate execution paths and fake applications;
+4. **Done:** run the clean reactor, generated-runtime benchmarks, rolling-build/lifecycle proof,
+   process inspection, and production complexity audit;
+5. **Done:** publish exact current evidence without presenting the advisory coverage target as a
+   build failure;
+6. **Done:** close the public-boundary coverage deficit without padding and rerun the exact clean
+   certification gate at 95.2316% lines and 90.0184% branches;
+7. **Queued after PR publication:** implement and accept Switch as the next ordinary control Step,
+   then continue with Merge, Split, and bounded Loop.
 
-## 6. Live Runtime, Bounded Work, And Permissions
+PR-readiness hardening is tracked separately from feature completion: one root build, one hosted
+verification workflow, pinned lifecycle plugins, host/browser requirements, compiler bounds,
+cross-process build ownership, quiet deterministic packaging, and contributor rules are integrated.
+The public target is `NanoNative/nano_railix` and its Apache-2.0 license is preserved. Publication
+still requires the reviewed commit, branch push, and PR; none changes Item 5 completion.
+
+Global reusable groups, automatic group suggestions, and parameter suggestions remain unsupported.
+No Item 5 screenshot is current because the item is not 100%.
+
+## 6. Live Runtime, Operations, Bounded Work, And Permissions
 
 Status: **Planned**
 
@@ -261,9 +362,17 @@ Goal: make development observable and production behavior bounded.
 
 Scope:
 
+- explicit suspending Steps begin only as one lifecycle-complete slice: top-level suspension,
+  bounded admission, ingress-owned deadline/cancellation, idempotent application shutdown,
+  one-shot inline resume by integer node, and constrained-heap/classloader-retention proof;
 - independently includable project/build metadata, preview/trace, live-error, queue, and metrics
   build capabilities;
-- local and remote authenticated Creator attachment with explicit compatibility metadata;
+- local and remote authenticated, read-only Creator attachment with explicit compatibility
+  metadata and build-selected endpoints; production attachment never edits or invokes a Flow;
+- platform user identity, role, and per-environment capability authorization for project editing,
+  Example execution, build, deployment, and production attachment;
+- SOPS-encrypted, recipient-key or key-group-controlled environment secrets that never enter Flow
+  JSON, diagnostics, traces, metrics, or Creator exports;
 - bounded throughput, timing, resources, uptime, bottleneck, queue, and custom metrics per flow
   and Step without workflow values;
 - traces only for explicit examples or user-supplied test contexts, never sampled production data;
@@ -271,14 +380,24 @@ Scope:
 - explicit filesystem, network, process, environment, and other permission requests;
 - optional resource measurement and enforceable execution policy.
 
-## 7. Remote Execution, State, Sharding, And Replication
+The synchronous generated route remains a separate zero-scheduler fast path. Suspension is not
+accepted as a callback-only API because an abandoned callback would retain its complete event
+context without a lifecycle owner.
+
+## 7. Decentralised Execution, State, Sharding, And Replication
 
 Status: **Planned**
 
-Goal: scale eligible ordinary Steps without turning the application into microservices.
+Goal: scale one application through a decentralised Railix mesh without turning it into
+microservices or adding a user-managed orchestration layer.
 
 Scope:
 
+- define member discovery, authenticated mesh membership, resource declarations, work ownership,
+  crash/restart takeover, and decentralised rolling replacement;
+- every authorized mesh instance can accept work and participate in balancing and recovery;
+- decide and prove the compiled unit of distribution: eligible Step, Flow, or another boundary.
+  Creator-only Groups, Blueprints, and Templates must never become a production placement model;
 - explicit eligibility and dependency-tree compatibility, never automatic migration from timing
   alone;
 - authenticated remote dispatch with bounded retries, deadlines, backpressure, and observability;
@@ -297,9 +416,11 @@ Scope:
 
 - direct Java calls for reachable Steps and control paths;
 - only referenced dependencies and JDK modules;
-- `jdeps` module closure, cached `jlink` runtime images, and `jpackage` applications/installers;
+- dependency-aware `jdeps` module closure after all project bundles are known, cached `jlink`
+  runtime images, and `jpackage` applications/installers;
 - environment-selected development capabilities omitted as code rather than disabled at runtime;
-- reproducible artifacts, signing-ready outputs, release smoke, upgrades, and clean-machine proof;
+- immutable timestamp-versioned artifacts, reproducible outputs, signing-ready release smoke,
+  upgrades, supported operating-system supervision integration, and clean-machine proof;
 - GraalVM native-image only after Java contracts stabilize;
 - approximately 95% line and at least 90% branch coverage as non-failing quality reports;
 - one public E2E per reachable success, rejection, cancellation, repeat, concurrency, lifecycle,

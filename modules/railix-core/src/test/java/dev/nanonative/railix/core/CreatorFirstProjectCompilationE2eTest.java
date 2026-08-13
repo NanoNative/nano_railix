@@ -1,20 +1,19 @@
 package dev.nanonative.railix.core;
 
 import dev.nanonative.railix.core.project.CompileResult;
+import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.project.ProjectCompiler;
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.step.StepDefinition.Input;
-import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueShape;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static dev.nanonative.railix.core.step.StepDefinition.PathAccess.READ;
 import static dev.nanonative.railix.core.step.StepDefinition.PathAccess.READ_WRITE;
@@ -24,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CreatorFirstProjectCompilationE2eTest {
     @Test
     void genericPathOptionsAndStepsProjectCompiles() {
-        assertThat(ProjectCompiler.compile(contextProject(), contextCatalog()))
+        assertThat(ProjectCompiler.compileApplication(contextProject(), contextCatalog()))
                 .isInstanceOf(CompileResult.Compiled.class);
     }
 
@@ -95,7 +94,7 @@ class CreatorFirstProjectCompilationE2eTest {
     void unaryStepCompilesAsAnOrdinaryGraphNodeWithExplicitPortPaths() {
         final CompileResult.Compiled compiled = compiled(graphPrimitiveProject(), contextCatalog());
 
-        assertThat(compiled.executableSource())
+        assertThat(compiled.source())
                 .contains("\"receives\":{\"value\":[\"context\",\"payload\",\"name\"]}")
                 .contains("\"returns\":{\"value\":[\"context\",\"payload\",\"name\"]}");
     }
@@ -145,28 +144,21 @@ class CreatorFirstProjectCompilationE2eTest {
                 ],"links":[]}
                 """;
 
-        assertThat(ProjectCompiler.compile(source, contextCatalog()))
+        assertThat(ProjectCompiler.compileApplication(source, contextCatalog()))
                 .isInstanceOf(CompileResult.Compiled.class);
     }
 
     @Test
     void compilingAProjectNeverInvokesTriggerOrStepHandlers() {
-        final AtomicInteger executions = new AtomicInteger();
         final StepDefinition app = StepDefinition.named("railix.app", "1")
                 .kind(StepDefinition.Kind.APP)
                 .define();
         final StepDefinition trigger = StepDefinition.named("example.trigger", "1")
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source("application.example")
-                .run(input -> {
-                    executions.incrementAndGet();
-                    return StepResult.outcome(input.primaryOutcome());
-                });
+                .run(TestStepHandlers.PrimaryOutcome.class);
         final StepDefinition step = StepDefinition.named("example.step", "1")
-                .run(input -> {
-                    executions.incrementAndGet();
-                    return StepResult.outcome(input.primaryOutcome());
-                });
+                .run(TestStepHandlers.PrimaryOutcome.class);
         final String source = """
                 {"format":1,"id":"pure-compilation","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
@@ -181,9 +173,34 @@ class CreatorFirstProjectCompilationE2eTest {
                 ]}
                 """;
 
-        assertThat(ProjectCompiler.compile(source, StepCatalog.of(app, trigger, step)))
+        assertThat(ProjectCompiler.compileApplication(source, StepCatalog.of(app, trigger, step)))
                 .isInstanceOf(CompileResult.Compiled.class);
-        assertThat(executions).hasValue(0);
+    }
+
+    @Test
+    void applicationCompilationRejectsStepBeyondGeneratedCodeLimit() {
+        final String nested = IntStream.range(0, 256)
+                .mapToObj(index -> "{\"use\":\"text.lowercase\",\"inputs\":{}}")
+                .collect(Collectors.joining(",", "[", "]"));
+        final String source = contextProject().replace(
+                "[{\"use\":\"text.lowercase\",\"inputs\":{}}]",
+                nested
+        );
+
+        assertThat(ProjectCompiler.compileApplication(source, contextCatalog()))
+                .isInstanceOfSatisfying(CompileResult.Rejected.class, rejected ->
+                        assertThat(rejected.diagnostics()).singleElement().satisfies(diagnostic ->
+                                assertThat(diagnostic).extracting(
+                                        Diagnostic::code,
+                                        Diagnostic::message,
+                                        Diagnostic::path
+                                ).containsExactly(
+                                        "PROJECT_APPLICATION_STEP_LIMIT",
+                                        "One compiled Step exceeds the 32768-character generated-code limit.",
+                                        "nodes[2]"
+                                )
+                        )
+                );
     }
 
     @Test
@@ -207,7 +224,7 @@ class CreatorFirstProjectCompilationE2eTest {
                 ]}
                 """;
 
-        assertThat(ProjectCompiler.compile(source, catalog))
+        assertThat(ProjectCompiler.compileApplication(source, catalog))
                 .isInstanceOf(CompileResult.Compiled.class);
     }
 
@@ -217,7 +234,7 @@ class CreatorFirstProjectCompilationE2eTest {
                 .replace("\"name\":\"Hello RAILIX\"", "\"names\":[\"Hello RAILIX\"]")
                 .replace("[\"context\",\"payload\",\"name\"]", "[\"context\",\"payload\",\"names\",0]");
 
-        assertThat(ProjectCompiler.compile(source, contextCatalog()))
+        assertThat(ProjectCompiler.compileApplication(source, contextCatalog()))
                 .isInstanceOf(CompileResult.Compiled.class);
     }
 
@@ -228,24 +245,21 @@ class CreatorFirstProjectCompilationE2eTest {
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.STRING)
                 .input("locale", Input.json(ValueShape.STRING).defaultValue(RailixValue.string("root")))
-                .run(input -> StepResult.outcome("ok").output(
-                        "value",
-                        RailixValue.string(input.string("value").toLowerCase(Locale.ROOT))
-                ));
+                .run(TestStepHandlers.LowercaseValue.class);
 
-        assertThat(ProjectCompiler.compile(contextProject(), replacePrimitive(lowercase)))
+        assertThat(ProjectCompiler.compileApplication(contextProject(), replacePrimitive(lowercase)))
                 .isInstanceOf(CompileResult.Compiled.class);
     }
 
     @Test
     void fallibleNestedPrimitiveCompilesWithoutBranchRouting() {
-        assertThat(ProjectCompiler.compile(fallibleProject(), fallibleCatalog()))
+        assertThat(ProjectCompiler.compileApplication(fallibleProject(), fallibleCatalog()))
                 .isInstanceOf(CompileResult.Compiled.class);
     }
 
     @Test
     void triggerResultDefaultsAllowAFlowToFinishImmediately() {
-        assertThat(ProjectCompiler.compile(triggerOnlyProject(), contextCatalog()))
+        assertThat(ProjectCompiler.compileApplication(triggerOnlyProject(), contextCatalog()))
                 .isInstanceOf(CompileResult.Compiled.class);
     }
 
@@ -262,8 +276,7 @@ class CreatorFirstProjectCompilationE2eTest {
                 .result("exit_code", ValueShape.NUMBER, RailixValue.number(0))
                 .response("output", "result")
                 .response("status", "exit_code")
-                .run(input -> StepResult.outcome(input.primaryOutcome())
-                        .write("target", input.value("arguments")));
+                .run(TestStepHandlers.WriteArguments.class);
         final StepDefinition manipulation = StepDefinition.named("railix.field-manipulation", "1")
                 .input("field", Input.path(READ_WRITE).defaultPath("context", "payload"))
                 .input("value", Input.candidates(
@@ -276,15 +289,12 @@ class CreatorFirstProjectCompilationE2eTest {
                                         .fromOwned("source")
                         ).defaultCandidate("current"))
                 .input("steps", Input.steps(StepDefinition.ValueSource.from("value")))
-                .run(input -> input.run("steps").writeWhenPresent("field"));
+                .run(TestStepHandlers.RunStepsWriteWhenPresentField.class);
         final StepDefinition lowercase = StepDefinition.named("text.lowercase", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.STRING)
-                .run(input -> StepResult.outcome("ok").output(
-                        "value",
-                        RailixValue.string(input.string("value").toLowerCase(Locale.ROOT))
-                ));
+                .run(TestStepHandlers.LowercaseValue.class);
         final StepDefinition branchingTransform = StepDefinition.named("test.branching-transform", "1")
                 .input("field", Input.path(READ_WRITE).defaultPath("context", "payload"))
                 .input("value", Input.candidates(
@@ -299,7 +309,7 @@ class CreatorFirstProjectCompilationE2eTest {
                 .input("steps", Input.steps(
                         StepDefinition.ValueSource.from("value").onMissing("missing")
                 ).propagateOutcomes())
-                .run(input -> input.run("steps").write("field"));
+                .run(TestStepHandlers.RunStepsWriteField.class);
         return StepCatalog.of(app, cli, manipulation, lowercase, branchingTransform);
     }
 
@@ -309,16 +319,7 @@ class CreatorFirstProjectCompilationE2eTest {
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.NUMBER)
                 .outcome("invalid")
-                .run(input -> {
-                    try {
-                        return StepResult.outcome("ok").output(
-                                "value",
-                                RailixValue.number(new BigDecimal(input.string("value")))
-                        );
-                    } catch (NumberFormatException exception) {
-                        return StepResult.outcome("invalid");
-                    }
-                });
+                .run(TestStepHandlers.ToNumber.class);
         return with(contextCatalog(), toNumber);
     }
 
@@ -410,7 +411,7 @@ class CreatorFirstProjectCompilationE2eTest {
         return StepDefinition.named(id, "1")
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source(source)
-                .run(input -> StepResult.outcome(input.primaryOutcome()));
+                .run(TestStepHandlers.PrimaryOutcome.class);
     }
 
     private static StepCatalog replacePrimitive(final StepDefinition replacement) {
@@ -438,6 +439,6 @@ class CreatorFirstProjectCompilationE2eTest {
     }
 
     private static CompileResult.Compiled compiled(final String source, final StepCatalog catalog) {
-        return (CompileResult.Compiled) ProjectCompiler.compile(source, catalog);
+        return (CompileResult.Compiled) ProjectCompiler.compileApplication(source, catalog);
     }
 }

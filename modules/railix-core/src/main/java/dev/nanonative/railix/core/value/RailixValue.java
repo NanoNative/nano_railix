@@ -21,7 +21,7 @@ public sealed interface RailixValue permits
     }
 
     static BooleanValue bool(final boolean value) {
-        return new BooleanValue(value);
+        return value ? BooleanValue.TRUE : BooleanValue.FALSE;
     }
 
     static NumberValue number(final BigDecimal value) {
@@ -49,6 +49,8 @@ public sealed interface RailixValue permits
     }
 
     record BooleanValue(boolean value) implements RailixValue {
+        private static final BooleanValue TRUE = new BooleanValue(true);
+        private static final BooleanValue FALSE = new BooleanValue(false);
     }
 
     record NumberValue(BigDecimal value) implements RailixValue {
