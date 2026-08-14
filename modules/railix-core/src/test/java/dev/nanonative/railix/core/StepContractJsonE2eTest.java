@@ -4,6 +4,9 @@ import dev.nanonative.railix.core.step.StepDefinition.Input;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueShape;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -11,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.UnaryOperator;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -152,6 +156,19 @@ final class StepContractJsonE2eTest {
                 .hasMessage("Bundle Step must declare an implementation: codec.unimplemented.");
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("unsafeImplementationAddresses")
+    void bundleContractRejectsAnUnsafeImplementationAddress(
+            final String scenario,
+            final String className,
+            final String classEntry,
+            final String message
+    ) {
+        assertThatThrownBy(() -> StepContractJson.read(contract(), className, classEntry))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(message);
+    }
+
     @Test
     void contractRequiresItsPrimaryOutcomeFirst() {
         final RailixValue.ObjectValue contract = with(
@@ -264,6 +281,23 @@ final class StepContractJsonE2eTest {
         return StepDefinition.named("codec.base", "1")
                 .input("value", Input.json(ValueShape.STRING))
                 .run(CodecHandler.class);
+    }
+
+    private static Stream<Arguments> unsafeImplementationAddresses() {
+        final String classMessage = "Step implementation must be a canonical Java class name.";
+        final String entryMessage = "Step implementation entry must be a safe JAR class entry.";
+        return Stream.of(
+                Arguments.of("implementation class without package", "Handler", IMPLEMENTATION_ENTRY, classMessage),
+                Arguments.of("implementation class with empty segment", "dev..Handler", IMPLEMENTATION_ENTRY, classMessage),
+                Arguments.of("implementation class with numeric segment", "dev.1Handler", IMPLEMENTATION_ENTRY, classMessage),
+                Arguments.of("implementation class with invalid character", "dev.Handler-name", IMPLEMENTATION_ENTRY, classMessage),
+                Arguments.of("implementation entry without class suffix", IMPLEMENTATION, "dev/Handler", entryMessage),
+                Arguments.of("absolute implementation entry", IMPLEMENTATION, "/dev/Handler.class", entryMessage),
+                Arguments.of("backslash implementation entry", IMPLEMENTATION, "dev\\Handler.class", entryMessage),
+                Arguments.of("empty implementation entry segment", IMPLEMENTATION, "dev//Handler.class", entryMessage),
+                Arguments.of("current-directory implementation entry", IMPLEMENTATION, "dev/./Handler.class", entryMessage),
+                Arguments.of("parent-directory implementation entry", IMPLEMENTATION, "dev/../Handler.class", entryMessage)
+        );
     }
 
     private static RailixValue.ObjectValue contract() {

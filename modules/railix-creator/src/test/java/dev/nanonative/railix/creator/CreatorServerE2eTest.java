@@ -7,6 +7,8 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
@@ -32,18 +34,13 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @Execution(ExecutionMode.SAME_THREAD)
-final class CreatorServerE2eTest {
-    private static final String CONTEXT = """
-            {"payload":{"arguments":["Hello RAILIX"]}}
-            """;
-
-    @TempDir
-    Path directory;
+final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
 
     @Test
     void missingWorkspaceStartsWithPersistedApplicationGraph() throws Exception {
@@ -221,11 +218,6 @@ final class CreatorServerE2eTest {
     }
 
     @Test
-    void creatorMetadataRejectsMalformedJsonWithoutChangingTheRunningApplication() throws Exception {
-        assertCreatorMetadataRejected("{", "CREATOR_JSON_INVALID", "");
-    }
-
-    @Test
     void creatorMetadataRejectsInvalidUtf8WithoutChangingTheRunningApplication() throws Exception {
         final Path project = directory.resolve("railix.project.json");
         final Path creatorFile = directory.resolve("railix.creator.json");
@@ -248,444 +240,158 @@ final class CreatorServerE2eTest {
         }
     }
 
-    @Test
-    void creatorMetadataMustBeAnObject() throws Exception {
-        assertCreatorMetadataRejected("[]", "CREATOR_OBJECT_REQUIRED", "");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidCreatorMetadata")
+    void creatorMetadataRejectionKeepsTheRunningApplication(
+            final String scenario,
+            final String source,
+            final String code,
+            final String path
+    ) throws Exception {
+        assertCreatorMetadataRejected(source, code, path);
     }
 
-    @Test
-    void creatorMetadataStepsMustBeAnObject() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":[],\"groups\":[]}",
-                "CREATOR_STEPS_OBJECT_REQUIRED",
-                "steps"
+    private static Stream<Arguments> invalidCreatorMetadata() {
+        final String occurrence = "{\"id\":\"occurrence-one\",\"flow\":\"command\",\"parent\":null,"
+                + "\"steps\":{\"slot-one\":\"lowercase-text\"}}";
+        return Stream.of(
+                Arguments.of("malformed JSON", "{", "CREATOR_JSON_INVALID", ""),
+                Arguments.of("metadata must be an object", "[]", "CREATOR_OBJECT_REQUIRED", ""),
+                Arguments.of("steps must be an object", creatorMetadata("[]", "[]"), "CREATOR_STEPS_OBJECT_REQUIRED", "steps"),
+                Arguments.of("groups must be an array", creatorMetadata("{}", "{}"), "CREATOR_GROUPS_ARRAY_REQUIRED", "groups"),
+                Arguments.of("Step presentation must be an object", creatorStep("true"), "CREATOR_PRESENTATION_OBJECT_REQUIRED", "steps.lowercase-text"),
+                Arguments.of("presentation name must be non-blank", creatorStep("{\"name\":\" \"}"), "CREATOR_PRESENTATION_NAME_INVALID", "steps.lowercase-text.name"),
+                Arguments.of("presentation color must use six hex digits", creatorStep("{\"color\":\"red\"}"), "CREATOR_PRESENTATION_COLOR_INVALID", "steps.lowercase-text.color"),
+                Arguments.of("presentation icon must be an object", creatorStep("{\"icon\":true}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon"),
+                Arguments.of("presentation name must be text", creatorStep("{\"name\":1}"), "CREATOR_PRESENTATION_NAME_INVALID", "steps.lowercase-text.name"),
+                Arguments.of("presentation name is bounded", creatorStep("{\"name\":\"" + "x".repeat(129) + "\"}"), "CREATOR_PRESENTATION_NAME_INVALID", "steps.lowercase-text.name"),
+                Arguments.of("presentation color must be text", creatorStep("{\"color\":1}"), "CREATOR_PRESENTATION_COLOR_INVALID", "steps.lowercase-text.color"),
+                Arguments.of("icon rejects unknown fields", creatorIcon("{\"media_type\":\"image/svg+xml\",\"data\":\"PHN2Zy8+\",\"noise\":true}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon.noise"),
+                Arguments.of("icon requires both fields", creatorIcon("{\"media_type\":\"image/svg+xml\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon"),
+                Arguments.of("icon media type must be text", creatorIcon("{\"media_type\":1,\"data\":\"PHN2Zy8+\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon"),
+                Arguments.of("icon data must be text", creatorIcon("{\"media_type\":\"image/svg+xml\",\"data\":1}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon"),
+                Arguments.of("icon media type must be supported", creatorIcon("{\"media_type\":\"image/jpeg\",\"data\":\"PHN2Zy8+\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon"),
+                Arguments.of("icon data must be Base64", creatorIcon("{\"media_type\":\"image/svg+xml\",\"data\":\"%%%\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon.data"),
+                Arguments.of("icon data must not be empty", creatorIcon("{\"media_type\":\"image/svg+xml\",\"data\":\"\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon.data"),
+                Arguments.of("icon data must match media type", creatorIcon("{\"media_type\":\"image/svg+xml\",\"data\":\"PGJhZC8+\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon.data"),
+                Arguments.of("icon data is bounded", creatorIcon("{\"media_type\":\"image/png\",\"data\":\"" + Base64.getEncoder().encodeToString(new byte[65_537]) + "\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon.data"),
+                Arguments.of("Step presentation rejects unknown fields", creatorStep("{\"noise\":true}"), "CREATOR_PRESENTATION_FIELD_UNKNOWN", "steps.lowercase-text.noise"),
+                Arguments.of("group must be an object", creatorGroup("true"), "CREATOR_GROUP_OBJECT_REQUIRED", "groups[0]"),
+                Arguments.of("group id must be non-blank", creatorGroup("{\"id\":\"\",\"occurrences\":[true]}"), "CREATOR_ID_INVALID", "groups[0].id"),
+                Arguments.of("group color must use six hex digits", creatorGroup("{\"id\":\"group-one\",\"color\":\"red\",\"occurrences\":[]}"), "CREATOR_PRESENTATION_COLOR_INVALID", "groups[0].color"),
+                Arguments.of("group occurrence must be an object", creatorOccurrence("true"), "CREATOR_OCCURRENCE_OBJECT_REQUIRED", "groups[0].occurrences[0]"),
+                Arguments.of("group occurrences must be an array", creatorGroup("{\"id\":\"group-one\",\"occurrences\":true}"), "CREATOR_GROUP_OCCURRENCES_REQUIRED", "groups[0].occurrences"),
+                Arguments.of("occurrence rejects unknown fields", creatorOccurrence(occurrence.replace("\"steps\":{\"slot-one\":\"lowercase-text\"}", "\"steps\":{\"slot-one\":\"lowercase-text\"},\"noise\":true")), "CREATOR_OCCURRENCE_FIELD_UNKNOWN", "groups[0].occurrences[0].noise"),
+                Arguments.of("occurrence id must be non-blank", creatorOccurrence(occurrence.replace("\"occurrence-one\"", "\"\"")), "CREATOR_ID_INVALID", "groups[0].occurrences[0].id"),
+                Arguments.of("occurrence flow must be an id", creatorOccurrence(occurrence.replace("\"flow\":\"command\"", "\"flow\":4")), "CREATOR_ID_INVALID", "groups[0].occurrences[0].flow"),
+                Arguments.of("occurrence steps must be an object", creatorOccurrence(occurrence.replace("{\"slot-one\":\"lowercase-text\"}", "[]")), "CREATOR_OCCURRENCE_STEPS_REQUIRED", "groups[0].occurrences[0].steps"),
+                Arguments.of("occurrence steps must not be empty", creatorOccurrence(occurrence.replace("{\"slot-one\":\"lowercase-text\"}", "{}")), "CREATOR_OCCURRENCE_STEPS_REQUIRED", "groups[0].occurrences[0].steps"),
+                Arguments.of("occurrence parent must be null or an id", creatorOccurrence(occurrence.replace("\"parent\":null", "\"parent\":4")), "CREATOR_OCCURRENCE_PARENT_INVALID", "groups[0].occurrences[0].parent"),
+                Arguments.of("occurrence parent must not be blank", creatorOccurrence(occurrence.replace("\"parent\":null", "\"parent\":\" \"")), "CREATOR_OCCURRENCE_PARENT_INVALID", "groups[0].occurrences[0].parent"),
+                Arguments.of("occurrence slot must be a non-blank id", creatorOccurrence(occurrence.replace("\"slot-one\"", "\"\"")), "CREATOR_OCCURRENCE_STEP_INVALID", "groups[0].occurrences[0].steps."),
+                Arguments.of("occurrence Step must be an id", creatorOccurrence(occurrence.replace("\"lowercase-text\"", "4")), "CREATOR_OCCURRENCE_STEP_INVALID", "groups[0].occurrences[0].steps.slot-one"),
+                Arguments.of("occurrence rejects reserved app node", creatorOccurrence(occurrence.replace("\"lowercase-text\"", "\"app\"")), "CREATOR_OCCURRENCE_STEP_UNKNOWN", "groups[0].occurrences[0].steps.slot-one"),
+                Arguments.of("occurrence rejects reserved Trigger node", creatorOccurrence(occurrence.replace("\"lowercase-text\"", "\"command\"")), "CREATOR_OCCURRENCE_STEP_UNKNOWN", "groups[0].occurrences[0].steps.slot-one"),
+                Arguments.of("occurrence cannot assign one Step twice", creatorOccurrence(occurrence.replace("{\"slot-one\":\"lowercase-text\"}", "{\"slot-one\":\"lowercase-text\",\"slot-two\":\"lowercase-text\"}")), "CREATOR_OCCURRENCE_STEP_DUPLICATE", "groups[0].occurrences[0].steps.slot-two"),
+                Arguments.of("metadata rejects unknown top-level fields", "{\"format\":1,\"steps\":{},\"groups\":[],\"noise\":true}", "CREATOR_FIELD_UNKNOWN", "noise"),
+                Arguments.of("group rejects unimplemented global flag", creatorGroup("{\"id\":\"group-one\",\"global\":true,\"occurrences\":[]}"), "CREATOR_GROUP_FIELD_UNKNOWN", "groups[0].global"),
+                Arguments.of("group requires occurrences", creatorGroup("{\"id\":\"group-one\",\"occurrences\":[]}"), "CREATOR_GROUP_OCCURRENCES_REQUIRED", "groups[0].occurrences"),
+                Arguments.of("unsupported format", "{\"format\":2,\"steps\":{},\"groups\":[]}", "CREATOR_FORMAT_UNSUPPORTED", "format"),
+                Arguments.of("missing format", "{\"steps\":{},\"groups\":[]}", "CREATOR_FORMAT_UNSUPPORTED", "format"),
+                Arguments.of("presentation references unknown Step", "{\"format\":1,\"steps\":{\"missing\":{}},\"groups\":[]}", "CREATOR_STEP_UNKNOWN", "steps.missing"),
+                Arguments.of("duplicate group ids", """
+                        {"format":1,"steps":{},"groups":[
+                          {"id":"group-one","occurrences":[{
+                            "id":"occurrence-one","flow":"command","parent":null,
+                            "steps":{"slot-one":"lowercase-text"}
+                          }]},
+                          {"id":"group-one","occurrences":[{
+                            "id":"occurrence-two","flow":"command","parent":null,
+                            "steps":{"slot-two":"return-text"}
+                          }]}
+                        ]}
+                        """, "CREATOR_GROUP_ID_DUPLICATE", "groups[1].id"),
+                Arguments.of("unknown occurrence flow", creatorOccurrence(occurrence.replace("\"flow\":\"command\"", "\"flow\":\"missing\"")), "CREATOR_OCCURRENCE_FLOW_UNKNOWN", "groups[0].occurrences[0].flow"),
+                Arguments.of("unknown occurrence Step", creatorOccurrence(occurrence.replace("\"lowercase-text\"", "\"missing\"")), "CREATOR_OCCURRENCE_STEP_UNKNOWN", "groups[0].occurrences[0].steps.slot-one"),
+                Arguments.of("duplicate occurrence ids", """
+                        {"format":1,"steps":{},"groups":[
+                          {"id":"group-one","occurrences":[{
+                            "id":"same-occurrence","flow":"command","parent":null,
+                            "steps":{"slot-one":"lowercase-text"}
+                          }]},
+                          {"id":"group-two","occurrences":[{
+                            "id":"same-occurrence","flow":"command","parent":null,
+                            "steps":{"slot-one":"return-text"}
+                          }]}
+                        ]}
+                        """, "CREATOR_OCCURRENCE_ID_DUPLICATE", "groups[1].occurrences[0].id"),
+                Arguments.of("shared occurrences use different slots", """
+                        {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[
+                          {"id":"occurrence-one","flow":"command","parent":null,
+                           "steps":{"slot-one":"lowercase-text"}},
+                          {"id":"occurrence-two","flow":"command","parent":null,
+                           "steps":{"slot-two":"return-text"}}
+                        ]}]}
+                        """, "CREATOR_OCCURRENCE_SLOTS_MISMATCH", "groups[0].occurrences[1].steps"),
+                Arguments.of("unknown parent occurrence", creatorOccurrence(occurrence.replace("\"parent\":null", "\"parent\":\"missing\"")), "CREATOR_OCCURRENCE_PARENT_UNKNOWN", "groups[0].occurrences[0].parent"),
+                Arguments.of("self parent occurrence", creatorOccurrence(occurrence.replace("\"parent\":null", "\"parent\":\"occurrence-one\"")), "CREATOR_OCCURRENCE_PARENT_UNKNOWN", "groups[0].occurrences[0].parent"),
+                Arguments.of("parent cycle", """
+                        {"format":1,"steps":{},"groups":[
+                          {"id":"group-one","occurrences":[{
+                            "id":"occurrence-one","flow":"command","parent":"occurrence-two",
+                            "steps":{"slot-one":"lowercase-text"}
+                          }]},
+                          {"id":"group-two","occurrences":[{
+                            "id":"occurrence-two","flow":"command","parent":"occurrence-one",
+                            "steps":{"slot-two":"return-text"}
+                          }]}
+                        ]}
+                        """, "CREATOR_OCCURRENCE_PARENT_CYCLE", "groups[0].occurrences[0].parent"),
+                Arguments.of("child outside parent range", """
+                        {"format":1,"steps":{},"groups":[
+                          {"id":"group-one","occurrences":[{
+                            "id":"occurrence-one","flow":"command","parent":null,
+                            "steps":{"slot-one":"lowercase-text"}
+                          }]},
+                          {"id":"group-two","occurrences":[{
+                            "id":"occurrence-two","flow":"command","parent":"occurrence-one",
+                            "steps":{"slot-two":"return-text"}
+                          }]}
+                        ]}
+                        """, "CREATOR_OCCURRENCE_OUTSIDE_PARENT", "groups[1].occurrences[0].steps"),
+                Arguments.of("overlapping sibling groups", """
+                        {"format":1,"steps":{},"groups":[
+                          {"id":"group-one","occurrences":[{
+                            "id":"occurrence-one","flow":"command","parent":null,
+                            "steps":{"slot-one":"lowercase-text"}
+                          }]},
+                          {"id":"group-two","occurrences":[{
+                            "id":"occurrence-two","flow":"command","parent":null,
+                            "steps":{"slot-two":"lowercase-text"}
+                          }]}
+                        ]}
+                        """, "CREATOR_OCCURRENCE_STEP_OVERLAP", "groups[1].occurrences[0].steps")
         );
     }
 
-    @Test
-    void creatorMetadataGroupsMustBeAnArray() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{},\"groups\":{}}",
-                "CREATOR_GROUPS_ARRAY_REQUIRED",
-                "groups"
-        );
+    private static String creatorMetadata(final String steps, final String groups) {
+        return "{\"format\":1,\"steps\":" + steps + ",\"groups\":" + groups + "}";
     }
 
-    @Test
-    void creatorStepPresentationMustBeAnObject() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{\"lowercase-text\":true},\"groups\":[]}",
-                "CREATOR_PRESENTATION_OBJECT_REQUIRED",
-                "steps.lowercase-text"
-        );
+    private static String creatorStep(final String presentation) {
+        return creatorMetadata("{\"lowercase-text\":" + presentation + "}", "[]");
     }
 
-    @Test
-    void creatorPresentationNameMustBeNonBlank() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"name\":\" \"}},\"groups\":[]}",
-                "CREATOR_PRESENTATION_NAME_INVALID",
-                "steps.lowercase-text.name"
-        );
+    private static String creatorIcon(final String icon) {
+        return creatorStep("{\"icon\":" + icon + "}");
     }
 
-    @Test
-    void creatorPresentationColorMustUseSixHexDigits() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"color\":\"red\"}},\"groups\":[]}",
-                "CREATOR_PRESENTATION_COLOR_INVALID",
-                "steps.lowercase-text.color"
-        );
+    private static String creatorGroup(final String group) {
+        return creatorMetadata("{}", "[" + group + "]");
     }
 
-    @Test
-    void creatorPresentationIconMustBeAnObject() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"icon\":true}},\"groups\":[]}",
-                "CREATOR_PRESENTATION_ICON_INVALID",
-                "steps.lowercase-text.icon"
-        );
-    }
-
-    @Test
-    void creatorPresentationNameMustBeText() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"name\":1}},\"groups\":[]}",
-                "CREATOR_PRESENTATION_NAME_INVALID",
-                "steps.lowercase-text.name"
-        );
-    }
-
-    @Test
-    void creatorPresentationNameIsBounded() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"name\":\"%s\"}},\"groups\":[]}"
-                        .formatted("x".repeat(129)),
-                "CREATOR_PRESENTATION_NAME_INVALID",
-                "steps.lowercase-text.name"
-        );
-    }
-
-    @Test
-    void creatorPresentationColorMustBeText() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"color\":1}},\"groups\":[]}",
-                "CREATOR_PRESENTATION_COLOR_INVALID",
-                "steps.lowercase-text.color"
-        );
-    }
-
-    @Test
-    void creatorPresentationIconRejectsUnknownFields() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{"lowercase-text":{"icon":{
-                  "media_type":"image/svg+xml","data":"PHN2Zy8+","noise":true
-                }}},"groups":[]}
-                """,
-                "CREATOR_PRESENTATION_ICON_INVALID",
-                "steps.lowercase-text.icon.noise"
-        );
-    }
-
-    @Test
-    void creatorPresentationIconRequiresBothFields() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{"lowercase-text":{"icon":{
-                  "media_type":"image/svg+xml"
-                }}},"groups":[]}
-                """,
-                "CREATOR_PRESENTATION_ICON_INVALID",
-                "steps.lowercase-text.icon"
-        );
-    }
-
-    @Test
-    void creatorPresentationIconMediaTypeMustBeText() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{"lowercase-text":{"icon":{
-                  "media_type":1,"data":"PHN2Zy8+"
-                }}},"groups":[]}
-                """,
-                "CREATOR_PRESENTATION_ICON_INVALID",
-                "steps.lowercase-text.icon"
-        );
-    }
-
-    @Test
-    void creatorPresentationIconDataMustBeText() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{"lowercase-text":{"icon":{
-                  "media_type":"image/svg+xml","data":1
-                }}},"groups":[]}
-                """,
-                "CREATOR_PRESENTATION_ICON_INVALID",
-                "steps.lowercase-text.icon"
-        );
-    }
-
-    @Test
-    void creatorPresentationIconMediaTypeMustBeSupported() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{"lowercase-text":{"icon":{
-                  "media_type":"image/jpeg","data":"PHN2Zy8+"
-                }}},"groups":[]}
-                """,
-                "CREATOR_PRESENTATION_ICON_INVALID",
-                "steps.lowercase-text.icon"
-        );
-    }
-
-    @Test
-    void creatorPresentationIconDataMustBeBase64() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{"lowercase-text":{"icon":{
-                  "media_type":"image/svg+xml","data":"%%%"
-                }}},"groups":[]}
-                """,
-                "CREATOR_PRESENTATION_ICON_INVALID",
-                "steps.lowercase-text.icon.data"
-        );
-    }
-
-    @Test
-    void creatorPresentationIconDataMustNotBeEmpty() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{"lowercase-text":{"icon":{
-                  "media_type":"image/svg+xml","data":""
-                }}},"groups":[]}
-                """,
-                "CREATOR_PRESENTATION_ICON_INVALID",
-                "steps.lowercase-text.icon.data"
-        );
-    }
-
-    @Test
-    void creatorPresentationIconDataMustMatchItsMediaType() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{"lowercase-text":{"icon":{
-                  "media_type":"image/svg+xml","data":"PGJhZC8+"
-                }}},"groups":[]}
-                """,
-                "CREATOR_PRESENTATION_ICON_INVALID",
-                "steps.lowercase-text.icon.data"
-        );
-    }
-
-    @Test
-    void creatorPresentationIconDataIsBounded() throws Exception {
-        final String data = Base64.getEncoder().encodeToString(new byte[65_537]);
-
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"icon\":{"
-                        + "\"media_type\":\"image/png\",\"data\":\"" + data + "\"}}},\"groups\":[]}",
-                "CREATOR_PRESENTATION_ICON_INVALID",
-                "steps.lowercase-text.icon.data"
-        );
-    }
-
-    @Test
-    void creatorStepPresentationRejectsUnknownFields() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{\"lowercase-text\":{\"noise\":true}},\"groups\":[]}",
-                "CREATOR_PRESENTATION_FIELD_UNKNOWN",
-                "steps.lowercase-text.noise"
-        );
-    }
-
-    @Test
-    void creatorGroupMustBeAnObject() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{},\"groups\":[true]}",
-                "CREATOR_GROUP_OBJECT_REQUIRED",
-                "groups[0]"
-        );
-    }
-
-    @Test
-    void creatorGroupIdMustBeNonBlank() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{},\"groups\":[{\"id\":\"\",\"occurrences\":[true]}]}",
-                "CREATOR_ID_INVALID",
-                "groups[0].id"
-        );
-    }
-
-    @Test
-    void creatorGroupPresentationRejectsInvalidColors() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{},\"groups\":[{"
-                        + "\"id\":\"group-one\",\"color\":\"red\",\"occurrences\":[]}]}",
-                "CREATOR_PRESENTATION_COLOR_INVALID",
-                "groups[0].color"
-        );
-    }
-
-    @Test
-    void creatorGroupOccurrenceMustBeAnObject() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{},\"groups\":[{\"id\":\"group-one\",\"occurrences\":[true]}]}",
-                "CREATOR_OCCURRENCE_OBJECT_REQUIRED",
-                "groups[0].occurrences[0]"
-        );
-    }
-
-    @Test
-    void creatorGroupOccurrencesMustBeAnArray() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{},\"groups\":[{\"id\":\"group-one\",\"occurrences\":true}]}",
-                "CREATOR_GROUP_OCCURRENCES_REQUIRED",
-                "groups[0].occurrences"
-        );
-    }
-
-    @Test
-    void creatorOccurrenceRejectsUnknownFields() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":null,
-                  "steps":{"slot-one":"lowercase-text"},"noise":true
-                }]}]}
-                """,
-                "CREATOR_OCCURRENCE_FIELD_UNKNOWN",
-                "groups[0].occurrences[0].noise"
-        );
-    }
-
-    @Test
-    void creatorOccurrenceIdMustBeNonBlank() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"","flow":"command","parent":null,
-                  "steps":{"slot-one":"lowercase-text"}
-                }]}]}
-                """,
-                "CREATOR_ID_INVALID",
-                "groups[0].occurrences[0].id"
-        );
-    }
-
-    @Test
-    void creatorOccurrenceFlowMustBeAnId() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":4,"parent":null,
-                  "steps":{"slot-one":"lowercase-text"}
-                }]}]}
-                """,
-                "CREATOR_ID_INVALID",
-                "groups[0].occurrences[0].flow"
-        );
-    }
-
-    @Test
-    void creatorOccurrenceStepsMustBeAnObject() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":null,"steps":[]
-                }]}]}
-                """,
-                "CREATOR_OCCURRENCE_STEPS_REQUIRED",
-                "groups[0].occurrences[0].steps"
-        );
-    }
-
-    @Test
-    void creatorOccurrenceStepsMustNotBeEmpty() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":null,"steps":{}
-                }]}]}
-                """,
-                "CREATOR_OCCURRENCE_STEPS_REQUIRED",
-                "groups[0].occurrences[0].steps"
-        );
-    }
-
-    @Test
-    void creatorOccurrenceParentMustBeNullOrAnId() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":4,
-                  "steps":{"slot-one":"lowercase-text"}
-                }]}]}
-                """,
-                "CREATOR_OCCURRENCE_PARENT_INVALID",
-                "groups[0].occurrences[0].parent"
-        );
-    }
-
-    @Test
-    void creatorOccurrenceParentMustNotBeBlank() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":" ",
-                  "steps":{"slot-one":"lowercase-text"}
-                }]}]}
-                """,
-                "CREATOR_OCCURRENCE_PARENT_INVALID",
-                "groups[0].occurrences[0].parent"
-        );
-    }
-
-    @Test
-    void creatorOccurrenceSlotMustBeANonBlankId() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":null,
-                  "steps":{"":"lowercase-text"}
-                }]}]}
-                """,
-                "CREATOR_OCCURRENCE_STEP_INVALID",
-                "groups[0].occurrences[0].steps."
-        );
-    }
-
-    @Test
-    void creatorOccurrenceStepMustBeAnId() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":null,
-                  "steps":{"slot-one":4}
-                }]}]}
-                """,
-                "CREATOR_OCCURRENCE_STEP_INVALID",
-                "groups[0].occurrences[0].steps.slot-one"
-        );
-    }
-
-    @ParameterizedTest(name = "Creator occurrence rejects reserved node {0}")
-    @ValueSource(strings = {"app", "command"})
-    void creatorOccurrenceCannotReferenceReservedNodes(final String node) throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":null,
-                  "steps":{"slot-one":"%s"}
-                }]}]}
-                """.formatted(node),
-                "CREATOR_OCCURRENCE_STEP_UNKNOWN",
-                "groups[0].occurrences[0].steps.slot-one"
-        );
-    }
-
-    @Test
-    void creatorOccurrenceCannotAssignOneStepToTwoSlots() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":null,
-                  "steps":{"slot-one":"lowercase-text","slot-two":"lowercase-text"}
-                }]}]}
-                """,
-                "CREATOR_OCCURRENCE_STEP_DUPLICATE",
-                "groups[0].occurrences[0].steps.slot-two"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsUnknownTopLevelFields() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{},\"groups\":[],\"noise\":true}",
-                "CREATOR_FIELD_UNKNOWN",
-                "noise"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsAnUnimplementedGlobalGroupFlag() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{},\"groups\":[{"
-                        + "\"id\":\"group-one\",\"global\":true,\"occurrences\":[]}]}",
-                "CREATOR_GROUP_FIELD_UNKNOWN",
-                "groups[0].global"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsAGroupWithoutOccurrences() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{},\"groups\":[{"
-                        + "\"id\":\"group-one\",\"occurrences\":[]}]}",
-                "CREATOR_GROUP_OCCURRENCES_REQUIRED",
-                "groups[0].occurrences"
-        );
+    private static String creatorOccurrence(final String occurrence) {
+        return creatorGroup("{\"id\":\"group-one\",\"occurrences\":[" + occurrence + "]}");
     }
 
     @Test
@@ -806,205 +512,6 @@ final class CreatorServerE2eTest {
                     "groups[0].occurrences[1].steps"
             );
         }
-    }
-
-    @Test
-    void creatorMetadataRejectsUnsupportedFormats() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":2,\"steps\":{},\"groups\":[]}",
-                "CREATOR_FORMAT_UNSUPPORTED",
-                "format"
-        );
-    }
-
-    @Test
-    void creatorMetadataRequiresAFormat() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"steps\":{},\"groups\":[]}",
-                "CREATOR_FORMAT_UNSUPPORTED",
-                "format"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsPresentationForAnUnknownStep() throws Exception {
-        assertCreatorMetadataRejected(
-                "{\"format\":1,\"steps\":{\"missing\":{}},\"groups\":[]}",
-                "CREATOR_STEP_UNKNOWN",
-                "steps.missing"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsDuplicateGroupIds() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[
-                  {"id":"group-one","occurrences":[{
-                    "id":"occurrence-one","flow":"command","parent":null,
-                    "steps":{"slot-one":"lowercase-text"}
-                  }]},
-                  {"id":"group-one","occurrences":[{
-                    "id":"occurrence-two","flow":"command","parent":null,
-                    "steps":{"slot-two":"return-text"}
-                  }]}
-                ]}
-                """,
-                "CREATOR_GROUP_ID_DUPLICATE",
-                "groups[1].id"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsAnUnknownOccurrenceFlow() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"missing","parent":null,
-                  "steps":{"slot-one":"lowercase-text"}
-                }]}]}
-                """,
-                "CREATOR_OCCURRENCE_FLOW_UNKNOWN",
-                "groups[0].occurrences[0].flow"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsAnUnknownOccurrenceStep() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":null,
-                  "steps":{"slot-one":"missing"}
-                }]}]}
-                """,
-                "CREATOR_OCCURRENCE_STEP_UNKNOWN",
-                "groups[0].occurrences[0].steps.slot-one"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsDuplicateOccurrenceIds() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[
-                  {"id":"group-one","occurrences":[{
-                    "id":"same-occurrence","flow":"command","parent":null,
-                    "steps":{"slot-one":"lowercase-text"}
-                  }]},
-                  {"id":"group-two","occurrences":[{
-                    "id":"same-occurrence","flow":"command","parent":null,
-                    "steps":{"slot-one":"return-text"}
-                  }]}
-                ]}
-                """,
-                "CREATOR_OCCURRENCE_ID_DUPLICATE",
-                "groups[1].occurrences[0].id"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsDifferentSlotsAcrossSharedOccurrences() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[
-                  {"id":"occurrence-one","flow":"command","parent":null,
-                   "steps":{"slot-one":"lowercase-text"}},
-                  {"id":"occurrence-two","flow":"command","parent":null,
-                   "steps":{"slot-two":"return-text"}}
-                ]}]}
-                """,
-                "CREATOR_OCCURRENCE_SLOTS_MISMATCH",
-                "groups[0].occurrences[1].steps"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsAnUnknownParentOccurrence() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":"missing",
-                  "steps":{"slot-one":"lowercase-text"}
-                }]}]}
-                """,
-                "CREATOR_OCCURRENCE_PARENT_UNKNOWN",
-                "groups[0].occurrences[0].parent"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsASelfParentOccurrence() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":"occurrence-one",
-                  "steps":{"slot-one":"lowercase-text"}
-                }]}]}
-                """,
-                "CREATOR_OCCURRENCE_PARENT_UNKNOWN",
-                "groups[0].occurrences[0].parent"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsAParentCycle() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[
-                  {"id":"group-one","occurrences":[{
-                    "id":"occurrence-one","flow":"command","parent":"occurrence-two",
-                    "steps":{"slot-one":"lowercase-text"}
-                  }]},
-                  {"id":"group-two","occurrences":[{
-                    "id":"occurrence-two","flow":"command","parent":"occurrence-one",
-                    "steps":{"slot-two":"return-text"}
-                  }]}
-                ]}
-                """,
-                "CREATOR_OCCURRENCE_PARENT_CYCLE",
-                "groups[0].occurrences[0].parent"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsAChildOutsideItsParentRange() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[
-                  {"id":"group-one","occurrences":[{
-                    "id":"occurrence-one","flow":"command","parent":null,
-                    "steps":{"slot-one":"lowercase-text"}
-                  }]},
-                  {"id":"group-two","occurrences":[{
-                    "id":"occurrence-two","flow":"command","parent":"occurrence-one",
-                    "steps":{"slot-two":"return-text"}
-                  }]}
-                ]}
-                """,
-                "CREATOR_OCCURRENCE_OUTSIDE_PARENT",
-                "groups[1].occurrences[0].steps"
-        );
-    }
-
-    @Test
-    void creatorMetadataRejectsOverlappingSiblingGroups() throws Exception {
-        assertCreatorMetadataRejected(
-                """
-                {"format":1,"steps":{},"groups":[
-                  {"id":"group-one","occurrences":[{
-                    "id":"occurrence-one","flow":"command","parent":null,
-                    "steps":{"slot-one":"lowercase-text"}
-                  }]},
-                  {"id":"group-two","occurrences":[{
-                    "id":"occurrence-two","flow":"command","parent":null,
-                    "steps":{"slot-two":"lowercase-text"}
-                  }]}
-                ]}
-                """,
-                "CREATOR_OCCURRENCE_STEP_OVERLAP",
-                "groups[1].occurrences[0].steps"
-        );
     }
 
     @Test
@@ -1234,6 +741,11 @@ final class CreatorServerE2eTest {
     void emptyIconIsReportedAndNotSelectable() throws Exception {
         assertInvalidIcon("empty.svg", new byte[0]);
     }
+
+}
+
+@Execution(ExecutionMode.SAME_THREAD)
+final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
 
     @Test
     void duplicateCustomIconStemIsReportedOnce() throws Exception {
@@ -1803,82 +1315,32 @@ final class CreatorServerE2eTest {
         }
     }
 
-    @Test
-    void previewReturnsTheActualStartsWithOutputFromTheChildApplication() throws Exception {
-        final HttpResponse<String> response = primitivePreview(
-                "text.starts-with",
-                "{\"prefix\":\"Nano\"}",
-                "\"Nano Railix\""
-        );
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("primitivePreviews")
+    void previewReturnsTheActualPrimitiveOutputFromTheChildApplication(
+            final String scenario,
+            final String step,
+            final String options,
+            final String value,
+            final String expected
+    ) throws Exception {
+        final HttpResponse<String> response = primitivePreview(step, options, value);
 
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(response.body()).contains(
-                "\"status\":\"succeeded\",\"use\":\"text.starts-with\",\"value\":true"
+                "\"status\":\"succeeded\",\"use\":\"" + step + "\",\"value\":" + expected
         );
     }
 
-    @Test
-    void previewReturnsTheActualEndsWithOutputFromTheChildApplication() throws Exception {
-        final HttpResponse<String> response = primitivePreview(
-                "text.ends-with",
-                "{\"suffix\":\"Railix\"}",
-                "\"Nano Railix\""
-        );
-
-        assertThat(response.statusCode()).isEqualTo(200);
-        assertThat(response.body()).contains(
-                "\"status\":\"succeeded\",\"use\":\"text.ends-with\",\"value\":true"
-        );
-    }
-
-    @Test
-    void previewReturnsTheActualValueEqualsOutputFromTheChildApplication() throws Exception {
-        final HttpResponse<String> response = primitivePreview(
-                "value.equals",
-                "{\"expected\":{\"answer\":42}}",
-                "{\"answer\":42}"
-        );
-
-        assertThat(response.statusCode()).isEqualTo(200);
-        assertThat(response.body()).contains(
-                "\"status\":\"succeeded\",\"use\":\"value.equals\",\"value\":true"
-        );
-    }
-
-    @Test
-    void previewReturnsTheActualListReverseOutputFromTheChildApplication() throws Exception {
-        final HttpResponse<String> response = primitivePreview("list.reverse", "{}", "[1,2]");
-
-        assertThat(response.body()).contains(
-                "\"status\":\"succeeded\",\"use\":\"list.reverse\",\"value\":[2,1]"
-        );
-    }
-
-    @Test
-    void previewReturnsTheActualNumberToTextOutputFromTheChildApplication() throws Exception {
-        final HttpResponse<String> response = primitivePreview("number.to-text", "{}", "1.2300");
-
-        assertThat(response.body()).contains(
-                "\"status\":\"succeeded\",\"use\":\"number.to-text\",\"value\":\"1.23\""
-        );
-    }
-
-    @Test
-    void previewReturnsTheActualValueWrapListOutputFromTheChildApplication() throws Exception {
-        final HttpResponse<String> response = primitivePreview("value.wrap-list", "{}", "null");
-
-        assertThat(response.body()).contains(
-                "\"status\":\"succeeded\",\"use\":\"value.wrap-list\",\"value\":[null]"
-        );
-    }
-
-    @Test
-    void previewReturnsTheActualValueToJsonOutputFromTheChildApplication() throws Exception {
-        final HttpResponse<String> response = primitivePreview("value.to-json", "{}", "{\"z\":2,\"a\":1}");
-
-        assertThat(response.body()).contains(
-                "\"status\":\"succeeded\",\"use\":\"value.to-json\","
-                        + "\"value\":\"{\\\"a\\\":1,\\\"z\\\":2}\""
+    private static Stream<Arguments> primitivePreviews() {
+        return Stream.of(
+                Arguments.of("starts with", "text.starts-with", "{\"prefix\":\"Nano\"}", "\"Nano Railix\"", "true"),
+                Arguments.of("ends with", "text.ends-with", "{\"suffix\":\"Railix\"}", "\"Nano Railix\"", "true"),
+                Arguments.of("value equals", "value.equals", "{\"expected\":{\"answer\":42}}", "{\"answer\":42}", "true"),
+                Arguments.of("list reverse", "list.reverse", "{}", "[1,2]", "[2,1]"),
+                Arguments.of("number to text", "number.to-text", "{}", "1.2300", "\"1.23\""),
+                Arguments.of("wrap null in list", "value.wrap-list", "{}", "null", "[null]"),
+                Arguments.of("canonical JSON text", "value.to-json", "{}", "{\"z\":2,\"a\":1}", "\"{\\\"a\\\":1,\\\"z\\\":2}\"")
         );
     }
 
@@ -3018,7 +2480,17 @@ final class CreatorServerE2eTest {
         }
     }
 
-    private static HttpResponse<String> request(
+}
+
+abstract class CreatorServerE2eSupport {
+    static final String CONTEXT = """
+            {"payload":{"arguments":["Hello RAILIX"]}}
+            """;
+
+    @TempDir
+    Path directory;
+
+    static HttpResponse<String> request(
             final URI baseUri,
             final String method,
             final String path,
@@ -3034,7 +2506,7 @@ final class CreatorServerE2eTest {
         );
     }
 
-    private static HttpResponse<String> request(
+    static HttpResponse<String> request(
             final URI baseUri,
             final String method,
             final String path,
@@ -3043,7 +2515,7 @@ final class CreatorServerE2eTest {
         return request(baseUri, method, path, HttpRequest.BodyPublishers.ofByteArray(body));
     }
 
-    private static HttpResponse<String> request(
+    static HttpResponse<String> request(
             final URI baseUri,
             final String method,
             final String path,
@@ -3060,7 +2532,7 @@ final class CreatorServerE2eTest {
         }
     }
 
-    private static HttpResponse<String> creatorMutation(
+    static HttpResponse<String> creatorMutation(
             final URI baseUri,
             final String contentType
     ) throws IOException, InterruptedException {
@@ -3075,32 +2547,32 @@ final class CreatorServerE2eTest {
         }
     }
 
-    private static String tokenOrIncorrect(final URI baseUri) {
+    static String tokenOrIncorrect(final URI baseUri) {
         final String fragment = baseUri.getRawFragment();
         return fragment != null && fragment.startsWith("token=")
                 ? fragment.substring("token=".length())
                 : "incorrect";
     }
 
-    private static RailixValue.ObjectValue application(final URI baseUri) throws Exception {
+    static RailixValue.ObjectValue application(final URI baseUri) throws Exception {
         return (RailixValue.ObjectValue) object(
                 request(baseUri, "GET", "/api/application", "").body()
         );
     }
 
-    private static RailixValue.ObjectValue object(final String source) {
+    static RailixValue.ObjectValue object(final String source) {
         final RailixJson.Result result = RailixJson.parse(source);
         assertThat(result).isInstanceOf(RailixJson.Parsed.class);
         return (RailixValue.ObjectValue) ((RailixJson.Parsed) result).value();
     }
 
-    private static String snapshotKey(final String source) {
+    static String snapshotKey(final String source) {
         final RailixValue.ObjectValue payload = object(source);
         return string((RailixValue.ObjectValue) payload.values().get("project"), "id") + ":"
                 + string((RailixValue.ObjectValue) payload.values().get("application"), "fingerprint");
     }
 
-    private void assertCreatorMetadataRejected(
+    void assertCreatorMetadataRejected(
             final String metadata,
             final String code,
             final String path
@@ -3129,7 +2601,7 @@ final class CreatorServerE2eTest {
         }
     }
 
-    private void assertInvalidIcon(final String file, final byte[] source) throws Exception {
+    void assertInvalidIcon(final String file, final byte[] source) throws Exception {
         final Path railixHome = directory.resolve("railix-home");
         final Path icons = railixHome.resolve("icons");
         Files.createDirectories(icons);
@@ -3143,7 +2615,7 @@ final class CreatorServerE2eTest {
         }
     }
 
-    private static byte[] pngHeader(final int width, final int height) {
+    static byte[] pngHeader(final int width, final int height) {
         final byte[] value = new byte[24];
         ByteBuffer.wrap(value)
                 .put(new byte[]{(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a})
@@ -3153,7 +2625,7 @@ final class CreatorServerE2eTest {
         return value;
     }
 
-    private static RailixValue.ObjectValue catalogDefinition(
+    static RailixValue.ObjectValue catalogDefinition(
             final URI creator,
             final String primitive
     ) throws Exception {
@@ -3168,7 +2640,7 @@ final class CreatorServerE2eTest {
                 .orElseThrow();
     }
 
-    private static RailixValue.ArrayValue refinedPort(
+    static RailixValue.ArrayValue refinedPort(
             final String shape,
             final int maxDepth,
             final int maxJsonBytes
@@ -3186,15 +2658,15 @@ final class CreatorServerE2eTest {
         return RailixValue.array(java.util.List.of(RailixValue.object(values)));
     }
 
-    private static long number(final RailixValue.ObjectValue object, final String field) {
+    static long number(final RailixValue.ObjectValue object, final String field) {
         return ((RailixValue.NumberValue) object.values().get(field)).value().longValueExact();
     }
 
-    private static String string(final RailixValue.ObjectValue object, final String field) {
+    static String string(final RailixValue.ObjectValue object, final String field) {
         return ((RailixValue.StringValue) object.values().get(field)).value();
     }
 
-    private static boolean awaitExit(final long pid) throws InterruptedException {
+    static boolean awaitExit(final long pid) throws InterruptedException {
         for (int attempt = 0; attempt < 50; attempt++) {
             if (ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)) {
                 Thread.sleep(100);
@@ -3205,7 +2677,7 @@ final class CreatorServerE2eTest {
         return false;
     }
 
-    private static void stop(final long pid) throws InterruptedException {
+    static void stop(final long pid) throws InterruptedException {
         final ProcessHandle process = ProcessHandle.of(pid).orElseThrow();
         process.destroy();
         if (!awaitExit(pid)) {
@@ -3214,27 +2686,27 @@ final class CreatorServerE2eTest {
         }
     }
 
-    private CreatorServer start(final Path project) throws IOException {
+    CreatorServer start(final Path project) throws IOException {
         return start(project, directory.resolve("railix-home"));
     }
 
-    private static CreatorServer start(final Path project, final Path railixHome) throws IOException {
+    static CreatorServer start(final Path project, final Path railixHome) throws IOException {
         return CreatorServer.start(0, project, railixHome);
     }
 
-    private CreatorServer startJourney() throws IOException {
+    CreatorServer startJourney() throws IOException {
         final Path project = directory.resolve("project.json");
         Files.writeString(project, CreatorProjects.lowercaseCli(), StandardCharsets.UTF_8);
         return start(project);
     }
 
-    private static Path lowercaseExampleProject() {
+    static Path lowercaseExampleProject() {
         return Path.of("..", "..", "examples", "lowercase-app", "railix.project.json")
                 .toAbsolutePath()
                 .normalize();
     }
 
-    private static String threeStepProject() {
+    static String threeStepProject() {
         return """
                 {"format":1,"id":"three-steps","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
@@ -3254,7 +2726,7 @@ final class CreatorServerE2eTest {
                 """;
     }
 
-    private static String branchGroupProject() {
+    static String branchGroupProject() {
         return """
                 {"format":1,"id":"branch-group","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
@@ -3275,7 +2747,7 @@ final class CreatorServerE2eTest {
                 """;
     }
 
-    private static String sharedBranchGroupProject() {
+    static String sharedBranchGroupProject() {
         return """
                 {"format":1,"id":"shared-branch-group","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
@@ -3306,7 +2778,7 @@ final class CreatorServerE2eTest {
                 """;
     }
 
-    private static String sharedBranchMetadata(final boolean swapSecondLeaves) {
+    static String sharedBranchMetadata(final boolean swapSecondLeaves) {
         return """
                 {"format":1,"steps":{},"groups":[{"id":"group-one","occurrences":[
                   {"id":"occurrence-a","flow":"command","parent":null,"steps":{
@@ -3320,13 +2792,13 @@ final class CreatorServerE2eTest {
         );
     }
 
-    private CreatorServer startFallibleJourney() throws IOException {
+    CreatorServer startFallibleJourney() throws IOException {
         final Path project = directory.resolve("project.json");
         Files.writeString(project, CreatorProjects.fallibleNumber(), StandardCharsets.UTF_8);
         return start(project);
     }
 
-    private HttpResponse<String> primitivePreview(
+    HttpResponse<String> primitivePreview(
             final String primitive,
             final String inputs,
             final String value
@@ -3343,7 +2815,7 @@ final class CreatorServerE2eTest {
         }
     }
 
-    private static String primitiveProject(
+    static String primitiveProject(
             final String primitive,
             final String inputs,
             final String value

@@ -22,14 +22,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 final class CreatorFirstCompilerRejectionE2eTest {
-    @Test
-    void missingProjectSourceIsRejected() {
-        assertRejected(null, catalog(), "PROJECT_SOURCE_REQUIRED", "");
-    }
-
-    @Test
-    void blankProjectSourceIsRejected() {
-        assertRejected(" ", catalog(), "PROJECT_SOURCE_REQUIRED", "");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("projectRejections")
+    void malformedProjectStructureIsRejected(final RejectionCase rejection) {
+        assertRejected(rejection.source(), catalog(), rejection.code(), rejection.path());
     }
 
     @Test
@@ -37,183 +33,6 @@ final class CreatorFirstCompilerRejectionE2eTest {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> ProjectCompiler.compileApplication(baseProject(inputs()), null))
                 .withMessage("Step catalog cannot be Java null.");
-    }
-
-    @Test
-    void malformedJsonIsRejected() {
-        assertRejected("{", catalog(), "PROJECT_JSON_INVALID", "");
-    }
-
-    @Test
-    void projectMustBeAnObject() {
-        assertRejected("[]", catalog(), "PROJECT_OBJECT_REQUIRED", "");
-    }
-
-    @Test
-    void unknownProjectFieldIsRejected() {
-        assertRejected(baseProject(inputs()).replace("\"format\":1", "\"format\":1,\"unknown\":true"),
-                catalog(), "PROJECT_FIELD_UNKNOWN", "unknown");
-    }
-
-    @Test
-    void reusableDefinitionsAreCreatorMetadataNotCompilerInput() {
-        assertRejected(baseProject(inputs()).replace(
-                        "\"nodes\":[",
-                        "\"flows\":[],\"nodes\":["
-                ),
-                catalog(), "PROJECT_FIELD_UNKNOWN", "flows");
-    }
-
-    @Test
-    void missingProjectFormatIsRejected() {
-        assertRejected(baseProject(inputs()).replace("\"format\":1,", ""),
-                catalog(), "PROJECT_FORMAT_UNSUPPORTED", "format");
-    }
-
-    @Test
-    void unsupportedProjectFormatIsRejected() {
-        assertRejected(baseProject(inputs()).replace("\"format\":1", "\"format\":2"),
-                catalog(), "PROJECT_FORMAT_UNSUPPORTED", "format");
-    }
-
-    @Test
-    void missingProjectIdIsRejected() {
-        assertRejected(baseProject(inputs()).replace("\"id\":\"generic-project\",", ""),
-                catalog(), "PROJECT_ID_REQUIRED", "id");
-    }
-
-    @Test
-    void projectIdMustBeSafe() {
-        assertRejected(baseProject(inputs()).replace("generic-project", "Generic/Project"),
-                catalog(), "PROJECT_ID_INVALID", "id");
-    }
-
-    @Test
-    void projectIdCannotContainAnUnsafeInnerCharacter() {
-        assertRejected(baseProject(inputs()).replace("generic-project", "generic_project"),
-                catalog(), "PROJECT_ID_INVALID", "id");
-    }
-
-    @Test
-    void nodesMustBeAnArray() {
-        assertRejected("{\"format\":1,\"id\":\"generic-project\",\"nodes\":{},\"links\":[]}",
-                catalog(), "PROJECT_NODES_ARRAY_REQUIRED", "nodes");
-    }
-
-    @Test
-    void linksMustBeAnArray() {
-        assertRejected("{\"format\":1,\"id\":\"generic-project\",\"nodes\":[" + appNode() + "],\"links\":{}}",
-                catalog(), "PROJECT_LINKS_ARRAY_REQUIRED", "links");
-    }
-
-    @Test
-    void nodeMustBeAnObject() {
-        assertRejected(baseProject(inputs()).replace(appNode(), "\"app\""),
-                catalog(), "PROJECT_NODE_OBJECT_REQUIRED", "nodes[0]");
-    }
-
-    @Test
-    void unknownNodeFieldIsRejected() {
-        assertRejected(baseProject(inputs()).replace("\"id\":\"step\"", "\"unknown\":true,\"id\":\"step\""),
-                catalog(), "PROJECT_NODE_FIELD_UNKNOWN", "nodes[2].unknown");
-    }
-
-    @Test
-    void nodePresentationIsCreatorMetadataNotCompilerInput() {
-        assertRejected(baseProject(inputs()).replace(
-                        "\"id\":\"step\"",
-                        "\"id\":\"step\",\"presentation\":{\"name\":\"Visible only in Creator\"}"
-                ),
-                catalog(), "PROJECT_NODE_FIELD_UNKNOWN", "nodes[2].presentation");
-    }
-
-    @Test
-    void reusableInvocationIsCreatorMetadataNotCompilerInput() {
-        assertRejected(baseProject(inputs()).replace(
-                        "\"id\":\"step\"",
-                        "\"id\":\"step\",\"flow\":\"normalize-name\""
-                ),
-                catalog(), "PROJECT_NODE_FIELD_UNKNOWN", "nodes[2].flow");
-    }
-
-    @Test
-    void nodeIdIsRequired() {
-        assertRejected(baseProject(inputs()).replace("\"id\":\"step\",", ""),
-                catalog(), "PROJECT_NODE_ID_REQUIRED", "nodes[2].id");
-    }
-
-    @Test
-    void nodeIdMustBeSafe() {
-        assertRejected(baseProject(inputs()).replace("\"id\":\"step\"", "\"id\":\"Step\""),
-                catalog(), "PROJECT_NODE_ID_INVALID", "nodes[2].id");
-    }
-
-    @Test
-    void nodeUseIsRequired() {
-        assertRejected(baseProject(inputs()).replace("\"use\":\"example.step\",", ""),
-                catalog(), "PROJECT_NODE_USE_REQUIRED", "nodes[2].use");
-    }
-
-    @Test
-    void duplicateNodeIdIsRejected() {
-        assertRejected(baseProject(inputs()).replace("\"id\":\"trigger\"", "\"id\":\"app\""),
-                catalog(), "PROJECT_NODE_ID_DUPLICATE", "nodes[1].id");
-    }
-
-    @Test
-    void unknownStepIsRejected() {
-        assertRejected(baseProject(inputs()).replace("\"use\":\"example.step\"", "\"use\":\"example.unknown\""),
-                catalog(), "PROJECT_STEP_UNKNOWN", "nodes[2].use");
-    }
-
-    @Test
-    void unaryStepRequiresExplicitGraphReceiveBindings() {
-        assertRejected(simpleProject("example.primitive", "{}"),
-                catalog(), "PROJECT_NODE_RECEIVES_OBJECT_REQUIRED", "nodes[2].receives");
-    }
-
-    @Test
-    void graphReceivePortMustBeDeclaredByTheStep() {
-        assertRejected(primitiveProject(
-                        "{\"other\":[\"context\",\"payload\",\"value\"]}",
-                        "{\"value\":[\"context\",\"result\"]}"
-                ), catalog(), "PROJECT_NODE_PORT_UNKNOWN", "nodes[2].receives.other");
-    }
-
-    @Test
-    void graphReceivePortRequiresAPath() {
-        assertRejected(primitiveProject("{}", "{\"value\":[\"context\",\"result\"]}"),
-                catalog(), "PROJECT_NODE_PORT_REQUIRED", "nodes[2].receives.value");
-    }
-
-    @Test
-    void graphReceivePortPathMustUseCanonicalSegments() {
-        assertRejected(primitiveProject(
-                        "{\"value\":\"context.payload.value\"}",
-                        "{\"value\":[\"context\",\"result\"]}"
-                ), catalog(), "PROJECT_CONTEXT_PATH_REQUIRED", "nodes[2].receives.value");
-    }
-
-    @Test
-    void graphReturnPortMustBeDeclaredByTheStep() {
-        assertRejected(primitiveProject(
-                        "{\"value\":[\"context\",\"payload\",\"value\"]}",
-                        "{\"other\":[\"context\",\"result\"]}"
-                ), catalog(), "PROJECT_NODE_PORT_UNKNOWN", "nodes[2].returns.other");
-    }
-
-    @Test
-    void graphReturnPortRequiresAPath() {
-        assertRejected(primitiveProject("{\"value\":[\"context\",\"payload\",\"value\"]}", "{}"),
-                catalog(), "PROJECT_NODE_PORT_REQUIRED", "nodes[2].returns.value");
-    }
-
-    @Test
-    void graphReturnPortPathMustUseCanonicalSegments() {
-        assertRejected(primitiveProject(
-                        "{\"value\":[\"context\",\"payload\",\"value\"]}",
-                        "{\"value\":\"context.result\"}"
-                ), catalog(), "PROJECT_CONTEXT_PATH_REQUIRED", "nodes[2].returns.value");
     }
 
     @Test
@@ -232,26 +51,6 @@ final class CreatorFirstCompilerRejectionE2eTest {
 
         assertRejected(source, catalog(app(), trigger(), limited, primitive()),
                 "PROJECT_STEP_INSTANCE_LIMIT", "nodes[3].use");
-    }
-
-    @Test
-    void nodeInputsMustBeAnObject() {
-        assertRejected(baseProject(inputs()).replace("\"inputs\":{}", "\"inputs\":[]"),
-                catalog(), "PROJECT_NODE_INPUTS_OBJECT_REQUIRED", "nodes[0].inputs");
-    }
-
-    @Test
-    void projectRequiresTheReservedAppNode() {
-        assertRejected(baseProject(inputs()).replace(appNode() + ",", ""),
-                catalog(), "PROJECT_APP_REQUIRED", "nodes");
-    }
-
-    @Test
-    void appNodeMustKeepItsReservedId() {
-        assertRejected(baseProject(inputs())
-                        .replace("\"id\":\"app\"", "\"id\":\"root\"")
-                        .replace("app.start", "root.start"),
-                catalog(), "PROJECT_APP_ID_INVALID", "nodes[0].id");
     }
 
     @Test
@@ -358,28 +157,10 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 "PROJECT_NODE_RETURNS_OBJECT_REQUIRED", "nodes[2].returns");
     }
 
-    @Test
-    void undeclaredInputIsRejected() {
-        assertRejected(baseProject(inputs().replace("\"steps\":[", "\"unknown\":true,\"steps\":[")),
-                catalog(), "PROJECT_INPUT_UNKNOWN", "nodes[2].inputs.unknown");
-    }
-
-    @Test
-    void jsonInputIsRequiredWhenNoDefaultExists() {
-        assertRejected(baseProject(inputs().replace("\"json\":4,", "")),
-                catalog(), "PROJECT_INPUT_REQUIRED", "nodes[2].inputs.json");
-    }
-
-    @Test
-    void jsonInputMustMatchItsDeclaredShape() {
-        assertRejected(baseProject(inputs().replace("\"json\":4", "\"json\":\"four\"")),
-                catalog(), "PROJECT_INPUT_SHAPE_INVALID", "nodes[2].inputs.json");
-    }
-
-    @Test
-    void jsonInputMustRemainWithinItsDeclaredRange() {
-        assertRejected(baseProject(inputs().replace("\"json\":4", "\"json\":11")),
-                catalog(), "PROJECT_INPUT_RANGE_INVALID", "nodes[2].inputs.json");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("inputRejections")
+    void malformedInputsAreRejected(final RejectionCase rejection) {
+        assertRejected(rejection.source(), catalog(), rejection.code(), rejection.path());
     }
 
     @Test
@@ -389,30 +170,6 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 .run(TestStepHandlers.PrimaryOutcome.class);
 
         assertCompiled(simpleProject("example.step", "{}"), catalog(app(), trigger(), optional, primitive()));
-    }
-
-    @Test
-    void pathInputIsRequiredWhenNoDefaultExists() {
-        assertRejected(baseProject(inputs().replace("\"path\":[\"context\",\"payload\",\"value\"],", "")),
-                catalog(), "PROJECT_INPUT_REQUIRED", "nodes[2].inputs.path");
-    }
-
-    @Test
-    void pathInputMustContainAContextChild() {
-        assertRejected(baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]", "[\"context\"]")),
-                catalog(), "PROJECT_CONTEXT_PATH_REQUIRED", "nodes[2].inputs.path");
-    }
-
-    @Test
-    void pathInputMustStartAtContext() {
-        assertRejected(baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]", "[\"payload\",\"value\"]")),
-                catalog(), "PROJECT_CONTEXT_PATH_ROOT_REQUIRED", "nodes[2].inputs.path[0]");
-    }
-
-    @Test
-    void pathInputMustContainOnlyFieldOrIndexSegments() {
-        assertRejected(baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]", "[\"context\",true]")),
-                catalog(), "PROJECT_CONTEXT_PATH_ELEMENT_INVALID", "nodes[2].inputs.path[1]");
     }
 
     @Test
@@ -436,47 +193,6 @@ final class CreatorFirstCompilerRejectionE2eTest {
     }
 
     @Test
-    void negativePathIndexIsRejected() {
-        assertRejected(baseProject(inputs().replace(
-                        "[\"context\",\"payload\",\"value\"]", "[\"context\",-1]")),
-                catalog(), "PROJECT_CONTEXT_PATH_ELEMENT_INVALID", "nodes[2].inputs.path[1]");
-    }
-
-    @Test
-    void fractionalPathIndexIsRejected() {
-        assertRejected(baseProject(inputs().replace(
-                        "[\"context\",\"payload\",\"value\"]", "[\"context\",1.5]")),
-                catalog(), "PROJECT_CONTEXT_PATH_ELEMENT_INVALID", "nodes[2].inputs.path[1]");
-    }
-
-    @Test
-    void pathDeeperThanTheCanonicalContextLimitIsRejected() {
-        final String deepPath = "[\"context\"," + "\"field\",".repeat(63) + "\"field\"]";
-
-        assertRejected(baseProject(inputs().replace(
-                        "[\"context\",\"payload\",\"value\"]", deepPath)),
-                catalog(), "PROJECT_CONTEXT_PATH_TOO_DEEP", "nodes[2].inputs.path");
-    }
-
-    @Test
-    void optionsInputIsRequiredWhenNoDefaultExists() {
-        assertRejected(baseProject(inputs().replace("\"choice\":{\"option\":\"literal\",\"inputs\":{\"literal\":\"name\"}},", "")),
-                catalog(), "PROJECT_INPUT_REQUIRED", "nodes[2].inputs.choice");
-    }
-
-    @Test
-    void optionsInputMustBeAnObject() {
-        assertRejected(baseProject(inputs().replace("{\"option\":\"literal\",\"inputs\":{\"literal\":\"name\"}}", "\"literal\"")),
-                catalog(), "PROJECT_OPTION_OBJECT_REQUIRED", "nodes[2].inputs.choice");
-    }
-
-    @Test
-    void optionsInputMustNameADeclaredOption() {
-        assertRejected(baseProject(inputs().replace("\"option\":\"literal\"", "\"option\":\"unknown\"")),
-                catalog(), "PROJECT_OPTION_UNKNOWN", "nodes[2].inputs.choice.option");
-    }
-
-    @Test
     void omittedDefaultedOptionCompilesAndReachesTheStep() {
         final StepDefinition defaulted = StepDefinition.named("example.step", "1")
                 .input("choice", Input.options(Input.option("first")).defaultOption("first"))
@@ -492,89 +208,6 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 .run(TestStepHandlers.PrimaryOutcome.class);
 
         assertCompiled(simpleProject("example.step", "{}"), catalog(app(), trigger(), optional, primitive()));
-    }
-
-    @Test
-    void unknownOptionFieldIsRejected() {
-        assertRejected(baseProject(inputs().replace(
-                        "{\"option\":\"literal\",\"inputs\":{\"literal\":\"name\"}}",
-                        "{\"option\":\"literal\",\"inputs\":{\"literal\":\"name\"},\"unknown\":true}")),
-                catalog(), "PROJECT_OPTION_FIELD_UNKNOWN", "nodes[2].inputs.choice.unknown");
-    }
-
-    @Test
-    void optionNameIsRequired() {
-        assertRejected(baseProject(inputs().replace(
-                        "{\"option\":\"literal\",\"inputs\":{\"literal\":\"name\"}}",
-                        "{\"inputs\":{\"literal\":\"name\"}}")),
-                catalog(), "PROJECT_OPTION_REQUIRED", "nodes[2].inputs.choice.option");
-    }
-
-    @Test
-    void optionInputsMustBeAnObject() {
-        assertRejected(baseProject(inputs().replace(
-                        "{\"option\":\"literal\",\"inputs\":{\"literal\":\"name\"}}",
-                        "{\"option\":\"literal\",\"inputs\":[]}")),
-                catalog(), "PROJECT_OPTION_INPUTS_OBJECT_REQUIRED", "nodes[2].inputs.choice.inputs");
-    }
-
-    @Test
-    void selectedOptionRejectsUnknownChildInput() {
-        assertRejected(baseProject(inputs().replace(
-                        "\"literal\":\"name\"", "\"literal\":\"name\",\"unknown\":true")),
-                catalog(), "PROJECT_INPUT_UNKNOWN", "nodes[2].inputs.choice.inputs.unknown");
-    }
-
-    @Test
-    void selectedOptionMustSupplyItsRequiredChildren() {
-        assertRejected(baseProject(inputs().replace("\"literal\":\"name\"", "")),
-                catalog(), "PROJECT_INPUT_REQUIRED", "nodes[2].inputs.choice.inputs.literal");
-    }
-
-    @Test
-    void stepsInputMustBeAnArray() {
-        assertRejected(baseProject(inputs().replace("\"steps\":[{\"use\":\"example.primitive\",\"inputs\":{}}]", "\"steps\":{}")),
-                catalog(), "PROJECT_STEPS_ARRAY_REQUIRED", "nodes[2].inputs.steps");
-    }
-
-    @Test
-    void nestedStepMustBeAnObject() {
-        assertRejected(baseProject(inputs().replace("[{\"use\":\"example.primitive\",\"inputs\":{}}]", "[\"example.primitive\"]")),
-                catalog(), "PROJECT_NESTED_STEP_OBJECT_REQUIRED", "nodes[2].inputs.steps[0]");
-    }
-
-    @Test
-    void nestedStepMustBeRegistered() {
-        assertRejected(baseProject(inputs().replace("example.primitive", "example.unknown")),
-                catalog(), "PROJECT_NESTED_STEP_UNKNOWN", "nodes[2].inputs.steps[0].use");
-    }
-
-    @Test
-    void unknownNestedStepFieldIsRejected() {
-        assertRejected(baseProject(inputs().replace(
-                        "{\"use\":\"example.primitive\",\"inputs\":{}}",
-                        "{\"use\":\"example.primitive\",\"inputs\":{},\"unknown\":true}")),
-                catalog(), "PROJECT_NESTED_STEP_FIELD_UNKNOWN", "nodes[2].inputs.steps[0].unknown");
-    }
-
-    @Test
-    void nestedStepUseIsRequired() {
-        assertRejected(baseProject(inputs().replace(
-                        "{\"use\":\"example.primitive\",\"inputs\":{}}",
-                        "{\"inputs\":{}}")),
-                catalog(), "PROJECT_NESTED_STEP_USE_REQUIRED", "nodes[2].inputs.steps[0].use");
-    }
-
-    @Test
-    void nestedStepMustMatchTheDeclaredKind() {
-        assertRejected(baseProject(inputs().replace("example.primitive", "example.trigger")),
-                catalog(), "PROJECT_NESTED_STEP_KIND_INVALID", "nodes[2].inputs.steps[0].use");
-    }
-
-    @Test
-    void nestedStepInputsMustBeAnObject() {
-        assertRejected(baseProject(inputs().replace("\"inputs\":{}}]", "\"inputs\":[]}]")),
-                catalog(), "PROJECT_NESTED_INPUTS_OBJECT_REQUIRED", "nodes[2].inputs.steps[0].inputs");
     }
 
     @Test
@@ -624,64 +257,10 @@ final class CreatorFirstCompilerRejectionE2eTest {
         assertCompiled(nestedProject("\"Hello RAILIX\""), nestedCatalog(primitive));
     }
 
-    @Test
-    void nonTriggerNodeCannotDeclareExamples() {
-        assertRejected(baseProject(inputs()).replace("\"inputs\":" + inputs() + "}",
-                        "\"inputs\":" + inputs() + ",\"examples\":[]}"),
-                catalog(), "PROJECT_NODE_EXAMPLES_UNSUPPORTED", "nodes[2].examples");
-    }
-
-    @Test
-    void triggerRequiresAtLeastOneExample() {
-        assertRejected(baseProject(inputs()).replace(",\"examples\":" + examples(), ""),
-                catalog(), "PROJECT_TRIGGER_EXAMPLE_REQUIRED", "nodes[1].examples");
-    }
-
-    @Test
-    void triggerExampleRejectsUnknownFields() {
-        assertRejected(baseProject(inputs()).replace("\"name\":\"sample\"", "\"unknown\":true,\"name\":\"sample\""),
-                catalog(), "PROJECT_TRIGGER_EXAMPLE_FIELD_UNKNOWN", "nodes[1].examples[0].unknown");
-    }
-
-    @Test
-    void triggerExampleMustBeAnObject() {
-        assertRejected(baseProject(inputs()).replace(examples(), "[\"sample\"]"),
-                catalog(), "PROJECT_TRIGGER_EXAMPLE_OBJECT_REQUIRED", "nodes[1].examples[0]");
-    }
-
-    @Test
-    void triggerExampleNameIsRequired() {
-        assertRejected(baseProject(inputs()).replace(examples(),
-                        "[{\"payload\":[],\"context\":{\"payload\":{\"value\":4}}}]"),
-                catalog(), "PROJECT_TRIGGER_EXAMPLE_NAME_REQUIRED", "nodes[1].examples[0].name");
-    }
-
-    @Test
-    void triggerExampleNamesMustBeUnique() {
-        assertRejected(baseProject(inputs()).replace(examples(),
-                        "[{\"name\":\"sample\",\"payload\":4},"
-                                + "{\"name\":\"sample\",\"payload\":5}]"),
-                catalog(), "PROJECT_TRIGGER_EXAMPLE_NAME_DUPLICATE", "nodes[1].examples[1].name");
-    }
-
-    @Test
-    void triggerExamplePayloadIsRequired() {
-        assertRejected(baseProject(inputs()).replace(examples(), "[{\"name\":\"sample\"}]"),
-                catalog(), "PROJECT_TRIGGER_EXAMPLE_PAYLOAD_REQUIRED", "nodes[1].examples[0].payload");
-    }
-
-    @Test
-    void triggerExampleContextMustBeAnObjectWhenSupplied() {
-        assertRejected(baseProject(inputs()).replace(examples(),
-                        "[{\"name\":\"sample\",\"payload\":[],\"context\":[]}]"),
-                catalog(), "PROJECT_TRIGGER_EXAMPLE_CONTEXT_OBJECT_REQUIRED", "nodes[1].examples[0].context");
-    }
-
-    @Test
-    void triggerExamplesCannotClaimRuntime() {
-        assertRejected(baseProject(inputs()).replace("\"context\":{\"payload\":{\"value\":4}}",
-                        "\"context\":{\"runtime\":{}}"),
-                catalog(), "PROJECT_TRIGGER_EXAMPLE_RUNTIME_RESERVED", "nodes[1].examples[0].context.runtime");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("exampleRejections")
+    void malformedTriggerExamplesAreRejected(final RejectionCase rejection) {
+        assertRejected(rejection.source(), catalog(), rejection.code(), rejection.path());
     }
 
     @Test
@@ -744,91 +323,10 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 "PROJECT_NESTED_OUTCOME_COLLISION", "nodes[2].inputs");
     }
 
-    @Test
-    void linkMustBeAnObject() {
-        assertRejected(baseProject(inputs()).replace("{\"from\":\"app.start\",\"to\":\"trigger\"}", "\"link\""),
-                catalog(), "PROJECT_LINK_OBJECT_REQUIRED", "links[0]");
-    }
-
-    @Test
-    void linkMustUseNodeAndOutcomeSyntax() {
-        assertRejected(baseProject(inputs()).replace("\"from\":\"app.start\"", "\"from\":\"app\""),
-                catalog(), "PROJECT_LINK_FROM_INVALID", "links[0].from");
-    }
-
-    @Test
-    void unknownLinkFieldIsRejected() {
-        assertRejected(baseProject(inputs()).replace(
-                        "{\"from\":\"app.start\",\"to\":\"trigger\"}",
-                        "{\"from\":\"app.start\",\"to\":\"trigger\",\"unknown\":true}"),
-                catalog(), "PROJECT_LINK_FIELD_UNKNOWN", "links[0].unknown");
-    }
-
-    @Test
-    void linkFromIsRequired() {
-        assertRejected(baseProject(inputs()).replace(
-                        "{\"from\":\"app.start\",\"to\":\"trigger\"}",
-                        "{\"to\":\"trigger\"}"),
-                catalog(), "PROJECT_LINK_FROM_REQUIRED", "links[0].from");
-    }
-
-    @Test
-    void linkTargetIsRequired() {
-        assertRejected(baseProject(inputs()).replace(
-                        "{\"from\":\"app.start\",\"to\":\"trigger\"}",
-                        "{\"from\":\"app.start\"}"),
-                catalog(), "PROJECT_LINK_TO_REQUIRED", "links[0].to");
-    }
-
-    @Test
-    void linkSourceMustExist() {
-        assertRejected(baseProject(inputs()).replace("\"from\":\"app.start\"", "\"from\":\"unknown.start\""),
-                catalog(), "PROJECT_LINK_SOURCE_UNKNOWN", "links[0].from");
-    }
-
-    @Test
-    void linkOutcomeMustExist() {
-        assertRejected(baseProject(inputs()).replace("\"from\":\"trigger.next\"", "\"from\":\"trigger.missing\""),
-                catalog(), "PROJECT_LINK_OUTCOME_UNKNOWN", "links[1].from");
-    }
-
-    @Test
-    void ordinaryOutcomeCanHaveOnlyOneConnection() {
-        assertRejected(baseProject(inputs()).replace("{\"from\":\"step.next\",\"to\":\"end\"}",
-                        "{\"from\":\"step.next\",\"to\":\"end\"},{\"from\":\"step.next\",\"to\":\"end\"}"),
-                catalog(), "PROJECT_PORT_CONNECTION_DUPLICATE", "links[3].from");
-    }
-
-    @Test
-    void linkTargetMustExist() {
-        assertRejected(baseProject(inputs()).replace("\"to\":\"step\"", "\"to\":\"missing\""),
-                catalog(), "PROJECT_LINK_TARGET_UNKNOWN", "links[1].to");
-    }
-
-    @Test
-    void appMayConnectOnlyToTriggers() {
-        assertRejected(baseProject(inputs()).replace("\"to\":\"trigger\"", "\"to\":\"step\""),
-                catalog(), "PROJECT_APP_CONNECTION_INVALID", "links[0]");
-    }
-
-    @Test
-    void triggerMayConnectOnlyToOrdinaryStepsOrEnd() {
-        assertRejected(baseProject(inputs()).replace("\"to\":\"step\"", "\"to\":\"app\""),
-                catalog(), "PROJECT_TRIGGER_CONNECTION_INVALID", "links[1]");
-    }
-
-    @Test
-    void ordinaryStepMayConnectOnlyToOrdinaryStepsOrEnd() {
-        assertRejected(baseProject(inputs()).replace(
-                        "{\"from\":\"step.next\",\"to\":\"end\"}",
-                        "{\"from\":\"step.next\",\"to\":\"trigger\"}"),
-                catalog(), "PROJECT_STEP_CONNECTION_INVALID", "links[2]");
-    }
-
-    @Test
-    void everyGraphNodeNeedsOneIncomingConnection() {
-        assertRejected(baseProject(inputs()).replace("\"to\":\"step\"", "\"to\":\"end\""),
-                catalog(), "PROJECT_NODE_INPUT_CONNECTION_REQUIRED", "nodes[2]");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("linkRejections")
+    void malformedLinksAreRejected(final RejectionCase rejection) {
+        assertRejected(rejection.source(), catalog(), rejection.code(), rejection.path());
     }
 
     @Test
@@ -886,6 +384,302 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 """.formatted(appNode(), examples(), inputs(), inputs());
 
         assertRejected(source, catalog(), "PROJECT_GRAPH_CYCLE", "nodes[2]");
+    }
+
+    private static Stream<RejectionCase> projectRejections() {
+        return Stream.of(
+                new RejectionCase("missingProjectSourceIsRejected", null,
+                        "PROJECT_SOURCE_REQUIRED", ""),
+                new RejectionCase("blankProjectSourceIsRejected", " ",
+                        "PROJECT_SOURCE_REQUIRED", ""),
+                new RejectionCase("malformedJsonIsRejected", "{",
+                        "PROJECT_JSON_INVALID", ""),
+                new RejectionCase("projectMustBeAnObject", "[]",
+                        "PROJECT_OBJECT_REQUIRED", ""),
+                new RejectionCase("unknownProjectFieldIsRejected",
+                        baseProject(inputs()).replace("\"format\":1", "\"format\":1,\"unknown\":true"),
+                        "PROJECT_FIELD_UNKNOWN", "unknown"),
+                new RejectionCase("reusableDefinitionsAreCreatorMetadataNotCompilerInput",
+                        baseProject(inputs()).replace("\"nodes\":[", "\"flows\":[],\"nodes\":["),
+                        "PROJECT_FIELD_UNKNOWN", "flows"),
+                new RejectionCase("missingProjectFormatIsRejected",
+                        baseProject(inputs()).replace("\"format\":1,", ""),
+                        "PROJECT_FORMAT_UNSUPPORTED", "format"),
+                new RejectionCase("unsupportedProjectFormatIsRejected",
+                        baseProject(inputs()).replace("\"format\":1", "\"format\":2"),
+                        "PROJECT_FORMAT_UNSUPPORTED", "format"),
+                new RejectionCase("missingProjectIdIsRejected",
+                        baseProject(inputs()).replace("\"id\":\"generic-project\",", ""),
+                        "PROJECT_ID_REQUIRED", "id"),
+                new RejectionCase("projectIdMustBeSafe",
+                        baseProject(inputs()).replace("generic-project", "Generic/Project"),
+                        "PROJECT_ID_INVALID", "id"),
+                new RejectionCase("projectIdCannotContainAnUnsafeInnerCharacter",
+                        baseProject(inputs()).replace("generic-project", "generic_project"),
+                        "PROJECT_ID_INVALID", "id"),
+                new RejectionCase("nodesMustBeAnArray",
+                        "{\"format\":1,\"id\":\"generic-project\",\"nodes\":{},\"links\":[]}",
+                        "PROJECT_NODES_ARRAY_REQUIRED", "nodes"),
+                new RejectionCase("linksMustBeAnArray",
+                        "{\"format\":1,\"id\":\"generic-project\",\"nodes\":[" + appNode() + "],\"links\":{}}",
+                        "PROJECT_LINKS_ARRAY_REQUIRED", "links"),
+                new RejectionCase("nodeMustBeAnObject",
+                        baseProject(inputs()).replace(appNode(), "\"app\""),
+                        "PROJECT_NODE_OBJECT_REQUIRED", "nodes[0]"),
+                new RejectionCase("unknownNodeFieldIsRejected",
+                        baseProject(inputs()).replace("\"id\":\"step\"", "\"unknown\":true,\"id\":\"step\""),
+                        "PROJECT_NODE_FIELD_UNKNOWN", "nodes[2].unknown"),
+                new RejectionCase("nodePresentationIsCreatorMetadataNotCompilerInput",
+                        baseProject(inputs()).replace("\"id\":\"step\"",
+                                "\"id\":\"step\",\"presentation\":{\"name\":\"Visible only in Creator\"}"),
+                        "PROJECT_NODE_FIELD_UNKNOWN", "nodes[2].presentation"),
+                new RejectionCase("reusableInvocationIsCreatorMetadataNotCompilerInput",
+                        baseProject(inputs()).replace("\"id\":\"step\"",
+                                "\"id\":\"step\",\"flow\":\"normalize-name\""),
+                        "PROJECT_NODE_FIELD_UNKNOWN", "nodes[2].flow"),
+                new RejectionCase("nodeIdIsRequired",
+                        baseProject(inputs()).replace("\"id\":\"step\",", ""),
+                        "PROJECT_NODE_ID_REQUIRED", "nodes[2].id"),
+                new RejectionCase("nodeIdMustBeSafe",
+                        baseProject(inputs()).replace("\"id\":\"step\"", "\"id\":\"Step\""),
+                        "PROJECT_NODE_ID_INVALID", "nodes[2].id"),
+                new RejectionCase("nodeUseIsRequired",
+                        baseProject(inputs()).replace("\"use\":\"example.step\",", ""),
+                        "PROJECT_NODE_USE_REQUIRED", "nodes[2].use"),
+                new RejectionCase("duplicateNodeIdIsRejected",
+                        baseProject(inputs()).replace("\"id\":\"trigger\"", "\"id\":\"app\""),
+                        "PROJECT_NODE_ID_DUPLICATE", "nodes[1].id"),
+                new RejectionCase("unknownStepIsRejected",
+                        baseProject(inputs()).replace("\"use\":\"example.step\"", "\"use\":\"example.unknown\""),
+                        "PROJECT_STEP_UNKNOWN", "nodes[2].use"),
+                new RejectionCase("unaryStepRequiresExplicitGraphReceiveBindings",
+                        simpleProject("example.primitive", "{}"),
+                        "PROJECT_NODE_RECEIVES_OBJECT_REQUIRED", "nodes[2].receives"),
+                new RejectionCase("graphReceivePortMustBeDeclaredByTheStep",
+                        primitiveProject("{\"other\":[\"context\",\"payload\",\"value\"]}",
+                                "{\"value\":[\"context\",\"result\"]}"),
+                        "PROJECT_NODE_PORT_UNKNOWN", "nodes[2].receives.other"),
+                new RejectionCase("graphReceivePortRequiresAPath",
+                        primitiveProject("{}", "{\"value\":[\"context\",\"result\"]}"),
+                        "PROJECT_NODE_PORT_REQUIRED", "nodes[2].receives.value"),
+                new RejectionCase("graphReceivePortPathMustUseCanonicalSegments",
+                        primitiveProject("{\"value\":\"context.payload.value\"}",
+                                "{\"value\":[\"context\",\"result\"]}"),
+                        "PROJECT_CONTEXT_PATH_REQUIRED", "nodes[2].receives.value"),
+                new RejectionCase("graphReturnPortMustBeDeclaredByTheStep",
+                        primitiveProject("{\"value\":[\"context\",\"payload\",\"value\"]}",
+                                "{\"other\":[\"context\",\"result\"]}"),
+                        "PROJECT_NODE_PORT_UNKNOWN", "nodes[2].returns.other"),
+                new RejectionCase("graphReturnPortRequiresAPath",
+                        primitiveProject("{\"value\":[\"context\",\"payload\",\"value\"]}", "{}"),
+                        "PROJECT_NODE_PORT_REQUIRED", "nodes[2].returns.value"),
+                new RejectionCase("graphReturnPortPathMustUseCanonicalSegments",
+                        primitiveProject("{\"value\":[\"context\",\"payload\",\"value\"]}",
+                                "{\"value\":\"context.result\"}"),
+                        "PROJECT_CONTEXT_PATH_REQUIRED", "nodes[2].returns.value"),
+                new RejectionCase("nodeInputsMustBeAnObject",
+                        baseProject(inputs()).replace("\"inputs\":{}", "\"inputs\":[]"),
+                        "PROJECT_NODE_INPUTS_OBJECT_REQUIRED", "nodes[0].inputs"),
+                new RejectionCase("projectRequiresTheReservedAppNode",
+                        baseProject(inputs()).replace(appNode() + ",", ""),
+                        "PROJECT_APP_REQUIRED", "nodes"),
+                new RejectionCase("appNodeMustKeepItsReservedId",
+                        baseProject(inputs())
+                                .replace("\"id\":\"app\"", "\"id\":\"root\"")
+                                .replace("app.start", "root.start"),
+                        "PROJECT_APP_ID_INVALID", "nodes[0].id")
+        );
+    }
+
+    private static Stream<RejectionCase> inputRejections() {
+        return Stream.of(
+                new RejectionCase("undeclaredInputIsRejected",
+                        baseProject(inputs().replace("\"steps\":[", "\"unknown\":true,\"steps\":[")),
+                        "PROJECT_INPUT_UNKNOWN", "nodes[2].inputs.unknown"),
+                new RejectionCase("jsonInputIsRequiredWhenNoDefaultExists",
+                        baseProject(inputs().replace("\"json\":4,", "")),
+                        "PROJECT_INPUT_REQUIRED", "nodes[2].inputs.json"),
+                new RejectionCase("jsonInputMustMatchItsDeclaredShape",
+                        baseProject(inputs().replace("\"json\":4", "\"json\":\"four\"")),
+                        "PROJECT_INPUT_SHAPE_INVALID", "nodes[2].inputs.json"),
+                new RejectionCase("jsonInputMustRemainWithinItsDeclaredRange",
+                        baseProject(inputs().replace("\"json\":4", "\"json\":11")),
+                        "PROJECT_INPUT_RANGE_INVALID", "nodes[2].inputs.json"),
+                new RejectionCase("pathInputIsRequiredWhenNoDefaultExists",
+                        baseProject(inputs().replace("\"path\":[\"context\",\"payload\",\"value\"],", "")),
+                        "PROJECT_INPUT_REQUIRED", "nodes[2].inputs.path"),
+                new RejectionCase("pathInputMustContainAContextChild",
+                        baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]", "[\"context\"]")),
+                        "PROJECT_CONTEXT_PATH_REQUIRED", "nodes[2].inputs.path"),
+                new RejectionCase("pathInputMustStartAtContext",
+                        baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]",
+                                "[\"payload\",\"value\"]")),
+                        "PROJECT_CONTEXT_PATH_ROOT_REQUIRED", "nodes[2].inputs.path[0]"),
+                new RejectionCase("pathInputMustContainOnlyFieldOrIndexSegments",
+                        baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]", "[\"context\",true]")),
+                        "PROJECT_CONTEXT_PATH_ELEMENT_INVALID", "nodes[2].inputs.path[1]"),
+                new RejectionCase("negativePathIndexIsRejected",
+                        baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]", "[\"context\",-1]")),
+                        "PROJECT_CONTEXT_PATH_ELEMENT_INVALID", "nodes[2].inputs.path[1]"),
+                new RejectionCase("fractionalPathIndexIsRejected",
+                        baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]", "[\"context\",1.5]")),
+                        "PROJECT_CONTEXT_PATH_ELEMENT_INVALID", "nodes[2].inputs.path[1]"),
+                new RejectionCase("pathDeeperThanTheCanonicalContextLimitIsRejected",
+                        baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]",
+                                "[\"context\"," + "\"field\",".repeat(63) + "\"field\"]")),
+                        "PROJECT_CONTEXT_PATH_TOO_DEEP", "nodes[2].inputs.path"),
+                new RejectionCase("optionsInputIsRequiredWhenNoDefaultExists",
+                        baseProject(inputs().replace(
+                                "\"choice\":{\"option\":\"literal\",\"inputs\":{\"literal\":\"name\"}},", "")),
+                        "PROJECT_INPUT_REQUIRED", "nodes[2].inputs.choice"),
+                new RejectionCase("optionsInputMustBeAnObject",
+                        baseProject(inputs().replace(
+                                "{\"option\":\"literal\",\"inputs\":{\"literal\":\"name\"}}", "\"literal\"")),
+                        "PROJECT_OPTION_OBJECT_REQUIRED", "nodes[2].inputs.choice"),
+                new RejectionCase("optionsInputMustNameADeclaredOption",
+                        baseProject(inputs().replace("\"option\":\"literal\"", "\"option\":\"unknown\"")),
+                        "PROJECT_OPTION_UNKNOWN", "nodes[2].inputs.choice.option"),
+                new RejectionCase("unknownOptionFieldIsRejected",
+                        baseProject(inputs()).replace(
+                                "{\"option\":\"literal\",\"inputs\":{\"literal\":\"name\"}}",
+                                "{\"option\":\"literal\",\"inputs\":{\"literal\":\"name\"},\"unknown\":true}"),
+                        "PROJECT_OPTION_FIELD_UNKNOWN", "nodes[2].inputs.choice.unknown"),
+                new RejectionCase("optionNameIsRequired",
+                        baseProject(inputs()).replace(
+                                "{\"option\":\"literal\",\"inputs\":{\"literal\":\"name\"}}",
+                                "{\"inputs\":{\"literal\":\"name\"}}"),
+                        "PROJECT_OPTION_REQUIRED", "nodes[2].inputs.choice.option"),
+                new RejectionCase("optionInputsMustBeAnObject",
+                        baseProject(inputs()).replace(
+                                "{\"option\":\"literal\",\"inputs\":{\"literal\":\"name\"}}",
+                                "{\"option\":\"literal\",\"inputs\":[]}"),
+                        "PROJECT_OPTION_INPUTS_OBJECT_REQUIRED", "nodes[2].inputs.choice.inputs"),
+                new RejectionCase("selectedOptionRejectsUnknownChildInput",
+                        baseProject(inputs()).replace("\"literal\":\"name\"",
+                                "\"literal\":\"name\",\"unknown\":true"),
+                        "PROJECT_INPUT_UNKNOWN", "nodes[2].inputs.choice.inputs.unknown"),
+                new RejectionCase("selectedOptionMustSupplyItsRequiredChildren",
+                        baseProject(inputs()).replace("\"literal\":\"name\"", ""),
+                        "PROJECT_INPUT_REQUIRED", "nodes[2].inputs.choice.inputs.literal"),
+                new RejectionCase("stepsInputMustBeAnArray",
+                        baseProject(inputs()).replace(
+                                "\"steps\":[{\"use\":\"example.primitive\",\"inputs\":{}}]", "\"steps\":{}"),
+                        "PROJECT_STEPS_ARRAY_REQUIRED", "nodes[2].inputs.steps"),
+                new RejectionCase("nestedStepMustBeAnObject",
+                        baseProject(inputs()).replace(
+                                "[{\"use\":\"example.primitive\",\"inputs\":{}}]", "[\"example.primitive\"]"),
+                        "PROJECT_NESTED_STEP_OBJECT_REQUIRED", "nodes[2].inputs.steps[0]"),
+                new RejectionCase("nestedStepMustBeRegistered",
+                        baseProject(inputs()).replace("example.primitive", "example.unknown"),
+                        "PROJECT_NESTED_STEP_UNKNOWN", "nodes[2].inputs.steps[0].use"),
+                new RejectionCase("unknownNestedStepFieldIsRejected",
+                        baseProject(inputs()).replace(
+                                "{\"use\":\"example.primitive\",\"inputs\":{}}",
+                                "{\"use\":\"example.primitive\",\"inputs\":{},\"unknown\":true}"),
+                        "PROJECT_NESTED_STEP_FIELD_UNKNOWN", "nodes[2].inputs.steps[0].unknown"),
+                new RejectionCase("nestedStepUseIsRequired",
+                        baseProject(inputs()).replace(
+                                "{\"use\":\"example.primitive\",\"inputs\":{}}", "{\"inputs\":{}}"),
+                        "PROJECT_NESTED_STEP_USE_REQUIRED", "nodes[2].inputs.steps[0].use"),
+                new RejectionCase("nestedStepMustMatchTheDeclaredKind",
+                        baseProject(inputs()).replace("example.primitive", "example.trigger"),
+                        "PROJECT_NESTED_STEP_KIND_INVALID", "nodes[2].inputs.steps[0].use"),
+                new RejectionCase("nestedStepInputsMustBeAnObject",
+                        baseProject(inputs()).replace("\"inputs\":{}}]", "\"inputs\":[]}]"),
+                        "PROJECT_NESTED_INPUTS_OBJECT_REQUIRED", "nodes[2].inputs.steps[0].inputs")
+        );
+    }
+
+    private static Stream<RejectionCase> exampleRejections() {
+        return Stream.of(
+                new RejectionCase("nonTriggerNodeCannotDeclareExamples",
+                        baseProject(inputs()).replace("\"inputs\":" + inputs() + "}",
+                                "\"inputs\":" + inputs() + ",\"examples\":[]}"),
+                        "PROJECT_NODE_EXAMPLES_UNSUPPORTED", "nodes[2].examples"),
+                new RejectionCase("triggerRequiresAtLeastOneExample",
+                        baseProject(inputs()).replace(",\"examples\":" + examples(), ""),
+                        "PROJECT_TRIGGER_EXAMPLE_REQUIRED", "nodes[1].examples"),
+                new RejectionCase("triggerExampleRejectsUnknownFields",
+                        baseProject(inputs()).replace("\"name\":\"sample\"",
+                                "\"unknown\":true,\"name\":\"sample\""),
+                        "PROJECT_TRIGGER_EXAMPLE_FIELD_UNKNOWN", "nodes[1].examples[0].unknown"),
+                new RejectionCase("triggerExampleMustBeAnObject",
+                        baseProject(inputs()).replace(examples(), "[\"sample\"]"),
+                        "PROJECT_TRIGGER_EXAMPLE_OBJECT_REQUIRED", "nodes[1].examples[0]"),
+                new RejectionCase("triggerExampleNameIsRequired",
+                        baseProject(inputs()).replace(examples(),
+                                "[{\"payload\":[],\"context\":{\"payload\":{\"value\":4}}}]"),
+                        "PROJECT_TRIGGER_EXAMPLE_NAME_REQUIRED", "nodes[1].examples[0].name"),
+                new RejectionCase("triggerExampleNamesMustBeUnique",
+                        baseProject(inputs()).replace(examples(),
+                                "[{\"name\":\"sample\",\"payload\":4},"
+                                        + "{\"name\":\"sample\",\"payload\":5}]"),
+                        "PROJECT_TRIGGER_EXAMPLE_NAME_DUPLICATE", "nodes[1].examples[1].name"),
+                new RejectionCase("triggerExamplePayloadIsRequired",
+                        baseProject(inputs()).replace(examples(), "[{\"name\":\"sample\"}]"),
+                        "PROJECT_TRIGGER_EXAMPLE_PAYLOAD_REQUIRED", "nodes[1].examples[0].payload"),
+                new RejectionCase("triggerExampleContextMustBeAnObjectWhenSupplied",
+                        baseProject(inputs()).replace(examples(),
+                                "[{\"name\":\"sample\",\"payload\":[],\"context\":[]}]"),
+                        "PROJECT_TRIGGER_EXAMPLE_CONTEXT_OBJECT_REQUIRED", "nodes[1].examples[0].context"),
+                new RejectionCase("triggerExamplesCannotClaimRuntime",
+                        baseProject(inputs()).replace("\"context\":{\"payload\":{\"value\":4}}",
+                                "\"context\":{\"runtime\":{}}"),
+                        "PROJECT_TRIGGER_EXAMPLE_RUNTIME_RESERVED", "nodes[1].examples[0].context.runtime")
+        );
+    }
+
+    private static Stream<RejectionCase> linkRejections() {
+        return Stream.of(
+                new RejectionCase("linkMustBeAnObject",
+                        baseProject(inputs()).replace(
+                                "{\"from\":\"app.start\",\"to\":\"trigger\"}", "\"link\""),
+                        "PROJECT_LINK_OBJECT_REQUIRED", "links[0]"),
+                new RejectionCase("linkMustUseNodeAndOutcomeSyntax",
+                        baseProject(inputs()).replace("\"from\":\"app.start\"", "\"from\":\"app\""),
+                        "PROJECT_LINK_FROM_INVALID", "links[0].from"),
+                new RejectionCase("unknownLinkFieldIsRejected",
+                        baseProject(inputs()).replace(
+                                "{\"from\":\"app.start\",\"to\":\"trigger\"}",
+                                "{\"from\":\"app.start\",\"to\":\"trigger\",\"unknown\":true}"),
+                        "PROJECT_LINK_FIELD_UNKNOWN", "links[0].unknown"),
+                new RejectionCase("linkFromIsRequired",
+                        baseProject(inputs()).replace(
+                                "{\"from\":\"app.start\",\"to\":\"trigger\"}", "{\"to\":\"trigger\"}"),
+                        "PROJECT_LINK_FROM_REQUIRED", "links[0].from"),
+                new RejectionCase("linkTargetIsRequired",
+                        baseProject(inputs()).replace(
+                                "{\"from\":\"app.start\",\"to\":\"trigger\"}", "{\"from\":\"app.start\"}"),
+                        "PROJECT_LINK_TO_REQUIRED", "links[0].to"),
+                new RejectionCase("linkSourceMustExist",
+                        baseProject(inputs()).replace("\"from\":\"app.start\"", "\"from\":\"unknown.start\""),
+                        "PROJECT_LINK_SOURCE_UNKNOWN", "links[0].from"),
+                new RejectionCase("linkOutcomeMustExist",
+                        baseProject(inputs()).replace("\"from\":\"trigger.next\"", "\"from\":\"trigger.missing\""),
+                        "PROJECT_LINK_OUTCOME_UNKNOWN", "links[1].from"),
+                new RejectionCase("ordinaryOutcomeCanHaveOnlyOneConnection",
+                        baseProject(inputs()).replace(
+                                "{\"from\":\"step.next\",\"to\":\"end\"}",
+                                "{\"from\":\"step.next\",\"to\":\"end\"},{\"from\":\"step.next\",\"to\":\"end\"}"),
+                        "PROJECT_PORT_CONNECTION_DUPLICATE", "links[3].from"),
+                new RejectionCase("linkTargetMustExist",
+                        baseProject(inputs()).replace("\"to\":\"step\"", "\"to\":\"missing\""),
+                        "PROJECT_LINK_TARGET_UNKNOWN", "links[1].to"),
+                new RejectionCase("appMayConnectOnlyToTriggers",
+                        baseProject(inputs()).replace("\"to\":\"trigger\"", "\"to\":\"step\""),
+                        "PROJECT_APP_CONNECTION_INVALID", "links[0]"),
+                new RejectionCase("triggerMayConnectOnlyToOrdinaryStepsOrEnd",
+                        baseProject(inputs()).replace("\"to\":\"step\"", "\"to\":\"app\""),
+                        "PROJECT_TRIGGER_CONNECTION_INVALID", "links[1]"),
+                new RejectionCase("ordinaryStepMayConnectOnlyToOrdinaryStepsOrEnd",
+                        baseProject(inputs()).replace(
+                                "{\"from\":\"step.next\",\"to\":\"end\"}",
+                                "{\"from\":\"step.next\",\"to\":\"trigger\"}"),
+                        "PROJECT_STEP_CONNECTION_INVALID", "links[2]"),
+                new RejectionCase("everyGraphNodeNeedsOneIncomingConnection",
+                        baseProject(inputs()).replace("\"to\":\"step\"", "\"to\":\"end\""),
+                        "PROJECT_NODE_INPUT_CONNECTION_REQUIRED", "nodes[2]")
+        );
     }
 
     private static Stream<Arguments> malformedAppContracts() {
@@ -971,6 +765,11 @@ final class CreatorFirstCompilerRejectionE2eTest {
                         .result("result", ValueShape.ANY, RailixValue.nullValue())
                         .run(TestStepHandlers.PrimaryOutcome.class), "PROJECT_NESTED_STEP_CONTRACT_INVALID")
         );
+    }
+
+    private record RejectionCase(String name, String source, String code, String path) {
+        @Override
+        public String toString() { return name; }
     }
 
     private static StepCatalog catalog(final StepDefinition... definitions) {

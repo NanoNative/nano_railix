@@ -12,10 +12,6 @@ public final class StandardStepHandlers {
 
     /** Maps external CLI arguments to the configured workflow-context path. */
     public static final class Cli implements StepHandler {
-        /** Creates one stateless CLI handler. */
-        public Cli() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).write("target", input.value("arguments"));
@@ -24,10 +20,6 @@ public final class StandardStepHandlers {
 
     /** Applies a configured nested Step sequence and writes its value when present. */
     public static final class FieldManipulation implements StepHandler {
-        /** Creates one stateless field-manipulation handler. */
-        public FieldManipulation() {
-        }
-
         @Override
         public StepResult run(final StepInput input) throws InterruptedException {
             return input.run("steps").writeWhenPresent("field");
@@ -36,10 +28,6 @@ public final class StandardStepHandlers {
 
     /** Routes a present candidate to match and an absent candidate to otherwise. */
     public static final class Filter implements StepHandler {
-        /** Creates one stateless filter handler. */
-        public Filter() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return StepResult.outcome(input.optionalValue("conditions").isPresent() ? "match" : "otherwise");
@@ -48,10 +36,6 @@ public final class StandardStepHandlers {
 
     /** Routes the matcher-groups Boolean to match or otherwise. */
     public static final class Choice implements StepHandler {
-        /** Creates one stateless choice handler. */
-        public Choice() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return StepResult.outcome(

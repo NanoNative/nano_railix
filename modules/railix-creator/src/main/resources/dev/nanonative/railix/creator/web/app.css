@@ -395,18 +395,6 @@ body[data-build="unavailable"] .build-dot {
   font-size: 11px;
 }
 
-.flow-scope-lane {
-  display: flex;
-  min-height: 430px;
-  align-items: center;
-  flex-direction: column;
-  padding-top: 28px;
-}
-
-.scope-node {
-  cursor: pointer;
-}
-
 .end-node {
   width: 180px;
   border-style: dashed;
@@ -526,42 +514,6 @@ body[data-build="unavailable"] .build-dot {
 }
 
 .step-summary small {
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.operation-row {
-  display: grid;
-  width: 100%;
-  grid-template-columns: 22px minmax(0, 1fr);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: #fbf7ee;
-  padding: 9px;
-  text-align: left;
-}
-
-.operation-row > span {
-  color: var(--accent);
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.operation-row strong,
-.operation-row small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.operation-row strong {
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.operation-row small {
-  grid-column: 2;
-  margin-top: 4px;
   color: var(--muted);
   font-size: 10px;
 }
@@ -988,35 +940,6 @@ textarea {
   width: auto;
 }
 
-.parameter-control {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 7px;
-  margin-top: 12px;
-  border-top: 1px solid var(--line);
-  padding-top: 10px;
-}
-
-.parameter-control > span,
-.parameter-control > label {
-  margin: 0;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.parameter-control > input {
-  grid-column: 1;
-}
-
-.parameter-control > button {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-}
-
 .nested-step {
   gap: 8px;
 }
@@ -1192,16 +1115,7 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
-}
-
-.inspector-actions {
   padding-top: 18px;
-}
-
-.deletion-notice {
-  margin: 14px 0 0;
-  color: var(--red);
-  font-size: 12px;
 }
 
 .button:hover {

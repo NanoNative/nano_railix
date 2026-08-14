@@ -28,9 +28,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class Lowercase implements StepHandler {
-        public Lowercase() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.string(text(value).toLowerCase(Locale.ROOT)));
@@ -38,9 +35,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class Uppercase implements StepHandler {
-        public Uppercase() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.string(text(value).toUpperCase(Locale.ROOT)));
@@ -48,9 +42,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class Trim implements StepHandler {
-        public Trim() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.string(text(value).strip()));
@@ -58,9 +49,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class NormalizeSpace implements StepHandler {
-        public NormalizeSpace() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.string(normalizeSpace(text(value))));
@@ -68,9 +56,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class NormalizeNfc implements StepHandler {
-        public NormalizeNfc() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.string(Normalizer.normalize(text(value), Normalizer.Form.NFC)));
@@ -78,9 +63,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class TextLength implements StepHandler {
-        public TextLength() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.number(textLength(value)));
@@ -88,9 +70,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class TextIsEmpty implements StepHandler {
-        public TextIsEmpty() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.bool(text(value).isEmpty()));
@@ -98,9 +77,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class Contains implements StepHandler {
-        public Contains() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return predicate(input, text(input.value("value")).contains(text(input.value("needle"))));
@@ -108,9 +84,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class StartsWith implements StepHandler {
-        public StartsWith() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return predicate(input, text(input.value("value")).startsWith(text(input.value("prefix"))));
@@ -118,9 +91,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class EndsWith implements StepHandler {
-        public EndsWith() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return predicate(input, text(input.value("value")).endsWith(text(input.value("suffix"))));
@@ -128,9 +98,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class TextToNumber implements StepHandler {
-        public TextToNumber() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             final String source = text(input.value("value"));
@@ -152,9 +119,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class Floor implements StepHandler {
-        public Floor() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.number(number(value).setScale(0, RoundingMode.FLOOR)));
@@ -162,9 +126,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class Ceil implements StepHandler {
-        public Ceil() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.number(number(value).setScale(0, RoundingMode.CEILING)));
@@ -172,9 +133,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class Round implements StepHandler {
-        public Round() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.number(number(value).setScale(0, RoundingMode.HALF_UP)));
@@ -182,9 +140,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class Absolute implements StepHandler {
-        public Absolute() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.number(number(value).abs()));
@@ -192,9 +147,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class Negate implements StepHandler {
-        public Negate() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.number(
@@ -204,9 +156,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class Sign implements StepHandler {
-        public Sign() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.number(number(value).signum()));
@@ -214,9 +163,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class GreaterThan implements StepHandler {
-        public GreaterThan() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return predicate(input, comparison(input) > 0);
@@ -224,9 +170,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class GreaterOrEqual implements StepHandler {
-        public GreaterOrEqual() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return predicate(input, comparison(input) >= 0);
@@ -234,9 +177,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class LessThan implements StepHandler {
-        public LessThan() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return predicate(input, comparison(input) < 0);
@@ -244,9 +184,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class LessOrEqual implements StepHandler {
-        public LessOrEqual() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return predicate(input, comparison(input) <= 0);
@@ -254,9 +191,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class BooleanNot implements StepHandler {
-        public BooleanNot() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.bool(!((RailixValue.BooleanValue) value).value()));
@@ -264,9 +198,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class ListSize implements StepHandler {
-        public ListSize() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.number(((RailixValue.ArrayValue) value).values().size()));
@@ -274,9 +205,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class ListIsEmpty implements StepHandler {
-        public ListIsEmpty() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, value -> RailixValue.bool(((RailixValue.ArrayValue) value).values().isEmpty()));
@@ -284,9 +212,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class ListReverse implements StepHandler {
-        public ListReverse() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             final List<RailixValue> source = ((RailixValue.ArrayValue) input.value("value")).values();
@@ -299,9 +224,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class ListSum implements StepHandler {
-        public ListSum() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             final Optional<List<RailixValue.NumberValue>> values = numbers(input.value("value"));
@@ -319,9 +241,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class ListMinimum implements StepHandler {
-        public ListMinimum() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return listExtreme(input, true);
@@ -329,9 +248,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class ListMaximum implements StepHandler {
-        public ListMaximum() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return listExtreme(input, false);
@@ -339,9 +255,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class ListPercentile implements StepHandler {
-        public ListPercentile() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             final Optional<List<RailixValue.NumberValue>> values = numbers(input.value("value"));
@@ -364,9 +277,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class UtcMillis implements StepHandler {
-        public UtcMillis() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             final BigDecimal integer = number(input.value("value")).stripTrailingZeros();
@@ -377,9 +287,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class NumberToText implements StepHandler {
-        public NumberToText() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             final BigDecimal source = number(input.value("value"));
@@ -389,9 +296,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class BooleanToText implements StepHandler {
-        public BooleanToText() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, source -> RailixValue.string(
@@ -401,9 +305,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class BooleanToNumber implements StepHandler {
-        public BooleanToNumber() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, source -> RailixValue.number(
@@ -413,9 +314,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class ValueWrapList implements StepHandler {
-        public ValueWrapList() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, source -> RailixValue.array(List.of(source)));
@@ -423,9 +321,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class ValueToJson implements StepHandler {
-        public ValueToJson() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return unary(input, source -> RailixValue.string(RailixJson.write(source)));
@@ -433,9 +328,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class ValueEquals implements StepHandler {
-        public ValueEquals() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return predicate(input, equalValues(input.value("value"), input.value("expected")));
@@ -443,9 +335,6 @@ public final class PrimitiveStepHandlers {
     }
 
     public static final class ValueNotEquals implements StepHandler {
-        public ValueNotEquals() {
-        }
-
         @Override
         public StepResult run(final StepInput input) {
             return predicate(input, !equalValues(input.value("value"), input.value("expected")));

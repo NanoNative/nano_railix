@@ -18,7 +18,9 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.math.BigDecimal;
@@ -26,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -195,26 +198,83 @@ final class GeneratedPrimitiveStepsE2eTest {
                 .containsEntry("exit_code", RailixValue.number(0));
     }
 
-    @Test
-    void lowercaseUsesLocaleIndependentTextRules() {
-        assertThat(result("text.lowercase", "\"Hello RAILIX\""))
-                .isEqualTo(RailixValue.string("hello railix"));
-    }
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', quoteCharacter = '`', textBlock = """
+            lowercaseUsesLocaleIndependentTextRules | text.lowercase       | "Hello RAILIX"                                           | "hello railix"
+            uppercaseUsesRootLocaleRules                  | text.uppercase       | "i"                                                      | "I"
+            uppercaseRetainsUnicodeCaseExpansion          | text.uppercase       | "stra\\u00dfe"                                           | "STRASSE"
+            uppercaseKeepsEmptyTextEmpty                  | text.uppercase       | ""                                                       | ""
+            trimUsesUnicodeStripRules                     | text.trim            | "\\u2003Railix\\u2003"                                    | "Railix"
+            trimKeepsEmptyTextEmpty                       | text.trim            | ""                                                       | ""
+            trimPreservesInternalWhitespace               | text.trim            | "left\\t  right"                                          | "left\\t  right"
+            normalizeSpaceUsesCharacterWhitespace         | text.normalize-space | "left\\u2003right"                                        | "left right"
+            normalizeSpaceStripsOuterWhitespace           | text.normalize-space | "\\t  Railix\\n"                                          | "Railix"
+            normalizeSpaceCollapsesInternalWhitespaceRuns | text.normalize-space | "left\\t \\nright"                                       | "left right"
+            normalizeSpaceTurnsOnlyWhitespaceIntoEmptyText| text.normalize-space | "\\t \\u2003\\n"                                         | ""
+            normalizeNfcComposesDecomposedText            | text.normalize-nfc   | "e\\u0301"                                                | "\\u00e9"
+            normalizeNfcKeepsNormalizedTextUnchanged      | text.normalize-nfc   | "\\u00e9"                                                 | "\\u00e9"
+            textLengthCountsUnicodeCodePoints              | text.length          | "Railix"                                                   | 6
+            textLengthCountsASupplementaryCharacterOnce   | text.length          | "A\\ud83d\\ude80B"                                         | 3
+            textLengthOfEmptyTextIsZero                   | text.length          | ""                                                       | 0
+            textIsEmptyReturnsTrueForEmptyText             | text.is-empty        | ""                                                       | true
+            textIsEmptyReturnsFalseForWhitespace           | text.is-empty        | " "                                                      | false
 
-    @Test
-    void uppercaseUsesRootLocaleRules() {
-        assertThat(result("text.uppercase", "\"i\"")).isEqualTo(RailixValue.string("I"));
-    }
+            floorRoundsAPositiveFractionDown              | number.floor         | 1.9                                                        | 1
+            floorRoundsANegativeFractionDown              | number.floor         | -1.2                                                       | -2
+            floorKeepsAWholeNumber                        | number.floor         | 7                                                          | 7
+            floorHandlesAnArbitrarilyPreciseDecimal       | number.floor         | 1.0000000000000000000000000000000000001                  | 1
+            ceilRoundsAPositiveFractionUp                 | number.ceil          | 1.2                                                        | 2
+            ceilRoundsANegativeFractionUp                 | number.ceil          | -1.2                                                       | -1
+            ceilKeepsAWholeNumber                         | number.ceil          | 7                                                          | 7
+            ceilHandlesAnArbitrarilyPreciseDecimal        | number.ceil          | 1.0000000000000000000000000000000000001                  | 2
+            roundMovesAPositiveExactHalfAwayFromZero      | number.round         | 1.5                                                        | 2
+            roundMovesANegativeExactHalfAwayFromZero      | number.round         | -1.5                                                       | -2
+            roundMovesAValueBelowHalfTowardZero           | number.round         | 1.49                                                       | 1
+            roundMovesAPositiveValueAboveHalfAwayFromZero | number.round         | 1.51                                                       | 2
+            roundMovesANegativeValueBelowHalfTowardZero   | number.round         | -1.49                                                      | -1
+            roundMovesANegativeValueAboveHalfAwayFromZero | number.round         | -1.51                                                      | -2
+            roundKeepsAWholeNumber                        | number.round         | 7                                                          | 7
+            absoluteValueMakesANegativeNumberPositive     | number.abs           | -12.5                                                      | 12.5
+            absoluteValueKeepsAPositiveNumberUnchanged    | number.abs           | 12.50                                                      | 12.5
+            absoluteValueKeepsZeroUnchanged               | number.abs           | 0.00                                                       | 0
+            negateMakesAPositiveNumberNegative            | number.negate        | 12.5                                                       | -12.5
+            negateMakesANegativeNumberPositive            | number.negate        | -12.5                                                      | 12.5
+            negateReturnsCanonicalZero                   | number.negate        | 0.00                                                       | 0
+            signReturnsNegativeOneForANegativeNumber      | number.sign          | -0.1                                                       | -1
+            signReturnsZeroForZero                        | number.sign          | 0.00                                                       | 0
+            signReturnsPositiveOneForAPositiveNumber      | number.sign          | 0.1                                                        | 1
 
-    @Test
-    void uppercaseRetainsUnicodeCaseExpansion() {
-        assertThat(result("text.uppercase", "\"stra\\u00dfe\""))
-                .isEqualTo(RailixValue.string("STRASSE"));
-    }
-
-    @Test
-    void uppercaseKeepsEmptyTextEmpty() {
-        assertThat(result("text.uppercase", "\"\"")).isEqualTo(RailixValue.string(""));
+            booleanNotChangesTrueToFalse                 | boolean.not          | true                                                       | false
+            booleanNotChangesFalseToTrue                 | boolean.not          | false                                                      | true
+            listSizeCountsHeterogeneousItems             | list.size            | [1,"two",true]                                             | 3
+            listSizeOfAnEmptyListIsZero                  | list.size            | []                                                         | 0
+            listIsEmptyReturnsTrueForAnEmptyList          | list.is-empty        | []                                                         | true
+            listIsEmptyReturnsFalseForANonEmptyList       | list.is-empty        | [null]                                                     | false
+            zeroIsAUtcMillisecondTimestamp               | date.is-utc-millis   | 0                                                          | true
+            aNegativeWholeNumberIsAUtcMillisecondTimestamp| date.is-utc-millis   | -1                                                         | true
+            minimumLongIsAUtcMillisecondTimestamp        | date.is-utc-millis   | -9223372036854775808                                       | true
+            maximumLongIsAUtcMillisecondTimestamp        | date.is-utc-millis   | 9223372036854775807                                        | true
+            aFractionIsNotAUtcMillisecondTimestamp       | date.is-utc-millis   | 1.1                                                        | false
+            anIntegralDecimalIsAUtcMillisecondTimestamp  | date.is-utc-millis   | 1.0                                                        | true
+            aFractionalExponentIsNotAUtcMillisecondTimestamp | date.is-utc-millis | 1E-1                                                       | false
+            aNumberAboveLongRangeIsNotAUtcMillisecondTimestamp | date.is-utc-millis | 9223372036854775808                                      | false
+            aNumberBelowLongRangeIsNotAUtcMillisecondTimestamp | date.is-utc-millis | -9223372036854775809                                     | false
+            booleanToTextReturnsLowercaseTrue            | boolean.to-text      | true                                                       | "true"
+            booleanToTextReturnsLowercaseFalse           | boolean.to-text      | false                                                      | "false"
+            booleanToNumberReturnsOneForTrue             | boolean.to-number    | true                                                       | 1
+            booleanToNumberReturnsZeroForFalse           | boolean.to-number    | false                                                      | 0
+            numberToTextUsesCanonicalPlainJsonNumberForm | number.to-text       | 1.2300                                                     | "1.23"
+            numberToTextExpandsExponentNotation          | number.to-text       | 1e3                                                        | "1000"
+            numberToTextCanonicalizesNegativeZero        | number.to-text       | -0.0                                                       | "0"
+            """)
+    void simplePrimitiveReturnsExpectedResult(
+            final String scenario,
+            final String primitive,
+            final String input,
+            final String expected
+    ) {
+        assertThat(result(primitive, input))
+                .isEqualTo(((RailixJson.Parsed) RailixJson.parse(expected)).value());
     }
 
     @Test
@@ -237,23 +297,6 @@ final class GeneratedPrimitiveStepsE2eTest {
     }
 
     @Test
-    void trimUsesUnicodeStripRules() {
-        assertThat(result("text.trim", "\"\\u2003Railix\\u2003\""))
-                .isEqualTo(RailixValue.string("Railix"));
-    }
-
-    @Test
-    void trimKeepsEmptyTextEmpty() {
-        assertThat(result("text.trim", "\"\"")).isEqualTo(RailixValue.string(""));
-    }
-
-    @Test
-    void trimPreservesInternalWhitespace() {
-        assertThat(result("text.trim", "\"left\\t  right\""))
-                .isEqualTo(RailixValue.string("left\t  right"));
-    }
-
-    @Test
     void trimRejectsANumberWithoutCoercion() {
         assertIncompatible("text.trim", "7", "string", "number");
     }
@@ -270,30 +313,6 @@ final class GeneratedPrimitiveStepsE2eTest {
     void trimComposesWithUppercase() {
         assertThat(result(List.of("text.trim", "text.uppercase"), "\" railix \""))
                 .isEqualTo(RailixValue.string("RAILIX"));
-    }
-
-    @Test
-    void normalizeSpaceUsesCharacterWhitespace() {
-        assertThat(result("text.normalize-space", "\"left\\u2003right\""))
-                .isEqualTo(RailixValue.string("left right"));
-    }
-
-    @Test
-    void normalizeSpaceStripsOuterWhitespace() {
-        assertThat(result("text.normalize-space", "\"\\t  Railix\\n\""))
-                .isEqualTo(RailixValue.string("Railix"));
-    }
-
-    @Test
-    void normalizeSpaceCollapsesInternalWhitespaceRuns() {
-        assertThat(result("text.normalize-space", "\"left\\t \\nright\""))
-                .isEqualTo(RailixValue.string("left right"));
-    }
-
-    @Test
-    void normalizeSpaceTurnsOnlyWhitespaceIntoEmptyText() {
-        assertThat(result("text.normalize-space", "\"\\t \\u2003\\n\""))
-                .isEqualTo(RailixValue.string(""));
     }
 
     @Test
@@ -318,18 +337,6 @@ final class GeneratedPrimitiveStepsE2eTest {
     }
 
     @Test
-    void normalizeNfcComposesDecomposedText() {
-        assertThat(result("text.normalize-nfc", "\"e\\u0301\""))
-                .isEqualTo(RailixValue.string("\u00e9"));
-    }
-
-    @Test
-    void normalizeNfcKeepsNormalizedTextUnchanged() {
-        assertThat(result("text.normalize-nfc", "\"\\u00e9\""))
-                .isEqualTo(RailixValue.string("\u00e9"));
-    }
-
-    @Test
     void normalizeNfcRejectsANumberWithoutCoercion() {
         assertIncompatible("text.normalize-nfc", "7", "string", "number");
     }
@@ -351,22 +358,6 @@ final class GeneratedPrimitiveStepsE2eTest {
     }
 
     @Test
-    void textLengthCountsUnicodeCodePoints() {
-        assertThat(result("text.length", "\"Railix\"")).isEqualTo(RailixValue.number(6));
-    }
-
-    @Test
-    void textLengthCountsASupplementaryCharacterOnce() {
-        assertThat(result("text.length", "\"A\\ud83d\\ude80B\""))
-                .isEqualTo(RailixValue.number(3));
-    }
-
-    @Test
-    void textLengthOfEmptyTextIsZero() {
-        assertThat(result("text.length", "\"\"")).isEqualTo(RailixValue.number(0));
-    }
-
-    @Test
     void textLengthRejectsANumberWithoutCoercion() {
         assertIncompatible("text.length", "7", "string", "number");
     }
@@ -383,16 +374,6 @@ final class GeneratedPrimitiveStepsE2eTest {
     void textLengthComposesWithNumberSign() {
         assertThat(result(List.of("text.length", "number.sign"), "\"Railix\""))
                 .isEqualTo(RailixValue.number(1));
-    }
-
-    @Test
-    void textIsEmptyReturnsTrueForEmptyText() {
-        assertThat(result("text.is-empty", "\"\"")).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void textIsEmptyReturnsFalseForWhitespace() {
-        assertThat(result("text.is-empty", "\" \"")).isEqualTo(RailixValue.bool(false));
     }
 
     @Test
@@ -623,53 +604,11 @@ final class GeneratedPrimitiveStepsE2eTest {
     }
 
     @Test
-    void floorRoundsAPositiveFractionDown() {
-        assertThat(result("number.floor", "1.9")).isEqualTo(RailixValue.number(1));
-    }
-
-    @Test
-    void floorRoundsANegativeFractionDown() {
-        assertThat(result("number.floor", "-1.2")).isEqualTo(RailixValue.number(-2));
-    }
-
-    @Test
-    void floorKeepsAWholeNumber() {
-        assertThat(result("number.floor", "7")).isEqualTo(RailixValue.number(7));
-    }
-
-    @Test
-    void floorHandlesAnArbitrarilyPreciseDecimal() {
-        assertThat(result("number.floor", "1.0000000000000000000000000000000000001"))
-                .isEqualTo(RailixValue.number(1));
-    }
-
-    @Test
     void floorCarryAtTheMaximumMagnitudeRemainsInDomain() {
         final String digits = "9".repeat(1_022);
 
         assertThat(RailixJson.write(result("number.floor", "-" + digits + ".9")))
                 .isEqualTo("-1" + "0".repeat(1_022));
-    }
-
-    @Test
-    void ceilRoundsAPositiveFractionUp() {
-        assertThat(result("number.ceil", "1.2")).isEqualTo(RailixValue.number(2));
-    }
-
-    @Test
-    void ceilRoundsANegativeFractionUp() {
-        assertThat(result("number.ceil", "-1.2")).isEqualTo(RailixValue.number(-1));
-    }
-
-    @Test
-    void ceilKeepsAWholeNumber() {
-        assertThat(result("number.ceil", "7")).isEqualTo(RailixValue.number(7));
-    }
-
-    @Test
-    void ceilHandlesAnArbitrarilyPreciseDecimal() {
-        assertThat(result("number.ceil", "1.0000000000000000000000000000000000001"))
-                .isEqualTo(RailixValue.number(2));
     }
 
     @Test
@@ -694,41 +633,6 @@ final class GeneratedPrimitiveStepsE2eTest {
     }
 
     @Test
-    void roundMovesAPositiveExactHalfAwayFromZero() {
-        assertThat(result("number.round", "1.5")).isEqualTo(RailixValue.number(2));
-    }
-
-    @Test
-    void roundMovesANegativeExactHalfAwayFromZero() {
-        assertThat(result("number.round", "-1.5")).isEqualTo(RailixValue.number(-2));
-    }
-
-    @Test
-    void roundMovesAValueBelowHalfTowardZero() {
-        assertThat(result("number.round", "1.49")).isEqualTo(RailixValue.number(1));
-    }
-
-    @Test
-    void roundMovesAPositiveValueAboveHalfAwayFromZero() {
-        assertThat(result("number.round", "1.51")).isEqualTo(RailixValue.number(2));
-    }
-
-    @Test
-    void roundMovesANegativeValueBelowHalfTowardZero() {
-        assertThat(result("number.round", "-1.49")).isEqualTo(RailixValue.number(-1));
-    }
-
-    @Test
-    void roundMovesANegativeValueAboveHalfAwayFromZero() {
-        assertThat(result("number.round", "-1.51")).isEqualTo(RailixValue.number(-2));
-    }
-
-    @Test
-    void roundKeepsAWholeNumber() {
-        assertThat(result("number.round", "7")).isEqualTo(RailixValue.number(7));
-    }
-
-    @Test
     void roundCarryAtTheMaximumMagnitudeRemainsInDomain() {
         final String digits = "9".repeat(1_022);
 
@@ -750,24 +654,6 @@ final class GeneratedPrimitiveStepsE2eTest {
     }
 
     @Test
-    void absoluteValueMakesANegativeNumberPositive() {
-        assertThat(result("number.abs", "-12.5"))
-                .isEqualTo(RailixValue.number(new BigDecimal("12.5")));
-    }
-
-    @Test
-    void absoluteValueKeepsAPositiveNumberUnchanged() {
-        assertThat(result("number.abs", "12.50"))
-                .isEqualTo(RailixValue.number(new BigDecimal("12.5")));
-    }
-
-    @Test
-    void absoluteValueKeepsZeroUnchanged() {
-        assertThat(result("number.abs", "0.00"))
-                .isEqualTo(RailixValue.number(0));
-    }
-
-    @Test
     void absoluteValueRejectsTextWithoutCoercion() {
         assertIncompatible("number.abs", "\"7\"", "number", "string");
     }
@@ -778,23 +664,6 @@ final class GeneratedPrimitiveStepsE2eTest {
 
         assertThat(List.of(result(application, "-1"), result(application, "-9")))
                 .containsExactly(RailixValue.number(1), RailixValue.number(9));
-    }
-
-    @Test
-    void negateMakesAPositiveNumberNegative() {
-        assertThat(result("number.negate", "12.5"))
-                .isEqualTo(RailixValue.number(new BigDecimal("-12.5")));
-    }
-
-    @Test
-    void negateMakesANegativeNumberPositive() {
-        assertThat(result("number.negate", "-12.5"))
-                .isEqualTo(RailixValue.number(new BigDecimal("12.5")));
-    }
-
-    @Test
-    void negateReturnsCanonicalZero() {
-        assertThat(result("number.negate", "0.00")).isEqualTo(RailixValue.number(0));
     }
 
     @Test
@@ -824,21 +693,6 @@ final class GeneratedPrimitiveStepsE2eTest {
 
         assertThat(List.of(result(application, "1"), result(application, "-9")))
                 .containsExactly(RailixValue.number(-1), RailixValue.number(9));
-    }
-
-    @Test
-    void signReturnsNegativeOneForANegativeNumber() {
-        assertThat(result("number.sign", "-0.1")).isEqualTo(RailixValue.number(-1));
-    }
-
-    @Test
-    void signReturnsZeroForZero() {
-        assertThat(result("number.sign", "0.00")).isEqualTo(RailixValue.number(0));
-    }
-
-    @Test
-    void signReturnsPositiveOneForAPositiveNumber() {
-        assertThat(result("number.sign", "0.1")).isEqualTo(RailixValue.number(1));
     }
 
     @Test
@@ -997,26 +851,6 @@ final class GeneratedPrimitiveStepsE2eTest {
     }
 
     @Test
-    void booleanNotChangesTrueToFalse() {
-        assertThat(result("boolean.not", "true")).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void booleanNotChangesFalseToTrue() {
-        assertThat(result("boolean.not", "false")).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void listSizeCountsHeterogeneousItems() {
-        assertThat(result("list.size", "[1,\"two\",true]")).isEqualTo(RailixValue.number(3));
-    }
-
-    @Test
-    void listSizeOfAnEmptyListIsZero() {
-        assertThat(result("list.size", "[]")).isEqualTo(RailixValue.number(0));
-    }
-
-    @Test
     void listSizeDoesNotMutateTheSourceList() {
         final RunResult.Succeeded run = run("list.size", "[1,2]");
         final RailixValue.ObjectValue payload =
@@ -1026,16 +860,6 @@ final class GeneratedPrimitiveStepsE2eTest {
                 RailixValue.number(1),
                 RailixValue.number(2)
         )));
-    }
-
-    @Test
-    void listIsEmptyReturnsTrueForAnEmptyList() {
-        assertThat(result("list.is-empty", "[]")).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void listIsEmptyReturnsFalseForANonEmptyList() {
-        assertThat(result("list.is-empty", "[null]")).isEqualTo(RailixValue.bool(false));
     }
 
     @Test
@@ -1071,65 +895,6 @@ final class GeneratedPrimitiveStepsE2eTest {
     }
 
     @Test
-    void zeroIsAUtcMillisecondTimestamp() {
-        assertThat(result("date.is-utc-millis", "0")).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void aNegativeWholeNumberIsAUtcMillisecondTimestamp() {
-        assertThat(result("date.is-utc-millis", "-1")).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void minimumLongIsAUtcMillisecondTimestamp() {
-        assertThat(result("date.is-utc-millis", Long.toString(Long.MIN_VALUE)))
-                .isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void maximumLongIsAUtcMillisecondTimestamp() {
-        assertThat(result("date.is-utc-millis", Long.toString(Long.MAX_VALUE)))
-                .isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void aFractionIsNotAUtcMillisecondTimestamp() {
-        assertThat(result("date.is-utc-millis", "1.1")).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void anIntegralDecimalIsAUtcMillisecondTimestamp() {
-        assertThat(result("date.is-utc-millis", "1.0")).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void aFractionalExponentIsNotAUtcMillisecondTimestamp() {
-        assertThat(result("date.is-utc-millis", "1E-1")).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void aNumberAboveLongRangeIsNotAUtcMillisecondTimestamp() {
-        assertThat(result("date.is-utc-millis", "9223372036854775808"))
-                .isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void aNumberBelowLongRangeIsNotAUtcMillisecondTimestamp() {
-        assertThat(result("date.is-utc-millis", "-9223372036854775809"))
-                .isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void booleanToTextReturnsLowercaseTrue() {
-        assertThat(result("boolean.to-text", "true")).isEqualTo(RailixValue.string("true"));
-    }
-
-    @Test
-    void booleanToTextReturnsLowercaseFalse() {
-        assertThat(result("boolean.to-text", "false")).isEqualTo(RailixValue.string("false"));
-    }
-
-    @Test
     void booleanToTextRejectsTextWithoutCoercion() {
         assertIncompatible("boolean.to-text", "\"true\"", "boolean", "string");
     }
@@ -1151,16 +916,6 @@ final class GeneratedPrimitiveStepsE2eTest {
     void booleanToTextComposesWithUppercase() {
         assertThat(result(List.of("boolean.to-text", "text.uppercase"), "true"))
                 .isEqualTo(RailixValue.string("TRUE"));
-    }
-
-    @Test
-    void booleanToNumberReturnsOneForTrue() {
-        assertThat(result("boolean.to-number", "true")).isEqualTo(RailixValue.number(1));
-    }
-
-    @Test
-    void booleanToNumberReturnsZeroForFalse() {
-        assertThat(result("boolean.to-number", "false")).isEqualTo(RailixValue.number(0));
     }
 
     @Test
@@ -1187,127 +942,52 @@ final class GeneratedPrimitiveStepsE2eTest {
                 .isEqualTo(RailixValue.number(-1));
     }
 
-    @Test
-    void valueEqualsMatchesNestedJsonRecursively() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":{\"items\":[1,{\"active\":true}]}}",
-                "{\"items\":[1,{\"active\":true}]}"
-        )).isEqualTo(RailixValue.bool(true));
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("valueComparisonCases")
+    void valueComparisonsExecuteAgainstCanonicalJson(
+            final String scenario,
+            final String primitive,
+            final String configuration,
+            final String input,
+            final boolean expected
+    ) {
+        assertThat(configuredResult(primitive, configuration, input))
+                .isEqualTo(RailixValue.bool(expected));
     }
 
-    @Test
-    void valueEqualsTreatsArrayOrderAsSignificant() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":[1,2]}",
-                "[2,1]"
-        )).isEqualTo(RailixValue.bool(false));
+    static Stream<Arguments> valueComparisonCases() {
+        return Stream.of(
+                valueCase("valueEqualsMatchesNestedJsonRecursively", "value.equals", "{\"expected\":{\"items\":[1,{\"active\":true}]}}", "{\"items\":[1,{\"active\":true}]}", true),
+                valueCase("valueEqualsTreatsArrayOrderAsSignificant", "value.equals", "{\"expected\":[1,2]}", "[2,1]", false),
+                valueCase("valueEqualsIgnoresObjectFieldOrder", "value.equals", "{\"expected\":{\"first\":1,\"second\":2}}", "{\"second\":2,\"first\":1}", true),
+                valueCase("valueEqualsComparesNumbersByValueRatherThanScale", "value.equals", "{\"expected\":1.0}", "1.00", true),
+                valueCase("valueEqualsRejectsDifferentJsonTypes", "value.equals", "{\"expected\":1}", "\"1\"", false),
+                valueCase("valueEqualsMatchesJsonNull", "value.equals", "{\"expected\":null}", "null", true),
+                valueCase("valueEqualsRejectsDifferentBooleans", "value.equals", "{\"expected\":true}", "false", false),
+                valueCase("valueEqualsMatchesExactText", "value.equals", "{\"expected\":\"Railix\"}", "\"Railix\"", true),
+                valueCase("valueEqualsRejectsDifferentText", "value.equals", "{\"expected\":\"Railix\"}", "\"Other\"", false),
+                valueCase("valueEqualsRejectsDifferentArrayLengths", "value.equals", "{\"expected\":[1]}", "[1,2]", false),
+                valueCase("valueEqualsRejectsDifferentObjectFields", "value.equals", "{\"expected\":{\"first\":1}}", "{\"second\":1}", false),
+                valueCase("valueEqualsRejectsDifferentNestedObjectValues", "value.equals", "{\"expected\":{\"user\":{\"id\":1}}}", "{\"user\":{\"id\":2}}", false),
+                valueCase("valueEqualsRejectsNullAgainstAValue", "value.equals", "{\"expected\":null}", "false", false),
+                valueCase("valueEqualsUsesJsonNullWhenConfigurationIsOmitted", "value.equals", "{}", "null", true),
+                valueCase("valueNotEqualsReturnsFalseForRecursivelyEqualNestedJson", "value.not-equals", "{\"expected\":{\"items\":[1,{\"active\":true}]}}", "{\"items\":[1,{\"active\":true}]}", false),
+                valueCase("valueNotEqualsReturnsTrueForDifferentNestedJson", "value.not-equals", "{\"expected\":{\"items\":[1,{\"active\":true}]}}", "{\"items\":[1,{\"active\":false}]}", true),
+                valueCase("valueNotEqualsTreatsNumbersWithDifferentScalesAsEqual", "value.not-equals", "{\"expected\":1.0}", "1.00", false),
+                valueCase("valueNotEqualsReturnsTrueForDifferentJsonTypes", "value.not-equals", "{\"expected\":1}", "\"1\"", true),
+                valueCase("valueNotEqualsUsesJsonNullWhenConfigurationIsOmitted", "value.not-equals", "{}", "null", false),
+                valueCase("valueNotEqualsMatchesANonNullValueWhenConfigurationIsOmitted", "value.not-equals", "{}", "false", true)
+        );
     }
 
-    @Test
-    void valueEqualsIgnoresObjectFieldOrder() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":{\"first\":1,\"second\":2}}",
-                "{\"second\":2,\"first\":1}"
-        )).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void valueEqualsComparesNumbersByValueRatherThanScale() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":1.0}",
-                "1.00"
-        )).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void valueEqualsRejectsDifferentJsonTypes() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":1}",
-                "\"1\""
-        )).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void valueEqualsMatchesJsonNull() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":null}",
-                "null"
-        )).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void valueEqualsRejectsDifferentBooleans() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":true}",
-                "false"
-        )).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void valueEqualsMatchesExactText() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":\"Railix\"}",
-                "\"Railix\""
-        )).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void valueEqualsRejectsDifferentText() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":\"Railix\"}",
-                "\"Other\""
-        )).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void valueEqualsRejectsDifferentArrayLengths() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":[1]}",
-                "[1,2]"
-        )).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void valueEqualsRejectsDifferentObjectFields() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":{\"first\":1}}",
-                "{\"second\":1}"
-        )).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void valueEqualsRejectsDifferentNestedObjectValues() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":{\"user\":{\"id\":1}}}",
-                "{\"user\":{\"id\":2}}"
-        )).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void valueEqualsRejectsNullAgainstAValue() {
-        assertThat(configuredResult(
-                "value.equals",
-                "{\"expected\":null}",
-                "false"
-        )).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void valueEqualsUsesJsonNullWhenConfigurationIsOmitted() {
-        assertThat(configuredResult("value.equals", "{}", "null"))
-                .isEqualTo(RailixValue.bool(true));
+    static Arguments valueCase(
+            final String scenario,
+            final String primitive,
+            final String configuration,
+            final String input,
+            final boolean expected
+    ) {
+        return Arguments.of(scenario, primitive, configuration, input, expected);
     }
 
     @Test
@@ -1333,54 +1013,6 @@ final class GeneratedPrimitiveStepsE2eTest {
         );
 
         assertThat(result(application, "1.00")).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void valueNotEqualsReturnsFalseForRecursivelyEqualNestedJson() {
-        assertThat(configuredResult(
-                "value.not-equals",
-                "{\"expected\":{\"items\":[1,{\"active\":true}]}}",
-                "{\"items\":[1,{\"active\":true}]}"
-        )).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void valueNotEqualsReturnsTrueForDifferentNestedJson() {
-        assertThat(configuredResult(
-                "value.not-equals",
-                "{\"expected\":{\"items\":[1,{\"active\":true}]}}",
-                "{\"items\":[1,{\"active\":false}]}"
-        )).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void valueNotEqualsTreatsNumbersWithDifferentScalesAsEqual() {
-        assertThat(configuredResult(
-                "value.not-equals",
-                "{\"expected\":1.0}",
-                "1.00"
-        )).isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void valueNotEqualsReturnsTrueForDifferentJsonTypes() {
-        assertThat(configuredResult(
-                "value.not-equals",
-                "{\"expected\":1}",
-                "\"1\""
-        )).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void valueNotEqualsUsesJsonNullWhenConfigurationIsOmitted() {
-        assertThat(configuredResult("value.not-equals", "{}", "null"))
-                .isEqualTo(RailixValue.bool(false));
-    }
-
-    @Test
-    void valueNotEqualsMatchesANonNullValueWhenConfigurationIsOmitted() {
-        assertThat(configuredResult("value.not-equals", "{}", "false"))
-                .isEqualTo(RailixValue.bool(true));
     }
 
     @Test
@@ -1484,21 +1116,6 @@ final class GeneratedPrimitiveStepsE2eTest {
                 .isEqualTo(RailixValue.array(List.of(
                         RailixValue.number(1), RailixValue.number(2), RailixValue.number(3)
                 )));
-    }
-
-    @Test
-    void numberToTextUsesCanonicalPlainJsonNumberForm() {
-        assertThat(result("number.to-text", "1.2300")).isEqualTo(RailixValue.string("1.23"));
-    }
-
-    @Test
-    void numberToTextExpandsExponentNotation() {
-        assertThat(result("number.to-text", "1e3")).isEqualTo(RailixValue.string("1000"));
-    }
-
-    @Test
-    void numberToTextCanonicalizesNegativeZero() {
-        assertThat(result("number.to-text", "-0.0")).isEqualTo(RailixValue.string("0"));
     }
 
     @Test

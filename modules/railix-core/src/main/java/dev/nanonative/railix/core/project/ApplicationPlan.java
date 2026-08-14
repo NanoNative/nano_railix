@@ -95,17 +95,6 @@ record ApplicationPlan(String projectId, List<NodePlan> nodes, List<TriggerPlan>
             return destinations.clone();
         }
 
-        int outcomeIndex(final String outcome) {
-            return outcomes.indexOf(outcome);
-        }
-
-        String outcome(final int index) {
-            return outcomes.get(index);
-        }
-
-        int destination(final int outcome) {
-            return destinations[outcome];
-        }
     }
 
     sealed interface Binding permits JsonBinding, PathBinding, ChoiceBinding, CandidatesBinding,

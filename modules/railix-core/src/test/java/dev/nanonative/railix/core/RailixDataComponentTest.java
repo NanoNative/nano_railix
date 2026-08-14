@@ -3,6 +3,9 @@ package dev.nanonative.railix.core;
 import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixValue;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -12,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -253,202 +257,15 @@ class RailixDataComponentTest {
                 ));
     }
 
-    @Test
-    void emptyYamlDocumentIsRejected() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes(" \n")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Expected a YAML value.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlTabsAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a:\t1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML tabs are not supported.",
-                        1,
-                        3
-                ));
-    }
-
-    @Test
-    void yamlCommentsAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a: 1 # comment")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML comments are not supported.",
-                        1,
-                        6
-                ));
-    }
-
-    @Test
-    void yamlDocumentMarkersAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("---\na: 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML document markers are not supported.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlPlainStringsRequireExplicitQuotes() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("name: Ada")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "Plain YAML strings are not supported; use JSON double quotes.",
-                        1,
-                        7
-                ));
-    }
-
-    @Test
-    void yamlSingleQuotedStringsAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("name: 'Ada'")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML single-quoted strings are not supported.",
-                        1,
-                        7
-                ));
-    }
-
-    @Test
-    void nonEmptyYamlFlowCollectionsAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("items: [1]")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "Non-empty YAML flow collections are not supported.",
-                        1,
-                        8
-                ));
-    }
-
-    @Test
-    void yamlAnchorsAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("value: &id 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML anchors, aliases, and tags are not supported.",
-                        1,
-                        8
-                ));
-    }
-
-    @Test
-    void yamlAliasesAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("value: *id")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML anchors, aliases, and tags are not supported.",
-                        1,
-                        8
-                ));
-    }
-
-    @Test
-    void yamlTagsAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("value: !str 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML anchors, aliases, and tags are not supported.",
-                        1,
-                        8
-                ));
-    }
-
-    @Test
-    void yamlAnchorMappingKeysAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("&id key: 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML anchors, aliases, and tags are not supported.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlAliasMappingKeysAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("*id: 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML anchors, aliases, and tags are not supported.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlTagMappingKeysAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("!tag key: 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML anchors, aliases, and tags are not supported.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlBlockScalarsAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("value: |\n  text")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML block scalars are not supported.",
-                        1,
-                        8
-                ));
-    }
-
-    @Test
-    void yamlOddIndentationIsRejected() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a:\n b: 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "YAML indentation must use multiples of two spaces.",
-                        2,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlUnexpectedIndentationIsRejected() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a: 1\n  b: 2")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Unexpected YAML indentation.",
-                        2,
-                        3
-                ));
-    }
-
-    @Test
-    void yamlMappingsAndSequencesCannotMixAtOneDepth() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a: 1\n- 2")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Cannot mix YAML mappings and sequences at the same depth.",
-                        2,
-                        1
-                ));
-    }
-
-    @Test
-    void malformedJsonQuotedYamlStringIsRejectedAtTheScalar() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("name: \"Ada")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Invalid JSON-quoted YAML string.",
-                        1,
-                        7
-                ));
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidDocumentCases")
+    void invalidDocumentHasStableDiagnostic(
+            final String name,
+            final RailixData.Format format,
+            final String source,
+            final RailixData.Invalid expected
+    ) {
+        assertThat(RailixData.normalize(format, bytes(source))).isEqualTo(expected);
     }
 
     @Test
@@ -546,296 +363,6 @@ class RailixDataComponentTest {
                 "Duplicate object field: a",
                 3,
                 3
-        ));
-    }
-
-    @Test
-    void emptyXmlDocumentIsRejected() {
-        assertThat(RailixData.normalize(RailixData.Format.XML, bytes(" \n")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_XML_INVALID",
-                        "Expected a Railix XML value element.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void malformedXmlUsesAnAuthoredDiagnostic() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<object><field name=\"x\"><null/></object>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "Malformed XML document.",
-                1,
-                34
-        ));
-    }
-
-    @Test
-    void xmlDtdIsExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<!DOCTYPE object><object/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML DTD and custom entities are not supported.",
-                1,
-                1
-        ));
-    }
-
-    @Test
-    void xmlExternalEntityDeclarationIsRejectedBeforeResolution() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<!DOCTYPE string [<!ENTITY x SYSTEM \"file:///tmp/x\">]><string>&x;</string>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML DTD and custom entities are not supported.",
-                1,
-                1
-        ));
-    }
-
-    @Test
-    void xmlNamespacesAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<object xmlns=\"urn:test\"/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML namespaces are not supported.",
-                1,
-                1
-        ));
-    }
-
-    @Test
-    void xmlAttributesOutsideFieldNamesAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<object extra=\"x\"/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML attributes are supported only as field names.",
-                1,
-                1
-        ));
-    }
-
-    @Test
-    void arbitraryXmlElementsAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.XML, bytes("<value/>")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_XML_UNSUPPORTED",
-                        "Unsupported Railix XML element: value",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void xmlCommentsAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<!-- no hidden data --><null/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML comments are not supported.",
-                1,
-                1
-        ));
-    }
-
-    @Test
-    void xmlProcessingInstructionsAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<?work no?><null/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML processing instructions are not supported.",
-                1,
-                1
-        ));
-    }
-
-    @Test
-    void xmlCdataIsExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<string><![CDATA[value]]></string>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML CDATA is not supported.",
-                1,
-                9
-        ));
-    }
-
-    @Test
-    void xmlFieldRequiresANameAttribute() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("""
-                        <object>
-                          <field><null/></field>
-                        </object>
-                        """)
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "XML field requires exactly one name attribute.",
-                2,
-                3
-        ));
-    }
-
-    @Test
-    void xmlFieldRequiresOneValue() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("""
-                        <object>
-                          <field name="a"/>
-                        </object>
-                        """)
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "XML field must contain exactly one value element.",
-                2,
-                3
-        ));
-    }
-
-    @Test
-    void xmlFieldRejectsASecondValue() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("""
-                        <object>
-                          <field name="a">
-                            <null/>
-                            <string>x</string>
-                          </field>
-                        </object>
-                        """)
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "XML field must contain exactly one value element.",
-                4,
-                5
-        ));
-    }
-
-    @Test
-    void xmlObjectAcceptsOnlyFieldElements() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("""
-                        <object>
-                          <null/>
-                        </object>
-                        """)
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "XML object accepts only field elements.",
-                2,
-                3
-        ));
-    }
-
-    @Test
-    void xmlArrayAcceptsOnlyItemElements() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("""
-                        <array>
-                          <null/>
-                        </array>
-                        """)
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "XML array accepts only item elements.",
-                2,
-                3
-        ));
-    }
-
-    @Test
-    void xmlItemRejectsAttributes() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("""
-                        <array>
-                          <item name="a"><null/></item>
-                        </array>
-                        """)
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML attributes are supported only as field names.",
-                2,
-                3
-        ));
-    }
-
-    @Test
-    void xmlBooleanUsesExactLowercaseLiterals() {
-        assertThat(RailixData.normalize(RailixData.Format.XML, bytes("<boolean>True</boolean>")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_XML_INVALID",
-                        "XML boolean must be exactly true or false.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void xmlNumberUsesTheJsonDecimalGrammar() {
-        assertThat(RailixData.normalize(RailixData.Format.XML, bytes("<number>01</number>")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_XML_INVALID",
-                        "Invalid XML number.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void xmlNullMustBeEmpty() {
-        assertThat(RailixData.normalize(RailixData.Format.XML, bytes("<null> </null>")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_XML_INVALID",
-                        "XML null must be empty.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void xmlPrimitiveCannotContainAChildElement() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<string><null/></string>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "XML primitive values cannot contain child elements.",
-                1,
-                9
-        ));
-    }
-
-    @Test
-    void xmlRejectsASecondRootValue() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<null/><null/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "Malformed XML document.",
-                1,
-                9
         ));
     }
 
@@ -952,41 +479,6 @@ class RailixDataComponentTest {
     }
 
     @Test
-    void jsonScaleOverflowReturnsTheCanonicalNumberLimitDiagnostic() {
-        assertThat(RailixData.normalize(RailixData.Format.JSON, bytes("100e2147483647")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_NUMBER_LIMIT_EXCEEDED",
-                        "Number exceeds the 1024-character canonical limit.",
-                        0,
-                        0
-                ));
-    }
-
-    @Test
-    void yamlScaleOverflowReturnsTheCanonicalNumberLimitDiagnostic() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("100e2147483647")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_NUMBER_LIMIT_EXCEEDED",
-                        "Number exceeds the 1024-character canonical limit.",
-                        0,
-                        0
-                ));
-    }
-
-    @Test
-    void xmlScaleOverflowReturnsTheCanonicalNumberLimitDiagnostic() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<number>100e2147483647</number>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_NUMBER_LIMIT_EXCEEDED",
-                "Number exceeds the 1024-character canonical limit.",
-                0,
-                0
-        ));
-    }
-
-    @Test
     void jsonExtremeScaleZeroNormalizesToCanonicalZero() {
         assertThat(RailixData.normalize(RailixData.Format.JSON, bytes("0e-2147483647")))
                 .isEqualTo(new RailixData.Normalized(RailixValue.number(0)));
@@ -1014,19 +506,6 @@ class RailixDataComponentTest {
                 .isEqualTo(new RailixData.Normalized(
                         RailixValue.number(new BigDecimal("1e-500"))
                 ));
-    }
-
-    @Test
-    void jsonNumberSourceLimitUsesTheNumberLimitDiagnostic() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.JSON,
-                bytes("1".repeat(1_025))
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_NUMBER_LIMIT_EXCEEDED",
-                "Number exceeds the 1024-character canonical limit.",
-                0,
-                0
-        ));
     }
 
     @Test
@@ -1058,94 +537,6 @@ class RailixDataComponentTest {
     }
 
     @Test
-    void yamlSequenceCannotMixAMappingAtTheSameDepth() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("- 1\na: 2")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Cannot mix YAML mappings and sequences at the same depth.",
-                        2,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlMappingCannotMixAScalarAtTheSameDepth() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a: 1\n\"loose\"")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Cannot mix YAML mappings and sequences at the same depth.",
-                        2,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlMergeKeysAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("<<: {}")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML merge keys are not supported.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlMappingKeyCannotStartWithADigit() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("1a: 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "YAML mapping keys must match [A-Za-z_][A-Za-z0-9_-]*.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlMappingKeyRejectsUnsupportedCharactersAfterItsFirstCharacter() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a.b: 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "YAML mapping keys must match [A-Za-z_][A-Za-z0-9_-]*.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlMappingColonRequiresFollowingSpace() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a:1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Expected a space after the YAML mapping colon.",
-                        1,
-                        3
-                ));
-    }
-
-    @Test
-    void yamlMappingRequiresAValueAfterABareColon() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a:")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Expected an indented YAML value.",
-                        1,
-                        3
-                ));
-    }
-
-    @Test
-    void yamlNestedValueMustIndentExactlyTwoSpaces() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a:\n    b: 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Unexpected YAML indentation.",
-                        2,
-                        5
-                ));
-    }
-
-    @Test
     void yamlFalseLiteralIsAccepted() {
         assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("false")))
                 .isEqualTo(new RailixData.Normalized(RailixValue.bool(false)));
@@ -1155,50 +546,6 @@ class RailixDataComponentTest {
     void yamlEmptyArrayIsAccepted() {
         assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("[]")))
                 .isEqualTo(new RailixData.Normalized(RailixValue.array(List.of())));
-    }
-
-    @Test
-    void malformedYamlNumberIsRejectedInsteadOfBecomingAString() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("01")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Invalid YAML number.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlDirectivesAreExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("%YAML 1.2")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML directives are not supported.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlEndDocumentMarkerIsExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("...")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML document markers are not supported.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlFoldedBlockScalarIsExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("value: >\n  text")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "YAML block scalars are not supported.",
-                        1,
-                        8
-                ));
     }
 
     @Test
@@ -1220,116 +567,9 @@ class RailixDataComponentTest {
     }
 
     @Test
-    void yamlRootCannotStartAtAnIndentedLevel() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("  a: 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Unexpected YAML indentation.",
-                        1,
-                        3
-                ));
-    }
-
-    @Test
-    void yamlNestedScalarCannotHaveAnUnattachedSibling() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a:\n  1\n  2")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Unexpected YAML indentation.",
-                        3,
-                        3
-                ));
-    }
-
-    @Test
     void xmlFalseLiteralIsAccepted() {
         assertThat(RailixData.normalize(RailixData.Format.XML, bytes("<boolean>false</boolean>")))
                 .isEqualTo(new RailixData.Normalized(RailixValue.bool(false)));
-    }
-
-    @Test
-    void xmlNumberRejectsFormattingWhitespace() {
-        assertThat(RailixData.normalize(RailixData.Format.XML, bytes("<number> 1</number>")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_XML_INVALID",
-                        "Invalid XML number.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void xmlFieldRejectsAnAttributeOtherThanName() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<object><field other=\"x\"><null/></field></object>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML attributes are supported only as field names.",
-                1,
-                9
-        ));
-    }
-
-    @Test
-    void xmlObjectRejectsNonWhitespaceText() {
-        assertThat(RailixData.normalize(RailixData.Format.XML, bytes("<object>text</object>")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_XML_INVALID",
-                        "XML object cannot contain text.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void xmlArrayRejectsNonWhitespaceText() {
-        assertThat(RailixData.normalize(RailixData.Format.XML, bytes("<array>text</array>")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_XML_INVALID",
-                        "XML array cannot contain text.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void xmlFieldRejectsNonWhitespaceText() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<object><field name=\"a\">text</field></object>")
-        )).isEqualTo(new RailixData.Invalid(
-                        "DATA_XML_INVALID",
-                        "XML field cannot contain text.",
-                        1,
-                        9
-        ));
-    }
-
-    @Test
-    void xmlItemRequiresOneValue() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<array><item/></array>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "XML item must contain exactly one value element.",
-                1,
-                8
-        ));
-    }
-
-    @Test
-    void xmlItemRejectsASecondValue() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<array><item><null/><string>x</string></item></array>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "XML item must contain exactly one value element.",
-                1,
-                21
-        ));
     }
 
     @Test
@@ -1338,71 +578,6 @@ class RailixDataComponentTest {
                 RailixData.Format.XML,
                 bytes("<?xml version=\"1.0\" encoding=\"UTF-8\"?><null/>")
         )).isEqualTo(new RailixData.Normalized(RailixValue.nullValue()));
-    }
-
-    @Test
-    void xmlDeclarationCannotContradictStrictUtf8Ingress() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><null/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML declaration encoding must be UTF-8.",
-                1,
-                        1
-                ));
-    }
-
-    @Test
-    void xmlStylesheetProcessingInstructionIsNotMistakenForADeclaration() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<?xml-stylesheet href=\"theme.css\"?><null/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML processing instructions are not supported.",
-                1,
-                        1
-                ));
-    }
-
-    @Test
-    void xmlDeclarationWithoutAValueIsRejectedExplicitly() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<?xml version=\"1.0\"?>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "Expected a Railix XML value element.",
-                1,
-                1
-        ));
-    }
-
-    @Test
-    void unterminatedXmlDeclarationUsesTheAuthoredMalformedDiagnostic() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<?xml version=\"1.0\"")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "Malformed XML document.",
-                1,
-                20
-        ));
-    }
-
-    @Test
-    void truncatedXmlDeclarationTargetUsesTheAuthoredMalformedDiagnostic() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<?xml")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "Malformed XML document.",
-                1,
-                6
-        ));
     }
 
     @Test
@@ -1438,98 +613,11 @@ class RailixDataComponentTest {
     }
 
     @Test
-    void predefinedXmlElementNamespaceIsStillExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.XML, bytes("<xml:object/>")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_XML_UNSUPPORTED",
-                        "XML namespaces are not supported.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void predefinedXmlAttributeNamespaceCannotMasqueradeAsAFieldName() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<object><field xml:name=\"x\"><null/></field></object>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML attributes are supported only as field names.",
-                1,
-                9
-        ));
-    }
-
-    @Test
-    void encodingTextInsideMalformedXmlVersionIsNotTreatedAsADeclarationAttribute() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<?xml version=\"encoding='ISO-8859-1'\"?><null/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_INVALID",
-                "Malformed XML document.",
-                1,
-                38
-        ));
-    }
-
-    @Test
-    void xmlNumberCannotContainABooleanLiteral() {
-        assertThat(RailixData.normalize(RailixData.Format.XML, bytes("<number>true</number>")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_XML_INVALID",
-                        "Invalid XML number.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
     void xmlCollectionsAllowOnlyXmlStructuralWhitespace() {
         assertThat(RailixData.normalize(
                 RailixData.Format.XML,
                 bytes("<object> \t\r\n</object>")
         )).isEqualTo(new RailixData.Normalized(RailixValue.object(Map.of())));
-    }
-
-    @Test
-    void xmlProcessingInstructionAfterDeclarationIsRejected() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("<?xml version=\"1.0\"?><?work no?><null/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML processing instructions are not supported.",
-                1,
-                22
-        ));
-    }
-
-    @Test
-    void xmlDtdDiagnosticTracksCarriageReturnLines() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("\r<!DOCTYPE null><null/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML DTD and custom entities are not supported.",
-                2,
-                1
-        ));
-    }
-
-    @Test
-    void xmlDtdDiagnosticCountsCarriageReturnLineFeedOnce() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("\r\n<!DOCTYPE null><null/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML DTD and custom entities are not supported.",
-                2,
-                1
-        ));
     }
 
     @Test
@@ -1720,121 +808,9 @@ class RailixDataComponentTest {
     }
 
     @Test
-    void xmlDtdDiagnosticTracksLineFeedLines() {
-        assertThat(RailixData.normalize(
-                RailixData.Format.XML,
-                bytes("\n<!DOCTYPE null><null/>")
-        )).isEqualTo(new RailixData.Invalid(
-                "DATA_XML_UNSUPPORTED",
-                "XML DTD and custom entities are not supported.",
-                2,
-                1
-        ));
-    }
-
-    @Test
-    void yamlRootScalarCannotHaveASecondRootScalar() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("\"a\"\n\"b\"")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Unexpected YAML indentation.",
-                        2,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlMissingNestedValueIsRejectedBeforeTheNextField() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a:\nb: 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "Expected an indented YAML value.",
-                        1,
-                        3
-                ));
-    }
-
-    @Test
-    void nonEmptyYamlFlowObjectIsExplicitlyUnsupported() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("value: {a: 1}")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_UNSUPPORTED",
-                        "Non-empty YAML flow collections are not supported.",
-                        1,
-                        8
-                ));
-    }
-
-    @Test
-    void emptyYamlMappingKeyIsRejected() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes(": 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "YAML mapping keys must match [A-Za-z_][A-Za-z0-9_-]*.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
     void yamlNegativeNumberIsAcceptedAsAScalarRatherThanASequence() {
         assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("-1")))
                 .isEqualTo(new RailixData.Normalized(RailixValue.number(-1)));
-    }
-
-    @Test
-    void yamlMappingKeyRejectsOpeningSquareBracket() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a[: 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "YAML mapping keys must match [A-Za-z_][A-Za-z0-9_-]*.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void yamlMappingKeyRejectsOpeningCurlyBrace() {
-        assertThat(RailixData.normalize(RailixData.Format.YAML, bytes("a{: 1")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_YAML_INVALID",
-                        "YAML mapping keys must match [A-Za-z_][A-Za-z0-9_-]*.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void jsonLineCommentsAreRejectedAtTheNormalizationBoundary() {
-        assertThat(RailixData.normalize(RailixData.Format.JSON, bytes("// comment\nnull")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_JSON_INVALID",
-                        "Expected a JSON value.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void jsonBlockCommentsAreRejectedAtTheNormalizationBoundary() {
-        assertThat(RailixData.normalize(RailixData.Format.JSON, bytes("/* comment */null")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_JSON_INVALID",
-                        "Expected a JSON value.",
-                        1,
-                        1
-                ));
-    }
-
-    @Test
-    void jsonDuplicateFieldsKeepTheJsonDiagnosticAtTheNormalizationBoundary() {
-        assertThat(RailixData.normalize(RailixData.Format.JSON, bytes("{\"a\":1,\"a\":2}")))
-                .isEqualTo(new RailixData.Invalid(
-                        "DATA_JSON_INVALID",
-                        "Duplicate object field: a",
-                        1,
-                        8
-                ));
     }
 
     @Test
@@ -2173,6 +1149,157 @@ class RailixDataComponentTest {
                 RailixData.Format.XML,
                 bytes("<string>&lt;&gt;&quot;&apos;</string>")
         )).isEqualTo(normalizedString("<>\"'"));
+    }
+
+    private static Stream<Arguments> invalidDocumentCases() {
+        return Stream.of(
+                invalidCase("jsonScaleOverflowReturnsTheCanonicalNumberLimitDiagnostic", RailixData.Format.JSON, "100e2147483647", "DATA_NUMBER_LIMIT_EXCEEDED", "Number exceeds the 1024-character canonical limit.", 0, 0),
+                invalidCase("yamlScaleOverflowReturnsTheCanonicalNumberLimitDiagnostic", RailixData.Format.YAML, "100e2147483647", "DATA_NUMBER_LIMIT_EXCEEDED", "Number exceeds the 1024-character canonical limit.", 0, 0),
+                invalidCase("xmlScaleOverflowReturnsTheCanonicalNumberLimitDiagnostic", RailixData.Format.XML, "<number>100e2147483647</number>", "DATA_NUMBER_LIMIT_EXCEEDED", "Number exceeds the 1024-character canonical limit.", 0, 0),
+                invalidCase("jsonNumberSourceLimitUsesTheNumberLimitDiagnostic", RailixData.Format.JSON, "1".repeat(1_025), "DATA_NUMBER_LIMIT_EXCEEDED", "Number exceeds the 1024-character canonical limit.", 0, 0),
+                invalidCase("yamlSequenceCannotMixAMappingAtTheSameDepth", RailixData.Format.YAML, "- 1\na: 2", "DATA_YAML_INVALID", "Cannot mix YAML mappings and sequences at the same depth.", 2, 1),
+                invalidCase("yamlMappingCannotMixAScalarAtTheSameDepth", RailixData.Format.YAML, "a: 1\n\"loose\"", "DATA_YAML_INVALID", "Cannot mix YAML mappings and sequences at the same depth.", 2, 1),
+                invalidCase("yamlMergeKeysAreExplicitlyUnsupported", RailixData.Format.YAML, "<<: {}", "DATA_YAML_UNSUPPORTED", "YAML merge keys are not supported.", 1, 1),
+                invalidCase("yamlMappingKeyCannotStartWithADigit", RailixData.Format.YAML, "1a: 1", "DATA_YAML_INVALID", "YAML mapping keys must match [A-Za-z_][A-Za-z0-9_-]*.", 1, 1),
+                invalidCase("yamlMappingKeyRejectsUnsupportedCharactersAfterItsFirstCharacter", RailixData.Format.YAML, "a.b: 1", "DATA_YAML_INVALID", "YAML mapping keys must match [A-Za-z_][A-Za-z0-9_-]*.", 1, 1),
+                invalidCase("yamlMappingColonRequiresFollowingSpace", RailixData.Format.YAML, "a:1", "DATA_YAML_INVALID", "Expected a space after the YAML mapping colon.", 1, 3),
+                invalidCase("yamlMappingRequiresAValueAfterABareColon", RailixData.Format.YAML, "a:", "DATA_YAML_INVALID", "Expected an indented YAML value.", 1, 3),
+                invalidCase("yamlNestedValueMustIndentExactlyTwoSpaces", RailixData.Format.YAML, "a:\n    b: 1", "DATA_YAML_INVALID", "Unexpected YAML indentation.", 2, 5),
+                invalidCase("malformedYamlNumberIsRejectedInsteadOfBecomingAString", RailixData.Format.YAML, "01", "DATA_YAML_INVALID", "Invalid YAML number.", 1, 1),
+                invalidCase("yamlDirectivesAreExplicitlyUnsupported", RailixData.Format.YAML, "%YAML 1.2", "DATA_YAML_UNSUPPORTED", "YAML directives are not supported.", 1, 1),
+                invalidCase("yamlEndDocumentMarkerIsExplicitlyUnsupported", RailixData.Format.YAML, "...", "DATA_YAML_UNSUPPORTED", "YAML document markers are not supported.", 1, 1),
+                invalidCase("yamlFoldedBlockScalarIsExplicitlyUnsupported", RailixData.Format.YAML, "value: >\n  text", "DATA_YAML_UNSUPPORTED", "YAML block scalars are not supported.", 1, 8),
+                invalidCase("yamlRootCannotStartAtAnIndentedLevel", RailixData.Format.YAML, "  a: 1", "DATA_YAML_INVALID", "Unexpected YAML indentation.", 1, 3),
+                invalidCase("yamlNestedScalarCannotHaveAnUnattachedSibling", RailixData.Format.YAML, "a:\n  1\n  2", "DATA_YAML_INVALID", "Unexpected YAML indentation.", 3, 3),
+                invalidCase("yamlRootScalarCannotHaveASecondRootScalar", RailixData.Format.YAML, "\"a\"\n\"b\"", "DATA_YAML_INVALID", "Unexpected YAML indentation.", 2, 1),
+                invalidCase("yamlMissingNestedValueIsRejectedBeforeTheNextField", RailixData.Format.YAML, "a:\nb: 1", "DATA_YAML_INVALID", "Expected an indented YAML value.", 1, 3),
+                invalidCase("nonEmptyYamlFlowObjectIsExplicitlyUnsupported", RailixData.Format.YAML, "value: {a: 1}", "DATA_YAML_UNSUPPORTED", "Non-empty YAML flow collections are not supported.", 1, 8),
+                invalidCase("emptyYamlMappingKeyIsRejected", RailixData.Format.YAML, ": 1", "DATA_YAML_INVALID", "YAML mapping keys must match [A-Za-z_][A-Za-z0-9_-]*.", 1, 1),
+                invalidCase("yamlMappingKeyRejectsOpeningSquareBracket", RailixData.Format.YAML, "a[: 1", "DATA_YAML_INVALID", "YAML mapping keys must match [A-Za-z_][A-Za-z0-9_-]*.", 1, 1),
+                invalidCase("yamlMappingKeyRejectsOpeningCurlyBrace", RailixData.Format.YAML, "a{: 1", "DATA_YAML_INVALID", "YAML mapping keys must match [A-Za-z_][A-Za-z0-9_-]*.", 1, 1),
+                invalidCase("xmlNumberRejectsFormattingWhitespace", RailixData.Format.XML, "<number> 1</number>", "DATA_XML_INVALID", "Invalid XML number.", 1, 1),
+                invalidCase("xmlFieldRejectsAnAttributeOtherThanName", RailixData.Format.XML, "<object><field other=\"x\"><null/></field></object>", "DATA_XML_UNSUPPORTED", "XML attributes are supported only as field names.", 1, 9),
+                invalidCase("xmlObjectRejectsNonWhitespaceText", RailixData.Format.XML, "<object>text</object>", "DATA_XML_INVALID", "XML object cannot contain text.", 1, 1),
+                invalidCase("xmlArrayRejectsNonWhitespaceText", RailixData.Format.XML, "<array>text</array>", "DATA_XML_INVALID", "XML array cannot contain text.", 1, 1),
+                invalidCase("xmlFieldRejectsNonWhitespaceText", RailixData.Format.XML, "<object><field name=\"a\">text</field></object>", "DATA_XML_INVALID", "XML field cannot contain text.", 1, 9),
+                invalidCase("xmlItemRequiresOneValue", RailixData.Format.XML, "<array><item/></array>", "DATA_XML_INVALID", "XML item must contain exactly one value element.", 1, 8),
+                invalidCase("xmlItemRejectsASecondValue", RailixData.Format.XML, "<array><item><null/><string>x</string></item></array>", "DATA_XML_INVALID", "XML item must contain exactly one value element.", 1, 21),
+                invalidCase("xmlDeclarationCannotContradictStrictUtf8Ingress", RailixData.Format.XML, "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><null/>", "DATA_XML_UNSUPPORTED", "XML declaration encoding must be UTF-8.", 1, 1),
+                invalidCase("xmlStylesheetProcessingInstructionIsNotMistakenForADeclaration", RailixData.Format.XML, "<?xml-stylesheet href=\"theme.css\"?><null/>", "DATA_XML_UNSUPPORTED", "XML processing instructions are not supported.", 1, 1),
+                invalidCase("xmlDeclarationWithoutAValueIsRejectedExplicitly", RailixData.Format.XML, "<?xml version=\"1.0\"?>", "DATA_XML_INVALID", "Expected a Railix XML value element.", 1, 1),
+                invalidCase("unterminatedXmlDeclarationUsesTheAuthoredMalformedDiagnostic", RailixData.Format.XML, "<?xml version=\"1.0\"", "DATA_XML_INVALID", "Malformed XML document.", 1, 20),
+                invalidCase("truncatedXmlDeclarationTargetUsesTheAuthoredMalformedDiagnostic", RailixData.Format.XML, "<?xml", "DATA_XML_INVALID", "Malformed XML document.", 1, 6),
+                invalidCase("predefinedXmlElementNamespaceIsStillExplicitlyUnsupported", RailixData.Format.XML, "<xml:object/>", "DATA_XML_UNSUPPORTED", "XML namespaces are not supported.", 1, 1),
+                invalidCase("predefinedXmlAttributeNamespaceCannotMasqueradeAsAFieldName", RailixData.Format.XML, "<object><field xml:name=\"x\"><null/></field></object>", "DATA_XML_UNSUPPORTED", "XML attributes are supported only as field names.", 1, 9),
+                invalidCase("encodingTextInsideMalformedXmlVersionIsNotTreatedAsADeclarationAttribute", RailixData.Format.XML, "<?xml version=\"encoding='ISO-8859-1'\"?><null/>", "DATA_XML_INVALID", "Malformed XML document.", 1, 38),
+                invalidCase("xmlNumberCannotContainABooleanLiteral", RailixData.Format.XML, "<number>true</number>", "DATA_XML_INVALID", "Invalid XML number.", 1, 1),
+                invalidCase("xmlProcessingInstructionAfterDeclarationIsRejected", RailixData.Format.XML, "<?xml version=\"1.0\"?><?work no?><null/>", "DATA_XML_UNSUPPORTED", "XML processing instructions are not supported.", 1, 22),
+                invalidCase("xmlDtdDiagnosticTracksCarriageReturnLines", RailixData.Format.XML, "\r<!DOCTYPE null><null/>", "DATA_XML_UNSUPPORTED", "XML DTD and custom entities are not supported.", 2, 1),
+                invalidCase("xmlDtdDiagnosticCountsCarriageReturnLineFeedOnce", RailixData.Format.XML, "\r\n<!DOCTYPE null><null/>", "DATA_XML_UNSUPPORTED", "XML DTD and custom entities are not supported.", 2, 1),
+                invalidCase("xmlDtdDiagnosticTracksLineFeedLines", RailixData.Format.XML, "\n<!DOCTYPE null><null/>", "DATA_XML_UNSUPPORTED", "XML DTD and custom entities are not supported.", 2, 1),
+                invalidCase("jsonLineCommentsAreRejectedAtTheNormalizationBoundary", RailixData.Format.JSON, "// comment\nnull", "DATA_JSON_INVALID", "Expected a JSON value.", 1, 1),
+                invalidCase("jsonBlockCommentsAreRejectedAtTheNormalizationBoundary", RailixData.Format.JSON, "/* comment */null", "DATA_JSON_INVALID", "Expected a JSON value.", 1, 1),
+                invalidCase("jsonDuplicateFieldsKeepTheJsonDiagnosticAtTheNormalizationBoundary", RailixData.Format.JSON, "{\"a\":1,\"a\":2}", "DATA_JSON_INVALID", "Duplicate object field: a", 1, 8),
+                Arguments.of("emptyYamlDocumentIsRejected", RailixData.Format.YAML, " \n",
+                        new RailixData.Invalid("DATA_YAML_INVALID", "Expected a YAML value.", 1, 1)),
+                Arguments.of("yamlTabsAreExplicitlyUnsupported", RailixData.Format.YAML, "a:\t1",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "YAML tabs are not supported.", 1, 3)),
+                Arguments.of("yamlCommentsAreExplicitlyUnsupported", RailixData.Format.YAML, "a: 1 # comment",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "YAML comments are not supported.", 1, 6)),
+                Arguments.of("yamlDocumentMarkersAreExplicitlyUnsupported", RailixData.Format.YAML, "---\na: 1",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "YAML document markers are not supported.", 1, 1)),
+                Arguments.of("yamlPlainStringsRequireExplicitQuotes", RailixData.Format.YAML, "name: Ada",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "Plain YAML strings are not supported; use JSON double quotes.", 1, 7)),
+                Arguments.of("yamlSingleQuotedStringsAreExplicitlyUnsupported", RailixData.Format.YAML, "name: 'Ada'",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "YAML single-quoted strings are not supported.", 1, 7)),
+                Arguments.of("nonEmptyYamlFlowCollectionsAreExplicitlyUnsupported", RailixData.Format.YAML, "items: [1]",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "Non-empty YAML flow collections are not supported.", 1, 8)),
+                Arguments.of("yamlAnchorsAreExplicitlyUnsupported", RailixData.Format.YAML, "value: &id 1",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "YAML anchors, aliases, and tags are not supported.", 1, 8)),
+                Arguments.of("yamlAliasesAreExplicitlyUnsupported", RailixData.Format.YAML, "value: *id",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "YAML anchors, aliases, and tags are not supported.", 1, 8)),
+                Arguments.of("yamlTagsAreExplicitlyUnsupported", RailixData.Format.YAML, "value: !str 1",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "YAML anchors, aliases, and tags are not supported.", 1, 8)),
+                Arguments.of("yamlAnchorMappingKeysAreExplicitlyUnsupported", RailixData.Format.YAML, "&id key: 1",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "YAML anchors, aliases, and tags are not supported.", 1, 1)),
+                Arguments.of("yamlAliasMappingKeysAreExplicitlyUnsupported", RailixData.Format.YAML, "*id: 1",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "YAML anchors, aliases, and tags are not supported.", 1, 1)),
+                Arguments.of("yamlTagMappingKeysAreExplicitlyUnsupported", RailixData.Format.YAML, "!tag key: 1",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "YAML anchors, aliases, and tags are not supported.", 1, 1)),
+                Arguments.of("yamlBlockScalarsAreExplicitlyUnsupported", RailixData.Format.YAML, "value: |\n  text",
+                        new RailixData.Invalid("DATA_YAML_UNSUPPORTED", "YAML block scalars are not supported.", 1, 8)),
+                Arguments.of("yamlOddIndentationIsRejected", RailixData.Format.YAML, "a:\n b: 1",
+                        new RailixData.Invalid("DATA_YAML_INVALID", "YAML indentation must use multiples of two spaces.", 2, 1)),
+                Arguments.of("yamlUnexpectedIndentationIsRejected", RailixData.Format.YAML, "a: 1\n  b: 2",
+                        new RailixData.Invalid("DATA_YAML_INVALID", "Unexpected YAML indentation.", 2, 3)),
+                Arguments.of("yamlMappingsAndSequencesCannotMixAtOneDepth", RailixData.Format.YAML, "a: 1\n- 2",
+                        new RailixData.Invalid("DATA_YAML_INVALID", "Cannot mix YAML mappings and sequences at the same depth.", 2, 1)),
+                Arguments.of("malformedJsonQuotedYamlStringIsRejectedAtTheScalar", RailixData.Format.YAML, "name: \"Ada",
+                        new RailixData.Invalid("DATA_YAML_INVALID", "Invalid JSON-quoted YAML string.", 1, 7)),
+                Arguments.of("emptyXmlDocumentIsRejected", RailixData.Format.XML, " \n",
+                        new RailixData.Invalid("DATA_XML_INVALID", "Expected a Railix XML value element.", 1, 1)),
+                Arguments.of("malformedXmlUsesAnAuthoredDiagnostic", RailixData.Format.XML,
+                        "<object><field name=\"x\"><null/></object>",
+                        new RailixData.Invalid("DATA_XML_INVALID", "Malformed XML document.", 1, 34)),
+                Arguments.of("xmlDtdIsExplicitlyUnsupported", RailixData.Format.XML, "<!DOCTYPE object><object/>",
+                        new RailixData.Invalid("DATA_XML_UNSUPPORTED", "XML DTD and custom entities are not supported.", 1, 1)),
+                Arguments.of("xmlExternalEntityDeclarationIsRejectedBeforeResolution", RailixData.Format.XML,
+                        "<!DOCTYPE string [<!ENTITY x SYSTEM \"file:///tmp/x\">]><string>&x;</string>",
+                        new RailixData.Invalid("DATA_XML_UNSUPPORTED", "XML DTD and custom entities are not supported.", 1, 1)),
+                Arguments.of("xmlNamespacesAreExplicitlyUnsupported", RailixData.Format.XML, "<object xmlns=\"urn:test\"/>",
+                        new RailixData.Invalid("DATA_XML_UNSUPPORTED", "XML namespaces are not supported.", 1, 1)),
+                Arguments.of("xmlAttributesOutsideFieldNamesAreExplicitlyUnsupported", RailixData.Format.XML,
+                        "<object extra=\"x\"/>",
+                        new RailixData.Invalid("DATA_XML_UNSUPPORTED", "XML attributes are supported only as field names.", 1, 1)),
+                Arguments.of("arbitraryXmlElementsAreExplicitlyUnsupported", RailixData.Format.XML, "<value/>",
+                        new RailixData.Invalid("DATA_XML_UNSUPPORTED", "Unsupported Railix XML element: value", 1, 1)),
+                Arguments.of("xmlCommentsAreExplicitlyUnsupported", RailixData.Format.XML, "<!-- no hidden data --><null/>",
+                        new RailixData.Invalid("DATA_XML_UNSUPPORTED", "XML comments are not supported.", 1, 1)),
+                Arguments.of("xmlProcessingInstructionsAreExplicitlyUnsupported", RailixData.Format.XML, "<?work no?><null/>",
+                        new RailixData.Invalid("DATA_XML_UNSUPPORTED", "XML processing instructions are not supported.", 1, 1)),
+                Arguments.of("xmlCdataIsExplicitlyUnsupported", RailixData.Format.XML, "<string><![CDATA[value]]></string>",
+                        new RailixData.Invalid("DATA_XML_UNSUPPORTED", "XML CDATA is not supported.", 1, 9)),
+                Arguments.of("xmlFieldRequiresANameAttribute", RailixData.Format.XML,
+                        "<object>\n  <field><null/></field>\n</object>\n",
+                        new RailixData.Invalid("DATA_XML_INVALID", "XML field requires exactly one name attribute.", 2, 3)),
+                Arguments.of("xmlFieldRequiresOneValue", RailixData.Format.XML,
+                        "<object>\n  <field name=\"a\"/>\n</object>\n",
+                        new RailixData.Invalid("DATA_XML_INVALID", "XML field must contain exactly one value element.", 2, 3)),
+                Arguments.of("xmlFieldRejectsASecondValue", RailixData.Format.XML,
+                        "<object>\n  <field name=\"a\">\n    <null/>\n    <string>x</string>\n  </field>\n</object>\n",
+                        new RailixData.Invalid("DATA_XML_INVALID", "XML field must contain exactly one value element.", 4, 5)),
+                Arguments.of("xmlObjectAcceptsOnlyFieldElements", RailixData.Format.XML,
+                        "<object>\n  <null/>\n</object>\n",
+                        new RailixData.Invalid("DATA_XML_INVALID", "XML object accepts only field elements.", 2, 3)),
+                Arguments.of("xmlArrayAcceptsOnlyItemElements", RailixData.Format.XML,
+                        "<array>\n  <null/>\n</array>\n",
+                        new RailixData.Invalid("DATA_XML_INVALID", "XML array accepts only item elements.", 2, 3)),
+                Arguments.of("xmlItemRejectsAttributes", RailixData.Format.XML,
+                        "<array>\n  <item name=\"a\"><null/></item>\n</array>\n",
+                        new RailixData.Invalid("DATA_XML_UNSUPPORTED", "XML attributes are supported only as field names.", 2, 3)),
+                Arguments.of("xmlBooleanUsesExactLowercaseLiterals", RailixData.Format.XML, "<boolean>True</boolean>",
+                        new RailixData.Invalid("DATA_XML_INVALID", "XML boolean must be exactly true or false.", 1, 1)),
+                Arguments.of("xmlNumberUsesTheJsonDecimalGrammar", RailixData.Format.XML, "<number>01</number>",
+                        new RailixData.Invalid("DATA_XML_INVALID", "Invalid XML number.", 1, 1)),
+                Arguments.of("xmlNullMustBeEmpty", RailixData.Format.XML, "<null> </null>",
+                        new RailixData.Invalid("DATA_XML_INVALID", "XML null must be empty.", 1, 1)),
+                Arguments.of("xmlPrimitiveCannotContainAChildElement", RailixData.Format.XML, "<string><null/></string>",
+                        new RailixData.Invalid("DATA_XML_INVALID", "XML primitive values cannot contain child elements.", 1, 9)),
+                Arguments.of("xmlRejectsASecondRootValue", RailixData.Format.XML, "<null/><null/>",
+                        new RailixData.Invalid("DATA_XML_INVALID", "Malformed XML document.", 1, 9))
+        );
+    }
+
+    private static Arguments invalidCase(
+            final String name,
+            final RailixData.Format format,
+            final String source,
+            final String code,
+            final String message,
+            final int line,
+            final int column
+    ) {
+        return Arguments.of(name, format, source, new RailixData.Invalid(code, message, line, column));
     }
 
     private static RailixValue nestedArrays(final int depth) {

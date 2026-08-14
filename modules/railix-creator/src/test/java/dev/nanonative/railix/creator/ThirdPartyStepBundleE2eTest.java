@@ -15,6 +15,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import thirdparty.conformance.RuntimeBoundaryProbeStep;
 
 import javax.tools.DiagnosticCollector;
@@ -112,74 +115,30 @@ final class ThirdPartyStepBundleE2eTest {
         assertCreatorRuns(noisyBundle("unterminated", "unterminated", false), "LINE");
     }
 
-    @Test
-    void wrongTokenCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("wrongtoken", "wrong-token"), "TOKEN");
-    }
-
-    @Test
-    void partialCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("partialcallback", "partial"), "PARTIAL");
-    }
-
-    @Test
-    void oversizedCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("oversizedcallback", "oversized"), "OVERSIZED");
-    }
-
-    @Test
-    void stalledCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("stalledcallback", "stalled"), "STALLED");
-    }
-
-    @Test
-    void wrongPrefixCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("wrongprefix", "wrong-prefix"), "PREFIX");
-    }
-
-    @Test
-    void emptyTokenCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("emptytoken", "empty-token"), "EMPTYTOKEN");
-    }
-
-    @Test
-    void extraFieldCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("extrafield", "extra-field"), "EXTRAFIELD");
-    }
-
-    @Test
-    void emptyPortCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("emptyport", "empty-port"), "EMPTYPORT");
-    }
-
-    @Test
-    void nonNumericPortCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("nonnumericport", "non-numeric-port"), "NONNUMERIC");
-    }
-
-    @Test
-    void zeroPortCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("zeroport", "zero-port"), "ZEROPORT");
-    }
-
-    @Test
-    void outOfRangePortCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("highport", "high-port"), "HIGHPORT");
-    }
-
-    @Test
-    void overflowingPortCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("overflowport", "overflow-port"), "OVERFLOWPORT");
-    }
-
-    @Test
-    void controlByteCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("controlcallback", "control-byte"), "CONTROL");
-    }
-
-    @Test
-    void nonAsciiCallbackCannotConsumeAuthenticatedCreatorReadiness() throws Exception {
-        assertCreatorRuns(interferingBundle("nonasciicallback", "non-ascii"), "NONASCII");
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+            "wrong token, wrongtoken, wrong-token, TOKEN",
+            "partial callback, partialcallback, partial, PARTIAL",
+            "oversized callback, oversizedcallback, oversized, OVERSIZED",
+            "stalled callback, stalledcallback, stalled, STALLED",
+            "wrong prefix, wrongprefix, wrong-prefix, PREFIX",
+            "empty token, emptytoken, empty-token, EMPTYTOKEN",
+            "extra field, extrafield, extra-field, EXTRAFIELD",
+            "empty port, emptyport, empty-port, EMPTYPORT",
+            "non-numeric port, nonnumericport, non-numeric-port, NONNUMERIC",
+            "zero port, zeroport, zero-port, ZEROPORT",
+            "out-of-range port, highport, high-port, HIGHPORT",
+            "overflowing port, overflowport, overflow-port, OVERFLOWPORT",
+            "control byte, controlcallback, control-byte, CONTROL",
+            "non-ASCII callback, nonasciicallback, non-ascii, NONASCII"
+    })
+    void invalidCallbackCannotConsumeAuthenticatedCreatorReadiness(
+            final String scenario,
+            final String bundleId,
+            final String interference,
+            final String value
+    ) throws Exception {
+        assertCreatorRuns(interferingBundle(bundleId, interference), value);
     }
 
     @Test
@@ -711,49 +670,25 @@ final class ThirdPartyStepBundleE2eTest {
                 .hasMessageStartingWith("DEPENDENCY_ARTIFACT_UNSUPPORTED_METADATA:");
     }
 
-    @Test
-    void rsaSignatureMetadataIsRejected() throws Exception {
-        assertDependencyEntryRejected("rsa", "META-INF/EXAMPLE.RSA", "DEPENDENCY_ARTIFACT_UNSUPPORTED_METADATA:");
-    }
-
-    @Test
-    void dsaSignatureMetadataIsRejected() throws Exception {
-        assertDependencyEntryRejected("dsa", "META-INF/EXAMPLE.DSA", "DEPENDENCY_ARTIFACT_UNSUPPORTED_METADATA:");
-    }
-
-    @Test
-    void ecSignatureMetadataIsRejected() throws Exception {
-        assertDependencyEntryRejected("ec", "META-INF/EXAMPLE.EC", "DEPENDENCY_ARTIFACT_UNSUPPORTED_METADATA:");
-    }
-
-    @Test
-    void moduleMetadataIsRejected() throws Exception {
-        assertDependencyEntryRejected("module", "module-info.class", "DEPENDENCY_ARTIFACT_UNSUPPORTED_METADATA:");
-    }
-
-    @Test
-    void absoluteDependencyEntryIsRejected() throws Exception {
-        assertDependencyEntryRejected("absolute", "/absolute.txt", "DEPENDENCY_LOCAL_ENTRY_UNSAFE:");
-    }
-
-    @Test
-    void backslashDependencyEntryIsRejected() throws Exception {
-        assertDependencyEntryRejected("backslash", "unsafe\\entry.txt", "DEPENDENCY_LOCAL_ENTRY_UNSAFE:");
-    }
-
-    @Test
-    void parentTraversalDependencyEntryIsRejected() throws Exception {
-        assertDependencyEntryRejected("parent", "unsafe/../entry.txt", "DEPENDENCY_LOCAL_ENTRY_UNSAFE:");
-    }
-
-    @Test
-    void currentDirectoryDependencyEntryIsRejected() throws Exception {
-        assertDependencyEntryRejected("current", "unsafe/./entry.txt", "DEPENDENCY_LOCAL_ENTRY_UNSAFE:");
-    }
-
-    @Test
-    void emptyPathSegmentDependencyEntryIsRejected() throws Exception {
-        assertDependencyEntryRejected("segment", "unsafe//entry.txt", "DEPENDENCY_LOCAL_ENTRY_UNSAFE:");
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+            "RSA signature metadata, rsa, META-INF/EXAMPLE.RSA, DEPENDENCY_ARTIFACT_UNSUPPORTED_METADATA:",
+            "DSA signature metadata, dsa, META-INF/EXAMPLE.DSA, DEPENDENCY_ARTIFACT_UNSUPPORTED_METADATA:",
+            "EC signature metadata, ec, META-INF/EXAMPLE.EC, DEPENDENCY_ARTIFACT_UNSUPPORTED_METADATA:",
+            "module metadata, module, module-info.class, DEPENDENCY_ARTIFACT_UNSUPPORTED_METADATA:",
+            "absolute entry, absolute, /absolute.txt, DEPENDENCY_LOCAL_ENTRY_UNSAFE:",
+            "backslash entry, backslash, unsafe\\entry.txt, DEPENDENCY_LOCAL_ENTRY_UNSAFE:",
+            "parent traversal, parent, unsafe/../entry.txt, DEPENDENCY_LOCAL_ENTRY_UNSAFE:",
+            "current-directory segment, current, unsafe/./entry.txt, DEPENDENCY_LOCAL_ENTRY_UNSAFE:",
+            "empty path segment, segment, unsafe//entry.txt, DEPENDENCY_LOCAL_ENTRY_UNSAFE:"
+    })
+    void unsafeDependencyEntryIsRejected(
+            final String scenario,
+            final String id,
+            final String entry,
+            final String diagnostic
+    ) throws Exception {
+        assertDependencyEntryRejected(id, entry, diagnostic);
     }
 
     @Test
@@ -847,13 +782,17 @@ final class ThirdPartyStepBundleE2eTest {
         assertThat(Files.readAllBytes(generatedClass)).isEqualTo(expected);
     }
 
-    @Test
-    void cachedApplicationWithUnexpectedGeneratedClassIsRebuilt() throws Exception {
+    @ParameterizedTest(name = "cache rejects unexpected generated class {0}")
+    @ValueSource(strings = {
+            "unexpected/Extra.class",
+            "dev/nanonative/railix/core/project/RailixApplicationInjected.class"
+    })
+    void cachedApplicationWithUnexpectedGeneratedClassIsRebuilt(final String name) throws Exception {
         final Workspace workspace = workspace(List.of(bundle("alpha", "external.alpha", "helper-", "-resource", Map.of(), Map.of())));
         final Path project = project(directory.resolve("cache-extra-class"), "external.alpha");
         final CompileResult.Compiled compiled = compile(workspace, "external.alpha");
         final ApplicationBuilder.Artifact first = ApplicationBuilder.buildProduction(project, compiled);
-        final Path unexpected = first.classes().resolve("unexpected/Extra.class");
+        final Path unexpected = first.classes().resolve(name);
         Files.createDirectories(unexpected.getParent());
         Files.write(unexpected, new byte[]{0});
 

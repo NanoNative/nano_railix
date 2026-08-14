@@ -53,6 +53,7 @@ public final class CreatorServer implements AutoCloseable {
     private static final String WEB_ROOT = "/dev/nanonative/railix/creator/web/";
     private static final int MAX_PROJECT_BYTES = RailixData.DEFAULT_MAX_SOURCE_BYTES;
     private static final Duration BODY_READ_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration RESPONSE_DRAIN_TIMEOUT = Duration.ofSeconds(1);
     private static final String TOKEN_HEADER = "X-Railix-Creator-Token";
     private static final String[] PROJECT_PREFIXES = {
             "atomic", "brisk", "cosmic", "eager", "lunar", "neon",
@@ -81,6 +82,7 @@ public final class CreatorServer implements AutoCloseable {
     private final AtomicBoolean open = new AtomicBoolean(true);
     private final Semaphore requests = new Semaphore(MAX_CONCURRENT_REQUESTS);
     private final Semaphore forwarding = new Semaphore(MAX_CONCURRENT_FORWARDS);
+    private final Semaphore responses = new Semaphore(MAX_CONCURRENT_FORWARDS);
     private final String creatorToken;
     private DevelopmentApplication application;
     private DevelopmentApplication retirement;
@@ -289,12 +291,43 @@ public final class CreatorServer implements AutoCloseable {
                 return;
             }
             open.set(false);
+            synchronized (buildLock) {
+                if (!applicationClosed) {
+                    try {
+                        application.close();
+                        applicationClosed = true;
+                    } catch (final RuntimeException exception) {
+                        failure = merge(failure, exception);
+                    }
+                }
+                final String phase = cleanupRetirement();
+                if (!phase.isEmpty()) {
+                    failure = merge(failure, new IllegalStateException(
+                            "Retired generated application did not clean up: " + phase + "."
+                    ));
+                }
+            }
+            interrupted |= Thread.interrupted();
             if (!serverClosed) {
+                boolean responsesDrained = false;
+                try {
+                    responsesDrained = responses.tryAcquire(
+                            MAX_CONCURRENT_FORWARDS,
+                            RESPONSE_DRAIN_TIMEOUT.toNanos(),
+                            TimeUnit.NANOSECONDS
+                    );
+                } catch (final InterruptedException exception) {
+                    interrupted = true;
+                }
                 try {
                     server.stop(0);
                     serverClosed = true;
                 } catch (final RuntimeException exception) {
                     failure = merge(failure, exception);
+                } finally {
+                    if (responsesDrained) {
+                        responses.release(MAX_CONCURRENT_FORWARDS);
+                    }
                 }
             }
             interrupted |= Thread.interrupted();
@@ -328,23 +361,6 @@ public final class CreatorServer implements AutoCloseable {
                     bodyDeadlinesClosed = true;
                 } catch (final RuntimeException exception) {
                     failure = merge(failure, exception);
-                }
-            }
-            interrupted |= Thread.interrupted();
-            synchronized (buildLock) {
-                if (!applicationClosed) {
-                    try {
-                        application.close();
-                        applicationClosed = true;
-                    } catch (final RuntimeException exception) {
-                        failure = merge(failure, exception);
-                    }
-                }
-                final String phase = cleanupRetirement();
-                if (!phase.isEmpty()) {
-                    failure = merge(failure, new IllegalStateException(
-                            "Retired generated application did not clean up: " + phase + "."
-                    ));
                 }
             }
             interrupted |= Thread.interrupted();
@@ -393,11 +409,19 @@ public final class CreatorServer implements AutoCloseable {
 
     private void handle(final HttpExchange exchange) {
         try (exchange) {
+            if (!open.get()) {
+                sendSafely(exchange, unavailable("closing"));
+                return;
+            }
             if (!requests.tryAcquire()) {
                 sendSafely(exchange, unavailable("request-saturated"));
                 return;
             }
             try {
+                if (!open.get()) {
+                    sendSafely(exchange, unavailable("closing"));
+                    return;
+                }
                 final Response response = route(exchange);
                 if (!response.committed()) {
                     send(exchange, response);
@@ -752,18 +776,29 @@ public final class CreatorServer implements AutoCloseable {
             if (!body.diagnostics().isEmpty()) {
                 return bodyResponse(body);
             }
-            final DevelopmentApplication deployed;
-            synchronized (applicationLock) {
-                deployed = application;
+            if (!open.get() || !responses.tryAcquire()) {
+                return unavailable("closed");
             }
-            final DevelopmentApplication.Response response = preview
-                    ? deployed.preview(target[0], target[1], body.value(), true)
-                    : deployed.run(target[0], body.value(), true);
-            return new Response(
-                    response.status(),
-                    "application/json; charset=utf-8",
-                    response.body().getBytes(StandardCharsets.UTF_8)
-            );
+            try {
+                if (!open.get()) {
+                    return unavailable("closed");
+                }
+                final DevelopmentApplication deployed;
+                synchronized (applicationLock) {
+                    deployed = application;
+                }
+                final DevelopmentApplication.Response response = preview
+                        ? deployed.preview(target[0], target[1], body.value(), true)
+                        : deployed.run(target[0], body.value(), true);
+                send(exchange, new Response(
+                        response.status(),
+                        "application/json; charset=utf-8",
+                        response.body().getBytes(StandardCharsets.UTF_8)
+                ));
+                return Response.committedResponse();
+            } finally {
+                responses.release();
+            }
         } finally {
             forwarding.release();
         }

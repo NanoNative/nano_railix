@@ -41,11 +41,6 @@ final class DevelopmentApplication implements AutoCloseable {
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(12);
     private static final Duration OUTPUT_JOIN_TIMEOUT = Duration.ofSeconds(2);
-    private final String fingerprint;
-    private final long builtAt;
-    private final String buildPath;
-    private final String sourcePath;
-    private final String classesPath;
     private final String token;
     private final Process process;
     private final OutputStream ownership;
@@ -62,11 +57,6 @@ final class DevelopmentApplication implements AutoCloseable {
     private int activeRequests;
 
     private DevelopmentApplication(
-            final String fingerprint,
-            final long builtAt,
-            final String buildPath,
-            final String sourcePath,
-            final String classesPath,
             final String token,
             final Process process,
             final OutputStream ownership,
@@ -75,11 +65,6 @@ final class DevelopmentApplication implements AutoCloseable {
             final URI baseUri,
             final HttpClient client
     ) {
-        this.fingerprint = fingerprint;
-        this.builtAt = builtAt;
-        this.buildPath = buildPath;
-        this.sourcePath = sourcePath;
-        this.classesPath = classesPath;
         this.token = token;
         this.process = process;
         this.ownership = ownership;
@@ -116,11 +101,6 @@ final class DevelopmentApplication implements AutoCloseable {
             final URI baseUri = URI.create("http://127.0.0.1:" + readyPort);
             client = HttpClient.newBuilder().connectTimeout(REQUEST_TIMEOUT).build();
             return new DevelopmentApplication(
-                    artifact.fingerprint(),
-                    artifact.builtAt(),
-                    artifact.jar().toString(),
-                    artifact.source().toString(),
-                    artifact.classes().toString(),
                     token,
                     process,
                     ownership,
@@ -201,11 +181,11 @@ final class DevelopmentApplication implements AutoCloseable {
     RailixValue.ObjectValue snapshot() {
         final Map<String, RailixValue> value = new LinkedHashMap<>();
         value.put("state", RailixValue.string(process.isAlive() && !closed.get() ? "running" : "stopped"));
-        value.put("fingerprint", RailixValue.string(fingerprint));
-        value.put("built_at", RailixValue.number(builtAt));
-        value.put("build_path", RailixValue.string(buildPath));
-        value.put("source_path", RailixValue.string(sourcePath));
-        value.put("classes_path", RailixValue.string(classesPath));
+        value.put("fingerprint", RailixValue.string(artifact.fingerprint()));
+        value.put("built_at", RailixValue.number(artifact.builtAt()));
+        value.put("build_path", RailixValue.string(artifact.jar().toString()));
+        value.put("source_path", RailixValue.string(artifact.source().toString()));
+        value.put("classes_path", RailixValue.string(artifact.classes().toString()));
         value.put("pid", RailixValue.number(process.pid()));
         return RailixValue.object(value);
     }

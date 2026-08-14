@@ -16,13 +16,13 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -31,90 +31,15 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@Execution(ExecutionMode.SAME_THREAD)
-@Timeout(40)
-final class RailixCreatorBrowserIT {
-    private static final int VIEWPORT_WIDTH = Integer.getInteger("railix.browser.viewport.width", 1_280);
-    private static Playwright playwright;
-    private static Browser browser;
-    private static String templateProject;
-    private static String templateCreator;
-
-    @TempDir
-    static Path template;
-
-    @TempDir
-    Path directory;
-
-    private CreatorServer creator;
-    private BrowserContext context;
-    private Page page;
-    private final List<String> pageErrors = new ArrayList<>();
-
-    @BeforeAll
-    static void startBrowser() throws Exception {
-        playwright = Playwright.create(new Playwright.CreateOptions().setEnv(Map.of(
-                "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
-                "1"
-        )));
-        browser = launchBrowser();
-        try (CreatorServer ignored = CreatorServer.start(
-                0,
-                template.resolve("project.json"),
-                template.resolve("railix-home")
-        )) {
-            templateProject = Files.readString(template.resolve("project.json"));
-            templateCreator = Files.readString(template.resolve("railix.creator.json"));
-        }
-    }
-
-    private static Browser launchBrowser() {
-        return playwright.chromium().launch(new BrowserType.LaunchOptions()
-                .setChannel(System.getenv().getOrDefault("RAILIX_BROWSER_CHANNEL", "chrome"))
-                .setHeadless(true));
-    }
-
-    @AfterAll
-    static void stopBrowser() {
-        if (playwright != null) {
-            playwright.close();
-        }
-    }
-
-    @BeforeEach
-    void openCreator() throws Exception {
-        pageErrors.clear();
-        Files.createDirectories(directory.resolve("railix-home/icons"));
-        Files.writeString(directory.resolve("railix-home/icons/bolt.svg"), "<svg/>");
-        Files.writeString(directory.resolve("project.json"), templateProject);
-        Files.writeString(directory.resolve("railix.creator.json"), templateCreator);
-        copyTree(template.resolve(".railix/build"), directory.resolve(".railix/build"));
-        creator = CreatorServer.start(0, directory.resolve("project.json"), directory.resolve("railix-home"));
-        context = browser.newContext(new Browser.NewContextOptions().setViewportSize(
-                VIEWPORT_WIDTH,
-                VIEWPORT_WIDTH <= 560 ? 720 : 800
-        ));
-        page = context.newPage();
-        page.onPageError(error -> pageErrors.add(error));
-        page.navigate(creator.baseUri().toString());
-        waitForText("#build-state", "Built");
-    }
-
-    @AfterEach
-    void closeCreator() {
-        try {
-            if (context != null) {
-                context.close();
-            }
-        } finally {
-            if (creator != null) {
-                creator.close();
-            }
-        }
-    }
+final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport {
 
     @Test
     void newProjectStartsWithOnePermanentCenteredApp() {
@@ -2551,6 +2476,45 @@ final class RailixCreatorBrowserIT {
         assertThat(runResult()).isEqualTo(RailixValue.nullValue());
     }
 
+    @ParameterizedTest(name = "{0} required configuration, preview, and run")
+    @CsvSource({
+            "number.greater-than, 6, 5, true",
+            "number.greater-or-equal, 5.00, 5, true",
+            "number.less-than, 6, 5, false",
+            "number.less-or-equal, 6, 5, false"
+    })
+    void numberComparisonCanBeConfiguredPreviewedAndExecuted(
+            final String primitive,
+            final String value,
+            final String than,
+            final boolean expected
+    ) {
+        preparePrimitiveSearch(
+                "{\"payload\":{\"value\":" + value + "}}",
+                primitive
+        );
+        page.locator("#steps-options [data-add-nested='" + primitive + "']").click();
+        waitForText("#build-state", "Built");
+
+        final var config = page.locator("#steps-0-than-value");
+        assertThat(config.inputValue()).isEqualTo("0");
+
+        config.fill(than);
+        config.press("Tab");
+        waitForText("#build-state", "Built");
+        page.locator("[data-preview-stage='0']").waitFor();
+        assertThat(page.locator("[data-preview-stage='0']").textContent())
+                .isEqualTo(Boolean.toString(expected));
+
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+        assertThat(runResult()).isEqualTo(RailixValue.bool(expected));
+    }
+
+}
+
+final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
+
     @Test
     void emptyPercentileRemainsOneLinearStepWithoutRoutes() {
         createPercentileJourney("[]", "");
@@ -2593,124 +2557,105 @@ final class RailixCreatorBrowserIT {
         assertThat(page.locator(".run-result").textContent()).contains("\"result\": 1");
     }
 
-    @Test
-    void numberCeilCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":1.2}}",
-                "ceil",
-                "number.ceil",
-                "2"
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.number(2));
-    }
-
-    @Test
-    void numberRoundCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":-1.5}}",
-                "round",
-                "number.round",
-                "-2"
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.number(-2));
-    }
-
-    @Test
-    void numberAbsoluteValueCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":-12.5}}",
-                "abs",
-                "number.abs",
-                "12.5"
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.number(new BigDecimal("12.5")));
-    }
-
-    @Test
-    void numberNegateCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":12.5}}",
-                "negate",
-                "number.negate",
-                "-12.5"
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.number(new BigDecimal("-12.5")));
-    }
-
-    @Test
-    void numberNegateMaximumMagnitudeCanBePreviewedAndExecuted() {
-        final String magnitude = "1".repeat(1_024);
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":" + magnitude + "}}",
-                "negate",
-                "number.negate",
-                "-" + magnitude
-        );
-
-        assertThat(runResult())
-                .isEqualTo(RailixValue.number(new BigDecimal("-" + magnitude)));
-    }
-
-    @Test
-    void numberSignCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":-0.1}}",
-                "sign",
-                "number.sign",
-                "-1"
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.number(-1));
-    }
-
-    @ParameterizedTest(name = "{0} required configuration, preview, and run")
-    @CsvSource({
-            "number.greater-than, 6, 5, true",
-            "number.greater-or-equal, 5.00, 5, true",
-            "number.less-than, 6, 5, false",
-            "number.less-or-equal, 6, 5, false"
-    })
-    void numberComparisonCanBeConfiguredPreviewedAndExecuted(
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("primitivePreviewAndExecutionCases")
+    void primitiveCanBePreviewedAndExecuted(
+            final String scenario,
+            final String example,
+            final String search,
             final String primitive,
-            final String value,
-            final String than,
-            final boolean expected
+            final String preview,
+            final RailixValue expected
     ) {
-        preparePrimitiveSearch(
-                "{\"payload\":{\"value\":" + value + "}}",
-                primitive
-        );
-        page.locator("#steps-options [data-add-nested='" + primitive + "']").click();
-        waitForText("#build-state", "Built");
+        createPrimitivePreviewAndResult(example, search, primitive, preview);
 
-        final var config = page.locator("#steps-0-than-value");
-        assertThat(config.inputValue()).isEqualTo("0");
-
-        config.fill(than);
-        config.press("Tab");
-        waitForText("#build-state", "Built");
-        page.locator("[data-preview-stage='0']").waitFor();
-        assertThat(page.locator("[data-preview-stage='0']").textContent())
-                .isEqualTo(Boolean.toString(expected));
-
-        selectTrigger();
-        page.locator(".run-result").waitFor();
-        assertThat(runResult()).isEqualTo(RailixValue.bool(expected));
+        assertThat(runResult()).isEqualTo(expected);
     }
 
-    @ParameterizedTest(name = "{0} is hidden for a string source")
-    @ValueSource(strings = {
-            "number.greater-than",
-            "number.greater-or-equal",
-            "number.less-than",
-            "number.less-or-equal"
-    })
-    void numberComparisonIsHiddenForAStringSource(final String primitive) {
-        preparePrimitiveSearch("{\"payload\":{\"value\":\"6\"}}", primitive);
+    static Stream<Arguments> primitivePreviewAndExecutionCases() {
+        final String magnitude = "1".repeat(1_024);
+        return Stream.of(
+                Arguments.of("numberCeilCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":1.2}}", "ceil", "number.ceil", "2",
+                        RailixValue.number(2)),
+                Arguments.of("numberRoundCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":-1.5}}", "round", "number.round", "-2",
+                        RailixValue.number(-2)),
+                Arguments.of("numberAbsoluteValueCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":-12.5}}", "abs", "number.abs", "12.5",
+                        RailixValue.number(new BigDecimal("12.5"))),
+                Arguments.of("numberNegateCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":12.5}}", "negate", "number.negate", "-12.5",
+                        RailixValue.number(new BigDecimal("-12.5"))),
+                Arguments.of("numberNegateMaximumMagnitudeCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":" + magnitude + "}}", "negate", "number.negate", "-" + magnitude,
+                        RailixValue.number(new BigDecimal("-" + magnitude))),
+                Arguments.of("numberSignCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":-0.1}}", "sign", "number.sign", "-1",
+                        RailixValue.number(-1)),
+                Arguments.of("textUppercaseCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":\"stra\\u00dfe\"}}", "uppercase", "text.uppercase", "\"STRASSE\"",
+                        RailixValue.string("STRASSE")),
+                Arguments.of("textTrimCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":\"\\u2003Railix\\u2003\"}}", "trim", "text.trim", "\"Railix\"",
+                        RailixValue.string("Railix")),
+                Arguments.of("textNormalizeSpaceCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":\" railix\\t creator \"}}",
+                        "normalize space", "text.normalize-space", "\"railix creator\"",
+                        RailixValue.string("railix creator")),
+                Arguments.of("textNormalizeNfcCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":\"e\\u0301\"}}", "normalize nfc", "text.normalize-nfc", "\"é\"",
+                        RailixValue.string("é")),
+                Arguments.of("textLengthCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":\"A\\ud83d\\ude80B\"}}", "length", "text.length", "3",
+                        RailixValue.number(3)),
+                Arguments.of("textIsEmptyCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":\"\"}}", "is empty", "text.is-empty", "true",
+                        RailixValue.bool(true)),
+                Arguments.of("listIsEmptyCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":[]}}", "is empty", "list.is-empty", "true",
+                        RailixValue.bool(true)),
+                Arguments.of("booleanToTextCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":true}}", "to text", "boolean.to-text", "\"true\"",
+                        RailixValue.string("true")),
+                Arguments.of("booleanToNumberCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":true}}", "to number", "boolean.to-number", "1",
+                        RailixValue.number(1)),
+                Arguments.of("listReverseCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":[1,2]}}", "reverse", "list.reverse", "[2,1]",
+                        RailixValue.array(List.of(RailixValue.number(2), RailixValue.number(1)))),
+                Arguments.of("numberToTextCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":1.2300}}", "to text", "number.to-text", "\"1.23\"",
+                        RailixValue.string("1.23")),
+                Arguments.of("valueWrapListCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":null}}", "wrap list", "value.wrap-list", "[null]",
+                        RailixValue.array(List.of(RailixValue.nullValue()))),
+                Arguments.of("valueToJsonCanBePreviewedAndExecuted",
+                        "{\"payload\":{\"value\":{\"z\":2,\"a\":1}}}", "to json", "value.to-json",
+                        "\"{\\\"a\\\":1,\\\"z\\\":2}\"", RailixValue.string("{\"a\":1,\"z\":2}"))
+        );
+    }
+
+    @ParameterizedTest(name = "{0} is hidden for a {1} source")
+    @CsvSource(delimiter = '|', textBlock = """
+            number.greater-than     | string | {"payload":{"value":"6"}}
+            number.greater-or-equal | string | {"payload":{"value":"6"}}
+            number.less-than        | string | {"payload":{"value":"6"}}
+            number.less-or-equal    | string | {"payload":{"value":"6"}}
+            text.starts-with        | number | {"payload":{"value":7}}
+            text.ends-with          | number | {"payload":{"value":7}}
+            list.is-empty           | object | {"payload":{"value":{}}}
+            boolean.to-text         | string | {"payload":{"value":"true"}}
+            boolean.to-number       | string | {"payload":{"value":"true"}}
+            list.reverse            | object | {"payload":{"value":{}}}
+            number.to-text          | string | {"payload":{"value":"1"}}
+            """)
+    void primitiveIsHiddenForIncompatibleSource(
+            final String primitive,
+            final String sourceType,
+            final String example
+    ) {
+        preparePrimitiveSearch(example, primitive);
 
         assertThat(page.locator("#steps-options [data-add-nested='" + primitive + "']").count()).isZero();
     }
@@ -2775,14 +2720,6 @@ final class RailixCreatorBrowserIT {
         assertThat(runResult()).isEqualTo(RailixValue.bool(true));
     }
 
-    @ParameterizedTest(name = "{0} is hidden for a number source")
-    @ValueSource(strings = {"text.starts-with", "text.ends-with"})
-    void textBoundaryIsHiddenForANumberSource(final String primitive) {
-        preparePrimitiveSearch("{\"payload\":{\"value\":7}}", primitive);
-
-        assertThat(page.locator("#steps-options [data-add-nested='" + primitive + "']").count()).isZero();
-    }
-
     @Test
     void valueEqualsCanBeConfiguredPreviewedAndExecuted() {
         preparePrimitiveSearch(
@@ -2807,176 +2744,6 @@ final class RailixCreatorBrowserIT {
     }
 
     @Test
-    void textUppercaseCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":\"stra\\u00dfe\"}}",
-                "uppercase",
-                "text.uppercase",
-                "\"STRASSE\""
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.string("STRASSE"));
-    }
-
-    @Test
-    void textTrimCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":\"\\u2003Railix\\u2003\"}}",
-                "trim",
-                "text.trim",
-                "\"Railix\""
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.string("Railix"));
-    }
-
-    @Test
-    void textNormalizeSpaceCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":\" railix\\t creator \"}}",
-                "normalize space",
-                "text.normalize-space",
-                "\"railix creator\""
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.string("railix creator"));
-    }
-
-    @Test
-    void textNormalizeNfcCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":\"e\\u0301\"}}",
-                "normalize nfc",
-                "text.normalize-nfc",
-                "\"\u00e9\""
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.string("\u00e9"));
-    }
-
-    @Test
-    void textLengthCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":\"A\\ud83d\\ude80B\"}}",
-                "length",
-                "text.length",
-                "3"
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.number(3));
-    }
-
-    @Test
-    void textIsEmptyCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":\"\"}}",
-                "is empty",
-                "text.is-empty",
-                "true"
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void listIsEmptyCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":[]}}",
-                "is empty",
-                "list.is-empty",
-                "true"
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.bool(true));
-    }
-
-    @Test
-    void listIsEmptyIsHiddenForAnObjectSource() {
-        preparePrimitiveSearch("{\"payload\":{\"value\":{}}}", "list.is-empty");
-
-        assertThat(page.locator("#steps-options [data-add-nested='list.is-empty']").count()).isZero();
-    }
-
-    @Test
-    void booleanToTextCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":true}}",
-                "to text",
-                "boolean.to-text",
-                "\"true\""
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.string("true"));
-    }
-
-    @Test
-    void booleanToTextIsHiddenForAStringSource() {
-        preparePrimitiveSearch("{\"payload\":{\"value\":\"true\"}}", "boolean.to-text");
-
-        assertThat(page.locator("#steps-options [data-add-nested='boolean.to-text']").count()).isZero();
-    }
-
-    @Test
-    void booleanToNumberCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":true}}",
-                "to number",
-                "boolean.to-number",
-                "1"
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.number(1));
-    }
-
-    @Test
-    void booleanToNumberIsHiddenForAStringSource() {
-        preparePrimitiveSearch("{\"payload\":{\"value\":\"true\"}}", "boolean.to-number");
-
-        assertThat(page.locator("#steps-options [data-add-nested='boolean.to-number']").count()).isZero();
-    }
-
-    @Test
-    void listReverseCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":[1,2]}}",
-                "reverse",
-                "list.reverse",
-                "[2,1]"
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.array(java.util.List.of(
-                RailixValue.number(2),
-                RailixValue.number(1)
-        )));
-    }
-
-    @Test
-    void listReverseIsHiddenForAnObjectSource() {
-        preparePrimitiveSearch("{\"payload\":{\"value\":{}}}", "list.reverse");
-
-        assertThat(page.locator("#steps-options [data-add-nested='list.reverse']").count()).isZero();
-    }
-
-    @Test
-    void numberToTextCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":1.2300}}",
-                "to text",
-                "number.to-text",
-                "\"1.23\""
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.string("1.23"));
-    }
-
-    @Test
-    void numberToTextIsHiddenForAStringSource() {
-        preparePrimitiveSearch("{\"payload\":{\"value\":\"1\"}}", "number.to-text");
-
-        assertThat(page.locator("#steps-options [data-add-nested='number.to-text']").count()).isZero();
-    }
-
-    @Test
     void numberToTextIsOfferedAtTheCanonicalNumberLimit() {
         preparePrimitiveSearch("{\"payload\":{\"value\":1e1023}}", "number.to-text");
 
@@ -2988,30 +2755,6 @@ final class RailixCreatorBrowserIT {
         preparePrimitiveSearch("{\"payload\":{\"value\":1e1024}}", "number.to-text");
 
         assertThat(page.locator("#steps-options [data-add-nested='number.to-text']").count()).isZero();
-    }
-
-    @Test
-    void valueWrapListCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":null}}",
-                "wrap list",
-                "value.wrap-list",
-                "[null]"
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.array(java.util.List.of(RailixValue.nullValue())));
-    }
-
-    @Test
-    void valueToJsonCanBePreviewedAndExecuted() {
-        createPrimitivePreviewAndResult(
-                "{\"payload\":{\"value\":{\"z\":2,\"a\":1}}}",
-                "to json",
-                "value.to-json",
-                "\"{\\\"a\\\":1,\\\"z\\\":2}\""
-        );
-
-        assertThat(runResult()).isEqualTo(RailixValue.string("{\"a\":1,\"z\":2}"));
     }
 
     @Test
@@ -4132,7 +3875,140 @@ final class RailixCreatorBrowserIT {
         assertThat(box.x + box.width).isLessThanOrEqualTo(viewport + 0.5);
     }
 
-    private void createResultJourney() {
+}
+
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Timeout(40)
+abstract class RailixCreatorBrowserSupport {
+    private static final int VIEWPORT_WIDTH = Integer.getInteger("railix.browser.viewport.width", 1_280);
+
+    @TempDir
+    Path directory;
+
+    CreatorServer creator;
+    BrowserContext context;
+    Page page;
+    final List<String> pageErrors = new ArrayList<>();
+
+    private Path template;
+    private String templateProject;
+    private String templateCreator;
+    private Playwright playwright;
+    private Browser browser;
+    private ProcessHandle playwrightDriver;
+
+    @BeforeAll
+    final void startBrowser(@TempDir final Path template) throws Exception {
+        this.template = template;
+        final ProcessHandle testProcess = ProcessHandle.current();
+        final List<Long> existingChildren = testProcess.children().map(ProcessHandle::pid).toList();
+        playwright = Playwright.create(new Playwright.CreateOptions().setEnv(Map.of(
+                "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
+                "1"
+        )));
+        final List<ProcessHandle> drivers = testProcess.children()
+                .filter(process -> !existingChildren.contains(process.pid()))
+                .toList();
+        assertThat(drivers).singleElement();
+        playwrightDriver = drivers.getFirst();
+        browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
+                .setChannel(System.getenv().getOrDefault("RAILIX_BROWSER_CHANNEL", "chrome"))
+                .setHeadless(true));
+        try (CreatorServer ignored = CreatorServer.start(
+                0,
+                template.resolve("project.json"),
+                template.resolve("railix-home")
+        )) {
+            templateProject = Files.readString(template.resolve("project.json"));
+            templateCreator = Files.readString(template.resolve("railix.creator.json"));
+        }
+    }
+
+    @AfterAll
+    final void stopBrowser() throws InterruptedException {
+        if (playwright == null) {
+            return;
+        }
+        final List<ProcessHandle> processes = Stream.concat(
+                playwrightDriver.descendants(),
+                Stream.of(playwrightDriver)
+        ).toList();
+        final AtomicReference<RuntimeException> failure = new AtomicReference<>();
+        final Thread closer = Thread.ofPlatform().name("railix-playwright-close").start(() -> {
+            try {
+                playwright.close();
+            } catch (final RuntimeException exception) {
+                failure.set(exception);
+            }
+        });
+        closer.join(java.time.Duration.ofSeconds(5));
+        if (closer.isAlive()) {
+            terminate(processes);
+            closer.join(java.time.Duration.ofSeconds(5));
+        } else if (!awaitExit(processes)) {
+            terminate(processes);
+        }
+        assertThat(closer.isAlive()).isFalse();
+        assertThat(processes).noneMatch(ProcessHandle::isAlive);
+        if (failure.get() != null) {
+            throw failure.get();
+        }
+    }
+
+    private static void terminate(final List<ProcessHandle> processes) {
+        processes.reversed().stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroy);
+        if (!awaitExit(processes)) {
+            processes.reversed().stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroyForcibly);
+            assertThat(awaitExit(processes)).isTrue();
+        }
+    }
+
+    private static boolean awaitExit(final List<ProcessHandle> processes) {
+        try {
+            CompletableFuture.allOf(processes.stream()
+                    .filter(ProcessHandle::isAlive)
+                    .map(ProcessHandle::onExit)
+                    .toArray(CompletableFuture<?>[]::new)
+            ).orTimeout(2, TimeUnit.SECONDS).join();
+        } catch (final CompletionException ignoredTimeout) {
+            // The caller escalates from graceful to forced termination.
+        }
+        return processes.stream().noneMatch(ProcessHandle::isAlive);
+    }
+
+    @BeforeEach
+    final void openCreator() throws Exception {
+        pageErrors.clear();
+        Files.createDirectories(directory.resolve("railix-home/icons"));
+        Files.writeString(directory.resolve("railix-home/icons/bolt.svg"), "<svg/>");
+        Files.writeString(directory.resolve("project.json"), templateProject);
+        Files.writeString(directory.resolve("railix.creator.json"), templateCreator);
+        copyTree(template.resolve(".railix/build"), directory.resolve(".railix/build"));
+        creator = CreatorServer.start(0, directory.resolve("project.json"), directory.resolve("railix-home"));
+        context = browser.newContext(new Browser.NewContextOptions().setViewportSize(
+                VIEWPORT_WIDTH,
+                VIEWPORT_WIDTH <= 560 ? 720 : 800
+        ));
+        page = context.newPage();
+        page.onPageError(error -> pageErrors.add(error));
+        page.navigate(creator.baseUri().toString());
+        waitForText("#build-state", "Built");
+    }
+
+    @AfterEach
+    final void closeCreator() {
+        try {
+            if (context != null) {
+                context.close();
+            }
+        } finally {
+            if (creator != null) {
+                creator.close();
+            }
+        }
+    }
+
+    void createResultJourney() {
         addTrigger();
         exampleContext().fill("{\"payload\":{\"text\":\"Hello RAILIX\"}}");
         exampleContext().press("Tab");
@@ -4144,7 +4020,7 @@ final class RailixCreatorBrowserIT {
         waitForText("#build-state", "Built");
     }
 
-    private void createLowercaseJourney() {
+    void createLowercaseJourney() {
         createResultJourney();
         selectTrigger();
         addManipulationAfterSelected();
@@ -4154,7 +4030,7 @@ final class RailixCreatorBrowserIT {
         waitForText("#build-state", "Built");
     }
 
-    private void createPrimitiveResult(
+    void createPrimitiveResult(
             final String example,
             final String search,
             final String primitive
@@ -4166,7 +4042,7 @@ final class RailixCreatorBrowserIT {
         page.locator(".run-result").waitFor();
     }
 
-    private void createPrimitivePreviewAndResult(
+    void createPrimitivePreviewAndResult(
             final String example,
             final String search,
             final String primitive,
@@ -4181,11 +4057,11 @@ final class RailixCreatorBrowserIT {
         page.locator(".run-result").waitFor();
     }
 
-    private RailixValue runResult() {
+    RailixValue runResult() {
         return runResult(0);
     }
 
-    private RailixValue runResult(final int index) {
+    RailixValue runResult(final int index) {
         final RailixValue.ArrayValue cases = (RailixValue.ArrayValue) (
                 (RailixJson.Parsed) RailixJson.parse(page.locator(".run-result").textContent())
         ).value();
@@ -4197,7 +4073,7 @@ final class RailixCreatorBrowserIT {
                 .get("result");
     }
 
-    private void createFallibleNumberJourney(final String value) {
+    void createFallibleNumberJourney(final String value) {
         preparePrimitiveSearch(
                 "{\"payload\":{\"value\":\"" + value + "\"}}",
                 "to number"
@@ -4206,7 +4082,7 @@ final class RailixCreatorBrowserIT {
         waitForText("#build-state", "Built");
     }
 
-    private void createPercentileJourney(final String values, final String percentile) {
+    void createPercentileJourney(final String values, final String percentile) {
         preparePrimitiveSearch(
                 "{\"payload\":{\"value\":" + values + "}}",
                 "percentile"
@@ -4220,7 +4096,7 @@ final class RailixCreatorBrowserIT {
         waitForText("#build-state", "Built");
     }
 
-    private void preparePrimitiveSearch(final String example, final String search) {
+    void preparePrimitiveSearch(final String example, final String search) {
         addTrigger();
         exampleContext().fill(example);
         exampleContext().press("Tab");
@@ -4231,7 +4107,7 @@ final class RailixCreatorBrowserIT {
         page.locator("#steps-search").fill(search);
     }
 
-    private void prepareLiteralPrimitiveSearch(final String value, final String search) {
+    void prepareLiteralPrimitiveSearch(final String value, final String search) {
         addTrigger();
         addManipulationAfterSelected();
         choosePath("field", "result");
@@ -4241,14 +4117,14 @@ final class RailixCreatorBrowserIT {
         page.locator("#steps-search").fill(search);
     }
 
-    private static String canonicalJsonBytes(final int bytes) {
+    static String canonicalJsonBytes(final int bytes) {
         final int fixedBytes = 1_048;
         return "{\"number\":1e1023,\"padding\":\""
                 + "a".repeat(bytes - fixedBytes)
                 + "\"}";
     }
 
-    private void prepareOperationAfterListSize() {
+    void prepareOperationAfterListSize() {
         addTrigger();
         exampleContext().fill("{\"payload\":{\"value\":[1,2]}}");
         exampleContext().press("Tab");
@@ -4264,7 +4140,7 @@ final class RailixCreatorBrowserIT {
         choosePath("value-0-source", "payload", "size");
     }
 
-    private void prepareDateNotChain(final int notCount) {
+    void prepareDateNotChain(final int notCount) {
         preparePrimitiveSearch("{\"payload\":{\"value\":0}}", "utc");
         page.locator("#steps-options [data-add-nested='date.is-utc-millis']").click();
         for (int index = 0; index < notCount; index++) {
@@ -4274,7 +4150,7 @@ final class RailixCreatorBrowserIT {
         waitForText("#build-state", "Built");
     }
 
-    private void prepareRejectedCurrentCandidate() {
+    void prepareRejectedCurrentCandidate() {
         addTrigger();
         exampleContext().fill("{\"payload\":{\"value\":\"\"}}");
         exampleContext().press("Tab");
@@ -4290,7 +4166,7 @@ final class RailixCreatorBrowserIT {
         waitForText("#build-state", "Built");
     }
 
-    private void addLiteralCandidate(final String value) {
+    void addLiteralCandidate(final String value) {
         page.locator("#value-candidate-search").fill("literal");
         page.locator("[data-add-candidate='literal']").click();
         final int index = page.locator(".candidate[data-candidate-index]").count() - 1;
@@ -4298,7 +4174,7 @@ final class RailixCreatorBrowserIT {
         page.locator("#value-" + index + "-literal-value").press("Tab");
     }
 
-    private void prepareMissingResultCandidate() {
+    void prepareMissingResultCandidate() {
         addTrigger();
         exampleContext().fill("{\"payload\":{}}");
         exampleContext().press("Tab");
@@ -4312,7 +4188,7 @@ final class RailixCreatorBrowserIT {
         addLiteralCandidate("\"RAILIX\"");
     }
 
-    private void openSourceAfterSparseArrayWrite() {
+    void openSourceAfterSparseArrayWrite() {
         addTrigger();
         exampleContext().fill("{\"payload\":{}}");
         exampleContext().press("Tab");
@@ -4330,7 +4206,7 @@ final class RailixCreatorBrowserIT {
         page.locator("[data-path-part='people']").click();
     }
 
-    private void openFieldBuilder(final String example, final String... parts) {
+    void openFieldBuilder(final String example, final String... parts) {
         addTrigger();
         exampleContext().fill(example);
         exampleContext().press("Tab");
@@ -4342,7 +4218,7 @@ final class RailixCreatorBrowserIT {
         }
     }
 
-    private void createLiteralResult(
+    void createLiteralResult(
             final String literal,
             final Object[] target,
             final String... source
@@ -4362,14 +4238,14 @@ final class RailixCreatorBrowserIT {
         page.locator(".run-result").waitFor();
     }
 
-    private void groupSteps(final int start, final int end) {
+    void groupSteps(final int start, final int end) {
         page.locator("[data-inspector-mode='groups']").click();
         page.locator("#new-group").click();
         page.locator("[data-select-step]").nth(start).click();
         clickAndWaitForCreatorSave(() -> page.locator("[data-select-step]").nth(end).click());
     }
 
-    private void prepareSharedGroup() {
+    void prepareSharedGroup() {
         openProject(fourStepProject());
         groupSteps("one", "two");
         page.locator("[data-inspector-mode='groups']").click();
@@ -4378,7 +4254,7 @@ final class RailixCreatorBrowserIT {
         clickAndWaitForCreatorSave(() -> page.locator("[data-select-step='four']").click());
     }
 
-    private void prepareNestedGroup() {
+    void prepareNestedGroup() {
         createLowercaseJourney();
         groupSteps(0, 1);
         page.locator("[data-select-group]").click();
@@ -4386,21 +4262,21 @@ final class RailixCreatorBrowserIT {
         groupSteps(0, 0);
     }
 
-    private void groupSteps(final String start, final String end) {
+    void groupSteps(final String start, final String end) {
         page.locator("[data-inspector-mode='groups']").click();
         page.locator("#new-group").click();
         page.locator("[data-select-step='" + start + "']").click();
         clickAndWaitForCreatorSave(() -> page.locator("[data-select-step='" + end + "']").click());
     }
 
-    private void clickAndWaitForCreatorSave(final Runnable click) {
+    void clickAndWaitForCreatorSave(final Runnable click) {
         final var response = page.waitForResponse(candidate ->
                 candidate.url().endsWith("/api/creator")
                         && "POST".equals(candidate.request().method()), click);
         assertThat(response.status()).isEqualTo(200);
     }
 
-    private void openSharedStep(final int occurrence, final int step) {
+    void openSharedStep(final int occurrence, final int step) {
         final String id = new String[][]{{"one", "two"}, {"three", "four"}}[occurrence][step];
         page.locator("[data-inspector-mode='groups']").click();
         page.locator("[data-manage-occurrence]").nth(occurrence).click();
@@ -4408,13 +4284,13 @@ final class RailixCreatorBrowserIT {
         page.locator("[data-select-step='" + id + "']").click();
     }
 
-    private String creatorMetadata() {
+    String creatorMetadata() {
         return String.valueOf(page.evaluate("""
                 async () => JSON.stringify((await (await fetch('/api/project')).json()).creator)
                 """));
     }
 
-    private static String filterProject() {
+    static String filterProject() {
         return branchProject("filter-browser", "filter", "railix.filter", """
                 [{
                   "option":"field","inputs":{"field":["context","payload","value"]},
@@ -4425,7 +4301,7 @@ final class RailixCreatorBrowserIT {
                 """);
     }
 
-    private static String choiceProject() {
+    static String choiceProject() {
         return branchProject("choice-browser", "choice", "railix.choice", """
                 [[{
                   "option":"field","inputs":{"field":["context","payload","value"]},
@@ -4436,7 +4312,7 @@ final class RailixCreatorBrowserIT {
                 """);
     }
 
-    private static String branchProject(
+    static String branchProject(
             final String projectId,
             final String branchId,
             final String branchStep,
@@ -4475,7 +4351,7 @@ final class RailixCreatorBrowserIT {
                 );
     }
 
-    private static String deepBranchProject(final int steps) {
+    static String deepBranchProject(final int steps) {
         final StringBuilder nodes = new StringBuilder("""
                 {"format":1,"id":"deep-branch","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
@@ -4500,7 +4376,7 @@ final class RailixCreatorBrowserIT {
         return nodes.append(links).append("]}").toString();
     }
 
-    private static String fourStepProject() {
+    static String fourStepProject() {
         return """
                 {"format":1,"id":"four-steps","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
@@ -4530,13 +4406,13 @@ final class RailixCreatorBrowserIT {
                 """;
     }
 
-    private void addTrigger() {
+    void addTrigger() {
         page.locator("#add-trigger").click();
         page.locator("#step-search").fill("cli");
         page.locator("[data-add-step='railix.trigger.cli']").click();
     }
 
-    private void addFilterAfterTrigger() {
+    void addFilterAfterTrigger() {
         addTrigger();
         openInspectorTab("inspect");
         page.locator("#add-next-step").click();
@@ -4545,7 +4421,7 @@ final class RailixCreatorBrowserIT {
         waitForText("#build-state", "Built");
     }
 
-    private void addChoiceAfterTrigger() {
+    void addChoiceAfterTrigger() {
         addTrigger();
         openInspectorTab("inspect");
         page.locator("#add-next-step").click();
@@ -4554,11 +4430,11 @@ final class RailixCreatorBrowserIT {
         waitForText("#build-state", "Built");
     }
 
-    private void prepareSizeChoiceMatcher() {
+    void prepareSizeChoiceMatcher() {
         prepareSizeChoiceMatcher(1);
     }
 
-    private void prepareSizeChoiceMatcher(final int size) {
+    void prepareSizeChoiceMatcher(final int size) {
         openProject(branchProject("choice-size", "choice", "railix.choice", """
                 [[{
                   "option":"literal","inputs":{"value":%s},
@@ -4572,7 +4448,7 @@ final class RailixCreatorBrowserIT {
         waitForText("#build-state", "Not built");
     }
 
-    private void addSizeBounds(final int size) {
+    void addSizeBounds(final int size) {
         prepareSizeChoiceMatcher(size);
         final Locator search = page.locator("[data-matcher-group='0'] [data-predicate-query]");
         search.fill("gt");
@@ -4586,11 +4462,11 @@ final class RailixCreatorBrowserIT {
         waitForText("#build-state", "Built");
     }
 
-    private static String numberList(final int size) {
+    static String numberList(final int size) {
         return size == 0 ? "[]" : "[" + "0,".repeat(size - 1) + "0]";
     }
 
-    private void addNestedFilterToMatchRoute() {
+    void addNestedFilterToMatchRoute() {
         addFilterAfterTrigger();
         page.locator("[data-add-outcome='match']").click();
         page.locator("#step-search").fill("filter");
@@ -4598,7 +4474,7 @@ final class RailixCreatorBrowserIT {
         waitForText("#build-state", "Built");
     }
 
-    private void addStepToOtherwiseBranch() {
+    void addStepToOtherwiseBranch() {
         addFilterAfterTrigger();
         page.locator("[data-add-outcome='otherwise']").click();
         page.locator("#step-search").fill("field");
@@ -4607,7 +4483,7 @@ final class RailixCreatorBrowserIT {
     }
 
 
-    private void openProject(final String source) {
+    void openProject(final String source) {
         final Number status = (Number) page.evaluate("""
                 source => fetch('/api/project', {
                   method: 'POST',
@@ -4625,7 +4501,7 @@ final class RailixCreatorBrowserIT {
                 .isEqualTo("Built");
     }
 
-    private static void copyTree(final Path source, final Path target) throws IOException {
+    static void copyTree(final Path source, final Path target) throws IOException {
         try (var paths = Files.walk(source)) {
             for (final Path path : paths.toList()) {
                 final Path destination = target.resolve(source.relativize(path));
@@ -4638,7 +4514,7 @@ final class RailixCreatorBrowserIT {
         }
     }
 
-    private void delayNextProjectWrite() {
+    void delayNextProjectWrite() {
         page.evaluate("""
                 () => {
                   const original = window.fetch.bind(window);
@@ -4665,7 +4541,7 @@ final class RailixCreatorBrowserIT {
                 """);
     }
 
-    private void delayFirstProjectWriteAndRecordIds() {
+    void delayFirstProjectWriteAndRecordIds() {
         page.evaluate("""
                 () => {
                   const request = window.fetch.bind(window);
@@ -4690,7 +4566,7 @@ final class RailixCreatorBrowserIT {
                 """);
     }
 
-    private void delayNextPreview() {
+    void delayNextPreview() {
         page.evaluate("""
                 () => {
                   const request = window.fetch.bind(window);
@@ -4709,7 +4585,7 @@ final class RailixCreatorBrowserIT {
                 """);
     }
 
-    private void delayNextRun() {
+    void delayNextRun() {
         page.evaluate("""
                 () => {
                   const request = window.fetch.bind(window);
@@ -4741,24 +4617,24 @@ final class RailixCreatorBrowserIT {
                 """);
     }
 
-    private String applicationPid() {
+    String applicationPid() {
         return String.valueOf(((Number) page.evaluate(
                 "async () => (await (await fetch('/api/application')).json()).pid"
         )).longValue());
     }
 
-    private void addManipulationAfterSelected() {
+    void addManipulationAfterSelected() {
         openInspectorTab("inspect");
         page.locator("#add-next-step").click();
         page.locator("#step-search").fill("field");
         page.locator("[data-add-step='railix.field-manipulation']").click();
     }
 
-    private void selectTrigger() {
+    void selectTrigger() {
         page.locator(".trigger-node").click();
     }
 
-    private void choosePath(final String target, final String... parts) {
+    void choosePath(final String target, final String... parts) {
         final Locator identified = page.locator("#" + target + "-path");
         final Locator picker = identified.count() == 1
                 ? identified
@@ -4771,15 +4647,15 @@ final class RailixCreatorBrowserIT {
         page.locator("#apply-path").click();
     }
 
-    private void chooseCustomField(final String... fields) {
+    void chooseCustomField(final String... fields) {
         chooseCustomPath((Object[]) fields);
     }
 
-    private void chooseCustomPath(final Object... parts) {
+    void chooseCustomPath(final Object... parts) {
         chooseCustomPathFor("field", parts);
     }
 
-    private void chooseCustomPathFor(final String target, final Object... parts) {
+    void chooseCustomPathFor(final String target, final Object... parts) {
         final Locator identified = page.locator("#" + target + "-path");
         final Locator picker = identified.count() == 1
                 ? identified
@@ -4798,32 +4674,32 @@ final class RailixCreatorBrowserIT {
         page.locator("#apply-path").click();
     }
 
-    private void openInspectorTab(final String mode) {
+    void openInspectorTab(final String mode) {
         page.locator("[data-inspector-mode='" + mode + "']").click();
     }
 
-    private Locator examplePayload() {
+    Locator examplePayload() {
         if (page.locator("#example-payload").count() == 0) {
             openInspectorTab("examples");
         }
         return page.locator("#example-payload");
     }
 
-    private Locator exampleContext() {
+    Locator exampleContext() {
         if (page.locator("#example-context").count() == 0) {
             openInspectorTab("examples");
         }
         return page.locator("#example-context");
     }
 
-    private Locator presentationName() {
+    Locator presentationName() {
         if (page.locator("#presentation-name").count() == 0) {
             openInspectorTab("appearance");
         }
         return page.locator("#presentation-name");
     }
 
-    private void prepareTextPayloadTrigger() {
+    void prepareTextPayloadTrigger() {
         addTrigger();
         chooseCustomPathFor("target", "payload", "text");
         waitForText("#build-state", "Built");
@@ -4833,7 +4709,7 @@ final class RailixCreatorBrowserIT {
         openInspectorTab("inspect");
     }
 
-    private String addGraphPrimitive(final String payload, final String query, final String id) {
+    String addGraphPrimitive(final String payload, final String query, final String id) {
         addTrigger();
         chooseCustomPathFor("target", "payload", "value");
         waitForText("#build-state", "Built");
@@ -4852,7 +4728,7 @@ final class RailixCreatorBrowserIT {
         return page.locator(".step-node.selected").getAttribute("data-node-id");
     }
 
-    private void replaceExamplePayloads(final String... payloads) {
+    void replaceExamplePayloads(final String... payloads) {
         assertThat(page.locator("[data-select-example]").count()).isEqualTo(payloads.length);
         for (int index = 0; index < payloads.length; index++) {
             page.locator("[data-select-example='" + index + "']").click();
@@ -4861,7 +4737,7 @@ final class RailixCreatorBrowserIT {
         }
     }
 
-    private String positions() {
+    String positions() {
         page.evaluate("""
                 () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
                   .then(() => Promise.allSettled(
@@ -4883,7 +4759,7 @@ final class RailixCreatorBrowserIT {
         );
     }
 
-    private void waitForText(final String selector, final String text) {
+    void waitForText(final String selector, final String text) {
         try {
             page.waitForFunction(
                     "expected => document.querySelector(expected.selector)?.textContent === expected.text",
@@ -4902,7 +4778,7 @@ final class RailixCreatorBrowserIT {
         }
     }
 
-    private static void stopProcess(final long pid) {
+    static void stopProcess(final long pid) {
         final ProcessHandle process = ProcessHandle.of(pid).orElseThrow();
         process.destroyForcibly();
         process.onExit().orTimeout(2, java.util.concurrent.TimeUnit.SECONDS).join();

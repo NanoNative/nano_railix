@@ -5,7 +5,6 @@ ROOT=$(CDPATH= cd -- "${0%/*}/.." && pwd)
 cd "$ROOT"
 
 ./mvnw clean verify
-./mvnw -pl modules/railix-creator -am jacoco:report-aggregate@coverage-aggregate
 
 REPORT="$ROOT/modules/railix-creator/target/site/jacoco-aggregate/jacoco.csv"
 awk -F, '

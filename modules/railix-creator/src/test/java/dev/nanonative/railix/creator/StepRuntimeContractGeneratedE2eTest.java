@@ -13,6 +13,10 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import thirdparty.conformance.StepRuntimeContractProbe;
 
 import java.io.File;
@@ -234,47 +238,51 @@ final class StepRuntimeContractGeneratedE2eTest {
         }
     }
 
-    @Test
-    void graphStepImplementationExceptionBecomesAnExplicitFailure() throws Exception {
-        assertFailure(runGraph("graph-exception"), "STEP_IMPLEMENTATION_FAULT", "graph-exception-step");
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', textBlock = """
+            graphStepImplementationExceptionBecomesAnExplicitFailure | graph-exception           | STEP_IMPLEMENTATION_FAULT | graph-exception-step
+            graphStepJavaNullResultBecomesAnExplicitFailure          | graph-null                | STEP_RESULT_REQUIRED      | graph-null-step
+            graphStepUndeclaredOutcomeBecomesAnExplicitFailure       | graph-undeclared-outcome  | STEP_OUTCOME_INVALID      | graph-undeclared-outcome-step
+            graphStepNestedOutputBecomesAnExplicitFailure            | graph-unexpected-output   | STEP_OUTPUT_INVALID       | graph-unexpected-output-step
+            graphStepUndeclaredWriteBecomesAnExplicitFailure         | graph-unknown-write       | STEP_WRITE_UNDECLARED     | graph-unknown-write-step
+            graphStepWriteThroughReadOnlyInputBecomesAnExplicitFailure | graph-read-only-write    | STEP_WRITE_UNDECLARED     | graph-read-only-write-step
+            secondaryOutcomeCannotReturnOutputs                      | secondary-output          | STEP_OUTPUT_UNEXPECTED    | secondary-output-step
+            declaredOutputRejectsWrongShape                          | output-shape              | STEP_OUTPUT_INVALID       | output-shape-step
+            declaredNumberOutputRejectsNoncanonicalValue             | output-number-domain      | STEP_OUTPUT_INVALID       | output-number-domain-step
+            nestedJavaNullResultFailsExplicitly                      | nested-null               | STEP_RESULT_REQUIRED      | contract.nested.null
+            nestedImplementationExceptionFailsExplicitly             | nested-exception          | STEP_IMPLEMENTATION_FAULT | contract.nested.exception
+            nestedUndeclaredOutcomeFailsExplicitly                    | nested-undeclared-outcome | STEP_OUTCOME_INVALID      | contract.nested.undeclared-outcome
+            nestedStepCannotWriteContext                             | nested-write              | STEP_WRITE_UNEXPECTED     | contract.nested.write
+            nestedSecondaryOutcomeCannotReturnOutput                 | nested-secondary-output   | STEP_OUTPUT_UNEXPECTED    | contract.nested.secondary-output
+            nestedNumberRejectsNoncanonicalValue                     | nested-number-domain      | STEP_OUTPUT_INVALID       | contract.nested.number-domain
+            """)
+    void generatedGraphFailure(final String scenario, final String trigger, final String code, final String step) throws Exception {
+        assertFailure(runGraph(trigger), code, step);
     }
 
-    @Test
-    void graphStepJavaNullResultBecomesAnExplicitFailure() throws Exception {
-        assertFailure(runGraph("graph-null"), "STEP_RESULT_REQUIRED", "graph-null-step");
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', textBlock = """
+            graphStepInterruptionCancelsTheStream          | graph-interrupt
+            interruptSetByHandlerCancelsBeforeCommit       | interrupt-after-result
+            nestedProgramObservesPreexistingInterrupt      | nested-preinterrupted
+            nestedInterruptedHandlerCancelsTheInvocation   | nested-interrupt
+            """)
+    void generatedGraphCancellation(final String scenario, final String trigger) throws Exception {
+        assertCancelled(runGraph(trigger));
     }
 
-    @Test
-    void graphStepUndeclaredOutcomeBecomesAnExplicitFailure() throws Exception {
-        assertFailure(runGraph("graph-undeclared-outcome"), "STEP_OUTCOME_INVALID", "graph-undeclared-outcome-step");
-    }
-
-    @Test
-    void graphStepNestedOutputBecomesAnExplicitFailure() throws Exception {
-        assertFailure(runGraph("graph-unexpected-output"), "STEP_OUTPUT_INVALID", "graph-unexpected-output-step");
-    }
-
-    @Test
-    void graphStepUndeclaredWriteBecomesAnExplicitFailure() throws Exception {
-        assertFailure(runGraph("graph-unknown-write"), "STEP_WRITE_UNDECLARED", "graph-unknown-write-step");
-    }
-
-    @Test
-    void graphStepWriteThroughReadOnlyInputBecomesAnExplicitFailure() throws Exception {
-        assertFailure(runGraph("graph-read-only-write"), "STEP_WRITE_UNDECLARED", "graph-read-only-write-step");
-    }
-
-    @Test
-    void graphStepInterruptionCancelsTheStream() throws Exception {
-        final DevelopmentApplication.Response response = runGraph("graph-interrupt");
-
-        assertThat(response.status()).isEqualTo(409);
-        assertThat(string(body(response), "status")).isEqualTo("cancelled");
-    }
-
-    @Test
-    void incompatibleFinalTriggerResultBecomesAnExplicitRejection() throws Exception {
-        assertRejection(runGraph("incompatible-result"), "RUN_RESULT_INCOMPATIBLE", "context.result");
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', textBlock = """
+            incompatibleFinalTriggerResultBecomesAnExplicitRejection                 | incompatible-result       | RUN_RESULT_INCOMPATIBLE       | context.result
+            graphStepRejectsAnUnboundedGapInALaterWrite                              | graph-multi-write-sparse  | RUN_ARRAY_TARGET_SPARSE       | nodes[20].inputs.second
+            graphStepAppliesWritesInDeclaredInputOrderRatherThanResultMapOrder        | graph-multi-write-order   | RUN_FIELD_TARGET_CONFLICT     | nodes[22].inputs.second
+            ordinaryReceiveRejectsRuntimeRefinementViolation                         | receive-refinement        | RUN_STEP_RECEIVE_INCOMPATIBLE | nodes[24].receives.received
+            noncanonicalTriggerResultIsRejectedBeforeSerialization                   | write-number-domain       | RUN_RESULT_INCOMPATIBLE       | context.result
+            sparseWriteUsesExistingArraySize                                         | array-sparse-existing     | RUN_ARRAY_TARGET_SPARSE       | nodes[68].inputs.target
+            arrayPathRejectsScalarRuntimeValue                                       | array-scalar-conflict     | RUN_FIELD_TARGET_CONFLICT     | nodes[70].inputs.target
+            """)
+    void generatedGraphRejection(final String scenario, final String trigger, final String code, final String path) throws Exception {
+        assertRejection(runGraph(trigger), code, path);
     }
 
     @Test
@@ -289,122 +297,6 @@ final class StepRuntimeContractGeneratedE2eTest {
     }
 
     @Test
-    void graphStepRejectsAnUnboundedGapInALaterWrite() throws Exception {
-        assertRejection(
-                runGraph("graph-multi-write-sparse"),
-                "RUN_ARRAY_TARGET_SPARSE",
-                "nodes[20].inputs.second"
-        );
-    }
-
-    @Test
-    void graphStepAppliesWritesInDeclaredInputOrderRatherThanResultMapOrder() throws Exception {
-        assertRejection(
-                runGraph("graph-multi-write-order"),
-                "RUN_FIELD_TARGET_CONFLICT",
-                "nodes[22].inputs.second"
-        );
-    }
-
-    @Test
-    void ordinaryReceiveRejectsRuntimeRefinementViolation() throws Exception {
-        assertRejection(
-                runGraph("receive-refinement"),
-                "RUN_STEP_RECEIVE_INCOMPATIBLE",
-                graphPath("receive-refinement") + ".receives.received"
-        );
-    }
-
-    @Test
-    void interruptSetByHandlerCancelsBeforeCommit() throws Exception {
-        assertCancelled(runGraph("interrupt-after-result"));
-    }
-
-    @Test
-    void secondaryOutcomeCannotReturnOutputs() throws Exception {
-        assertFailure(runGraph("secondary-output"), "STEP_OUTPUT_UNEXPECTED", "secondary-output-step");
-    }
-
-    @Test
-    void declaredOutputRejectsWrongShape() throws Exception {
-        assertFailure(runGraph("output-shape"), "STEP_OUTPUT_INVALID", "output-shape-step");
-    }
-
-    @Test
-    void declaredNumberOutputRejectsNoncanonicalValue() throws Exception {
-        assertFailure(
-                runGraph("output-number-domain"),
-                "STEP_OUTPUT_INVALID",
-                "output-number-domain-step"
-        );
-    }
-
-    @Test
-    void noncanonicalTriggerResultIsRejectedBeforeSerialization() throws Exception {
-        assertRejection(
-                runGraph("write-number-domain"),
-                "RUN_RESULT_INCOMPATIBLE",
-                "context.result"
-        );
-    }
-
-    @Test
-    void nestedProgramObservesPreexistingInterrupt() throws Exception {
-        assertCancelled(runGraph("nested-preinterrupted"));
-    }
-
-    @Test
-    void nestedJavaNullResultFailsExplicitly() throws Exception {
-        assertFailure(runGraph("nested-null"), "STEP_RESULT_REQUIRED", "contract.nested.null");
-    }
-
-    @Test
-    void nestedImplementationExceptionFailsExplicitly() throws Exception {
-        assertFailure(
-                runGraph("nested-exception"),
-                "STEP_IMPLEMENTATION_FAULT",
-                "contract.nested.exception"
-        );
-    }
-
-    @Test
-    void nestedUndeclaredOutcomeFailsExplicitly() throws Exception {
-        assertFailure(
-                runGraph("nested-undeclared-outcome"),
-                "STEP_OUTCOME_INVALID",
-                "contract.nested.undeclared-outcome"
-        );
-    }
-
-    @Test
-    void nestedInterruptedHandlerCancelsTheInvocation() throws Exception {
-        assertCancelled(runGraph("nested-interrupt"));
-    }
-
-    @Test
-    void nestedStepCannotWriteContext() throws Exception {
-        assertFailure(runGraph("nested-write"), "STEP_WRITE_UNEXPECTED", "contract.nested.write");
-    }
-
-    @Test
-    void nestedSecondaryOutcomeCannotReturnOutput() throws Exception {
-        assertFailure(
-                runGraph("nested-secondary-output"),
-                "STEP_OUTPUT_UNEXPECTED",
-                "contract.nested.secondary-output"
-        );
-    }
-
-    @Test
-    void nestedNumberRejectsNoncanonicalValue() throws Exception {
-        assertFailure(
-                runGraph("nested-number-domain"),
-                "STEP_OUTPUT_INVALID",
-                "contract.nested.number-domain"
-        );
-    }
-
-    @Test
     void nestedProgramCannotRunAfterOwningStepReturns() throws Exception {
         assertThat(runGraph("nested-retain").status()).isEqualTo(200);
 
@@ -412,26 +304,26 @@ final class StepRuntimeContractGeneratedE2eTest {
         assertThat(payload.values().get("observed")).isEqualTo(RailixValue.string("closed"));
     }
 
-    @Test
-    void nestedProgramCannotRunOnAnotherThread() throws Exception {
-        final RailixValue.ObjectValue payload = payload(runGraph("nested-wrong-thread"));
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', textBlock = """
+            nestedProgramCannotRunOnAnotherThread | nested-wrong-thread    | wrong-thread
+            laterStepReadsMaterializedArray       | array-later-read       | materialized
+            indexedReadOfScalarResolvesMissing    | indexed-scalar-missing | missing
+            """)
+    void generatedGraphObservedPayload(final String scenario, final String trigger, final String observed) throws Exception {
+        final RailixValue.ObjectValue payload = payload(runGraph(trigger));
 
-        assertThat(payload.values().get("observed")).isEqualTo(RailixValue.string("wrong-thread"));
+        assertThat(payload.values().get("observed")).isEqualTo(RailixValue.string(observed));
     }
 
-    @Test
-    void developmentHttpReportsNoncanonicalPayloadNumber() throws Exception {
-        assertInvalidDevelopmentResponse(runGraph("payload-number-domain"));
-    }
-
-    @Test
-    void developmentHttpReportsInvalidPayloadUnicode() throws Exception {
-        assertInvalidDevelopmentResponse(runGraph("payload-unicode"));
-    }
-
-    @Test
-    void developmentHttpReportsOverDepthPayload() throws Exception {
-        assertInvalidDevelopmentResponse(runGraph("payload-depth"));
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', textBlock = """
+            developmentHttpReportsNoncanonicalPayloadNumber | payload-number-domain
+            developmentHttpReportsInvalidPayloadUnicode     | payload-unicode
+            developmentHttpReportsOverDepthPayload           | payload-depth
+            """)
+    void developmentHttpReportsInvalidPayload(final String scenario, final String trigger) throws Exception {
+        assertInvalidDevelopmentResponse(runGraph(trigger));
     }
 
     @Test
@@ -464,31 +356,6 @@ final class StepRuntimeContractGeneratedE2eTest {
     }
 
     @Test
-    void sparseWriteUsesExistingArraySize() throws Exception {
-        assertRejection(
-                runGraph("array-sparse-existing"),
-                "RUN_ARRAY_TARGET_SPARSE",
-                graphPath("array-sparse-existing") + ".inputs.target"
-        );
-    }
-
-    @Test
-    void arrayPathRejectsScalarRuntimeValue() throws Exception {
-        assertRejection(
-                runGraph("array-scalar-conflict"),
-                "RUN_FIELD_TARGET_CONFLICT",
-                graphPath("array-scalar-conflict") + ".inputs.target"
-        );
-    }
-
-    @Test
-    void laterStepReadsMaterializedArray() throws Exception {
-        final RailixValue.ObjectValue payload = payload(runGraph("array-later-read"));
-
-        assertThat(payload.values().get("observed")).isEqualTo(RailixValue.string("materialized"));
-    }
-
-    @Test
     void multiWriteForkCopiesMaterializedArray() throws Exception {
         final RailixValue.ObjectValue payload = payload(runGraph("array-fork-copy"));
         final RailixValue.ObjectValue item = (RailixValue.ObjectValue)
@@ -510,65 +377,47 @@ final class StepRuntimeContractGeneratedE2eTest {
         assertThat(item.values().get("value")).isEqualTo(RailixValue.string("after"));
     }
 
-    @Test
-    void indexedReadOfScalarResolvesMissing() throws Exception {
-        final RailixValue.ObjectValue payload = payload(runGraph("indexed-scalar-missing"));
-
-        assertThat(payload.values().get("observed")).isEqualTo(RailixValue.string("missing"));
-    }
-
-    @Test
-    void sourceTriggerImplementationExceptionBecomesAnExplicitFailure() throws Exception {
-        final RailixValue.ObjectValue result = runSource(sourceFaultJar, "fault");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("failedSources")
+    void generatedSourceFailure(final String name, final Path application, final String scenario, final String step) throws Exception {
+        final RailixValue.ObjectValue result = runSource(application, scenario);
 
         assertSourceFailure(result, "STEP_IMPLEMENTATION_FAULT");
-        assertThat(string(result, "step")).isEqualTo("command");
+        assertThat(string(result, "step")).isEqualTo(step);
     }
 
-    @Test
-    void downstreamFailureIsReturnedThroughTheSourceBoundary() throws Exception {
-        final RailixValue.ObjectValue result = runSource(downstreamFailureJar, "fault");
-
-        assertSourceFailure(result, "STEP_IMPLEMENTATION_FAULT");
-        assertThat(string(result, "step")).isEqualTo("probe");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("successfulSources")
+    void generatedSourceSuccess(final String name, final Path application, final String scenario) throws Exception {
+        assertSourceSuccess(runSource(application, scenario));
     }
 
-    @Test
-    void refinedSourceRejectsANoncanonicalDescendantBeforeCallingTheHandler() throws Exception {
-        assertSourceRejection(
-                runSource(refinedNumberJar, "noncanonical-number"),
-                "Value contains a number outside the canonical 1024-character domain."
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("rejectedSources")
+    void generatedSourceRejection(final String name, final Path application, final String scenario, final String reason) throws Exception {
+        assertSourceRejection(runSource(application, scenario), reason);
+    }
+
+    private List<Arguments> failedSources() {
+        return List.of(
+                Arguments.arguments("sourceTriggerImplementationExceptionBecomesAnExplicitFailure", sourceFaultJar, "fault", "command"),
+                Arguments.arguments("downstreamFailureIsReturnedThroughTheSourceBoundary", downstreamFailureJar, "fault", "probe")
         );
     }
 
-    @Test
-    void unrefinedSourcePassesANoncanonicalDescendantToTheHandler() throws Exception {
-        assertSourceSuccess(runSource(unrefinedJar, "noncanonical-mixed"));
-    }
-
-    @Test
-    void refinedSourceAcceptsItsExactCanonicalJsonByteLimit() throws Exception {
-        assertSourceSuccess(runSource(byteRefinementJar, "byte-limit"));
-    }
-
-    @Test
-    void refinedSourceRejectsTheNextCanonicalJsonByte() throws Exception {
-        assertSourceRejection(
-                runSource(byteRefinementJar, "byte-over-limit"),
-                "Canonical JSON exceeds 4 bytes."
+    private List<Arguments> successfulSources() {
+        return List.of(
+                Arguments.arguments("unrefinedSourcePassesANoncanonicalDescendantToTheHandler", unrefinedJar, "noncanonical-mixed"),
+                Arguments.arguments("refinedSourceAcceptsItsExactCanonicalJsonByteLimit", byteRefinementJar, "byte-limit"),
+                Arguments.arguments("refinedSourceAcceptsItsExactContainerDepth", depthRefinementJar, "depth-limit")
         );
     }
 
-    @Test
-    void refinedSourceAcceptsItsExactContainerDepth() throws Exception {
-        assertSourceSuccess(runSource(depthRefinementJar, "depth-limit"));
-    }
-
-    @Test
-    void refinedSourceRejectsTheNextContainerDepth() throws Exception {
-        assertSourceRejection(
-                runSource(depthRefinementJar, "depth-over-limit"),
-                "Value exceeds maximum container depth 1."
+    private List<Arguments> rejectedSources() {
+        return List.of(
+                Arguments.arguments("refinedSourceRejectsANoncanonicalDescendantBeforeCallingTheHandler", refinedNumberJar, "noncanonical-number", "Value contains a number outside the canonical 1024-character domain."),
+                Arguments.arguments("refinedSourceRejectsTheNextCanonicalJsonByte", byteRefinementJar, "byte-over-limit", "Canonical JSON exceeds 4 bytes."),
+                Arguments.arguments("refinedSourceRejectsTheNextContainerDepth", depthRefinementJar, "depth-over-limit", "Value exceeds maximum container depth 1.")
         );
     }
 

@@ -361,6 +361,36 @@ final class CreatorForwardingLifecycleE2eTest {
     }
 
     @Test
+    void creatorCloseLetsAnActiveStepFinishBeforeStoppingTheChild() throws Exception {
+        final Path workspace = directory.resolve("creator-graceful-close");
+        final Path project = workspace.resolve("railix.project.json");
+        final Path marker = workspace.resolve("slow.started");
+        final StepDefinition slow = slowStep(750);
+        Files.createDirectories(workspace);
+        GeneratedApplicationFixture.installedCatalog(workspace, List.of(slow), SlowStepHandler.class);
+        Files.writeString(
+                project,
+                slowProject("creator-graceful-close", marker, 750),
+                StandardCharsets.UTF_8
+        );
+        final CreatorServer creator = CreatorServer.start(0, project, workspace.resolve("railix-home"));
+        try (HttpClient client = HttpClient.newHttpClient();
+             ExecutorService requests = Executors.newVirtualThreadPerTaskExecutor()) {
+            final Future<HttpResponse<String>> response = requests.submit(() ->
+                    request(client, creator.baseUri(), "{\"payload\":{\"marker\":\""
+                            + json(marker.toString()) + "\"}}")
+            );
+            await(marker);
+
+            creator.close();
+
+            assertThat(response.get(5, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+        } finally {
+            creator.close();
+        }
+    }
+
+    @Test
     void rollingReplacementForciblyStopsADrainedOutChildAndCommitsTheCandidate() throws Exception {
         final Path workspace = directory.resolve("drain-timeout-roll");
         final Path project = workspace.resolve("railix.project.json");

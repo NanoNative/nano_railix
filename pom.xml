@@ -76,7 +76,7 @@
                             </goals>
                             <configuration>
                                 <propertyName>jacocoUnitArgLine</propertyName>
-                                <destFile>${project.build.directory}/jacoco-unit.exec</destFile>
+                                <destFile>${project.build.directory}/jacoco-unit-${surefire.forkNumber}.exec</destFile>
                                 <append>false</append>
                                 <includes>
                                     <include>dev.nanonative.railix.*</include>
