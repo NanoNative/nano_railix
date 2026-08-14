@@ -284,10 +284,10 @@ Current evidence:
   represents rejection, failure, or cancellation. No success-path routing object, exception,
   future, or scheduler remains between a Step and its authored integer destination.
 - A real 129-Step production flow executes 322,500 verified Steps with zero traces. The clean gate
-  measures 94,248 allocated bytes and 34,085 median nanoseconds per call: 730 bytes and 264
+  measures 94,248 allocated bytes and 35,057 median nanoseconds per call: 730 bytes and 271
   nanoseconds per Step, with 1,616 retained bytes. A one-million-call soak stays inside a 64 MiB
-  heap with 128,848 retained bytes. The single-Step boundary and escaped result each remain bounded
-  at 3,936 allocated bytes per call; median single-call latency is 805 nanoseconds.
+  heap with 130,512 retained bytes. The single-Step boundary and escaped result each remain bounded
+  at 3,936 allocated bytes per call; median single-call latency is 925 nanoseconds.
 - The maximum 16,384-node generated monolith executes all 16,381 ordinary Steps exactly once in
   authored order. Generated applications currently admit at most 512 Triggers; exact-boundary
   production and development builds pass, while Trigger 513 is rejected before source allocation.
@@ -310,9 +310,9 @@ Current evidence:
   generated artifacts, child JVMs, HTTP, CLI, or browser boundaries. Five unique HTTP cases were
   consolidated into the canonical generated-child suite; one duplicate 33-case integration suite,
   two obsolete handler files, and 26 unreferenced nested test handlers were removed.
-- Clean `./mvnw clean verify` passes **2,067/2,067 tests** with no failure, error, or skip: core 747,
-  standard library 71, Creator Surefire 934, desktop browser 282, package 32, and mobile browser 1.
-  The complete local gate takes 17:02; the real packaged browser suite dominates at 11:00 and is a
+- Clean `./mvnw clean verify` passes **2,070/2,070 tests** with no failure, error, or skip: core 747,
+  standard library 71, Creator Surefire 934, desktop browser 282, package 35, and mobile browser 1.
+  The complete local gate takes 17:15; the real packaged browser suite dominates at 11:22 and is a
   measured contribution-speed target, not a reason to replace public-boundary proof with mocks.
 - Clean aggregate JaCoCo is **95.2033% lines (7,026/7,380)** and **90.0104% branches
   (3,478/3,864)**. Core is 97.1957%/91.9849%, standard library 100%/97.2222%, and Creator
@@ -326,7 +326,8 @@ Current evidence:
   third-party Maven runtime dependency. The executable Creator JAR is 510,390 bytes. Its universal
   application image includes every stable build-JDK module so Creator can compile and run arbitrary
   locked Step bundles without ambient Java; unsupported incubator modules are excluded, and
-  per-project minimal images remain Item 8.
+  per-project minimal images remain Item 8. Packaging rejects empty output paths and JDKs without
+  `java.base.jmod` before cleanup or linking begins.
 - Clean concurrency proof completes 2,000 isolated calls and 2,000 external effects exactly once,
   with all 64 workers overlapping and no production traces. Post-gate inspection found no owned
   Railix application or browser process.

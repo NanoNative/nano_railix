@@ -9,7 +9,7 @@ case "$0" in
     SELF_DIR=.
     ;;
 esac
-ROOT=$(CDPATH= cd -- "$SELF_DIR" && pwd)
+ROOT=$(CDPATH='' cd -- "$SELF_DIR" && pwd)
 MAC_APP="$ROOT/modules/railix-creator/target/app-image/railix.app/Contents/MacOS/railix"
 LINUX_APP="$ROOT/modules/railix-creator/target/app-image/railix/bin/railix"
 

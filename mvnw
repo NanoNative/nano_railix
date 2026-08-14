@@ -175,18 +175,10 @@ verbose "Couldn't find MAVEN_HOME, downloading and installing it ..."
 verbose "Downloading from: $distributionUrl"
 verbose "Downloading to: $TMP_DOWNLOAD_DIR/$distributionUrlName"
 
-# Prefer the ZIP so a configured checksum always verifies the configured artifact.
-JAR_CMD=
+# select .zip or .tar.gz
 if ! command -v unzip >/dev/null; then
-  if [ -n "${JAVA_HOME-}" ] && [ -x "$JAVA_HOME/bin/jar" ]; then
-    JAR_CMD="$JAVA_HOME/bin/jar"
-  elif JAR_CMD="$(command -v jar 2>/dev/null)"; then
-    :
-  else
-    [ -z "${distributionSha256Sum-}" ] || die "checksum-pinned Maven ZIP requires unzip or a JDK with bin/jar"
-    distributionUrl="${distributionUrl%.zip}.tar.gz"
-    distributionUrlName="${distributionUrl##*/}"
-  fi
+  distributionUrl="${distributionUrl%.zip}.tar.gz"
+  distributionUrlName="${distributionUrl##*/}"
 fi
 
 # verbose opt
@@ -260,8 +252,6 @@ fi
 # unzip and move
 if command -v unzip >/dev/null; then
   unzip ${__MVNW_QUIET_UNZIP:+"$__MVNW_QUIET_UNZIP"} "$TMP_DOWNLOAD_DIR/$distributionUrlName" -d "$TMP_DOWNLOAD_DIR" || die "failed to unzip"
-elif [ -n "$JAR_CMD" ]; then
-  (cd "$TMP_DOWNLOAD_DIR" && "$JAR_CMD" xf "$distributionUrlName") || die "failed to extract zip with jar"
 else
   tar xzf${__MVNW_QUIET_TAR:+"$__MVNW_QUIET_TAR"} "$TMP_DOWNLOAD_DIR/$distributionUrlName" -C "$TMP_DOWNLOAD_DIR" || die "failed to untar"
 fi
@@ -295,10 +285,6 @@ if [ -z "$actualDistributionDir" ]; then
   verbose "Contents of $TMP_DOWNLOAD_DIR:"
   verbose "$(ls -la "$TMP_DOWNLOAD_DIR")"
   die "Could not find Maven distribution directory in extracted archive"
-fi
-
-if [ -n "$JAR_CMD" ]; then
-  chmod +x "$TMP_DOWNLOAD_DIR/$actualDistributionDir/bin/$MVN_CMD" || die "failed to make Maven executable"
 fi
 
 verbose "Found extracted Maven distribution directory: $actualDistributionDir"

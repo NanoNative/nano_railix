@@ -97,7 +97,7 @@ final class RailixPackageIT {
     void packagingRetainsOnlyTheDeployableApplicationImage() {
         assertThat(APP_IMAGE).isDirectory();
         assertThat(Path.of("target", "runtime")).doesNotExist();
-        assertThat(Path.of("target", "package-input")).doesNotExist();
+        assertThat(APP_IMAGE.resolve("package-input")).doesNotExist();
     }
 
     @Test
@@ -140,7 +140,7 @@ final class RailixPackageIT {
                 2,
                 ("Compatible JDK required: passed Java home '%s'; JAVA_HOME '%s'; "
                         + "expected Java 25 or newer with executable bin/java, bin/jlink, bin/jpackage, "
-                        + "and directory jmods.")
+                        + "and file jmods/java.base.jmod.")
                         .formatted(incompleteHome, incompleteHome)
         ));
         assertThat(runtime).doesNotExist();
@@ -159,10 +159,57 @@ final class RailixPackageIT {
                 2,
                 ("Compatible JDK required: passed Java home '%s'; JAVA_HOME '%s'; "
                         + "expected Java 25 or newer with executable bin/java, bin/jlink, bin/jpackage, "
-                        + "and directory jmods.").formatted(oldJdk, oldJdk)
+                        + "and file jmods/java.base.jmod.").formatted(oldJdk, oldJdk)
         ));
         assertThat(runtime).doesNotExist();
         assertThat(packageParent).doesNotExist();
+    }
+
+    @Test
+    void packageScriptRejectsJdkWithoutJavaBaseModuleBeforeWritingOutput() throws Exception {
+        final Path incompleteJdk = fakeJdk(25);
+        Files.delete(incompleteJdk.resolve("jmods").resolve("java.base.jmod"));
+        final Path packageParent = directory.resolve("app-image");
+        final Path runtime = directory.resolve("runtime");
+
+        final ProcessResult result = runPackager(incompleteJdk, incompleteJdk, runtime, packageParent);
+
+        assertThat(result).isEqualTo(new ProcessResult(
+                2,
+                ("Compatible JDK required: passed Java home '%s'; JAVA_HOME '%s'; "
+                        + "expected Java 25 or newer with executable bin/java, bin/jlink, bin/jpackage, "
+                        + "and file jmods/java.base.jmod.").formatted(incompleteJdk, incompleteJdk)
+        ));
+        assertThat(runtime).doesNotExist();
+        assertThat(packageParent).doesNotExist();
+    }
+
+    @Test
+    void packageScriptRejectsEmptyRuntimeDirectoryBeforeWritingOutput() throws Exception {
+        final Path jdk = fakeJdk(25);
+        final Path packageParent = directory.resolve("app-image");
+
+        final ProcessResult result = runPackager(jdk, jdk, Path.of(""), packageParent);
+
+        assertThat(result).isEqualTo(new ProcessResult(
+                2,
+                "Creator package runtime directory must not be empty."
+        ));
+        assertThat(packageParent).doesNotExist();
+    }
+
+    @Test
+    void packageScriptRejectsEmptyPackageParentBeforeWritingOutput() throws Exception {
+        final Path jdk = fakeJdk(25);
+        final Path runtime = directory.resolve("runtime");
+
+        final ProcessResult result = runPackager(jdk, jdk, runtime, Path.of(""));
+
+        assertThat(result).isEqualTo(new ProcessResult(
+                2,
+                "Creator package parent directory must not be empty."
+        ));
+        assertThat(runtime).doesNotExist();
     }
 
     @Test
@@ -366,7 +413,7 @@ final class RailixPackageIT {
         return Files.isExecutable(home.resolve("bin").resolve("java"))
                 && Files.isExecutable(home.resolve("bin").resolve("jlink"))
                 && Files.isExecutable(home.resolve("bin").resolve("jpackage"))
-                && Files.isDirectory(home.resolve("jmods"));
+                && Files.isRegularFile(home.resolve("jmods").resolve("java.base.jmod"));
     }
 
     private static String moduleName(final String listedModule) {
@@ -637,7 +684,7 @@ final class RailixPackageIT {
     private Path fakeJdk(final int feature) throws IOException {
         final Path home = directory.resolve("jdk-" + feature);
         final Path bin = Files.createDirectories(home.resolve("bin"));
-        Files.createDirectories(home.resolve("jmods"));
+        Files.write(Files.createDirectories(home.resolve("jmods")).resolve("java.base.jmod"), new byte[0]);
         executable(bin.resolve("java"), """
                 #!/bin/sh
                 printf '%%s\n' '    java.specification.version = %d' >&2

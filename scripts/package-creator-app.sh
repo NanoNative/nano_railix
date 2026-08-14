@@ -12,6 +12,14 @@ RUNTIME_DIR=$3
 PACKAGE_PARENT=$4
 REQUIRED_JAVA_FEATURE=25
 
+if [ -z "$RUNTIME_DIR" ]; then
+  printf '%s\n' "Creator package runtime directory must not be empty." >&2
+  exit 2
+fi
+if [ -z "$PACKAGE_PARENT" ]; then
+  printf '%s\n' "Creator package parent directory must not be empty." >&2
+  exit 2
+fi
 if [ ! -f "$INPUT_JAR" ]; then
   printf '%s\n' "Creator package input is missing: $INPUT_JAR" >&2
   exit 2
@@ -21,7 +29,7 @@ complete_jdk() {
   [ -x "$1/bin/java" ] &&
     [ -x "$1/bin/jlink" ] &&
     [ -x "$1/bin/jpackage" ] &&
-    [ -d "$1/jmods" ]
+    [ -f "$1/jmods/java.base.jmod" ]
 }
 
 java_feature() {
@@ -43,7 +51,7 @@ if ! compatible_jdk "$TOOL_JAVA_HOME"; then
   else
     printf "Compatible JDK required: passed Java home '%s'; JAVA_HOME '%s'; %s\n" \
       "$JAVA_HOME_INPUT" "${ENV_JAVA_HOME:-<unset>}" \
-      "expected Java $REQUIRED_JAVA_FEATURE or newer with executable bin/java, bin/jlink, bin/jpackage, and directory jmods." >&2
+      "expected Java $REQUIRED_JAVA_FEATURE or newer with executable bin/java, bin/jlink, bin/jpackage, and file jmods/java.base.jmod." >&2
     exit 2
   fi
 fi
@@ -53,17 +61,19 @@ JMODS=$TOOL_JAVA_HOME/jmods
 
 STAGE_DIR=$PACKAGE_PARENT/package-input
 PACKAGE_NAME=railix
+APP_IMAGE=$PACKAGE_PARENT/$PACKAGE_NAME
+MAC_APP_IMAGE=$APP_IMAGE.app
 PACKAGE_READY=false
 
 cleanup() {
   if [ "$PACKAGE_READY" = true ]; then
     rm -rf "$RUNTIME_DIR" "$STAGE_DIR"
   else
-    rm -rf "$RUNTIME_DIR" "$STAGE_DIR" "$PACKAGE_PARENT/$PACKAGE_NAME" "$PACKAGE_PARENT/$PACKAGE_NAME.app"
+    rm -rf "$RUNTIME_DIR" "$STAGE_DIR" "$APP_IMAGE" "$MAC_APP_IMAGE"
   fi
 }
 
-rm -rf "$RUNTIME_DIR" "$STAGE_DIR" "$PACKAGE_PARENT/$PACKAGE_NAME" "$PACKAGE_PARENT/$PACKAGE_NAME.app"
+rm -rf "$RUNTIME_DIR" "$STAGE_DIR" "$APP_IMAGE" "$MAC_APP_IMAGE"
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
@@ -71,6 +81,7 @@ trap 'exit 143' TERM
 mkdir -p "$PACKAGE_PARENT" "$STAGE_DIR"
 cp "$INPUT_JAR" "$STAGE_DIR/"
 
+# Creator compiles unknown future Step bundles; only final applications can be dependency-minimized.
 MODULES=
 for JMOD_FILE in "$JMODS"/*.jmod; do
   MODULE_NAME=${JMOD_FILE##*/}
