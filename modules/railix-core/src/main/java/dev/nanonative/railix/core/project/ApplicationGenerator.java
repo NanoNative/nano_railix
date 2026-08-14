@@ -967,7 +967,7 @@ final class ApplicationGenerator {
         return list(trigger.results().stream().map(result ->
                 "new WorkflowRuntime.ResultPlan(" + quote(result.name())
                         + ", ValueShape." + result.shape().name() + ", "
-                        + values(result.defaultValue()) + ")").toList());
+                        + values(result.defaults()) + ")").toList());
     }
 
     private static String resultsReference(final ApplicationPlan.TriggerPlan trigger) {

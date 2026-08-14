@@ -2205,14 +2205,14 @@ function selectCandidate(locator, input, index, optionName) {
   dirty();
 }
 
-function moveCandidate(locator, index, direction) {
-  const candidates = valueAt(selectedOperation(), locator);
+function moveListItem(locator, index, direction) {
+  const items = valueAt(selectedOperation(), locator);
   const target = index + direction;
-  if (!Array.isArray(candidates) || target < 0 || target >= candidates.length) {
+  if (!Array.isArray(items) || target < 0 || target >= items.length) {
     return;
   }
   moveDraft(locator, index, target);
-  [candidates[index], candidates[target]] = [candidates[target], candidates[index]];
+  [items[index], items[target]] = [items[target], items[index]];
   clearInputQueries();
   dirty();
 }
@@ -2230,35 +2230,12 @@ function moveDraft(locator, index, target) {
   }
 }
 
-function removeCandidate(locator, index) {
-  const candidates = valueAt(selectedOperation(), locator);
-  if (!Array.isArray(candidates) || index < 0 || index >= candidates.length) {
+function removeListItem(locator, index) {
+  const items = valueAt(selectedOperation(), locator);
+  if (!Array.isArray(items) || index < 0 || index >= items.length) {
     return;
   }
-  candidates.splice(index, 1);
-  state.jsonDraft = null;
-  clearInputQueries();
-  dirty();
-}
-
-function moveMatcherGroup(locator, index, direction) {
-  const groups = valueAt(selectedOperation(), locator);
-  const target = index + direction;
-  if (!Array.isArray(groups) || target < 0 || target >= groups.length) {
-    return;
-  }
-  moveDraft(locator, index, target);
-  [groups[index], groups[target]] = [groups[target], groups[index]];
-  clearInputQueries();
-  dirty();
-}
-
-function removeMatcherGroup(locator, index) {
-  const groups = valueAt(selectedOperation(), locator);
-  if (!Array.isArray(groups) || index < 0 || index >= groups.length) {
-    return;
-  }
-  groups.splice(index, 1);
+  items.splice(index, 1);
   state.jsonDraft = null;
   clearInputQueries();
   dirty();
@@ -4308,7 +4285,7 @@ document.addEventListener("click", event => {
   }
   const removeMatcherGroupButton = target.closest("[data-remove-matcher-group]");
   if (removeMatcherGroupButton) {
-    removeMatcherGroup(
+    removeListItem(
       parseToken(removeMatcherGroupButton.dataset.matcherGroupsLocator),
       Number(removeMatcherGroupButton.dataset.removeMatcherGroup)
     );
@@ -4316,7 +4293,7 @@ document.addEventListener("click", event => {
   }
   const moveMatcherGroupButton = target.closest("[data-move-matcher-group]");
   if (moveMatcherGroupButton) {
-    moveMatcherGroup(
+    moveListItem(
       parseToken(moveMatcherGroupButton.dataset.matcherGroupsLocator),
       Number(moveMatcherGroupButton.dataset.moveMatcherGroup),
       Number(moveMatcherGroupButton.dataset.direction)
@@ -4325,7 +4302,7 @@ document.addEventListener("click", event => {
   }
   const removeCandidateButton = target.closest("[data-remove-candidate]");
   if (removeCandidateButton) {
-    removeCandidate(
+    removeListItem(
       parseToken(removeCandidateButton.dataset.candidateLocator),
       Number(removeCandidateButton.dataset.removeCandidate)
     );
@@ -4333,7 +4310,7 @@ document.addEventListener("click", event => {
   }
   const moveCandidateButton = target.closest("[data-move-candidate]");
   if (moveCandidateButton) {
-    moveCandidate(
+    moveListItem(
       parseToken(moveCandidateButton.dataset.candidateLocator),
       Number(moveCandidateButton.dataset.moveCandidate),
       Number(moveCandidateButton.dataset.direction)

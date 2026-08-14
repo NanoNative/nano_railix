@@ -94,7 +94,7 @@ public final class WorkflowRuntime {
             }
             this.results = results;
             this.history = history ? new ArrayList<>() : NO_HISTORY;
-            final Map<String, RailixValue> context = new LinkedHashMap<>(streamContext.values());
+            final LinkedHashMap<String, Object> context = new LinkedHashMap<>(streamContext.values());
             for (final ResultPlan result : results) {
                 context.remove(result.name());
                 if (!result.defaultValue().isEmpty()) {
@@ -1021,7 +1021,7 @@ public final class WorkflowRuntime {
         private final Object owner = new Object();
         private final FrameObject context;
 
-        private EventFrame(final Map<String, RailixValue> values) {
+        private EventFrame(final LinkedHashMap<String, Object> values) {
             context = new FrameObject(owner, values);
         }
 
@@ -1260,6 +1260,11 @@ public final class WorkflowRuntime {
         private final Object owner;
         private final Map<String, Object> values;
         private RailixValue.ObjectValue frozen;
+
+        private FrameObject(final Object owner, final LinkedHashMap<String, Object> values) {
+            this.owner = owner;
+            this.values = values;
+        }
 
         private FrameObject(final Object owner, final Map<String, ?> source) {
             this.owner = owner;

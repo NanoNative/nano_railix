@@ -31,15 +31,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 final class ProductionRuntimeSoakE2eTest {
     private static final long MAX_HEAP_BYTES = 64L * 1024 * 1024;
     private static final long RETAINED_GROWTH_BUDGET_BYTES = 2L * 1024 * 1024;
-    // Three local JDK 25 calibrations measured 6,530-6,549 B/call; 8 KiB leaves about 25% headroom.
-    private static final long ALLOCATION_BUDGET_BYTES_PER_CALL = 8L * 1024;
-    private static final long ESCAPING_ALLOCATION_BASELINE_LIMIT_BYTES_PER_CALL = 16L * 1024;
+    // Local JDK 25 calibrations measured 3,544 B/call; 4 KiB leaves 15% cross-platform headroom.
+    private static final long ALLOCATION_BUDGET_BYTES_PER_CALL = 4L * 1024;
+    private static final long ESCAPING_ALLOCATION_BASELINE_LIMIT_BYTES_PER_CALL = 4L * 1024;
     private static final int FLOW_STEPS = 129;
     private static final int ARRAY_ITEMS = 4_096;
     private static final int ARRAY_READ_STEPS = 32;
     private static final int MULTI_WRITE_STEPS = 1_800;
-    // Two JDK 25 integer-routing calibrations measured exactly 1,434 B/Step.
-    private static final long FLOW_ALLOCATION_BUDGET_BYTES_PER_STEP = 1_440;
+    // Local JDK 25 generated-flow calibrations measured 728 B/Step; 800 leaves 9% headroom.
+    private static final long FLOW_ALLOCATION_BUDGET_BYTES_PER_STEP = 800;
     private static final long ARRAY_READ_ALLOCATION_BUDGET_BYTES_PER_CALL = 256L * 1_024;
     private static final Duration CHILD_TIMEOUT = Duration.ofSeconds(120);
     private static final String PROBE_CLASS = "dev.nanonative.railix.core.project.ProductionRuntimeSoakProbe";
@@ -72,7 +72,7 @@ final class ProductionRuntimeSoakE2eTest {
     }
 
     @Test
-    void productionRunSourceStaysBelow8KiBPerCallAfterOneHundredThousandWarmups(
+    void productionRunSourceStaysBelow4KiBPerCallAfterOneHundredThousandWarmups(
             @TempDir final Path workspace
     ) throws Exception {
         final ProcessResult result = probe(workspace).run("allocation");

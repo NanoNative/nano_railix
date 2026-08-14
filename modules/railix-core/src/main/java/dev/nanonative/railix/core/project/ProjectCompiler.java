@@ -134,13 +134,7 @@ public final class ProjectCompiler {
             }
             final ApplicationPlan.TriggerPlan triggerPlan = new ApplicationPlan.TriggerPlan(
                     trigger.index(),
-                    trigger.definition().results().stream()
-                            .map(result -> new ApplicationPlan.ResultPlan(
-                                    result.name(),
-                                    result.shape(),
-                                    result.defaults()
-                            ))
-                            .toList(),
+                    trigger.definition().results(),
                     index.destination(trigger.index(), trigger.definition().primaryOutcome()),
                     "nodes[" + trigger.index() + "]"
             );

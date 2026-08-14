@@ -2,7 +2,6 @@ package dev.nanonative.railix.core.project;
 
 import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.value.RailixValue;
-import dev.nanonative.railix.core.value.ValueShape;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -20,15 +19,9 @@ record ApplicationPlan(String projectId, List<NodePlan> nodes, List<TriggerPlan>
         triggers = List.copyOf(triggers);
     }
 
-    record TriggerPlan(int node, List<ResultPlan> results, int start, String path) {
+    record TriggerPlan(int node, List<StepDefinition.Result> results, int start, String path) {
         TriggerPlan {
             results = List.copyOf(results);
-        }
-    }
-
-    record ResultPlan(String name, ValueShape shape, List<RailixValue> defaultValue) {
-        ResultPlan {
-            defaultValue = List.copyOf(defaultValue);
         }
     }
 
