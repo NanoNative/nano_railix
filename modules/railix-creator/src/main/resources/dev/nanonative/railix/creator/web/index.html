@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Railix Creator</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Railix Creator">
+      <span class="brand-mark">R</span>
+      <span><strong>Railix</strong><small>Creator</small></span>
+    </a>
+    <div class="build-indicator">
+      <span class="build-dot" aria-hidden="true"></span>
+      <strong id="build-state">Loading</strong>
+    </div>
+  </header>
+  <main class="creator-shell">
+    <section class="canvas-panel" aria-label="Project graph">
+      <div class="canvas-heading">
+        <div>
+          <span class="eyebrow">Application graph</span>
+          <h1 id="project-title">Opening project</h1>
+        </div>
+        <div class="canvas-counts">
+          <span id="flow-count">0 flows</span>
+          <span id="step-count">0 steps</span>
+          <span>Last build <strong id="last-build">Not built</strong></span>
+        </div>
+      </div>
+      <div id="graph" class="graph-stage" aria-live="polite"></div>
+    </section>
+    <aside id="inspector" class="inspector" aria-label="Inspector"></aside>
+  </main>
+  <div id="overlay"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

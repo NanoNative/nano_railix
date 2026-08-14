@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+case "$0" in
+  */*)
+    SELF_DIR=${0%/*}
+    ;;
+  *)
+    SELF_DIR=.
+    ;;
+esac
+ROOT=$(CDPATH= cd -- "$SELF_DIR" && pwd)
+MAC_APP="$ROOT/modules/railix-creator/target/app-image/railix.app/Contents/MacOS/railix"
+LINUX_APP="$ROOT/modules/railix-creator/target/app-image/railix/bin/railix"
+
+if [ -x "$MAC_APP" ]; then
+  APP=$MAC_APP
+elif [ -x "$LINUX_APP" ]; then
+  APP=$LINUX_APP
+else
+  APP=
+fi
+
+if [ -z "$APP" ]; then
+  printf '%s\n' '{"error":{"code":"PACKAGE_MISSING","message":"Build with mvn -q -pl modules/railix-creator -am package"},"status":"launcher-rejected"}' >&2
+  exit 4
+fi
+
+exec "$APP" "$@"
