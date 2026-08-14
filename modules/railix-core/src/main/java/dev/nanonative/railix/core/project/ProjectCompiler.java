@@ -315,9 +315,9 @@ public final class ProjectCompiler {
             if (!returns.diagnostics().isEmpty()) {
                 return new NodeRead(List.of(), returns.diagnostics());
             }
-            final ExampleRead examples = examples(object, definition, path);
-            if (!examples.diagnostics().isEmpty()) {
-                return new NodeRead(List.of(), examples.diagnostics());
+            final List<Diagnostic> exampleDiagnostics = examples(object, definition, path);
+            if (!exampleDiagnostics.isEmpty()) {
+                return new NodeRead(List.of(), exampleDiagnostics);
             }
             final List<String> outcomes = outcomes(definition, compiled.bindings());
             if (new LinkedHashSet<>(outcomes).size() != outcomes.size()) {
@@ -357,13 +357,9 @@ public final class ProjectCompiler {
             nodes.add(new Node(
                     id.value(),
                     definition,
-                    compiled.canonical(),
                     compiled.bindings(),
                     receives.paths(),
-                    receives.canonical(),
                     returns.paths(),
-                    returns.canonical(),
-                    examples.examples(),
                     outcomes,
                     index
             ));
@@ -388,7 +384,7 @@ public final class ProjectCompiler {
     ) {
         final RailixValue authored = node.values().get(field);
         if (authored == null && declarations.isEmpty()) {
-            return new PortRead(Map.of(), RailixValue.object(Map.of()), List.of());
+            return new PortRead(Map.of(), List.of());
         }
         if (!(authored instanceof RailixValue.ObjectValue object)) {
             return PortRead.rejected(
@@ -410,7 +406,6 @@ public final class ProjectCompiler {
             }
         }
         final Map<String, ApplicationPlan.Path> paths = new LinkedHashMap<>();
-        final Map<String, RailixValue> canonical = new LinkedHashMap<>();
         for (final StepDefinition.Port declaration : declarations) {
             final String path = nodePath + "." + field + "." + declaration.name();
             final RailixValue value = object.values().get(declaration.name());
@@ -423,12 +418,11 @@ public final class ProjectCompiler {
             }
             final PathRead parsed = path(value, path, write);
             if (!parsed.diagnostics().isEmpty()) {
-                return new PortRead(Map.of(), RailixValue.object(Map.of()), parsed.diagnostics());
+                return new PortRead(Map.of(), parsed.diagnostics());
             }
             paths.put(declaration.name(), parsed.value());
-            canonical.put(declaration.name(), pathValue(parsed.value()));
         }
-        return new PortRead(paths, RailixValue.object(canonical), List.of());
+        return new PortRead(paths, List.of());
     }
 
     private static InputsRead inputs(
@@ -449,18 +443,16 @@ public final class ProjectCompiler {
             }
         }
         final Map<String, ApplicationPlan.Binding> bindings = new LinkedHashMap<>();
-        final Map<String, RailixValue> canonical = new LinkedHashMap<>();
         for (final StepDefinition.Field field : declarations) {
             final String fieldPath = path + "." + field.name();
             final RailixValue value = authored.values().get(field.name());
             final InputRead input = input(value, field.input(), fieldPath, catalog, bindings);
             if (!input.diagnostics().isEmpty()) {
-                return new InputsRead(Map.of(), RailixValue.object(Map.of()), input.diagnostics());
+                return new InputsRead(Map.of(), input.diagnostics());
             }
             bindings.put(field.name(), input.binding());
-            input.canonical().stream().findFirst().ifPresent(resolved -> canonical.put(field.name(), resolved));
         }
-        return new InputsRead(bindings, RailixValue.object(canonical), List.of());
+        return new InputsRead(bindings, List.of());
     }
 
     private static InputRead input(
@@ -513,7 +505,7 @@ public final class ProjectCompiler {
                     path
             );
         }
-        return InputRead.value(new ApplicationPlan.JsonBinding(List.of(value)), value);
+        return InputRead.value(new ApplicationPlan.JsonBinding(List.of(value)));
     }
 
     private static InputRead path(
@@ -532,12 +524,9 @@ public final class ProjectCompiler {
         }
         final PathRead parsed = path(value, path, declaration.access().writable());
         if (!parsed.diagnostics().isEmpty()) {
-            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), List.of(), parsed.diagnostics());
+            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), parsed.diagnostics());
         }
-        return InputRead.value(
-                new ApplicationPlan.PathBinding(parsed.value(), declaration.access()),
-                pathValue(parsed.value())
-        );
+        return InputRead.value(new ApplicationPlan.PathBinding(parsed.value(), declaration.access()));
     }
 
     private static InputRead options(
@@ -595,7 +584,7 @@ public final class ProjectCompiler {
                 path + ".option"
         );
         if (!optionName.diagnostics().isEmpty()) {
-            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), List.of(), optionName.diagnostics());
+            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), optionName.diagnostics());
         }
         final StepDefinition.Option option = declaredOptions.stream()
                 .filter(candidate -> candidate.name().equals(optionName.value()))
@@ -616,21 +605,17 @@ public final class ProjectCompiler {
                 path + ".inputs"
         );
         if (!childInputs.diagnostics().isEmpty()) {
-            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), List.of(), childInputs.diagnostics());
+            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), childInputs.diagnostics());
         }
         final InputsRead children = inputs(childInputs.value(), option.inputs(), path + ".inputs", catalog);
         if (!children.diagnostics().isEmpty()) {
-            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), List.of(), children.diagnostics());
+            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), children.diagnostics());
         }
-        final RailixValue canonical = RailixValue.object(Map.of(
-                "option", RailixValue.string(option.name()),
-                "inputs", children.canonical()
-        ));
         return InputRead.value(new ApplicationPlan.ChoiceBinding(
                 option.name(),
                 children.bindings(),
                 option.valueSources()
-        ), canonical);
+        ));
     }
 
     private static InputRead steps(
@@ -641,15 +626,14 @@ public final class ProjectCompiler {
     ) {
         final NestedRead nested = nestedSteps(value, path, catalog);
         if (!nested.diagnostics().isEmpty()) {
-            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), List.of(), nested.diagnostics());
+            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), nested.diagnostics());
         }
         return InputRead.value(
                 new ApplicationPlan.StepsBinding(
                         nested.plans(),
                         declaration.valueSource(),
                         declaration.propagatesOutcomes()
-                ),
-                RailixValue.array(nested.canonical())
+                )
         );
     }
 
@@ -676,19 +660,17 @@ public final class ProjectCompiler {
             );
         }
         final List<ApplicationPlan.CandidatePlan> plans = new ArrayList<>();
-        final List<RailixValue> canonical = new ArrayList<>();
         for (int index = 0; index < array.values().size(); index++) {
             final String candidatePath = path + "[" + index + "]";
             final CandidateRead candidate = candidate(
                     array.values().get(index), declaration.options(), candidatePath, catalog, previous, "Candidate", "CANDIDATE"
             );
             if (!candidate.diagnostics().isEmpty()) {
-                return new InputRead(new ApplicationPlan.JsonBinding(List.of()), List.of(), candidate.diagnostics());
+                return new InputRead(new ApplicationPlan.JsonBinding(List.of()), candidate.diagnostics());
             }
             plans.add(candidate.plan());
-            canonical.add(candidate.canonical());
         }
-        return InputRead.value(new ApplicationPlan.CandidatesBinding(plans, path), RailixValue.array(canonical));
+        return InputRead.value(new ApplicationPlan.CandidatesBinding(plans, path));
     }
 
     private static InputRead matcherGroups(
@@ -707,7 +689,6 @@ public final class ProjectCompiler {
             );
         }
         final List<List<ApplicationPlan.CandidatePlan>> plans = new ArrayList<>();
-        final List<RailixValue> canonical = new ArrayList<>();
         for (int groupIndex = 0; groupIndex < groups.values().size(); groupIndex++) {
             final String groupPath = path + "[" + groupIndex + "]";
             final RailixValue group = groups.values().get(groupIndex);
@@ -726,7 +707,6 @@ public final class ProjectCompiler {
                 );
             }
             final List<ApplicationPlan.CandidatePlan> matcherPlans = new ArrayList<>();
-            final List<RailixValue> matcherCanonical = new ArrayList<>();
             for (int matcherIndex = 0; matcherIndex < matchers.values().size(); matcherIndex++) {
                 final CandidateRead matcher = candidate(
                         matchers.values().get(matcherIndex),
@@ -738,15 +718,13 @@ public final class ProjectCompiler {
                         "MATCHER"
                 );
                 if (!matcher.diagnostics().isEmpty()) {
-                    return new InputRead(new ApplicationPlan.JsonBinding(List.of()), List.of(), matcher.diagnostics());
+                    return new InputRead(new ApplicationPlan.JsonBinding(List.of()), matcher.diagnostics());
                 }
                 matcherPlans.add(matcher.plan());
-                matcherCanonical.add(matcher.canonical());
             }
             plans.add(List.copyOf(matcherPlans));
-            canonical.add(RailixValue.array(matcherCanonical));
         }
-        return InputRead.value(new ApplicationPlan.MatcherGroupsBinding(plans), RailixValue.array(canonical));
+        return InputRead.value(new ApplicationPlan.MatcherGroupsBinding(plans));
     }
 
     private static CandidateRead candidate(
@@ -795,13 +773,8 @@ public final class ProjectCompiler {
                 return CandidateRead.rejected(mismatch.get());
             }
         }
-        final Map<String, RailixValue> authored = new LinkedHashMap<>(
-                ((RailixValue.ObjectValue) source.canonical().getFirst()).values()
-        );
-        authored.put("when", condition.canonical());
         return new CandidateRead(
                 new ApplicationPlan.CandidatePlan(selected, transforms, predicates),
-                RailixValue.object(authored),
                 List.of()
         );
     }
@@ -878,7 +851,6 @@ public final class ProjectCompiler {
             return ConditionRead.rejected(transformOutcome.get());
         }
         final List<List<ApplicationPlan.NestedStepPlan>> predicates = new ArrayList<>();
-        final List<List<RailixValue>> canonical = new ArrayList<>();
         for (int index = 0; index < predicatesArray.values().size(); index++) {
             final RailixValue authored = predicatesArray.values().get(index);
             final String predicatePath = path + ".all[" + index + "]";
@@ -909,12 +881,10 @@ public final class ProjectCompiler {
                 return ConditionRead.rejected(result.get());
             }
             predicates.add(predicate.plans());
-            canonical.add(predicate.canonical());
         }
         return new ConditionRead(
                 transforms.plans(),
                 predicates,
-                conditionValue(transforms.canonical(), canonical),
                 List.of()
         );
     }
@@ -1017,7 +987,6 @@ public final class ProjectCompiler {
             return NestedRead.rejected("PROJECT_STEPS_ARRAY_REQUIRED", "STEPS input must be an array.", path);
         }
         final List<ApplicationPlan.NestedStepPlan> plans = new ArrayList<>();
-        final List<RailixValue> canonical = new ArrayList<>();
         for (int index = 0; index < array.values().size(); index++) {
             final String stepPath = path + "[" + index + "]";
             final RailixValue nested = array.values().get(index);
@@ -1046,7 +1015,7 @@ public final class ProjectCompiler {
                     stepPath + ".use"
             );
             if (!use.diagnostics().isEmpty()) {
-                return new NestedRead(List.of(), List.of(), use.diagnostics());
+                return new NestedRead(List.of(), use.diagnostics());
             }
             final StepDefinition definition = catalog.find(use.value()).orElse(null);
             if (definition == null) {
@@ -1078,7 +1047,7 @@ public final class ProjectCompiler {
                     stepPath + ".inputs"
             );
             if (!nestedInputs.diagnostics().isEmpty()) {
-                return new NestedRead(List.of(), List.of(), nestedInputs.diagnostics());
+                return new NestedRead(List.of(), nestedInputs.diagnostics());
             }
             final InputsRead compiled = inputs(
                     nestedInputs.value(),
@@ -1087,7 +1056,7 @@ public final class ProjectCompiler {
                     catalog
             );
             if (!compiled.diagnostics().isEmpty()) {
-                return new NestedRead(List.of(), List.of(), compiled.diagnostics());
+                return new NestedRead(List.of(), compiled.diagnostics());
             }
             if (!plans.isEmpty()) {
                 final ValueShape previous = plans.getLast().step().returns().getFirst().shape();
@@ -1106,15 +1075,11 @@ public final class ProjectCompiler {
                     compiled.bindings(),
                     stepPath
             ));
-            canonical.add(RailixValue.object(Map.of(
-                    "use", RailixValue.string(definition.id()),
-                    "inputs", compiled.canonical()
-            )));
         }
-        return new NestedRead(plans, canonical, List.of());
+        return new NestedRead(plans, List.of());
     }
 
-    private static ExampleRead examples(
+    private static List<Diagnostic> examples(
             final RailixValue.ObjectValue node,
             final StepDefinition definition,
             final String nodePath
@@ -1122,31 +1087,30 @@ public final class ProjectCompiler {
         final RailixValue value = node.values().get("examples");
         if (definition.kind() != StepDefinition.Kind.TRIGGER) {
             return value == null
-                    ? new ExampleRead(List.of(), List.of())
-                    : ExampleRead.rejected(
+                    ? List.of()
+                    : List.of(Diagnostic.atPath(
                             "PROJECT_NODE_EXAMPLES_UNSUPPORTED",
                             "Only Trigger Steps may declare examples.",
                             nodePath + ".examples"
-                    );
+                    ));
         }
         if (!(value instanceof RailixValue.ArrayValue array) || array.values().isEmpty()) {
-            return ExampleRead.rejected(
+            return List.of(Diagnostic.atPath(
                     "PROJECT_TRIGGER_EXAMPLE_REQUIRED",
                     "Trigger Step must define at least one payload example.",
                     nodePath + ".examples"
-            );
+            ));
         }
-        final List<Example> examples = new ArrayList<>();
         final Set<String> names = new LinkedHashSet<>();
         for (int index = 0; index < array.values().size(); index++) {
             final String path = nodePath + ".examples[" + index + "]";
             final RailixValue item = array.values().get(index);
             if (!(item instanceof RailixValue.ObjectValue object)) {
-                return ExampleRead.rejected(
+                return List.of(Diagnostic.atPath(
                         "PROJECT_TRIGGER_EXAMPLE_OBJECT_REQUIRED",
                         "Trigger example must be an object.",
                         path
-                );
+                ));
             }
             final Optional<Diagnostic> unknown = unknown(
                     object,
@@ -1156,7 +1120,7 @@ public final class ProjectCompiler {
                     path
             );
             if (unknown.isPresent()) {
-                return new ExampleRead(List.of(), List.of(unknown.get()));
+                return List.of(unknown.get());
             }
             final TextRead name = text(
                     object,
@@ -1166,46 +1130,40 @@ public final class ProjectCompiler {
                     path + ".name"
             );
             if (!name.diagnostics().isEmpty()) {
-                return new ExampleRead(List.of(), name.diagnostics());
+                return name.diagnostics();
             }
             if (!names.add(name.value())) {
-                return ExampleRead.rejected(
+                return List.of(Diagnostic.atPath(
                         "PROJECT_TRIGGER_EXAMPLE_NAME_DUPLICATE",
                         "Trigger example name is already declared: " + name.value() + ".",
                         path + ".name"
-                );
+                ));
             }
-            final RailixValue payload = object.values().get("payload");
-            if (payload == null) {
-                return ExampleRead.rejected(
+            if (!object.values().containsKey("payload")) {
+                return List.of(Diagnostic.atPath(
                         "PROJECT_TRIGGER_EXAMPLE_PAYLOAD_REQUIRED",
                         "Trigger example payload is required.",
                         path + ".payload"
-                );
+                ));
             }
             final RailixValue contextValue = object.values().get("context");
-            final RailixValue.ObjectValue context;
-            if (contextValue == null) {
-                context = RailixValue.object(Map.of());
-            } else if (contextValue instanceof RailixValue.ObjectValue authoredContext) {
-                context = authoredContext;
-            } else {
-                return ExampleRead.rejected(
+            if (contextValue != null && !(contextValue instanceof RailixValue.ObjectValue)) {
+                return List.of(Diagnostic.atPath(
                         "PROJECT_TRIGGER_EXAMPLE_CONTEXT_OBJECT_REQUIRED",
                         "Trigger example context must be an object when supplied.",
                         path + ".context"
-                );
+                ));
             }
-            if (context.values().containsKey("runtime")) {
-                return ExampleRead.rejected(
+            if (contextValue instanceof RailixValue.ObjectValue context
+                    && context.values().containsKey("runtime")) {
+                return List.of(Diagnostic.atPath(
                         "PROJECT_TRIGGER_EXAMPLE_RUNTIME_RESERVED",
                         "context.runtime is supplied by Railix.",
                         path + ".context.runtime"
-                );
+                ));
             }
-            examples.add(new Example(name.value(), payload, context));
         }
-        return new ExampleRead(examples, List.of());
+        return List.of();
     }
 
     private static LinkRead links(final RailixValue.ArrayValue values, final List<Node> nodes) {
@@ -1632,13 +1590,6 @@ public final class ProjectCompiler {
         );
     }
 
-    private static RailixValue.ArrayValue pathValue(final ApplicationPlan.Path path) {
-        return RailixValue.array(path.elements().stream().<RailixValue>map(element -> switch (element) {
-            case ApplicationPlan.Field field -> RailixValue.string(field.name());
-            case ApplicationPlan.Index index -> RailixValue.number(index.value());
-        }).toList());
-    }
-
     private static Optional<Diagnostic> unknown(
             final RailixValue.ObjectValue object,
             final Set<String> fields,
@@ -1745,13 +1696,9 @@ public final class ProjectCompiler {
     private record Node(
             String id,
             StepDefinition definition,
-            RailixValue.ObjectValue canonicalInputs,
             Map<String, ApplicationPlan.Binding> bindings,
             Map<String, ApplicationPlan.Path> receives,
-            RailixValue.ObjectValue canonicalReceives,
             Map<String, ApplicationPlan.Path> returns,
-            RailixValue.ObjectValue canonicalReturns,
-            List<Example> examples,
             List<String> outcomes,
             int index
     ) {
@@ -1759,12 +1706,8 @@ public final class ProjectCompiler {
             bindings = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(bindings));
             receives = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(receives));
             returns = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(returns));
-            examples = List.copyOf(examples);
             outcomes = List.copyOf(outcomes);
         }
-    }
-
-    private record Example(String name, RailixValue payload, RailixValue.ObjectValue context) {
     }
 
     private record Endpoint(String node, String outcome) {
@@ -1807,57 +1750,48 @@ public final class ProjectCompiler {
 
     private record InputsRead(
             Map<String, ApplicationPlan.Binding> bindings,
-            RailixValue.ObjectValue canonical,
             List<Diagnostic> diagnostics
     ) {
         static InputsRead rejected(final String code, final String message, final String path) {
-            return new InputsRead(Map.of(), RailixValue.object(Map.of()), List.of(Diagnostic.atPath(code, message, path)));
+            return new InputsRead(Map.of(), List.of(Diagnostic.atPath(code, message, path)));
         }
     }
 
     private record PortRead(
             Map<String, ApplicationPlan.Path> paths,
-            RailixValue.ObjectValue canonical,
             List<Diagnostic> diagnostics
     ) {
         static PortRead rejected(final String code, final String message, final String path) {
-            return new PortRead(
-                    Map.of(),
-                    RailixValue.object(Map.of()),
-                    List.of(Diagnostic.atPath(code, message, path))
-            );
+            return new PortRead(Map.of(), List.of(Diagnostic.atPath(code, message, path)));
         }
     }
 
     private record InputRead(
             ApplicationPlan.Binding binding,
-            List<RailixValue> canonical,
             List<Diagnostic> diagnostics
     ) {
-        static InputRead value(final ApplicationPlan.Binding binding, final RailixValue canonical) {
-            return new InputRead(binding, List.of(canonical), List.of());
+        static InputRead value(final ApplicationPlan.Binding binding) {
+            return new InputRead(binding, List.of());
         }
 
         static InputRead empty() {
-            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), List.of(), List.of());
+            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), List.of());
         }
 
         static InputRead rejected(final String code, final String message, final String path) {
             return new InputRead(
                     new ApplicationPlan.JsonBinding(List.of()),
-                    List.of(),
                     List.of(Diagnostic.atPath(code, message, path))
             );
         }
 
         static InputRead rejected(final Diagnostic diagnostic) {
-            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), List.of(), List.of(diagnostic));
+            return new InputRead(new ApplicationPlan.JsonBinding(List.of()), List.of(diagnostic));
         }
     }
 
     private record CandidateRead(
             ApplicationPlan.CandidatePlan plan,
-            RailixValue canonical,
             List<Diagnostic> diagnostics
     ) {
         static CandidateRead rejected(final String code, final String message, final String path) {
@@ -1875,7 +1809,6 @@ public final class ProjectCompiler {
                             List.of(),
                             List.of()
                     ),
-                    RailixValue.object(Map.of()),
                     List.copyOf(diagnostics)
             );
         }
@@ -1884,7 +1817,6 @@ public final class ProjectCompiler {
     private record ConditionRead(
             List<ApplicationPlan.NestedStepPlan> transforms,
             List<List<ApplicationPlan.NestedStepPlan>> predicates,
-            RailixValue canonical,
             List<Diagnostic> diagnostics
     ) {
         ConditionRead {
@@ -1894,7 +1826,7 @@ public final class ProjectCompiler {
         }
 
         static ConditionRead empty() {
-            return new ConditionRead(List.of(), List.of(), conditionValue(List.of(), List.of()), List.of());
+            return new ConditionRead(List.of(), List.of(), List.of());
         }
 
         static ConditionRead rejected(final String code, final String message, final String path) {
@@ -1906,27 +1838,20 @@ public final class ProjectCompiler {
         }
 
         static ConditionRead rejected(final List<Diagnostic> diagnostics) {
-            return new ConditionRead(List.of(), List.of(), RailixValue.array(List.of()), diagnostics);
+            return new ConditionRead(List.of(), List.of(), diagnostics);
         }
     }
 
     private record NestedRead(
             List<ApplicationPlan.NestedStepPlan> plans,
-            List<RailixValue> canonical,
             List<Diagnostic> diagnostics
     ) {
         static NestedRead rejected(final String code, final String message, final String path) {
-            return new NestedRead(List.of(), List.of(), List.of(Diagnostic.atPath(code, message, path)));
+            return new NestedRead(List.of(), List.of(Diagnostic.atPath(code, message, path)));
         }
 
         static NestedRead rejected(final Diagnostic diagnostic) {
-            return new NestedRead(List.of(), List.of(), List.of(diagnostic));
-        }
-    }
-
-    private record ExampleRead(List<Example> examples, List<Diagnostic> diagnostics) {
-        static ExampleRead rejected(final String code, final String message, final String path) {
-            return new ExampleRead(List.of(), List.of(Diagnostic.atPath(code, message, path)));
+            return new NestedRead(List.of(), List.of(diagnostic));
         }
     }
 

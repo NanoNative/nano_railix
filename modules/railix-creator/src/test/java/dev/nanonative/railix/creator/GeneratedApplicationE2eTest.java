@@ -104,6 +104,14 @@ final class GeneratedApplicationE2eTest {
     }
 
     @Test
+    void productionApplicationBuildsOneWidePlanPartitionWithoutOversizedInitialization() throws Exception {
+        final TriggerScale scale = widePlanPartition();
+        final Path project = project(directory.resolve("wide-plan-partition"), scale.source());
+
+        assertThat(productionArtifact(project, scale.source(), scale.catalog()).jar()).isRegularFile();
+    }
+
+    @Test
     void generatedSourceCallsOnlyReachableStepImplementations() throws Exception {
         final Path project = project(directory.resolve("workspace"));
 
@@ -176,6 +184,26 @@ final class GeneratedApplicationE2eTest {
         try (JarFile jar = new JarFile(artifact.jar().toFile())) {
             assertThat(jar.stream().map(java.util.jar.JarEntry::getName))
                     .noneMatch(name -> name.contains("ObservationCapture"));
+        }
+    }
+
+    @Test
+    void productionJarOmitsCompilerAndStepAuthoringContracts() throws Exception {
+        final ApplicationBuilder.Artifact artifact = productionArtifact();
+
+        try (JarFile jar = new JarFile(artifact.jar().toFile())) {
+            assertThat(jar.stream().map(java.util.jar.JarEntry::getName)).noneMatch(name ->
+                    name.startsWith("dev/nanonative/railix/core/project/ApplicationPlan")
+                            || name.startsWith("dev/nanonative/railix/core/project/ProjectCompiler")
+                            || name.startsWith("dev/nanonative/railix/core/step/StepDefinition")
+                            || name.contains("WorkflowRuntime$Binding")
+                            || name.contains("WorkflowRuntime$CallPlan")
+                            || name.contains("WorkflowRuntime$JsonBinding")
+                            || name.contains("WorkflowRuntime$ChoiceBinding")
+                            || name.contains("WorkflowRuntime$CandidatesBinding")
+                            || name.contains("WorkflowRuntime$MatcherGroupsBinding")
+                            || name.contains("WorkflowRuntime$StepsBinding")
+            );
         }
     }
 
@@ -912,6 +940,42 @@ final class GeneratedApplicationE2eTest {
                     .append(index + 1 == steps ? "end" : "step-" + (index + 1)).append("\"}");
         }
         return project.append("]}").toString();
+    }
+
+    private static TriggerScale widePlanPartition() {
+        final StepDefinition.Builder wide = StepDefinition.named("partition.wide", "1");
+        for (int index = 0; index < 100; index++) {
+            wide.input(
+                    "value_" + index,
+                    StepDefinition.Input.json(ValueShape.ANY).defaultValue(RailixValue.number(index))
+            );
+        }
+        final StepCatalog catalog = StepCatalog.of(
+                StepDefinition.named("railix.app", "1").kind(StepDefinition.Kind.APP).define(),
+                StepDefinition.named("partition.trigger", "1")
+                        .kind(StepDefinition.Kind.TRIGGER)
+                        .source("application.arguments")
+                        .run(StandardStepHandlers.Cli.class),
+                wide.run(StandardStepHandlers.FieldManipulation.class)
+        );
+        final StringBuilder nodes = new StringBuilder("""
+                {"format":1,"id":"wide-plan-partition","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"trigger","use":"partition.trigger","inputs":{},
+                   "examples":[{"name":"default","payload":[]}]}
+                """);
+        final StringBuilder links = new StringBuilder("""
+                ],"links":[
+                  {"from":"app.start","to":"trigger"},
+                  {"from":"trigger.next","to":"wide-0"}
+                """);
+        for (int index = 0; index < 126; index++) {
+            nodes.append(",{\"id\":\"wide-").append(index)
+                    .append("\",\"use\":\"partition.wide\",\"inputs\":{}}");
+            links.append(",{\"from\":\"wide-").append(index).append(".next\",\"to\":")
+                    .append(index == 125 ? "\"end\"}" : "\"wide-" + (index + 1) + "\"}");
+        }
+        return new TriggerScale(nodes.append(links).append("]}").toString(), catalog);
     }
 
     private CreatorServer start(final Path project) throws IOException {

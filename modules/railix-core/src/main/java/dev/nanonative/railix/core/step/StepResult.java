@@ -30,6 +30,9 @@ public final class StepResult {
 
     public StepResult output(final String name, final RailixValue value) {
         valid(name, value, "output");
+        if (outputs.isEmpty()) {
+            return new StepResult(outcome, Map.of(name, value), writes);
+        }
         final Map<String, RailixValue> next = new LinkedHashMap<>(outputs);
         next.put(name, value);
         return new StepResult(outcome, next, writes);
@@ -38,6 +41,9 @@ public final class StepResult {
     /** Writes one value through a declared writable PATH input of the enclosing Step. */
     public StepResult write(final String input, final RailixValue value) {
         valid(input, value, "write");
+        if (writes.isEmpty()) {
+            return new StepResult(outcome, outputs, Map.of(input, value));
+        }
         final Map<String, RailixValue> next = new LinkedHashMap<>(writes);
         next.put(input, value);
         return new StepResult(outcome, outputs, next);

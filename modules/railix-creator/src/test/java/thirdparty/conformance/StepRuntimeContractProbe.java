@@ -54,9 +54,15 @@ public final class StepRuntimeContractProbe implements StepHandler {
             case "write-number-domain" -> StepResult.outcome(input.primaryOutcome())
                     .write("result", nonCanonicalNumber());
             case "run-nested-preinterrupted" -> runNested(input, true);
-            case "run-nested-write", "run-nested-secondary-output", "run-nested-number-domain" ->
+            case "run-nested-write", "run-nested-secondary-output", "run-nested-number-domain",
+                 "run-nested-null", "run-nested-exception", "run-nested-undeclared-outcome",
+                 "run-nested-interrupt" ->
                     runNested(input, false);
             case "nested-identity" -> output(input, input.value("value"));
+            case "nested-null" -> null;
+            case "nested-exception" -> exception(input);
+            case "nested-undeclared-outcome" -> StepResult.outcome("undeclared");
+            case "nested-interrupt" -> throw new InterruptedException("nested contract cancellation");
             case "nested-write" -> StepResult.outcome(input.primaryOutcome())
                     .write("context", RailixValue.string("unexpected"));
             case "nested-secondary-output" -> StepResult.outcome("secondary")

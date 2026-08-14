@@ -2,7 +2,6 @@ package dev.nanonative.railix.core.project;
 
 import dev.nanonative.railix.core.runtime.RunFailure;
 import dev.nanonative.railix.core.runtime.RunResult;
-import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixData;
@@ -45,7 +44,7 @@ public final class WorkflowRuntime {
     }
 
     static Optional<RunResult> validateSource(
-            final ExecutableStep step,
+            final StepPlan step,
             final Map<String, RailixValue> values,
             final String path,
             final List<RunResult.StepExecution> history
@@ -71,10 +70,15 @@ public final class WorkflowRuntime {
         return failed(code, message, step, history);
     }
 
+    static Inputs inputs(final Map<String, RailixValue> received, final String primaryOutcome) {
+        return new Inputs(received, primaryOutcome);
+    }
+
     static final class Execution {
         private EventFrame frame;
         private RailixValue.ObjectValue frozenContext;
         private RunResult aborted;
+        private Capture capture;
         private final List<ResultPlan> results;
         private final List<RunResult.StepExecution> history;
 
@@ -105,40 +109,98 @@ public final class WorkflowRuntime {
         }
 
         int call(
-                final CallPlan plan,
+                final StepPlan plan,
                 final StepCall implementation,
-                final Map<String, RailixValue> received
+                final Map<String, RailixValue> received,
+                final InputResolver resolver
         ) {
-            return call(plan, implementation, received, null);
+            return invoke(plan, implementation, received, resolver, null);
         }
 
         int observe(
-                final CallPlan plan,
+                final StepPlan plan,
                 final StepCall implementation,
                 final Map<String, RailixValue> received,
+                final InputResolver resolver,
                 final Capture capture
         ) {
             if (capture == null) {
                 throw new IllegalArgumentException("Workflow observation capture cannot be Java null.");
             }
             capture.inputContext(frame.snapshot());
-            return call(plan, implementation, received, capture);
+            return invoke(plan, implementation, received, resolver, capture);
         }
 
-        private int call(
-                final CallPlan plan,
+        private int invoke(
+                final StepPlan plan,
                 final StepCall implementation,
                 final Map<String, RailixValue> received,
-                final Capture capture
+                final InputResolver resolver,
+                final Capture observed
         ) {
-            return WorkflowRuntime.call(
-                    plan,
-                    implementation,
-                    this,
-                    received,
-                    history,
-                    capture
-            );
+            if (plan == null || implementation == null || received == null || resolver == null) {
+                return abort(failed(
+                        "RUN_PLAN_MISSING",
+                        "Compiled Step invocation is incomplete.",
+                        plan == null ? "" : plan.id(),
+                        history
+                ));
+            }
+            if (Thread.currentThread().isInterrupted()) {
+                return abort(new RunResult.Cancelled(history));
+            }
+            Map<String, RailixValue> resolvedReceives = received;
+            if (plan.mappedReceives() && !plan.receives().isEmpty()) {
+                final Map<String, RailixValue> mapped = new LinkedHashMap<>();
+                for (final Port port : plan.receives()) {
+                    final Path source = plan.receivePaths().get(port.name());
+                    final RailixValue value = source == null ? null : frame.resolve(source);
+                    if (value == null) {
+                        return abort(rejected(
+                                "RUN_STEP_RECEIVE_REQUIRED",
+                                "Step receive path has no value: " + port.name() + ".",
+                                plan.path() + ".receives." + port.name(),
+                                history
+                        ));
+                    }
+                    if (!port.shape().accepts(value)) {
+                        return abort(rejected(
+                                "RUN_STEP_RECEIVE_INCOMPATIBLE",
+                                "Step receive " + port.name() + " requires " + shape(port.shape())
+                                        + " but receives " + shape(ValueShape.shapeOf(value)) + ".",
+                                plan.path() + ".receives." + port.name(),
+                                history
+                        ));
+                    }
+                    final Optional<String> rejection = port.refinement().rejection(value);
+                    if (rejection.isPresent()) {
+                        return abort(rejected(
+                                "RUN_STEP_RECEIVE_INCOMPATIBLE",
+                                "Step receive " + port.name() + " is incompatible: " + rejection.get(),
+                                plan.path() + ".receives." + port.name(),
+                                history
+                        ));
+                    }
+                    mapped.put(port.name(), value);
+                }
+                resolvedReceives = mapped;
+            }
+            final Capture previous = capture;
+            capture = observed;
+            try {
+                final Inputs resolved = resolver.resolve(this, resolvedReceives, plan.primaryOutcome());
+                if (resolved == null) {
+                    return abort(failed(
+                            "RUN_PLAN_MISSING",
+                            "Compiled Step input resolver returned Java null.",
+                            plan.id(),
+                            history
+                    ));
+                }
+                return WorkflowRuntime.call(plan, implementation, this, resolved);
+            } finally {
+                capture = previous;
+            }
         }
 
         int abort(final RunResult result) {
@@ -206,6 +268,10 @@ public final class WorkflowRuntime {
             return List.copyOf(history);
         }
 
+        RailixValue resolve(final Path path) {
+            return frame.resolve(path);
+        }
+
         private RailixValue.ObjectValue context() {
             if (frozenContext == null) {
                 frozenContext = frame.snapshot();
@@ -215,71 +281,22 @@ public final class WorkflowRuntime {
     }
 
     private static int call(
-            final CallPlan plan,
+            final StepPlan plan,
             final StepCall implementation,
             final Execution execution,
-            final Map<String, RailixValue> received,
-            final List<RunResult.StepExecution> history,
-            final Capture capture
+            final Inputs resolution
     ) {
+        final List<RunResult.StepExecution> history = execution.history;
+        final Capture capture = execution.capture;
         final EventFrame frame = execution.frame;
-        if (Thread.currentThread().isInterrupted()) {
-            return execution.abort(new RunResult.Cancelled(history));
-        }
-        Map<String, RailixValue> receivedValues = received;
-        if (plan.step().kind() == StepDefinition.Kind.STEP && !plan.receives().isEmpty()) {
-            final Map<String, RailixValue> mapped = new LinkedHashMap<>();
-            for (final StepDefinition.Port port : plan.step().receives()) {
-                final Path source = plan.receives().get(port.name());
-                final RailixValue value = source == null
-                        ? null
-                        : frame.resolve(source);
-                if (value == null) {
-                    return execution.abort(rejected(
-                            "RUN_STEP_RECEIVE_REQUIRED",
-                            "Step receive path has no value: " + port.name() + ".",
-                            plan.path() + ".receives." + port.name(),
-                            history
-                    ));
-                }
-                if (!port.shape().accepts(value)) {
-                    return execution.abort(rejected(
-                            "RUN_STEP_RECEIVE_INCOMPATIBLE",
-                            "Step receive " + port.name() + " requires " + shape(port.shape())
-                                    + " but receives " + shape(ValueShape.shapeOf(value)) + ".",
-                            plan.path() + ".receives." + port.name(),
-                            history
-                    ));
-                }
-                final Optional<String> rejection = port.refinement().rejection(value);
-                if (rejection.isPresent()) {
-                    return execution.abort(rejected(
-                            "RUN_STEP_RECEIVE_INCOMPATIBLE",
-                            "Step receive " + port.name() + " is incompatible: " + rejection.get(),
-                            plan.path() + ".receives." + port.name(),
-                            history
-                    ));
-                }
-                mapped.put(port.name(), value);
-            }
-            receivedValues = mapped;
-        }
-        final Resolution resolution = resolve(
-                plan.inputs(),
-                frame,
-                receivedValues,
-                plan.step().primaryOutcome(),
-                history,
-                capture
-        );
-        if (resolution.failure() != null) {
+        if (resolution.failure != null) {
             resolution.closePrograms();
-            return execution.abort(resolution.failure());
+            return execution.abort(resolution.failure);
         }
         if (capture != null) {
-            capture.inputs(resolution.values());
+            capture.inputs(resolution.values);
         }
-        if (plan.step().use().isEmpty()) {
+        if (plan.use().isEmpty()) {
             resolution.closePrograms();
             return execution.abort(failed(
                     "STEP_HANDLER_REQUIRED",
@@ -317,7 +334,7 @@ public final class WorkflowRuntime {
                     history
             ));
         }
-        final int outcome = plan.step().outcomes().indexOf(result.outcome());
+        final int outcome = plan.outcomes().indexOf(result.outcome());
         if (outcome < 0) {
             return execution.abort(failed(
                     "STEP_OUTCOME_INVALID",
@@ -326,7 +343,7 @@ public final class WorkflowRuntime {
                     history
             ));
         }
-        if (!plan.step().primaryOutcome().equals(result.outcome()) && !result.outputs().isEmpty()) {
+        if (!plan.primaryOutcome().equals(result.outcome()) && !result.outputs().isEmpty()) {
             return execution.abort(failed(
                     "STEP_OUTPUT_UNEXPECTED",
                     "Step returned output for outcome " + result.outcome() + ".",
@@ -334,10 +351,10 @@ public final class WorkflowRuntime {
                     history
             ));
         }
-        final boolean primary = plan.step().primaryOutcome().equals(result.outcome());
+        final boolean primary = plan.primaryOutcome().equals(result.outcome());
         if (primary) {
-            boolean complete = result.outputs().size() == plan.step().returns().size();
-            for (final StepDefinition.Port port : plan.step().returns()) {
+            boolean complete = result.outputs().size() == plan.returns().size();
+            for (final Port port : plan.returns()) {
                 complete &= result.outputs().containsKey(port.name());
             }
             if (!complete) {
@@ -348,7 +365,7 @@ public final class WorkflowRuntime {
                         history
                 ));
             }
-            for (final StepDefinition.Port port : plan.step().returns()) {
+            for (final Port port : plan.returns()) {
                 final RailixValue output = result.outputs().get(port.name());
                 if (!port.shape().accepts(output)) {
                     return execution.abort(failed(
@@ -370,7 +387,7 @@ public final class WorkflowRuntime {
                             history
                     ));
                 }
-                final Path target = plan.returns().get(port.name());
+                final Path target = plan.returnPaths().get(port.name());
                 if (target == null) {
                     return execution.abort(failed(
                             "STEP_RETURN_TARGET_REQUIRED",
@@ -382,8 +399,8 @@ public final class WorkflowRuntime {
             }
         }
         for (final Map.Entry<String, RailixValue> write : result.writes().entrySet()) {
-            final PathBinding target = resolution.paths().get(write.getKey());
-            if (target == null || !target.access().writable()) {
+            final PathBinding target = resolution.paths.get(write.getKey());
+            if (target == null || !target.writable()) {
                 return execution.abort(failed(
                         "STEP_WRITE_UNDECLARED",
                         "Step wrote through an undeclared writable PATH input: " + write.getKey() + ".",
@@ -392,11 +409,11 @@ public final class WorkflowRuntime {
                 ));
             }
         }
-        final int mutations = (primary ? plan.step().returns().size() : 0) + result.writes().size();
+        final int mutations = (primary ? plan.returns().size() : 0) + result.writes().size();
         final EventFrame next = mutations > 1 ? frame.fork() : frame;
         if (primary) {
-            for (final StepDefinition.Port port : plan.step().returns()) {
-                final int status = next.write(plan.returns().get(port.name()), result.outputs().get(port.name()));
+            for (final Port port : plan.returns()) {
+                final int status = next.write(plan.returnPaths().get(port.name()), result.outputs().get(port.name()));
                 if (status != WRITE_OK) {
                     return execution.abort(writeFailure(
                             status,
@@ -406,7 +423,7 @@ public final class WorkflowRuntime {
                 }
             }
         }
-        for (final Map.Entry<String, PathBinding> path : resolution.paths().entrySet()) {
+        for (final Map.Entry<String, PathBinding> path : resolution.paths.entrySet()) {
             final RailixValue write = result.writes().get(path.getKey());
             if (write == null) {
                 continue;
@@ -425,165 +442,218 @@ public final class WorkflowRuntime {
         return outcome;
     }
 
-    private static Resolution resolve(
-            final Map<String, Binding> bindings,
-            final EventFrame frame,
-            final Map<String, RailixValue> received,
-            final String primaryOutcome,
-            final List<RunResult.StepExecution> history,
-            final Capture capture
-    ) {
-        final Map<String, RailixValue> values = new LinkedHashMap<>(received);
-        final Map<String, String> options = new LinkedHashMap<>();
-        final Map<String, StepInput.Program> programs = new LinkedHashMap<>();
-        final Map<String, StepInput> selected = new LinkedHashMap<>();
-        final Map<String, PathBinding> paths = new LinkedHashMap<>();
-        List<ProgramScope> programScopes = null;
-        for (final Map.Entry<String, Binding> entry : bindings.entrySet()) {
-            final String name = entry.getKey();
-            final Binding binding = entry.getValue();
-            if (binding instanceof JsonBinding json) {
-                if (!json.value().isEmpty()) {
-                    values.put(name, json.value().getFirst());
+    static final class Inputs {
+        private final Map<String, RailixValue> values;
+        private Map<String, String> options = Map.of();
+        private Map<String, StepInput.Program> programs = Map.of();
+        private Map<String, StepInput> selected = Map.of();
+        private Map<String, PathBinding> paths = Map.of();
+        private final String primaryOutcome;
+        private List<ProgramScope> programScopes;
+        private RunResult failure;
+
+        private Inputs(final Map<String, RailixValue> received, final String primaryOutcome) {
+            values = new LinkedHashMap<>(received);
+            this.primaryOutcome = primaryOutcome;
+        }
+
+        void value(final String name, final RailixValue value) {
+            if (failure == null && value != null) {
+                values.put(name, value);
+            }
+        }
+
+        void path(
+                final String name,
+                final PathBinding binding,
+                final Execution execution
+        ) {
+            if (failure != null) {
+                return;
+            }
+            paths = put(paths, name, binding);
+            if (binding.readable()) {
+                final RailixValue value = execution.resolve(binding.path());
+                if (value != null) {
+                    values.put(name, value);
                 }
-            } else if (binding instanceof PathBinding path) {
-                paths.put(name, path);
-                if (path.access().readable()) {
-                    final RailixValue value = frame.resolve(path.path());
-                    if (value != null) {
-                        values.put(name, value);
-                    }
-                }
-            } else if (binding instanceof ChoiceBinding choice) {
-                final Resolution children = resolve(
-                        choice.inputs(),
-                        frame,
-                        Map.of(),
+            }
+        }
+
+        void choice(
+                final String name,
+                final String option,
+                final InputResolver resolver,
+                final List<InputReference> valueSources,
+                final Execution execution
+        ) {
+            if (failure != null) {
+                return;
+            }
+            final Inputs children = resolver.resolve(execution, Map.of(), primaryOutcome);
+            merge(children);
+            if (failure != null) {
+                return;
+            }
+            options = put(options, name, option);
+            selected = put(selected, name, children.input());
+            final RailixValue selectedValue = valueSources.isEmpty()
+                    ? null
+                    : valueSources.getFirst().owned()
+                    ? children.values.get(valueSources.getFirst().input())
+                    : values.get(valueSources.getFirst().input());
+            if (selectedValue != null) {
+                values.put(name, selectedValue);
+            }
+        }
+
+        void candidates(
+                final String name,
+                final List<CandidatePlan> candidates,
+                final String path,
+                final Execution execution
+        ) {
+            if (failure != null) {
+                return;
+            }
+            for (int index = 0; index < candidates.size(); index++) {
+                final CandidatePlan candidate = candidates.get(index);
+                final MatcherEvaluation evaluation = evaluate(
+                        candidate,
+                        values,
+                        execution,
                         primaryOutcome,
-                        history,
-                        capture
+                        name + "[" + index + "].when"
                 );
-                if (children.failure() != null) {
-                    closePrograms(programScopes);
-                    return children;
+                if (evaluation.failure() != null) {
+                    evaluation.children().closePrograms();
+                    fail(evaluation.failure());
+                    return;
                 }
-                programScopes = merge(programScopes, children.programScopes());
-                options.put(name, choice.option());
-                selected.put(name, children.input());
-                final RailixValue selectedValue = choice.valueSource()
-                        .map(source -> source.scope() == StepDefinition.ReferenceScope.OWNED
-                                ? children.values().get(source.input())
-                                : values.get(source.input()))
-                        .orElse(null);
-                if (selectedValue != null) {
-                    values.put(name, selectedValue);
+                if (evaluation.matched()) {
+                    merge(evaluation.children());
+                    values.put(name, evaluation.value());
+                    options = put(options, name, candidate.option());
+                    selected = put(selected, name, evaluation.children().input());
+                    if (execution.capture != null) {
+                        execution.capture.selectedCandidate(path, index);
+                    }
+                    return;
                 }
-            } else if (binding instanceof CandidatesBinding candidates) {
-                for (int index = 0; index < candidates.candidates().size(); index++) {
-                    final CandidatePlan candidate = candidates.candidates().get(index);
-                    final ChoiceBinding source = candidate.source();
+                evaluation.children().closePrograms();
+            }
+        }
+
+        void matcherGroups(
+                final String name,
+                final List<List<CandidatePlan>> groups,
+                final Execution execution
+        ) {
+            if (failure != null) {
+                return;
+            }
+            boolean matched = false;
+            groupLoop:
+            for (int groupIndex = 0; groupIndex < groups.size(); groupIndex++) {
+                final List<CandidatePlan> group = groups.get(groupIndex);
+                for (int matcherIndex = 0; matcherIndex < group.size(); matcherIndex++) {
                     final MatcherEvaluation evaluation = evaluate(
-                            candidate,
+                            group.get(matcherIndex),
                             values,
-                            frame,
+                            execution,
                             primaryOutcome,
-                            history,
-                            capture,
-                            name + "[" + index + "].when"
+                            name + "[" + groupIndex + "][" + matcherIndex + "].when"
                     );
                     if (evaluation.failure() != null) {
-                        closePrograms(programScopes);
                         evaluation.children().closePrograms();
-                        return failedResolution(primaryOutcome, evaluation.failure());
-                    }
-                    if (evaluation.matched()) {
-                        programScopes = merge(programScopes, evaluation.children().programScopes());
-                        values.put(name, evaluation.value());
-                        options.put(name, source.option());
-                        selected.put(name, evaluation.children().input());
-                        if (capture != null) {
-                            capture.selectedCandidate(candidates.path(), index);
-                        }
-                        break;
+                        fail(evaluation.failure());
+                        return;
                     }
                     evaluation.children().closePrograms();
-                }
-            } else if (binding instanceof MatcherGroupsBinding matcherGroups) {
-                boolean matched = false;
-                groupLoop:
-                for (int groupIndex = 0; groupIndex < matcherGroups.groups().size(); groupIndex++) {
-                    final List<CandidatePlan> group = matcherGroups.groups().get(groupIndex);
-                    for (int matcherIndex = 0; matcherIndex < group.size(); matcherIndex++) {
-                        final MatcherEvaluation evaluation = evaluate(
-                                group.get(matcherIndex),
-                                values,
-                                frame,
-                                primaryOutcome,
-                                history,
-                                capture,
-                                name + "[" + groupIndex + "][" + matcherIndex + "].when"
-                        );
-                        if (evaluation.failure() != null) {
-                            closePrograms(programScopes);
-                            evaluation.children().closePrograms();
-                            return failedResolution(primaryOutcome, evaluation.failure());
-                        }
-                        evaluation.children().closePrograms();
-                        if (!evaluation.matched()) {
-                            continue groupLoop;
-                        }
+                    if (!evaluation.matched()) {
+                        continue groupLoop;
                     }
-                    matched = true;
-                    break;
                 }
-                final RailixValue booleanValue = RailixValue.bool(matched);
-                values.put(name, booleanValue);
-            } else if (binding instanceof StepsBinding stepsBinding) {
-                final StepDefinition.ValueSource source = stepsBinding.valueSource();
-                final ProgramScope program = new ProgramScope(
-                        stepsBinding.steps(),
-                        values.get(source.input()),
-                        source.missingOutcome().orElse(primaryOutcome),
-                        frame,
-                        primaryOutcome,
-                        history,
-                        capture,
-                        name
-                );
-                programs.put(name, program::run);
+                matched = true;
+                break;
+            }
+            values.put(name, RailixValue.bool(matched));
+        }
+
+        void program(
+                final String name,
+                final NestedProgram steps,
+                final String sourceInput,
+                final String missingOutcome,
+                final Execution execution
+        ) {
+            if (failure != null) {
+                return;
+            }
+            final ProgramScope program = new ProgramScope(
+                    steps,
+                    values.get(sourceInput),
+                    missingOutcome.isEmpty() ? primaryOutcome : missingOutcome,
+                    execution,
+                    primaryOutcome,
+                    name
+            );
+            programs = put(programs, name, program::run);
+            if (programScopes == null) {
+                programScopes = new ArrayList<>();
+            }
+            programScopes.add(program);
+        }
+
+        private void merge(final Inputs children) {
+            if (children == null) {
+                fail(failed(
+                        "RUN_PLAN_MISSING",
+                        "Compiled child input resolver returned Java null.",
+                        "",
+                        List.of()
+                ));
+                return;
+            }
+            if (children.programScopes != null && !children.programScopes.isEmpty()) {
                 if (programScopes == null) {
                     programScopes = new ArrayList<>();
                 }
-                programScopes.add(program);
+                programScopes.addAll(children.programScopes);
+                children.programScopes = null;
+            }
+            if (children.failure != null) {
+                fail(children.failure);
             }
         }
-        return new Resolution(
-                new StepInput(values, options, programs, selected, primaryOutcome),
-                values,
-                paths,
-                null,
-                programScopes == null ? List.of() : List.copyOf(programScopes)
-        );
-    }
 
-    private static List<ProgramScope> merge(
-            List<ProgramScope> current,
-            final List<ProgramScope> added
-    ) {
-        if (added.isEmpty()) {
-            return current;
+        private void fail(final RunResult result) {
+            if (failure == null) {
+                failure = result;
+            }
         }
-        if (current == null) {
-            current = new ArrayList<>();
-        }
-        current.addAll(added);
-        return current;
-    }
 
-    private static void closePrograms(final List<ProgramScope> programs) {
-        if (programs != null) {
-            for (final ProgramScope program : programs) {
-                program.close();
+        private static <K, V> Map<K, V> put(final Map<K, V> current, final K key, final V value) {
+            final Map<K, V> mutable;
+            if (current.isEmpty()) {
+                mutable = new LinkedHashMap<>();
+            } else {
+                mutable = current;
+            }
+            mutable.put(key, value);
+            return mutable;
+        }
+
+        private StepInput input() {
+            return new StepInput(values, options, programs, selected, primaryOutcome);
+        }
+
+        private void closePrograms() {
+            if (programScopes != null) {
+                for (final ProgramScope program : programScopes) {
+                    program.close();
+                }
+                programScopes = null;
             }
         }
     }
@@ -591,29 +661,29 @@ public final class WorkflowRuntime {
     private static MatcherEvaluation evaluate(
             final CandidatePlan candidate,
             final Map<String, RailixValue> values,
-            final EventFrame frame,
+            final Execution execution,
             final String primaryOutcome,
-            final List<RunResult.StepExecution> history,
-            final Capture capture,
             final String predicateInput
     ) {
-        final ChoiceBinding source = candidate.source();
-        final Resolution children = resolve(
-                source.inputs(),
-                frame,
-                Map.of(),
-                primaryOutcome,
-                history,
-                capture
-        );
-        if (children.failure() != null) {
-            return new MatcherEvaluation(false, null, children, children.failure());
+        final Inputs children = candidate.inputs().resolve(execution, Map.of(), primaryOutcome);
+        if (children == null) {
+            final Inputs failed = inputs(Map.of(), primaryOutcome);
+            failed.fail(failed(
+                    "RUN_PLAN_MISSING",
+                    "Compiled candidate input resolver returned Java null.",
+                    "",
+                    execution.history
+            ));
+            return new MatcherEvaluation(false, null, failed, failed.failure);
         }
-        final RailixValue candidateValue = source.valueSource()
-                .map(reference -> reference.scope() == StepDefinition.ReferenceScope.OWNED
-                        ? children.values().get(reference.input())
-                        : values.get(reference.input()))
-                .orElse(null);
+        if (children.failure != null) {
+            return new MatcherEvaluation(false, null, children, children.failure);
+        }
+        final RailixValue candidateValue = candidate.valueSources().isEmpty()
+                ? null
+                : candidate.valueSources().getFirst().owned()
+                ? children.values.get(candidate.valueSources().getFirst().input())
+                : values.get(candidate.valueSources().getFirst().input());
         if (candidateValue == null) {
             return new MatcherEvaluation(false, null, children, null);
         }
@@ -621,26 +691,22 @@ public final class WorkflowRuntime {
             return new MatcherEvaluation(true, candidateValue, children, null);
         }
         try {
-            final RailixValue prepared = candidate.transforms().isEmpty()
+            final RailixValue prepared = candidate.transforms().steps().isEmpty()
                     ? candidateValue
                     : program(
                             candidate.transforms(),
                             candidateValue,
-                            frame,
+                            execution,
                             primaryOutcome,
-                            history,
-                            capture,
                             predicateInput + ".transforms"
                     ).values().getFirst();
             for (int index = 0; index < candidate.predicates().size(); index++) {
-                final List<NestedStepPlan> condition = candidate.predicates().get(index);
+                final NestedProgram condition = candidate.predicates().get(index);
                 final StepInput.ProgramResult predicate = program(
                         condition,
                         prepared,
-                        frame,
+                        execution,
                         primaryOutcome,
-                        history,
-                        capture,
                         predicateInput + ".all[" + index + "]"
                 );
                 if (!((RailixValue.BooleanValue) predicate.values().getFirst()).value()) {
@@ -652,22 +718,22 @@ public final class WorkflowRuntime {
             return new MatcherEvaluation(false, null, children, abort.result());
         } catch (final InterruptedException exception) {
             Thread.currentThread().interrupt();
-            return new MatcherEvaluation(false, null, children, new RunResult.Cancelled(history));
+            return new MatcherEvaluation(false, null, children, new RunResult.Cancelled(execution.history));
         }
     }
 
     private static StepInput.ProgramResult program(
-            final List<NestedStepPlan> program,
+            final NestedProgram program,
             RailixValue value,
-            final EventFrame frame,
+            final Execution execution,
             final String enclosingOutcome,
-            final List<RunResult.StepExecution> history,
-            final Capture capture,
             final String inputName
     ) throws InterruptedException {
-        for (final NestedStepPlan step : program) {
-            final ExecutableStep executable = step.step();
-            final StepDefinition.Port receive = executable.receives().getFirst();
+        final List<RunResult.StepExecution> history = execution.history;
+        final Capture capture = execution.capture;
+        for (final NestedStep step : program.steps()) {
+            final StepPlan executable = step.step();
+            final Port receive = executable.receives().getFirst();
             if (!receive.shape().accepts(value)) {
                 capture(capture, inputName, step, "rejected", List.of());
                 throw new ProgramAbort(rejected(
@@ -692,17 +758,23 @@ public final class WorkflowRuntime {
                 capture(capture, inputName, step, "cancelled", List.of());
                 throw new InterruptedException();
             }
-            final Resolution resolved = resolve(
-                    step.inputs(),
-                    frame,
+            final Inputs resolved = step.inputs().resolve(
+                    execution,
                     Map.of(receive.name(), value),
-                    executable.primaryOutcome(),
-                    history,
-                    capture
+                    executable.primaryOutcome()
             );
-            if (resolved.failure() != null) {
+            if (resolved == null) {
+                throw new ProgramAbort(failed(
+                        "RUN_PLAN_MISSING",
+                        "Compiled nested input resolver returned Java null.",
+                        executable.use(),
+                        step.path(),
+                        history
+                ));
+            }
+            if (resolved.failure != null) {
                 resolved.closePrograms();
-                throw new ProgramAbort(resolved.failure());
+                throw new ProgramAbort(resolved.failure);
             }
             if (executable.use().isEmpty()) {
                 resolved.closePrograms();
@@ -783,7 +855,7 @@ public final class WorkflowRuntime {
                 record(history, executable.use(), result.outcome());
                 return new StepInput.ProgramResult(enclosingOutcome, result.outcome(), List.of());
             }
-            final StepDefinition.Port output = executable.returns().getFirst();
+            final Port output = executable.returns().getFirst();
             final RailixValue next = result.outputs().get(output.name());
             if (next == null || result.outputs().size() != 1 || !output.shape().accepts(next)) {
                 capture(capture, inputName, step, "failed", next == null ? List.of() : List.of(next));
@@ -824,25 +896,15 @@ public final class WorkflowRuntime {
         return new StepInput.ProgramResult(enclosingOutcome, enclosingOutcome, List.of(value));
     }
 
-    private static Resolution failedResolution(final String primaryOutcome, final RunResult failure) {
-        return new Resolution(
-                new StepInput(Map.of(), Map.of(), Map.of(), Map.of(), primaryOutcome),
-                Map.of(),
-                Map.of(),
-                failure,
-                List.of()
-        );
-    }
-
     private static Optional<RunResult> validateReceives(
-            final ExecutableStep step,
+            final StepPlan step,
             final Map<String, RailixValue> values,
             final String path,
-        final List<RunResult.StepExecution> history
+            final List<RunResult.StepExecution> history
     ) {
         for (final String name : values.keySet()) {
             boolean declared = false;
-            for (final StepDefinition.Port port : step.receives()) {
+            for (final Port port : step.receives()) {
                 declared |= port.name().equals(name);
             }
             if (!declared) {
@@ -854,7 +916,7 @@ public final class WorkflowRuntime {
                 ));
             }
         }
-        for (final StepDefinition.Port port : step.receives()) {
+        for (final Port port : step.receives()) {
             final RailixValue value = values.get(port.name());
             if (value == null) {
                 return Optional.of(rejected(
@@ -889,7 +951,7 @@ public final class WorkflowRuntime {
     private static void capture(
             final Capture capture,
             final String input,
-            final NestedStepPlan step,
+            final NestedStep step,
             final String status,
             final List<RailixValue> value
     ) {
@@ -1260,158 +1322,59 @@ public final class WorkflowRuntime {
     }
 
     record ResultPlan(String name, ValueShape shape, List<RailixValue> defaultValue) {
-        ResultPlan {
-            defaultValue = List.copyOf(defaultValue);
-        }
     }
 
-    record ExecutableStep(
+    record Port(String name, ValueShape shape, ValueRefinement refinement) {
+    }
+
+    record StepPlan(
+            String id,
             String use,
-            StepDefinition.Kind kind,
-            List<StepDefinition.Port> receives,
-            List<StepDefinition.Port> returns,
+            boolean mappedReceives,
+            List<Port> receives,
+            List<Port> returns,
             List<String> outcomes,
-            String source,
-            Map<String, String> responses
+            Map<String, Path> receivePaths,
+            Map<String, Path> returnPaths,
+            String path
     ) {
-        ExecutableStep {
-            if (use == null || use.isBlank() || kind == null || source == null) {
-                throw new IllegalArgumentException("Executable Step contract must be supplied.");
-            }
-            receives = List.copyOf(receives);
-            returns = List.copyOf(returns);
-            outcomes = List.copyOf(outcomes);
-            responses = Collections.unmodifiableMap(new LinkedHashMap<>(responses));
-            if (outcomes.isEmpty()) {
-                throw new IllegalArgumentException("Executable Step must declare an outcome.");
-            }
-        }
-
-        static ExecutableStep from(final StepDefinition definition) {
-            return new ExecutableStep(
-                    definition.id(),
-                    definition.kind(),
-                    definition.receives(),
-                    definition.returns(),
-                    definition.outcomes(),
-                    definition.source().map(StepDefinition.Source::name).orElse(""),
-                    definition.source().map(StepDefinition.Source::responses).orElse(Map.of())
-            );
-        }
-
         String primaryOutcome() {
             return outcomes.getFirst();
         }
     }
 
-    record CallPlan(
-            String id,
-            ExecutableStep step,
-            Map<String, Binding> inputs,
-            Map<String, Path> receives,
-            Map<String, Path> returns,
-            String path
-    ) {
-        CallPlan {
-            inputs = Collections.unmodifiableMap(new LinkedHashMap<>(inputs));
-            receives = Collections.unmodifiableMap(new LinkedHashMap<>(receives));
-            returns = Collections.unmodifiableMap(new LinkedHashMap<>(returns));
-        }
+    @FunctionalInterface
+    interface InputResolver {
+        Inputs resolve(Execution execution, Map<String, RailixValue> received, String primaryOutcome);
     }
 
-    sealed interface Binding permits JsonBinding, PathBinding, ChoiceBinding, CandidatesBinding, MatcherGroupsBinding,
-            StepsBinding {
+    record PathBinding(Path path, boolean readable, boolean writable) {
     }
 
-    record JsonBinding(List<RailixValue> value) implements Binding {
-        JsonBinding {
-            value = List.copyOf(value);
-        }
-    }
-
-    record PathBinding(Path path, StepDefinition.PathAccess access) implements Binding {
-    }
-
-    record ChoiceBinding(
-            String option,
-            Map<String, Binding> inputs,
-            List<StepDefinition.InputReference> valueSources
-    ) implements Binding {
-        ChoiceBinding {
-            inputs = Collections.unmodifiableMap(new LinkedHashMap<>(inputs));
-            valueSources = List.copyOf(valueSources);
-        }
-
-        Optional<StepDefinition.InputReference> valueSource() {
-            return valueSources.isEmpty() ? Optional.empty() : Optional.of(valueSources.getFirst());
-        }
-    }
-
-    record CandidatesBinding(List<CandidatePlan> candidates, String path) implements Binding {
-        CandidatesBinding {
-            candidates = List.copyOf(candidates);
-            if (path == null || path.isBlank()) {
-                throw new IllegalArgumentException("Candidate input path must be supplied.");
-            }
-        }
-    }
-
-    record MatcherGroupsBinding(List<List<CandidatePlan>> groups) implements Binding {
-        MatcherGroupsBinding {
-            groups = groups.stream().map(List::copyOf).toList();
-        }
+    record InputReference(boolean owned, String input) {
     }
 
     record CandidatePlan(
-            ChoiceBinding source,
-            List<NestedStepPlan> transforms,
-            List<List<NestedStepPlan>> predicates
+            String option,
+            InputResolver inputs,
+            List<InputReference> valueSources,
+            NestedProgram transforms,
+            List<NestedProgram> predicates
     ) {
-        CandidatePlan {
-            if (source == null) {
-                throw new IllegalArgumentException("Candidate plan source must be supplied.");
-            }
-            transforms = List.copyOf(transforms);
-            predicates = predicates.stream().map(List::copyOf).toList();
-        }
     }
 
-    record StepsBinding(
-            List<NestedStepPlan> steps,
-            StepDefinition.ValueSource valueSource,
-            boolean propagatesOutcomes
-    ) implements Binding {
-        StepsBinding {
-            steps = List.copyOf(steps);
-            if (valueSource == null) {
-                throw new IllegalArgumentException("Nested Step value source cannot be Java null.");
-            }
-        }
+    record NestedProgram(List<NestedStep> steps) {
     }
 
-    record NestedStepPlan(
-            ExecutableStep step,
-            Map<String, Binding> inputs,
+    record NestedStep(
+            StepPlan step,
+            InputResolver inputs,
             String path,
             StepCall call
     ) {
-        NestedStepPlan {
-            inputs = Collections.unmodifiableMap(new LinkedHashMap<>(inputs));
-            if (call == null) {
-                throw new IllegalArgumentException("Nested Step call cannot be Java null.");
-            }
-        }
     }
 
     record Path(List<PathElement> elements) {
-        Path {
-            if (elements == null || elements.size() < 2 || elements.size() > RailixData.DEFAULT_MAX_DEPTH) {
-                throw new IllegalArgumentException(
-                        "Runtime path must contain 2 through " + RailixData.DEFAULT_MAX_DEPTH + " elements."
-                );
-            }
-            elements = List.copyOf(elements);
-        }
     }
 
     sealed interface PathElement permits Field, Index {
@@ -1426,45 +1389,39 @@ public final class WorkflowRuntime {
     private record MatcherEvaluation(
             boolean matched,
             RailixValue value,
-            Resolution children,
+            Inputs children,
             RunResult failure
     ) {
     }
 
     private static final class ProgramScope {
         private Thread owner;
-        private List<NestedStepPlan> steps;
+        private NestedProgram steps;
         private RailixValue value;
         private String missingOutcome;
-        private EventFrame frame;
+        private Execution execution;
         private String primaryOutcome;
-        private List<RunResult.StepExecution> history;
-        private Capture capture;
         private String inputName;
 
         private ProgramScope(
-                final List<NestedStepPlan> steps,
+                final NestedProgram steps,
                 final RailixValue value,
                 final String missingOutcome,
-                final EventFrame frame,
+                final Execution execution,
                 final String primaryOutcome,
-                final List<RunResult.StepExecution> history,
-                final Capture capture,
                 final String inputName
         ) {
             owner = Thread.currentThread();
             this.steps = steps;
             this.value = value;
             this.missingOutcome = missingOutcome;
-            this.frame = frame;
+            this.execution = execution;
             this.primaryOutcome = primaryOutcome;
-            this.history = history;
-            this.capture = capture;
             this.inputName = inputName;
         }
 
         private StepInput.ProgramResult run() throws InterruptedException {
-            if (frame == null) {
+            if (execution == null) {
                 throw new IllegalStateException("Nested Step program is no longer active.");
             }
             if (Thread.currentThread() != owner) {
@@ -1472,31 +1429,17 @@ public final class WorkflowRuntime {
             }
             return value == null
                     ? new StepInput.ProgramResult(primaryOutcome, missingOutcome, List.of())
-                    : program(steps, value, frame, primaryOutcome, history, capture, inputName);
+                    : program(steps, value, execution, primaryOutcome, inputName);
         }
 
         private void close() {
             owner = null;
-            steps = List.of();
+            steps = null;
             value = null;
             missingOutcome = null;
-            frame = null;
+            execution = null;
             primaryOutcome = null;
-            history = null;
-            capture = null;
             inputName = null;
-        }
-    }
-
-    private record Resolution(
-            StepInput input,
-            Map<String, RailixValue> values,
-            Map<String, PathBinding> paths,
-            RunResult failure,
-            List<ProgramScope> programScopes
-    ) {
-        private void closePrograms() {
-            WorkflowRuntime.closePrograms(programScopes);
         }
     }
 

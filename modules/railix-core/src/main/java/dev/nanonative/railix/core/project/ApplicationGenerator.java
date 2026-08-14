@@ -14,7 +14,8 @@ final class ApplicationGenerator {
     static final String APPLICATION_CLASS = "dev.nanonative.railix.core.project.RailixApplication";
     static final String DEVELOPMENT_LAUNCHER_CLASS =
             "dev.nanonative.railix.core.project.RailixDevelopmentApplication";
-    private static final int PARTITION_SIZE = 128;
+    private static final int PLAN_PARTITION_SIZE = 16;
+    private static final int ROUTE_PARTITION_SIZE = 128;
     private static final int MAX_APPLICATION_NODES = 16_384;
     private static final int MAX_APPLICATION_TRIGGERS = 512;
     private static final int MAX_PLAN_SOURCE_CHARACTERS = 32_768;
@@ -52,9 +53,10 @@ final class ApplicationGenerator {
             )), List.of());
         }
         final Map<String, Integer> handlerIndexes = handlerIndexes(implementations);
-        for (final ApplicationPlan.NodePlan node : nodes) {
+        for (int index = 0; index < nodes.size(); index++) {
+            final ApplicationPlan.NodePlan node = nodes.get(index);
             if (node.step().kind() != StepDefinition.Kind.APP
-                    && callPlan(node, handlerIndexes).length() > MAX_PLAN_SOURCE_CHARACTERS) {
+                    && compiledNode(index, node, handlerIndexes).length() > MAX_PLAN_SOURCE_CHARACTERS) {
                 return new Result("", "", "", List.of(Diagnostic.atPath(
                         "PROJECT_APPLICATION_STEP_LIMIT",
                         "One compiled Step exceeds the " + MAX_PLAN_SOURCE_CHARACTERS
@@ -156,7 +158,6 @@ final class ApplicationGenerator {
                 package dev.nanonative.railix.core.project;
 
                 import dev.nanonative.railix.core.runtime.RunResult;
-                import dev.nanonative.railix.core.step.StepDefinition;
                 import dev.nanonative.railix.core.step.StepInput;
                 import dev.nanonative.railix.core.step.StepResult;
                 import dev.nanonative.railix.core.value.RailixJson;
@@ -182,7 +183,7 @@ final class ApplicationGenerator {
                 .append("    private static final int END = -1;\n")
                 .append("    private static final int UNROUTED = -2;\n")
                 .append("    private static final int NODE_PARTITION_SIZE =\n")
-                .append(indent(Integer.toString(PARTITION_SIZE), 3)).append(";\n")
+                .append(indent(Integer.toString(ROUTE_PARTITION_SIZE), 3)).append(";\n")
                 .append("    private static final String PROJECT_ID =\n")
                 .append(indent(quote(projectId), 3)).append(";\n");
         int handlerIndex = 0;
@@ -203,6 +204,8 @@ final class ApplicationGenerator {
         source.append("    private static final RailixApplication APPLICATION = new RailixApplication();\n\n");
         handlerIndex = 0;
         for (final String ignored : implementations.keySet()) {
+            source.append("    private static final WorkflowRuntime.StepCall CALL_").append(handlerIndex)
+                    .append(" = RailixApplication::handler_").append(handlerIndex).append(";\n");
             source.append("    private static StepResult handler_").append(handlerIndex)
                     .append("(final StepInput input) throws InterruptedException {\n")
                     .append("        return HANDLER_").append(handlerIndex).append(".run(input);\n")
@@ -302,21 +305,19 @@ final class ApplicationGenerator {
             final List<ApplicationPlan.NodePlan> nodes,
             final Map<String, Integer> handlers
     ) {
-        for (int start = 0; start < nodes.size(); start += PARTITION_SIZE) {
-            final int end = Math.min(nodes.size(), start + PARTITION_SIZE);
-            source.append("    private static final class Plans_").append(start / PARTITION_SIZE).append(" {\n");
+        for (int start = 0; start < nodes.size(); start += PLAN_PARTITION_SIZE) {
+            final int end = Math.min(nodes.size(), start + PLAN_PARTITION_SIZE);
+            source.append("    private static final class Plans_")
+                    .append(start / PLAN_PARTITION_SIZE).append(" {\n");
             for (int index = start; index < end; index++) {
                 final ApplicationPlan.NodePlan node = nodes.get(index);
                 if (node.step().kind() == StepDefinition.Kind.APP) {
                     continue;
                 }
-                source.append("        private static final WorkflowRuntime.CallPlan NODE_")
-                        .append(index).append(" = node_").append(index).append("();\n")
-                        .append("        private static WorkflowRuntime.CallPlan node_").append(index)
-                        .append("() {\n            return ")
-                        .append(indent(callPlan(node, handlers), 3).stripLeading()).append(";\n        }\n");
+                source.append(indent(compiledNode(index, node, handlers), 2));
             }
-            source.append("\n        private Plans_").append(start / PARTITION_SIZE).append("() {\n        }\n")
+            source.append("\n        private Plans_").append(start / PLAN_PARTITION_SIZE)
+                    .append("() {\n        }\n")
                     .append("    }\n\n");
         }
     }
@@ -460,10 +461,8 @@ final class ApplicationGenerator {
                 .append("        return switch (source) {\n");
         for (final ApplicationPlan.TriggerPlan trigger : triggers) {
             final ApplicationPlan.NodePlan node = nodes.get(trigger.node());
-            if (!node.step().source().isEmpty()) {
-                source.append("            case ").append(quote(node.step().source()))
-                        .append(" -> source_").append(trigger.node()).append("(values);\n");
-            }
+            source.append("            case ").append(quote(node.step().source()))
+                    .append(" -> source_").append(trigger.node()).append("(values);\n");
         }
         source.append("            default -> new WorkflowRuntime.SourceResult(WorkflowRuntime.rejectedResult(\n")
                 .append("                    \"RUN_SOURCE_UNKNOWN\", \"Project has no Trigger for source: \" + source + \".\",\n")
@@ -472,14 +471,11 @@ final class ApplicationGenerator {
 
         for (final ApplicationPlan.TriggerPlan trigger : triggers) {
             final ApplicationPlan.NodePlan node = nodes.get(trigger.node());
-            if (node.step().source().isEmpty()) {
-                continue;
-            }
             final int handler = handlers.get(node.step().use());
             source.append("    private static WorkflowRuntime.SourceResult source_").append(trigger.node())
                     .append("(final Map<String, RailixValue> values) {\n")
                     .append("        final var invalid = WorkflowRuntime.validateSource(")
-                    .append(planReference(trigger.node())).append(".step(), values, ")
+                    .append(planReference(trigger.node())).append(", values, ")
                     .append(quote(trigger.path())).append(", List.of());\n")
                     .append("        if (invalid.isPresent()) {\n")
                     .append("            return new WorkflowRuntime.SourceResult(invalid.orElseThrow(), Map.of());\n")
@@ -488,8 +484,8 @@ final class ApplicationGenerator {
                     .append(quote(node.id())).append(", ").append(resultsReference(trigger)).append(",\n")
                     .append("                RailixValue.object(Map.of()), false, false);\n")
                     .append("        final int outcome = execution.call(")
-                    .append(planReference(trigger.node())).append(", RailixApplication::handler_")
-                    .append(handler).append(", values);\n")
+                    .append(planReference(trigger.node())).append(", CALL_")
+                    .append(handler).append(", values, ").append(inputsReference(trigger.node())).append(");\n")
                     .append("        if (outcome < 0) {\n")
                     .append("            return new WorkflowRuntime.SourceResult(execution.finish(), Map.of());\n        }\n")
                     .append("        final int destination = ").append(destination(node)).append(";\n")
@@ -676,15 +672,17 @@ final class ApplicationGenerator {
                     source.append("{\n")
                             .append("                    if (observe) {\n")
                             .append("                        yield execution.observe(")
-                            .append(planReference(index)).append(", RailixApplication::handler_")
-                            .append(handlers.get(node.step().use())).append(", Map.of(), capture);\n")
+                            .append(planReference(index)).append(", CALL_")
+                            .append(handlers.get(node.step().use())).append(", Map.of(), ")
+                            .append(inputsReference(index)).append(", capture);\n")
                             .append("                    }\n")
                             .append("                    yield execution.call(");
                 } else {
                     source.append("execution.call(");
                 }
-                source.append(planReference(index)).append(", RailixApplication::handler_")
-                        .append(handlers.get(node.step().use())).append(", Map.of());\n");
+                source.append(planReference(index)).append(", CALL_")
+                        .append(handlers.get(node.step().use())).append(", Map.of(), ")
+                        .append(inputsReference(index)).append(");\n");
                 if (variant == Variant.DEVELOPMENT) {
                     source.append("                }\n");
                 }
@@ -744,7 +742,7 @@ final class ApplicationGenerator {
     private static Map<Integer, List<Integer>> partitions(final List<Integer> indexes) {
         final Map<Integer, List<Integer>> partitions = new LinkedHashMap<>();
         for (final int index : indexes) {
-            partitions.computeIfAbsent(index / PARTITION_SIZE, ignored -> new ArrayList<>()).add(index);
+            partitions.computeIfAbsent(index / ROUTE_PARTITION_SIZE, ignored -> new ArrayList<>()).add(index);
         }
         return partitions;
     }
@@ -760,98 +758,202 @@ final class ApplicationGenerator {
         return Map.copyOf(indexes);
     }
 
-    private static String callPlan(
+    private static String compiledNode(
+            final int index,
             final ApplicationPlan.NodePlan node,
             final Map<String, Integer> handlers
     ) {
-        return "new WorkflowRuntime.CallPlan(\n"
-                + indent(quote(node.id()), 1) + ",\n"
-                + indent(runtimeStep(node.step()), 1) + ",\n"
-                + indent(runtimeBindings(node.inputs(), handlers), 1) + ",\n"
-                + indent(runtimePaths(node.receives()), 1) + ",\n"
-                + indent(runtimePaths(node.returns()), 1) + ",\n"
-                + indent(quote(node.path()), 1) + "\n)";
+        return new NodeCompiler(index, handlers).compile(node);
     }
 
-    private static String runtimeStep(final ApplicationPlan.ExecutableStep step) {
-        return "new WorkflowRuntime.ExecutableStep(\n"
+    private static final class NodeCompiler {
+        private final int node;
+        private final Map<String, Integer> handlers;
+        private final StringBuilder fields = new StringBuilder();
+        private final StringBuilder methods = new StringBuilder();
+        private int sequence;
+
+        private NodeCompiler(final int node, final Map<String, Integer> handlers) {
+            this.node = node;
+            this.handlers = handlers;
+        }
+
+        private String compile(final ApplicationPlan.NodePlan plan) {
+            resolver("INPUTS_" + node, plan.inputs());
+            final String receives = paths(plan.receives());
+            final String returns = paths(plan.returns());
+            constant(
+                    "NODE_" + node,
+                    "WorkflowRuntime.StepPlan",
+                    runtimeStep(
+                            plan.id(), plan.step(), plan.step().kind() == StepDefinition.Kind.STEP,
+                            receives, returns, plan.path()
+                    )
+            );
+            return fields.append(methods).toString();
+        }
+
+        private String resolver(
+                final String fieldName,
+                final Map<String, ApplicationPlan.Binding> bindings
+        ) {
+            final String methodName = "resolve_" + node + "_" + sequence++;
+            constant(
+                    fieldName,
+                    "WorkflowRuntime.InputResolver",
+                    "Plans_" + node / PLAN_PARTITION_SIZE + "::" + methodName
+            );
+            final StringBuilder statements = new StringBuilder();
+            for (final Map.Entry<String, ApplicationPlan.Binding> entry : bindings.entrySet()) {
+                binding(entry.getKey(), entry.getValue(), statements);
+            }
+            methods.append("private static WorkflowRuntime.Inputs ").append(methodName).append("(\n")
+                    .append("        final WorkflowRuntime.Execution execution,\n")
+                    .append("        final Map<String, RailixValue> received,\n")
+                    .append("        final String primaryOutcome\n")
+                    .append(") {\n")
+                    .append("    final WorkflowRuntime.Inputs inputs = WorkflowRuntime.inputs(received, primaryOutcome);\n")
+                    .append(statements)
+                    .append("    return inputs;\n")
+                    .append("}\n");
+            return fieldName;
+        }
+
+        private void binding(
+                final String name,
+                final ApplicationPlan.Binding binding,
+                final StringBuilder statements
+        ) {
+            switch (binding) {
+                case ApplicationPlan.JsonBinding json -> {
+                    if (!json.value().isEmpty()) {
+                        statements.append("    inputs.value(").append(quote(name)).append(", ")
+                                .append(field("RailixValue", value(json.value().getFirst()))).append(");\n");
+                    }
+                }
+                case ApplicationPlan.PathBinding path -> {
+                    final String runtimePath = path(path.path());
+                    final String runtimeBinding = field(
+                            "WorkflowRuntime.PathBinding",
+                            "new WorkflowRuntime.PathBinding(" + runtimePath + ", " + path.access().readable()
+                                    + ", " + path.access().writable() + ")"
+                    );
+                    statements.append("    inputs.path(").append(quote(name)).append(", ")
+                            .append(runtimeBinding).append(", execution);\n");
+                }
+                case ApplicationPlan.ChoiceBinding choice -> statements
+                        .append("    inputs.choice(").append(quote(name)).append(", ")
+                        .append(quote(choice.option())).append(", ")
+                        .append(resolver(dataName(), choice.inputs())).append(", ")
+                        .append(references(choice.valueSources())).append(", execution);\n");
+                case ApplicationPlan.CandidatesBinding candidates -> statements
+                        .append("    inputs.candidates(").append(quote(name)).append(", ")
+                        .append(candidates(candidates.candidates())).append(", ")
+                        .append(quote(candidates.path())).append(", execution);\n");
+                case ApplicationPlan.MatcherGroupsBinding groups -> {
+                    final List<String> runtimeGroups = new ArrayList<>();
+                    for (final List<ApplicationPlan.CandidatePlan> group : groups.groups()) {
+                        runtimeGroups.add(candidates(group));
+                    }
+                    statements.append("    inputs.matcherGroups(").append(quote(name)).append(", ")
+                            .append(field("List<List<WorkflowRuntime.CandidatePlan>>", list(runtimeGroups)))
+                            .append(", execution);\n");
+                }
+                case ApplicationPlan.StepsBinding steps -> statements
+                        .append("    inputs.program(").append(quote(name)).append(", ")
+                        .append(program(steps.steps())).append(", ")
+                        .append(quote(steps.valueSource().input())).append(", ")
+                        .append(quote(steps.valueSource().missingOutcome().orElse("")))
+                        .append(", execution);\n");
+            }
+        }
+
+        private String candidates(final List<ApplicationPlan.CandidatePlan> candidates) {
+            final List<String> plans = new ArrayList<>();
+            for (final ApplicationPlan.CandidatePlan candidate : candidates) {
+                final ApplicationPlan.ChoiceBinding source = candidate.source();
+                final List<String> predicates = new ArrayList<>();
+                for (final List<ApplicationPlan.NestedStepPlan> predicate : candidate.predicates()) {
+                    predicates.add(program(predicate));
+                }
+                plans.add(field(
+                        "WorkflowRuntime.CandidatePlan",
+                        "new WorkflowRuntime.CandidatePlan(" + quote(source.option()) + ", "
+                                + resolver(dataName(), source.inputs()) + ", "
+                                + references(source.valueSources()) + ", " + program(candidate.transforms())
+                                + ", " + list(predicates) + ")"
+                ));
+            }
+            return field("List<WorkflowRuntime.CandidatePlan>", list(plans));
+        }
+
+        private String program(final List<ApplicationPlan.NestedStepPlan> steps) {
+            final List<String> nested = new ArrayList<>();
+            for (final ApplicationPlan.NestedStepPlan step : steps) {
+                final String resolver = resolver(dataName(), step.inputs());
+                final String plan = field(
+                        "WorkflowRuntime.StepPlan",
+                        runtimeStep(step.step().use(), step.step(), false, "Map.of()", "Map.of()", step.path())
+                );
+                nested.add(field(
+                        "WorkflowRuntime.NestedStep",
+                        "new WorkflowRuntime.NestedStep(" + plan + ", " + resolver + ", " + quote(step.path())
+                                + ", CALL_" + handlers.get(step.step().use()) + ")"
+                ));
+            }
+            return field(
+                    "WorkflowRuntime.NestedProgram",
+                    "new WorkflowRuntime.NestedProgram(" + list(nested) + ")"
+            );
+        }
+
+        private String paths(final Map<String, ApplicationPlan.Path> paths) {
+            final List<String> entries = new ArrayList<>();
+            for (final Map.Entry<String, ApplicationPlan.Path> entry : paths.entrySet()) {
+                entries.add(entry(quote(entry.getKey()), path(entry.getValue())));
+            }
+            return map(entries);
+        }
+
+        private String path(final ApplicationPlan.Path path) {
+            return field("WorkflowRuntime.Path", runtimePath(path));
+        }
+
+        private String field(final String type, final String expression) {
+            return constant(dataName(), type, expression);
+        }
+
+        private String constant(final String name, final String type, final String expression) {
+            fields.append("private static final ").append(type).append(' ').append(name)
+                    .append(" = init_").append(name).append("();\n");
+            methods.append("private static ").append(type).append(" init_").append(name)
+                    .append("() {\n    return ").append(expression).append(";\n}\n");
+            return name;
+        }
+
+        private String dataName() {
+            return "DATA_" + node + "_" + sequence++;
+        }
+    }
+
+    private static String runtimeStep(
+            final String id,
+            final ApplicationPlan.ExecutableStep step,
+            final boolean mappedReceives,
+            final String receives,
+            final String returns,
+            final String path
+    ) {
+        return "new WorkflowRuntime.StepPlan(\n"
+                + indent(quote(id), 1) + ",\n"
                 + indent(quote(step.use()), 1) + ",\n"
-                + indent("StepDefinition.Kind." + step.kind().name(), 1) + ",\n"
+                + indent(Boolean.toString(mappedReceives), 1) + ",\n"
                 + indent(list(step.receives().stream().map(ApplicationGenerator::port).toList()), 1) + ",\n"
                 + indent(list(step.returns().stream().map(ApplicationGenerator::port).toList()), 1) + ",\n"
                 + indent(strings(step.outcomes()), 1) + ",\n"
-                + indent(quote(step.source()), 1) + ",\n"
-                + indent(stringMap(step.responses()), 1) + "\n)";
-    }
-
-    private static String runtimeBindings(
-            final Map<String, ApplicationPlan.Binding> bindings,
-            final Map<String, Integer> handlers
-    ) {
-        return map(bindings.entrySet().stream()
-                .map(entry -> entry(quote(entry.getKey()), runtimeBinding(entry.getValue(), handlers)))
-                .toList());
-    }
-
-    private static String runtimeBinding(
-            final ApplicationPlan.Binding binding,
-            final Map<String, Integer> handlers
-    ) {
-        return switch (binding) {
-            case ApplicationPlan.JsonBinding json ->
-                    "new WorkflowRuntime.JsonBinding(" + values(json.value()) + ")";
-            case ApplicationPlan.PathBinding path ->
-                    "new WorkflowRuntime.PathBinding(" + runtimePath(path.path())
-                            + ", StepDefinition.PathAccess." + path.access().name() + ")";
-            case ApplicationPlan.ChoiceBinding choice ->
-                    "new WorkflowRuntime.ChoiceBinding("
-                            + quote(choice.option()) + ", "
-                            + runtimeBindings(choice.inputs(), handlers) + ", "
-                            + list(choice.valueSources().stream().map(ApplicationGenerator::reference).toList())
-                            + ")";
-            case ApplicationPlan.CandidatesBinding candidates ->
-                    "new WorkflowRuntime.CandidatesBinding("
-                            + list(candidates.candidates().stream()
-                            .map(candidate -> runtimeCandidate(candidate, handlers)).toList())
-                            + ", " + quote(candidates.path()) + ")";
-            case ApplicationPlan.MatcherGroupsBinding groups ->
-                    "new WorkflowRuntime.MatcherGroupsBinding("
-                            + list(groups.groups().stream().map(group -> list(group.stream()
-                            .map(candidate -> runtimeCandidate(candidate, handlers)).toList())).toList()) + ")";
-            case ApplicationPlan.StepsBinding steps ->
-                    "new WorkflowRuntime.StepsBinding("
-                            + runtimeNested(steps.steps(), handlers) + ", "
-                            + valueSource(steps.valueSource()) + ", "
-                            + steps.propagatesOutcomes() + ")";
-        };
-    }
-
-    private static String runtimeCandidate(
-            final ApplicationPlan.CandidatePlan candidate,
-            final Map<String, Integer> handlers
-    ) {
-        return "new WorkflowRuntime.CandidatePlan("
-                + runtimeBinding(candidate.source(), handlers) + ", "
-                + runtimeNested(candidate.transforms(), handlers) + ", "
-                + list(candidate.predicates().stream()
-                .map(program -> runtimeNested(program, handlers)).toList()) + ")";
-    }
-
-    private static String runtimeNested(
-            final List<ApplicationPlan.NestedStepPlan> steps,
-            final Map<String, Integer> handlers
-    ) {
-        return list(steps.stream().map(step -> "new WorkflowRuntime.NestedStepPlan("
-                + runtimeStep(step.step()) + ", "
-                + runtimeBindings(step.inputs(), handlers) + ", "
-                + quote(step.path()) + ", RailixApplication::handler_"
-                + handlers.get(step.step().use()) + ")").toList());
-    }
-
-    private static String runtimePaths(final Map<String, ApplicationPlan.Path> paths) {
-        return map(paths.entrySet().stream()
-                .map(entry -> entry(quote(entry.getKey()), runtimePath(entry.getValue())))
-                .toList());
+                + indent(receives, 1) + ",\n"
+                + indent(returns, 1) + ",\n"
+                + indent(quote(path), 1) + "\n)";
     }
 
     private static String runtimePath(final ApplicationPlan.Path path) {
@@ -877,7 +979,11 @@ final class ApplicationGenerator {
     }
 
     private static String planReference(final int node) {
-        return "Plans_" + node / PARTITION_SIZE + ".NODE_" + node;
+        return "Plans_" + node / PLAN_PARTITION_SIZE + ".NODE_" + node;
+    }
+
+    private static String inputsReference(final int node) {
+        return "Plans_" + node / PLAN_PARTITION_SIZE + ".INPUTS_" + node;
     }
 
     private static String outcome(final ApplicationPlan.NodePlan node) {
@@ -898,21 +1004,17 @@ final class ApplicationGenerator {
     }
 
     private static String port(final StepDefinition.Port port) {
-        return "new StepDefinition.Port(" + quote(port.name())
+        return "new WorkflowRuntime.Port(" + quote(port.name())
                 + ", ValueShape." + port.shape().name()
                 + ", new ValueRefinement(" + port.refinement().canonicalValues()
                 + ", " + port.refinement().maxDepth()
                 + ", " + port.refinement().maxJsonBytes() + "))";
     }
 
-    private static String reference(final StepDefinition.InputReference reference) {
-        return "new StepDefinition.InputReference(StepDefinition.ReferenceScope."
-                + reference.scope().name() + ", " + quote(reference.input()) + ")";
-    }
-
-    private static String valueSource(final StepDefinition.ValueSource source) {
-        return "new StepDefinition.ValueSource("
-                + quote(source.input()) + ", " + strings(source.missingOutcomes()) + ")";
+    private static String references(final List<StepDefinition.InputReference> references) {
+        return list(references.stream().map(reference -> "new WorkflowRuntime.InputReference("
+                + (reference.scope() == StepDefinition.ReferenceScope.OWNED) + ", "
+                + quote(reference.input()) + ")").toList());
     }
 
     private static String values(final List<RailixValue> values) {

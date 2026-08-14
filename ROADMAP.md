@@ -1,6 +1,6 @@
 # Railix II Roadmap
 
-Updated: 2026-08-13
+Updated: 2026-08-14
 
 ## Product Goal
 
@@ -65,15 +65,16 @@ spreading them across unconnected application, CI/CD, observability, and orchest
 - Railix production certification: **0%**; the full product is not certified by one core gate
 - Current item: **5. Flow Control, Groups, And Flat Compilation**
 - Current item progress: **5/7 checkpoints complete (71%); 29% left**
-- Active delivery checkpoint: **PR Readiness And Contribution Simplification, 98% integrated;
-  2% left for commit, push, and PR publication**
+- Active delivery checkpoint: **Core Simplification And Direct Compilation, 100% integrated;
+  0% implementation left**
+- Publication vehicle: **PR #1; merge remains pending**
 - Next roadmap feature: **5.6 Switch control slice, 0% integrated; 100% left**
 - Core/base certification checkpoint: **Complete, 6/6 gates (100%; 0% left)**
 - Feature roadmap: **resumed after the 2026-08-13 core/base clean gate passed**
 - Retained incomplete item: **3. Primitive Contract And Standard Library, 4/6 complete
   (67%); 33% left**
-- Latest completed core checkpoint: **single production execution path and truthful clean
-  certification, 2026-08-13**
+- Latest completed core checkpoint: **direct generated plan, contribution hygiene, and truthful
+  clean certification, 2026-08-14**
 
 Completion percentages count accepted checkpoints, not lines written. A roadmap item reaches 100%
 only after its public acceptance gate, coverage report, complexity audit, stability checks,
@@ -266,14 +267,16 @@ Checkpoints:
 
 Current evidence:
 
-- The old compiler-side `CompiledProject` executor is deleted; compilation now emits one generated
-  application and runtime behavior is being re-proven only through packaged child JVMs.
+- The generated production application contains direct static Step calls, lowered input resolvers,
+  constants, and integer routes. It contains no `StepDefinition`, binding hierarchy, alternate
+  executor, or runtime Step scan; runtime behavior is proven through generated child JVMs.
 - Step definitions retain one immutable class-literal-derived implementation address. Locked
   third-party implementations must be owned by their root bundle and compile failures return stable
   diagnostics without exposing `javac` output.
 - Production requests allocate no Step trace; explicit development test and preview requests alone
   capture steps, resolved inputs, candidate selections, and nested stages.
-- Generated Trigger constants are initialized once. Each admitted item owns one shallow mutable
+- Generated constants are initialized once in bounded 16-node partitions; routing methods remain
+  bounded at 128 nodes. Each admitted item owns one shallow mutable
   context root, lazily thaws only written containers, freezes only at observation/response
   boundaries, and uses detached copy-on-write only for atomic multi-write Steps. Isolated owner
   tokens prevent borrowed containers from retaining prior event frames.
@@ -281,10 +284,10 @@ Current evidence:
   represents rejection, failure, or cancellation. No success-path routing object, exception,
   future, or scheduler remains between a Step and its authored integer destination.
 - A real 129-Step production flow executes 322,500 verified Steps with zero traces. The clean gate
-  measures 155,624 allocated bytes and 68,344 median nanoseconds per call: 1,206 bytes and 529
-  nanoseconds per Step. A one-million-call soak stays inside a 64 MiB heap with 137,584 retained
-  bytes. The single-Step boundary measures 4,352 allocated bytes and 748 median nanoseconds per
-  call; escaped-result measurement remains bounded at 4,336 bytes per call.
+  measures 94,248 allocated bytes and 34,085 median nanoseconds per call: 730 bytes and 264
+  nanoseconds per Step, with 1,616 retained bytes. A one-million-call soak stays inside a 64 MiB
+  heap with 128,848 retained bytes. The single-Step boundary and escaped result each remain bounded
+  at 3,936 allocated bytes per call; median single-call latency is 805 nanoseconds.
 - The maximum 16,384-node generated monolith executes all 16,381 ordinary Steps exactly once in
   authored order. Generated applications currently admit at most 512 Triggers; exact-boundary
   production and development builds pass, while Trigger 513 is rejected before source allocation.
@@ -307,20 +310,20 @@ Current evidence:
   generated artifacts, child JVMs, HTTP, CLI, or browser boundaries. Five unique HTTP cases were
   consolidated into the canonical generated-child suite; one duplicate 33-case integration suite,
   two obsolete handler files, and 26 unreferenced nested test handlers were removed.
-- Clean `mvn clean verify` passes **2,049/2,049 tests** with no failure, error, or skip: core 739,
-  standard library 71, Creator Surefire 928, desktop browser 282, package 28, and mobile browser 1.
-  The complete local gate takes 16:16; the real packaged browser suite dominates at 10:32 and is a
+- Clean `./mvnw clean verify` passes **2,067/2,067 tests** with no failure, error, or skip: core 747,
+  standard library 71, Creator Surefire 934, desktop browser 282, package 32, and mobile browser 1.
+  The complete local gate takes 17:02; the real packaged browser suite dominates at 11:00 and is a
   measured contribution-speed target, not a reason to replace public-boundary proof with mocks.
-- Clean aggregate JaCoCo is **95.2310% lines (7,049/7,402)** and **90.0936% branches
-  (3,465/3,846)**. Core is 97.2090%/92.0061%, standard library 100%/97.2222%, and Creator
-  90.4762%/84.8785% (line/branch). The visible non-failing 95%/90% target is met without changing
+- Clean aggregate JaCoCo is **95.2033% lines (7,026/7,380)** and **90.0104% branches
+  (3,478/3,864)**. Core is 97.1957%/91.9849%, standard library 100%/97.2222%, and Creator
+  90.4337%/84.6085% (line/branch). The visible non-failing 95%/90% target is met without changing
   the build into a coverage gate.
 - The generated development dispatch avoids the JDK 25 conditional-method-reference compiler
   crash through one explicit observation branch. A source-shape regression guards that contract,
   and clean desktop/mobile Failsafe reports contain no compiler exception, NPE, `LambdaToMethod`,
   or conditional-tree crash.
-- Current production inventory is three modules, 33 Java files, and 15,659 Java lines with no
-  third-party Maven runtime dependency. The executable Creator JAR is 517,097 bytes. Its universal
+- Current production inventory is three modules, 33 Java files, and 15,634 Java lines with no
+  third-party Maven runtime dependency. The executable Creator JAR is 510,390 bytes. Its universal
   application image includes every stable build-JDK module so Creator can compile and run arbitrary
   locked Step bundles without ambient Java; unsupported incubator modules are excluded, and
   per-project minimal images remain Item 8.
@@ -341,15 +344,16 @@ Next delivery sequence:
 5. **Done:** publish exact current evidence without presenting the advisory coverage target as a
    build failure;
 6. **Done:** close the public-boundary coverage deficit without padding and rerun the exact clean
-   certification gate at 95.2316% lines and 90.0184% branches;
+   certification gate at 95.2033% lines and 90.0104% branches;
 7. **Queued after PR publication:** implement and accept Switch as the next ordinary control Step,
    then continue with Merge, Split, and bounded Loop.
 
 PR-readiness hardening is tracked separately from feature completion: one root build, one hosted
-verification workflow, pinned lifecycle plugins, host/browser requirements, compiler bounds,
-cross-process build ownership, quiet deterministic packaging, and contributor rules are integrated.
+verification workflow, a checksum-verified Maven wrapper, minimal cross-editor settings, pinned
+lifecycle plugins, host/browser requirements, compiler bounds, cross-process build ownership,
+quiet deterministic packaging, and contributor rules are integrated.
 The public target is `NanoNative/nano_railix` and its Apache-2.0 license is preserved. Publication
-still requires the reviewed commit, branch push, and PR; none changes Item 5 completion.
+is tracked in PR #1; merge status does not change Item 5 completion.
 
 Global reusable groups, automatic group suggestions, and parameter suggestions remain unsupported.
 No Item 5 screenshot is current because the item is not 100%.
@@ -375,6 +379,12 @@ Scope:
   JSON, diagnostics, traces, metrics, or Creator exports;
 - bounded throughput, timing, resources, uptime, bottleneck, queue, and custom metrics per flow
   and Step without workflow values;
+- deterministic configuration precedence, named environments, explicit placeholders, and restart
+  behavior without hidden live mutation;
+- bounded issue and diagnostic registries with explicit overflow behavior, plus keyed rate limits
+  whose key, capacity, queue, and rejection paths are visible in the Flow;
+- bounded metric names, labels, and cardinality with an explicit overflow series instead of
+  unbounded production memory;
 - traces only for explicit examples or user-supplied test contexts, never sampled production data;
 - bounded queues, concurrency, deadlines, cancellation, backpressure, and shutdown;
 - explicit filesystem, network, process, environment, and other permission requests;
@@ -395,6 +405,8 @@ Scope:
 
 - define member discovery, authenticated mesh membership, resource declarations, work ownership,
   crash/restart takeover, and decentralised rolling replacement;
+- require a successor to prove identity, compatibility, readiness, ownership transfer, drain, and
+  rollback before an existing application yields work;
 - every authorized mesh instance can accept work and participate in balancing and recovery;
 - decide and prove the compiled unit of distribution: eligible Step, Flow, or another boundary.
   Creator-only Groups, Blueprints, and Templates must never become a production placement model;
@@ -418,7 +430,11 @@ Scope:
 - only referenced dependencies and JDK modules;
 - dependency-aware `jdeps` module closure after all project bundles are known, cached `jlink`
   runtime images, and `jpackage` applications/installers;
+- fresh-machine JDK/toolchain acquisition with verified checksums, plus authenticated private
+  repositories whose credentials never enter project JSON or generated artifacts;
 - environment-selected development capabilities omitted as code rather than disabled at runtime;
+- deterministic Mermaid audit export from the functional graph and a reproducible application
+  quality score whose inputs and deductions are inspectable rather than heuristic fog;
 - immutable timestamp-versioned artifacts, reproducible outputs, signing-ready release smoke,
   upgrades, supported operating-system supervision integration, and clean-machine proof;
 - GraalVM native-image only after Java contracts stabilize;

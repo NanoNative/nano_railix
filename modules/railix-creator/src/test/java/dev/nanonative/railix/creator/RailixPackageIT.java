@@ -51,8 +51,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 final class RailixPackageIT {
     private static final Path APP_IMAGE = Path.of("target", "app-image").toAbsolutePath().normalize();
     private static final Path EXECUTABLE = packagedExecutable(APP_IMAGE);
-    private static final Path RUNTIME_JAVA = bundledRuntimeHome(APP_IMAGE).resolve("bin").resolve("java");
     private static final Path LAUNCHER = Path.of("..", "..", "railix").toAbsolutePath().normalize();
+    private static final Path PACKAGE_SCRIPT =
+            Path.of("..", "..", "scripts", "package-creator-app.sh").toAbsolutePath().normalize();
+    private static final Path CREATOR_JAR = Path.of("target", "railix.jar").toAbsolutePath().normalize();
     private static final String SQL_STEP_ID = "thirdparty.sql.probe";
     private static final AtomicLong COVERAGE_CHILD = new AtomicLong();
 
@@ -96,6 +98,86 @@ final class RailixPackageIT {
         assertThat(APP_IMAGE).isDirectory();
         assertThat(Path.of("target", "runtime")).doesNotExist();
         assertThat(Path.of("target", "package-input")).doesNotExist();
+    }
+
+    @Test
+    @Timeout(180)
+    void packageScriptUsesCompleteEnvironmentJdkWhenMavenRuntimeHomeIsIncomplete() throws Exception {
+        final Path incompleteHome = bundledRuntimeHome(APP_IMAGE);
+        final Path packagingJdk = selectedBuildJdk();
+        final Path packageParent = directory.resolve("app-image");
+        final Path runtime = directory.resolve("runtime");
+
+        final ProcessResult result = runPackager(
+                incompleteHome,
+                packagingJdk,
+                runtime,
+                packageParent
+        );
+
+        assertThat(incompleteHome.resolve("jmods")).doesNotExist();
+        assertThat(result.status()).isZero();
+        assertThat(packagedExecutable(packageParent)).isExecutable();
+        assertRuntimeModules(packageParent, packagingJdk.resolve("jmods"));
+        assertThat(runtime).doesNotExist();
+        assertThat(packageParent.resolve("package-input")).doesNotExist();
+    }
+
+    @Test
+    void packageScriptRejectsIncompleteMavenAndEnvironmentJdkHomesBeforeWritingOutput() throws Exception {
+        final Path incompleteHome = bundledRuntimeHome(APP_IMAGE);
+        final Path packageParent = directory.resolve("app-image");
+        final Path runtime = directory.resolve("runtime");
+
+        final ProcessResult result = runPackager(
+                incompleteHome,
+                incompleteHome,
+                runtime,
+                packageParent
+        );
+
+        assertThat(result).isEqualTo(new ProcessResult(
+                2,
+                ("Compatible JDK required: passed Java home '%s'; JAVA_HOME '%s'; "
+                        + "expected Java 25 or newer with executable bin/java, bin/jlink, bin/jpackage, "
+                        + "and directory jmods.")
+                        .formatted(incompleteHome, incompleteHome)
+        ));
+        assertThat(runtime).doesNotExist();
+        assertThat(packageParent).doesNotExist();
+    }
+
+    @Test
+    void packageScriptRejectsCompleteJdkOlderThanCreatorBytecodeBeforeWritingOutput() throws Exception {
+        final Path oldJdk = fakeJdk(21);
+        final Path packageParent = directory.resolve("app-image");
+        final Path runtime = directory.resolve("runtime");
+
+        final ProcessResult result = runPackager(oldJdk, oldJdk, runtime, packageParent);
+
+        assertThat(result).isEqualTo(new ProcessResult(
+                2,
+                ("Compatible JDK required: passed Java home '%s'; JAVA_HOME '%s'; "
+                        + "expected Java 25 or newer with executable bin/java, bin/jlink, bin/jpackage, "
+                        + "and directory jmods.").formatted(oldJdk, oldJdk)
+        ));
+        assertThat(runtime).doesNotExist();
+        assertThat(packageParent).doesNotExist();
+    }
+
+    @Test
+    void packageScriptRemovesPartialApplicationImageAfterJpackageFailure() throws Exception {
+        final Path failingJdk = partiallyFailingJdk();
+        final Path packageParent = directory.resolve("app-image");
+        final Path runtime = directory.resolve("runtime");
+
+        final ProcessResult result = runPackager(failingJdk, failingJdk, runtime, packageParent);
+
+        assertThat(result.status()).isEqualTo(91);
+        assertThat(runtime).doesNotExist();
+        assertThat(packageParent.resolve("package-input")).doesNotExist();
+        assertThat(packageParent.resolve("railix")).doesNotExist();
+        assertThat(packageParent.resolve("railix.app")).doesNotExist();
     }
 
     @Test
@@ -234,9 +316,14 @@ final class RailixPackageIT {
 
     @Test
     void packagedRuntimeIncludesEveryStableBuildJdkModuleForDynamicSteps() throws Exception {
-        assertThat(Files.isExecutable(RUNTIME_JAVA)).isTrue();
+        assertRuntimeModules(APP_IMAGE, selectedBuildJdk().resolve("jmods"));
+    }
+
+    private static void assertRuntimeModules(final Path appImage, final Path expectedJmods) throws Exception {
+        final Path runtimeJava = bundledRuntimeHome(appImage).resolve("bin").resolve("java");
+        assertThat(runtimeJava).isExecutable();
         final Process process = instrument(new ProcessBuilder(
-                RUNTIME_JAVA.toString(),
+                runtimeJava.toString(),
                 "--list-modules"
         ).redirectErrorStream(true)).start();
         final String output;
@@ -253,7 +340,7 @@ final class RailixPackageIT {
                 .sorted()
                 .toList();
         final List<String> expected;
-        try (var jmods = Files.list(Path.of(System.getProperty("java.home"), "jmods"))) {
+        try (var jmods = Files.list(expectedJmods)) {
             expected = jmods
                     .filter(path -> path.getFileName().toString().endsWith(".jmod"))
                     .map(path -> path.getFileName().toString().replaceFirst("\\.jmod$", ""))
@@ -262,6 +349,24 @@ final class RailixPackageIT {
                     .toList();
         }
         assertThat(modules).containsExactlyElementsOf(expected);
+    }
+
+    private static Path selectedBuildJdk() {
+        final Path supplied = Path.of(System.getProperty("java.home"));
+        if (completeJdk(supplied)) {
+            return supplied;
+        }
+        return Optional.ofNullable(System.getenv("JAVA_HOME"))
+                .map(Path::of)
+                .filter(RailixPackageIT::completeJdk)
+                .orElseThrow(() -> new IllegalStateException("Railix packaging requires a complete JDK"));
+    }
+
+    private static boolean completeJdk(final Path home) {
+        return Files.isExecutable(home.resolve("bin").resolve("java"))
+                && Files.isExecutable(home.resolve("bin").resolve("jlink"))
+                && Files.isExecutable(home.resolve("bin").resolve("jpackage"))
+                && Files.isDirectory(home.resolve("jmods"));
     }
 
     private static String moduleName(final String listedModule) {
@@ -498,6 +603,85 @@ final class RailixPackageIT {
             final String... arguments
     ) throws Exception {
         return awaitExecutable(startExecutable(environment, arguments));
+    }
+
+    private ProcessResult runPackager(
+            final Path suppliedJavaHome,
+            final Path environmentJavaHome,
+            final Path runtime,
+            final Path packageParent
+    ) throws Exception {
+        final Path output = directory.resolve("packager-output.txt");
+        final ProcessBuilder builder = new ProcessBuilder(
+                "sh",
+                PACKAGE_SCRIPT.toString(),
+                suppliedJavaHome.toString(),
+                CREATOR_JAR.toString(),
+                runtime.toString(),
+                packageParent.toString()
+        ).redirectErrorStream(true).redirectOutput(output.toFile());
+        builder.environment().put("JAVA_HOME", environmentJavaHome.toString());
+        final Process process = builder.start();
+        final boolean exited = process.waitFor(170, TimeUnit.SECONDS);
+        if (!exited) {
+            process.destroyForcibly();
+            assertThat(process.waitFor(5, TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(exited).isTrue();
+        return new ProcessResult(
+                process.exitValue(),
+                Files.readString(output, StandardCharsets.UTF_8).strip()
+        );
+    }
+
+    private Path fakeJdk(final int feature) throws IOException {
+        final Path home = directory.resolve("jdk-" + feature);
+        final Path bin = Files.createDirectories(home.resolve("bin"));
+        Files.createDirectories(home.resolve("jmods"));
+        executable(bin.resolve("java"), """
+                #!/bin/sh
+                printf '%%s\n' '    java.specification.version = %d' >&2
+                """.formatted(feature));
+        executable(bin.resolve("jlink"), "#!/bin/sh\nexit 91\n");
+        executable(bin.resolve("jpackage"), "#!/bin/sh\nexit 91\n");
+        return home;
+    }
+
+    private Path partiallyFailingJdk() throws IOException {
+        final Path home = fakeJdk(25);
+        final Path bin = home.resolve("bin");
+        executable(bin.resolve("jlink"), """
+                #!/bin/sh
+                while [ "$#" -gt 0 ]; do
+                  if [ "$1" = "--output" ]; then
+                    shift
+                    mkdir -p "$1"
+                    exit 0
+                  fi
+                  shift
+                done
+                exit 2
+                """);
+        executable(bin.resolve("jpackage"), """
+                #!/bin/sh
+                destination=
+                name=
+                while [ "$#" -gt 0 ]; do
+                  case "$1" in
+                    --dest) shift; destination=$1 ;;
+                    --name) shift; name=$1 ;;
+                  esac
+                  shift
+                done
+                mkdir -p "$destination/$name" "$destination/$name.app"
+                exit 91
+                """);
+        return home;
+    }
+
+    private static void executable(final Path path, final String source) throws IOException {
+        Files.writeString(path, source, StandardCharsets.UTF_8);
+        assertThat(path.toFile().setExecutable(true, false)).isTrue();
     }
 
     private Process startExecutable(

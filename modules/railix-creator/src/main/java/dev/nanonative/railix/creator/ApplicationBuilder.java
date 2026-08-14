@@ -51,7 +51,6 @@ final class ApplicationBuilder {
             "dev/nanonative/railix/core/project/RuntimeApplication",
             "dev/nanonative/railix/core/project/WorkflowRuntime",
             "dev/nanonative/railix/core/runtime/",
-            "dev/nanonative/railix/core/step/StepDefinition",
             "dev/nanonative/railix/core/step/StepHandler",
             "dev/nanonative/railix/core/step/StepInput",
             "dev/nanonative/railix/core/step/StepResult",

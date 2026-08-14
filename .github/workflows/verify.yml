@@ -20,4 +20,4 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
-      - run: mvn --batch-mode --no-transfer-progress clean verify
+      - run: ./mvnw --batch-mode --no-transfer-progress clean verify

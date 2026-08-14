@@ -22,7 +22,7 @@ else
 fi
 
 if [ -z "$APP" ]; then
-  printf '%s\n' '{"error":{"code":"PACKAGE_MISSING","message":"Build with mvn -q -pl modules/railix-creator -am package"},"status":"launcher-rejected"}' >&2
+  printf '%s\n' '{"error":{"code":"PACKAGE_MISSING","message":"Build with ./mvnw -q -pl modules/railix-creator -am package"},"status":"launcher-rejected"}' >&2
   exit 4
 fi
 

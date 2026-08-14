@@ -53,22 +53,21 @@ context contract.
 Requirements:
 
 - Java 25
-- Maven 3.9 or newer
 - Google Chrome for browser E2Es
 - macOS or Linux for the current host-native Creator image
 
 Use the root Maven project in an IDE; it imports the three production modules without extra setup.
-The normal code/test loop is:
+The checked-in wrapper downloads the pinned Maven version on first use. The normal code/test loop is:
 
 ```sh
-mvn test
+./mvnw test
 ```
 
 Before opening or merging a pull request, build and verify every generated application, package,
 and desktop/mobile browser scenario:
 
 ```sh
-mvn clean verify
+./mvnw clean verify
 ```
 
 The repository provides the development launcher. The build creates both the executable Creator
@@ -96,7 +95,7 @@ Or select both:
 ```
 
 Creator prints the URL to open. `Ctrl-C` stops Creator and its owned development-application JVM.
-`mvn clean` removes the generated JAR and application image but never the tracked root launcher.
+`./mvnw clean` removes the generated JAR and application image but never the tracked root launcher.
 Railix has no third-party runtime libraries. Playwright is test-only.
 
 The printed URL contains a random Creator token in its fragment. Every Creator API request requires
@@ -325,12 +324,16 @@ Import and build the root `pom.xml`; there is no second build system or module-s
 Change the smallest owning module, and keep contracts in core, built-in implementations in stdlib,
 and authoring/development behavior in Creator. Do not add a module, runtime dependency, execution
 path, compatibility layer, or abstraction without current public behavior that requires it.
+Use Java 25, JDK types first, final values by default, stateless Step handlers, and explicit
+boundary results. Public methods do not return Java null. Reflection, parallel streams, hidden
+fallback execution, and interfaces without a current second implementation are not accepted.
 
 Each behavior or rejection belongs in its own highest-practical public-entrypoint test. During work,
-run `mvn test`; before requesting review, run `mvn clean verify`. Run `scripts/coverage.sh` only when
-updating the advisory coverage report. Do not commit `target`, `.railix`, IDE state, local project
-files, or `brainstorming`; all are ignored. GitHub Actions runs the same clean verification for every
-pull request, so the local and hosted acceptance commands are identical.
+run `./mvnw test`; before requesting review, run `./mvnw clean verify`. Run
+`scripts/coverage.sh` only when updating the advisory coverage report. Do not commit `target`,
+`.railix`, IDE state, local project files, or `brainstorming`; all are ignored. GitHub Actions
+runs the same clean verification for every pull request, so the local and hosted acceptance
+commands are identical.
 
 ## Unsupported Scope
 
@@ -341,7 +344,7 @@ metrics, remote attachment, queues, permissions, sharding, or final per-project 
 
 ## Verification
 
-`mvn clean verify` runs compiler, runtime, HTTP, packaged-JAR, desktop Chrome, and mobile Chrome
+`./mvnw clean verify` runs compiler, runtime, HTTP, packaged-JAR, desktop Chrome, and mobile Chrome
 public-entrypoint tests. Required suites reject zero discovered tests. Coverage reporting is kept
 outside that lifecycle, so it cannot turn a successful developer build into a failure.
 

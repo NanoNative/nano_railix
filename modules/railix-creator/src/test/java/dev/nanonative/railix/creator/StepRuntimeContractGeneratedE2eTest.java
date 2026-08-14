@@ -128,6 +128,10 @@ final class StepRuntimeContractGeneratedE2eTest {
             new GraphCase("output-number-domain", false),
             new GraphCase("write-number-domain", true),
             new GraphCase("nested-preinterrupted", false),
+            new GraphCase("nested-null", false),
+            new GraphCase("nested-exception", false),
+            new GraphCase("nested-undeclared-outcome", false),
+            new GraphCase("nested-interrupt", false),
             new GraphCase("nested-write", false),
             new GraphCase("nested-secondary-output", false),
             new GraphCase("nested-number-domain", false),
@@ -347,6 +351,34 @@ final class StepRuntimeContractGeneratedE2eTest {
     @Test
     void nestedProgramObservesPreexistingInterrupt() throws Exception {
         assertCancelled(runGraph("nested-preinterrupted"));
+    }
+
+    @Test
+    void nestedJavaNullResultFailsExplicitly() throws Exception {
+        assertFailure(runGraph("nested-null"), "STEP_RESULT_REQUIRED", "contract.nested.null");
+    }
+
+    @Test
+    void nestedImplementationExceptionFailsExplicitly() throws Exception {
+        assertFailure(
+                runGraph("nested-exception"),
+                "STEP_IMPLEMENTATION_FAULT",
+                "contract.nested.exception"
+        );
+    }
+
+    @Test
+    void nestedUndeclaredOutcomeFailsExplicitly() throws Exception {
+        assertFailure(
+                runGraph("nested-undeclared-outcome"),
+                "STEP_OUTCOME_INVALID",
+                "contract.nested.undeclared-outcome"
+        );
+    }
+
+    @Test
+    void nestedInterruptedHandlerCancelsTheInvocation() throws Exception {
+        assertCancelled(runGraph("nested-interrupt"));
     }
 
     @Test
@@ -657,6 +689,25 @@ final class StepRuntimeContractGeneratedE2eTest {
             }
         }
         definitions.add(nestedStep("contract.nested.identity", "nested-identity", ValueShape.ANY, false));
+        definitions.add(nestedStep("contract.nested.null", "nested-null", ValueShape.ANY, false));
+        definitions.add(nestedStep(
+                "contract.nested.exception",
+                "nested-exception",
+                ValueShape.ANY,
+                false
+        ));
+        definitions.add(nestedStep(
+                "contract.nested.undeclared-outcome",
+                "nested-undeclared-outcome",
+                ValueShape.ANY,
+                false
+        ));
+        definitions.add(nestedStep(
+                "contract.nested.interrupt",
+                "nested-interrupt",
+                ValueShape.ANY,
+                false
+        ));
         definitions.add(nestedStep("contract.nested.write", "nested-write", ValueShape.ANY, false));
         definitions.add(nestedStep(
                 "contract.nested.secondary-output",
@@ -711,8 +762,9 @@ final class StepRuntimeContractGeneratedE2eTest {
                     .outcome("secondary");
             case "output-shape" -> definition.returns("value", ValueShape.STRING);
             case "output-number-domain" -> definition.returns("value", ValueShape.NUMBER);
-            case "nested-preinterrupted", "nested-write", "nested-secondary-output", "nested-number-domain",
-                 "nested-retain" ->
+            case "nested-preinterrupted", "nested-null", "nested-exception",
+                 "nested-undeclared-outcome", "nested-interrupt", "nested-write",
+                 "nested-secondary-output", "nested-number-domain", "nested-retain" ->
                     definition.input("steps", Input.steps(StepDefinition.ValueSource.from("value"))
                             .propagateOutcomes());
             case "nested-late-invoke" -> definition.input(
@@ -860,6 +912,10 @@ final class StepRuntimeContractGeneratedE2eTest {
         }
         return switch (graph.id()) {
             case "nested-preinterrupted" -> nestedInputs("contract.nested.identity");
+            case "nested-null" -> nestedInputs("contract.nested.null");
+            case "nested-exception" -> nestedInputs("contract.nested.exception");
+            case "nested-undeclared-outcome" -> nestedInputs("contract.nested.undeclared-outcome");
+            case "nested-interrupt" -> nestedInputs("contract.nested.interrupt");
             case "nested-write" -> nestedInputs("contract.nested.write");
             case "nested-secondary-output" -> nestedInputs("contract.nested.secondary-output");
             case "nested-number-domain" -> nestedInputs("contract.nested.number-domain");

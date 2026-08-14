@@ -9,7 +9,7 @@ App -> CLI -> lowercase context.payload.arguments[0] -> context.result -> End
 Build and open it:
 
 ```sh
-mvn clean verify
+./mvnw clean verify
 ./railix creator examples/lowercase-app/railix.project.json
 ```
 

@@ -74,6 +74,15 @@ final class GeneratedApplicationVariantsE2eTest {
     }
 
     @Test
+    void productionApplicationCompilesInputsInsteadOfPackagingTheAuthoringModel() {
+        assertThat(compiled().productionApplicationSource()).doesNotContain(
+                "StepDefinition",
+                "WorkflowRuntime.Binding",
+                "WorkflowRuntime.CallPlan"
+        );
+    }
+
+    @Test
     void developmentApplicationAddsRunAndSinglePassObservation() {
         assertThat(compiled().developmentApplicationSource())
                 .contains("public final class RailixApplication implements DevelopmentRuntime.Application")

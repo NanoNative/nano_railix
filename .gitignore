@@ -6,6 +6,7 @@
 *.class
 *.jar
 *.jmod
+hs_err_pid*.log
 
 # Creator/UI
 node_modules/
@@ -17,6 +18,13 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+.classpath
+.project
+.settings/
+*.iml
+*.ipr
+*.iws
+out/
 
 # Railix local
 /brainstorming/

@@ -16,6 +16,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
 
 final class StepDeveloperApiContractE2eTest {
@@ -224,6 +225,13 @@ final class StepDeveloperApiContractE2eTest {
     }
 
     @Test
+    void JavaNullStepOutputNameIsRejected() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> StepResult.outcome("next").output(null, RailixValue.string("value")))
+                .withMessage("Step output name must be a non-blank string.");
+    }
+
+    @Test
     void JavaNullStepOutputValueIsRejected() {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> StepResult.outcome("next").output("value", null))
@@ -242,6 +250,62 @@ final class StepDeveloperApiContractE2eTest {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> StepResult.outcome("next").write("value", null))
                 .withMessage("Step write value cannot be Java null.");
+    }
+
+    @Test
+    void singleStepOutputLeavesTheReusableBaseResultUnchanged() {
+        final StepResult base = StepResult.outcome("next");
+
+        final StepResult result = base.output("value", RailixValue.string("one"));
+
+        assertThat(base.outputs()).isEmpty();
+        assertThat(result.outputs()).containsExactlyEntriesOf(Map.of("value", RailixValue.string("one")));
+    }
+
+    @Test
+    void singleStepWriteLeavesTheReusableBaseResultUnchanged() {
+        final StepResult base = StepResult.outcome("next");
+
+        final StepResult result = base.write("target", RailixValue.string("one"));
+
+        assertThat(base.writes()).isEmpty();
+        assertThat(result.writes()).containsExactlyEntriesOf(Map.of("target", RailixValue.string("one")));
+    }
+
+    @Test
+    void repeatedStepOutputNameReplacesItsValue() {
+        final StepResult result = StepResult.outcome("next")
+                .output("value", RailixValue.string("one"))
+                .output("value", RailixValue.string("two"));
+
+        assertThat(result.outputs()).containsExactlyEntriesOf(Map.of("value", RailixValue.string("two")));
+    }
+
+    @Test
+    void repeatedStepWriteNameReplacesItsValue() {
+        final StepResult result = StepResult.outcome("next")
+                .write("target", RailixValue.string("one"))
+                .write("target", RailixValue.string("two"));
+
+        assertThat(result.writes()).containsExactlyEntriesOf(Map.of("target", RailixValue.string("two")));
+    }
+
+    @Test
+    void returnedStepResultOutputsCannotBeMutated() {
+        final StepResult result = StepResult.outcome("next")
+                .output("value", RailixValue.string("one"));
+
+        assertThatThrownBy(() -> result.outputs().put("other", RailixValue.string("three")))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void returnedStepResultWritesCannotBeMutated() {
+        final StepResult result = StepResult.outcome("next")
+                .write("target", RailixValue.string("two"));
+
+        assertThatThrownBy(() -> result.writes().put("other", RailixValue.string("three")))
+                .isInstanceOf(UnsupportedOperationException.class);
     }
 
     private static void assertInvocationMapsRejected(
