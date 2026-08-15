@@ -1,54 +1,41 @@
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
-/bin/
-!**/src/main/**/bin/
-!**/src/test/**/bin/
+# Java
+/target/
+/modules/*/target/
+/examples/*/target/
+/build/
+*.class
+*.jar
+*.jmod
 hs_err_pid*.log
 
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/nbdist/
-/.nb-gradle/
-/temp
+# Creator/UI
+node_modules/
+dist/
+.playwright-cli/
+/output/playwright/
 
-### Editors ###
+# OS/IDE
+.DS_Store
+.idea/
 .vscode/
-coverage
-target/
-.idea
-*.iws
+.classpath
+.project
+.settings/
 *.iml
 *.ipr
+*.iws
 out/
-!**/src/main/**/out/
-!**/src/test/**/out/
-.gradle
-build/
-!gradle/wrapper/gradle-wrapper.jar
-!**/src/main/**/build/
-!**/src/test/**/build/
-!**/cdk.out
-infrastructure/cdk.out
-functions/cdk.out
-common/cdk.out
-*.DS_Store
-.venv
-__pycache__
-*.bat
 
-/cc-reporter*
-/public-key.asc
+# Railix local
+/brainstorming/
+/railix.project.json
+/railix.creator.json
+.railix/run/
+.railix/build/
+.railix/cache/
+.railix/tmp/
 
-lib/
-node_modules
-
-### Local AI context ###
-AGENTS.md
+# AI
 CLAUDE.md
+AGENTS.md
+.claude
