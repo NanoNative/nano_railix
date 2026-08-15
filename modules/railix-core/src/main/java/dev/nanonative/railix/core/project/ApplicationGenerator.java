@@ -53,10 +53,14 @@ final class ApplicationGenerator {
             )), List.of());
         }
         final Map<String, Integer> handlerIndexes = handlerIndexes(implementations);
+        final String[] compiledNodes = new String[nodes.size()];
         for (int index = 0; index < nodes.size(); index++) {
             final ApplicationPlan.NodePlan node = nodes.get(index);
-            if (node.step().kind() != StepDefinition.Kind.APP
-                    && compiledNode(index, node, handlerIndexes).length() > MAX_PLAN_SOURCE_CHARACTERS) {
+            if (node.step().kind() == StepDefinition.Kind.APP) {
+                continue;
+            }
+            compiledNodes[index] = compiledNode(index, node, handlerIndexes);
+            if (compiledNodes[index].length() > MAX_PLAN_SOURCE_CHARACTERS) {
                 return new Result("", "", "", List.of(Diagnostic.atPath(
                         "PROJECT_APPLICATION_STEP_LIMIT",
                         "One compiled Step exceeds the " + MAX_PLAN_SOURCE_CHARACTERS
@@ -66,8 +70,10 @@ final class ApplicationGenerator {
             }
         }
         return new Result(
-                source(plan.projectId(), nodes, triggers, implementations, handlerIndexes, Variant.PRODUCTION),
-                source(plan.projectId(), nodes, triggers, implementations, handlerIndexes, Variant.DEVELOPMENT),
+                source(plan.projectId(), nodes, triggers, implementations, handlerIndexes,
+                        compiledNodes, Variant.PRODUCTION),
+                source(plan.projectId(), nodes, triggers, implementations, handlerIndexes,
+                        compiledNodes, Variant.DEVELOPMENT),
                 developmentLauncherSource(),
                 List.of(),
                 implementations.values().stream().distinct().toList()
@@ -75,25 +81,25 @@ final class ApplicationGenerator {
     }
 
     private static void collect(
-            final ApplicationPlan.ExecutableStep step,
+            final StepDefinition step,
             final String path,
             final StepCatalog catalog,
             final Map<String, StepCatalog.Implementation> implementations,
             final List<Diagnostic> diagnostics
     ) {
-        if (step.kind() == StepDefinition.Kind.APP || implementations.containsKey(step.use())) {
+        if (step.kind() == StepDefinition.Kind.APP || implementations.containsKey(step.id())) {
             return;
         }
-        final StepCatalog.Implementation implementation = catalog.implementation(step.use()).orElse(null);
+        final StepCatalog.Implementation implementation = catalog.implementation(step.id()).orElse(null);
         if (implementation == null) {
             diagnostics.add(Diagnostic.atPath(
                     "PROJECT_STEP_IMPLEMENTATION_ADDRESS_REQUIRED",
                     "Step must declare a named Java handler class for application generation: "
-                            + step.use() + ".",
+                            + step.id() + ".",
                     path
             ));
         } else {
-            implementations.put(step.use(), implementation);
+            implementations.put(step.id(), implementation);
         }
     }
 
@@ -151,6 +157,7 @@ final class ApplicationGenerator {
             final List<ApplicationPlan.TriggerPlan> triggers,
             final Map<String, StepCatalog.Implementation> implementations,
             final Map<String, Integer> handlerIndexes,
+            final String[] compiledNodes,
             final Variant variant
     ) {
         final StringBuilder source = new StringBuilder(Math.max(16_384, nodes.size() * 512));
@@ -196,10 +203,10 @@ final class ApplicationGenerator {
         for (final ApplicationPlan.TriggerPlan trigger : triggers) {
             final ApplicationPlan.NodePlan node = nodes.get(trigger.node());
             source.append("    private static final List<WorkflowRuntime.ResultPlan> RESULTS_")
-                    .append(trigger.node()).append(" = ").append(results(trigger)).append(";\n")
+                    .append(trigger.node()).append(" = ").append(results(node)).append(";\n")
                     .append("    private static final Map<String, String> RESPONSE_SLOTS_")
                     .append(trigger.node()).append(" = ")
-                    .append(stringMap(node.step().responses())).append(";\n");
+                    .append(stringMap(node.step().source().orElseThrow().responses())).append(";\n");
         }
         source.append("    private static final RailixApplication APPLICATION = new RailixApplication();\n\n");
         handlerIndex = 0;
@@ -212,7 +219,7 @@ final class ApplicationGenerator {
                     .append("    }\n\n");
             handlerIndex++;
         }
-        appendPlans(source, nodes, handlerIndexes);
+        appendPlans(source, nodes, compiledNodes);
         source.append("    private RailixApplication() {\n    }\n\n")
                 .append("    static ")
                 .append(variant == Variant.PRODUCTION
@@ -303,7 +310,7 @@ final class ApplicationGenerator {
     private static void appendPlans(
             final StringBuilder source,
             final List<ApplicationPlan.NodePlan> nodes,
-            final Map<String, Integer> handlers
+            final String[] compiledNodes
     ) {
         for (int start = 0; start < nodes.size(); start += PLAN_PARTITION_SIZE) {
             final int end = Math.min(nodes.size(), start + PLAN_PARTITION_SIZE);
@@ -314,7 +321,7 @@ final class ApplicationGenerator {
                 if (node.step().kind() == StepDefinition.Kind.APP) {
                     continue;
                 }
-                source.append(indent(compiledNode(index, node, handlers), 2));
+                source.append(indent(compiledNodes[index], 2));
             }
             source.append("\n        private Plans_").append(start / PLAN_PARTITION_SIZE)
                     .append("() {\n        }\n")
@@ -461,7 +468,7 @@ final class ApplicationGenerator {
                 .append("        return switch (source) {\n");
         for (final ApplicationPlan.TriggerPlan trigger : triggers) {
             final ApplicationPlan.NodePlan node = nodes.get(trigger.node());
-            source.append("            case ").append(quote(node.step().source()))
+            source.append("            case ").append(quote(node.step().source().orElseThrow().name()))
                     .append(" -> source_").append(trigger.node()).append("(values);\n");
         }
         source.append("            default -> new WorkflowRuntime.SourceResult(WorkflowRuntime.rejectedResult(\n")
@@ -471,12 +478,12 @@ final class ApplicationGenerator {
 
         for (final ApplicationPlan.TriggerPlan trigger : triggers) {
             final ApplicationPlan.NodePlan node = nodes.get(trigger.node());
-            final int handler = handlers.get(node.step().use());
+            final int handler = handlers.get(node.step().id());
             source.append("    private static WorkflowRuntime.SourceResult source_").append(trigger.node())
                     .append("(final Map<String, RailixValue> values) {\n")
                     .append("        final var invalid = WorkflowRuntime.validateSource(")
                     .append(planReference(trigger.node())).append(", values, ")
-                    .append(quote(trigger.path())).append(", List.of());\n")
+                    .append(quote(node.path())).append(", List.of());\n")
                     .append("        if (invalid.isPresent()) {\n")
                     .append("            return new WorkflowRuntime.SourceResult(invalid.orElseThrow(), Map.of());\n")
                     .append("        }\n")
@@ -673,7 +680,7 @@ final class ApplicationGenerator {
                             .append("                    if (observe) {\n")
                             .append("                        yield execution.observe(")
                             .append(planReference(index)).append(", CALL_")
-                            .append(handlers.get(node.step().use())).append(", Map.of(), ")
+                            .append(handlers.get(node.step().id())).append(", Map.of(), ")
                             .append(inputsReference(index)).append(", capture);\n")
                             .append("                    }\n")
                             .append("                    yield execution.call(");
@@ -681,7 +688,7 @@ final class ApplicationGenerator {
                     source.append("execution.call(");
                 }
                 source.append(planReference(index)).append(", CALL_")
-                        .append(handlers.get(node.step().use())).append(", Map.of(), ")
+                        .append(handlers.get(node.step().id())).append(", Map.of(), ")
                         .append(inputsReference(index)).append(");\n");
                 if (variant == Variant.DEVELOPMENT) {
                     source.append("                }\n");
@@ -893,12 +900,12 @@ final class ApplicationGenerator {
                 final String resolver = resolver(dataName(), step.inputs());
                 final String plan = field(
                         "WorkflowRuntime.StepPlan",
-                        runtimeStep(step.step().use(), step.step(), false, "Map.of()", "Map.of()", step.path())
+                        runtimeStep(step.step().id(), step.step(), false, "Map.of()", "Map.of()", step.path())
                 );
                 nested.add(field(
                         "WorkflowRuntime.NestedStep",
                         "new WorkflowRuntime.NestedStep(" + plan + ", " + resolver + ", " + quote(step.path())
-                                + ", CALL_" + handlers.get(step.step().use()) + ")"
+                                + ", CALL_" + handlers.get(step.step().id()) + ")"
                 ));
             }
             return field(
@@ -938,7 +945,7 @@ final class ApplicationGenerator {
 
     private static String runtimeStep(
             final String id,
-            final ApplicationPlan.ExecutableStep step,
+            final StepDefinition step,
             final boolean mappedReceives,
             final String receives,
             final String returns,
@@ -946,7 +953,7 @@ final class ApplicationGenerator {
     ) {
         return "new WorkflowRuntime.StepPlan(\n"
                 + indent(quote(id), 1) + ",\n"
-                + indent(quote(step.use()), 1) + ",\n"
+                + indent(quote(step.id()), 1) + ",\n"
                 + indent(Boolean.toString(mappedReceives), 1) + ",\n"
                 + indent(list(step.receives().stream().map(ApplicationGenerator::port).toList()), 1) + ",\n"
                 + indent(list(step.returns().stream().map(ApplicationGenerator::port).toList()), 1) + ",\n"
@@ -963,8 +970,8 @@ final class ApplicationGenerator {
         }).toList()) + ")";
     }
 
-    private static String results(final ApplicationPlan.TriggerPlan trigger) {
-        return list(trigger.results().stream().map(result ->
+    private static String results(final ApplicationPlan.NodePlan trigger) {
+        return list(trigger.step().results().stream().map(result ->
                 "new WorkflowRuntime.ResultPlan(" + quote(result.name())
                         + ", ValueShape." + result.shape().name() + ", "
                         + values(result.defaults()) + ")").toList());

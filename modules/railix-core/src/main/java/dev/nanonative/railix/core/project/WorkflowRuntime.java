@@ -151,7 +151,7 @@ public final class WorkflowRuntime {
             }
             Map<String, RailixValue> resolvedReceives = received;
             if (plan.mappedReceives() && !plan.receives().isEmpty()) {
-                final Map<String, RailixValue> mapped = new LinkedHashMap<>();
+                final Map<String, RailixValue> mapped = LinkedHashMap.newLinkedHashMap(plan.receives().size());
                 for (final Port port : plan.receives()) {
                     final Path source = plan.receivePaths().get(port.name());
                     final RailixValue value = source == null ? null : frame.resolve(source);

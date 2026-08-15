@@ -217,10 +217,6 @@ final class ApplicationBuilder {
         return directory.resolve("src/dev/nanonative/railix/core/project/RailixApplication.java");
     }
 
-    private static Path developmentSource(final Path directory) {
-        return directory.resolve("src/dev/nanonative/railix/core/project/RailixDevelopmentApplication.java");
-    }
-
     private static void compile(
             final List<Path> sources,
             final Path applicationSourceFile,

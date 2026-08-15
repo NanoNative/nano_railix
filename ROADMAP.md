@@ -1,6 +1,6 @@
 # Railix II Roadmap
 
-Updated: 2026-08-14
+Updated: 2026-08-15
 
 ## Product Goal
 
@@ -73,8 +73,8 @@ spreading them across unconnected application, CI/CD, observability, and orchest
 - Feature roadmap: **resumed after the 2026-08-13 core/base clean gate passed**
 - Retained incomplete item: **3. Primitive Contract And Standard Library, 4/6 complete
   (67%); 33% left**
-- Latest completed core checkpoint: **direct generated plan, contribution hygiene, and truthful
-  clean certification, 2026-08-14**
+- Latest completed core checkpoint: **direct generated plan, allocation and duplicate-model
+  cleanup, contribution hygiene, and truthful clean certification, 2026-08-15**
 
 Completion percentages count accepted checkpoints, not lines written. A roadmap item reaches 100%
 only after its public acceptance gate, coverage report, complexity audit, stability checks,
@@ -269,7 +269,10 @@ Current evidence:
 
 - The generated production application contains direct static Step calls, lowered input resolvers,
   constants, and integer routes. It contains no `StepDefinition`, binding hierarchy, alternate
-  executor, or runtime Step scan; runtime behavior is proven through generated child JVMs.
+  executor, or runtime Step scan; runtime behavior is proven through generated child JVMs. The
+  generator compiles each node fragment once for both application variants, reuses the canonical
+  immutable Step definition during compilation, and emits byte-identical production, development,
+  and launcher sources after the cleanup.
 - Step definitions retain one immutable class-literal-derived implementation address. Locked
   third-party implementations must be owned by their root bundle and compile failures return stable
   diagnostics without exposing `javac` output.
@@ -284,10 +287,12 @@ Current evidence:
   represents rejection, failure, or cancellation. No success-path routing object, exception,
   future, or scheduler remains between a Step and its authored integer destination.
 - A real 129-Step production flow executes 322,500 verified Steps with zero traces. The clean gate
-  measures 94,248 allocated bytes and 35,057 median nanoseconds per call: 730 bytes and 271
-  nanoseconds per Step, with 1,616 retained bytes. A one-million-call soak stays inside a 64 MiB
+  measures 86,704 allocated bytes and 37,465 median nanoseconds per call: 672 bytes and 290
+  nanoseconds per Step, with 2,680 retained bytes. A one-million-call soak stays inside a 64 MiB
   heap with 130,512 retained bytes. The single-Step boundary and escaped result each remain bounded
-  at 3,936 allocated bytes per call; median single-call latency is 925 nanoseconds.
+  at 3,544 allocated bytes per call; median single-call latency is 730 nanoseconds. Three valid
+  flow calibrations measured 672-673 bytes per Step, so the enforced allocation budget is 750;
+  array-read calibrations measured 103,285-103,301 bytes per call against a 128 KiB budget.
 - The maximum 16,384-node generated monolith executes all 16,381 ordinary Steps exactly once in
   authored order. Generated applications currently admit at most 512 Triggers; exact-boundary
   production and development builds pass, while Trigger 513 is rejected before source allocation.
@@ -310,20 +315,23 @@ Current evidence:
   generated artifacts, child JVMs, HTTP, CLI, or browser boundaries. Five unique HTTP cases were
   consolidated into the canonical generated-child suite; one duplicate 33-case integration suite,
   two obsolete handler files, and 26 unreferenced nested test handlers were removed.
-- Clean `./mvnw clean verify` passes **2,070/2,070 tests** with no failure, error, or skip: core 747,
-  standard library 71, Creator Surefire 934, desktop browser 282, package 35, and mobile browser 1.
-  The complete local gate takes 17:15; the real packaged browser suite dominates at 11:22 and is a
-  measured contribution-speed target, not a reason to replace public-boundary proof with mocks.
-- Clean aggregate JaCoCo is **95.2033% lines (7,026/7,380)** and **90.0104% branches
-  (3,478/3,864)**. Core is 97.1957%/91.9849%, standard library 100%/97.2222%, and Creator
-  90.4337%/84.6085% (line/branch). The visible non-failing 95%/90% target is met without changing
+- Clean `./mvnw clean verify` passes **2,082/2,082 tests** with no failure, error, or skip: core 757,
+  standard library 71, Creator Surefire 928, desktop browser 282, package and soak 43, and mobile
+  browser 1. The complete local gate takes 9:38; the two real desktop suites pass 127 and 155 cases
+  in 335.1 and 357.8 seconds and remain a measured contribution-speed target, not a reason to
+  replace public-boundary proof with mocks.
+- Clean aggregate JaCoCo is **95.0698% lines (6,942/7,302)** and **90.3001% branches
+  (3,491/3,866)**. Core is 97.3690%/92.7729%, standard library 100%/97.2222%, and Creator
+  89.8046%/83.8795% (line/branch). The visible non-failing 95%/90% target is met without changing
   the build into a coverage gate.
 - The generated development dispatch avoids the JDK 25 conditional-method-reference compiler
   crash through one explicit observation branch. A source-shape regression guards that contract,
   and clean desktop/mobile Failsafe reports contain no compiler exception, NPE, `LambdaToMethod`,
   or conditional-tree crash.
-- Current production inventory is three modules, 33 Java files, and 15,634 Java lines with no
-  third-party Maven runtime dependency. The executable Creator JAR is 510,390 bytes. Its universal
+- Current production inventory is three modules, 33 Java files, 15,433 Java lines, and 21,459 total
+  module source lines with no third-party Maven runtime dependency. This cleanup removes 71 net
+  production source lines while retaining every public behavior. The executable Creator JAR is
+  505,868 bytes. Its universal
   application image includes every stable build-JDK module so Creator can compile and run arbitrary
   locked Step bundles without ambient Java; unsupported incubator modules are excluded, and
   per-project minimal images remain Item 8. Packaging rejects empty output paths and JDKs without

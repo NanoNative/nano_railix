@@ -134,9 +134,7 @@ public final class ProjectCompiler {
             }
             final ApplicationPlan.TriggerPlan triggerPlan = new ApplicationPlan.TriggerPlan(
                     trigger.index(),
-                    trigger.definition().results(),
-                    index.destination(trigger.index(), trigger.definition().primaryOutcome()),
-                    "nodes[" + trigger.index() + "]"
+                    index.destination(trigger.index(), trigger.definition().primaryOutcome())
             );
             triggers.add(triggerPlan);
         }
@@ -940,7 +938,7 @@ public final class ProjectCompiler {
                         : "the previous Step";
                 return Optional.of(Diagnostic.atPath(
                         "PROJECT_NESTED_INPUT_INCOMPATIBLE",
-                        "Nested Step " + step.step().use() + " cannot receive "
+                        "Nested Step " + step.step().id() + " cannot receive "
                                 + previous.name().toLowerCase(Locale.ROOT) + " from " + source + ".",
                         step.path() + ".use"
                 ));
@@ -1065,7 +1063,7 @@ public final class ProjectCompiler {
                 }
             }
             plans.add(new ApplicationPlan.NestedStepPlan(
-                    ApplicationPlan.ExecutableStep.from(definition),
+                    definition,
                     compiled.bindings(),
                     stepPath
             ));
@@ -1165,13 +1163,11 @@ public final class ProjectCompiler {
         final Map<Endpoint, Integer> outcomeIndexes = new HashMap<>();
         final List<List<Link>> outgoing = new ArrayList<>(nodes.size());
         final int[] incoming = new int[nodes.size()];
-        final int[][] connections = new int[nodes.size()][];
         final int[][] destinations = new int[nodes.size()][];
         int app = ApplicationPlan.END;
         for (final Node node : nodes) {
             nodeIndexes.put(node.id(), node.index());
             outgoing.add(new ArrayList<>());
-            connections[node.index()] = new int[node.outcomes().size()];
             destinations[node.index()] = new int[node.outcomes().size()];
             Arrays.fill(destinations[node.index()], ApplicationPlan.UNROUTED);
             for (int outcome = 0; outcome < node.outcomes().size(); outcome++) {
@@ -1231,7 +1227,7 @@ public final class ProjectCompiler {
                 );
             }
             if (source.definition().kind() != StepDefinition.Kind.APP
-                    && connections[sourceIndex][outcomeIndex] != 0) {
+                    && destinations[sourceIndex][outcomeIndex] != ApplicationPlan.UNROUTED) {
                 return LinkRead.rejected(
                         "PROJECT_PORT_CONNECTION_DUPLICATE",
                         "Step outcome may have only one connection: " + from.value() + ".",
@@ -1264,7 +1260,6 @@ public final class ProjectCompiler {
             final Link link = new Link(sourceIndex, outcomeIndex, targetIndex, index);
             links.add(link);
             outgoing.get(sourceIndex).add(link);
-            connections[sourceIndex][outcomeIndex]++;
             destinations[sourceIndex][outcomeIndex] = targetIndex;
             if (targetIndex != ApplicationPlan.END) {
                 incoming[targetIndex]++;
@@ -1275,7 +1270,6 @@ public final class ProjectCompiler {
                 links,
                 outgoing,
                 incoming,
-                connections,
                 destinations,
                 app
         ), List.of());
@@ -1315,7 +1309,7 @@ public final class ProjectCompiler {
                 continue;
             }
             for (int outcome = 0; outcome < current.outcomes().size(); outcome++) {
-                if (index.connections()[current.index()][outcome] != 1) {
+                if (index.destinations()[current.index()][outcome] == ApplicationPlan.UNROUTED) {
                     return Optional.of(Diagnostic.atPath(
                             current.outcomes().size() == 1
                                     ? "PROJECT_NODE_OUTPUT_CONNECTION_REQUIRED"
@@ -1440,7 +1434,7 @@ public final class ProjectCompiler {
     ) {
         return new ApplicationPlan.NodePlan(
                 node.id(),
-                ApplicationPlan.ExecutableStep.from(node.definition()),
+                node.definition(),
                 node.bindings(),
                 node.receives(),
                 node.returns(),
@@ -1491,12 +1485,16 @@ public final class ProjectCompiler {
             final Map<String, ApplicationPlan.Binding> bindings
     ) {
         final List<String> outcomes = new ArrayList<>(definition.outcomes());
-        propagated(bindings).forEach(outcomes::add);
+        final List<String> propagated = new ArrayList<>();
+        propagated(bindings, propagated);
+        outcomes.addAll(propagated);
         return List.copyOf(outcomes);
     }
 
-    private static List<String> propagated(final Map<String, ApplicationPlan.Binding> bindings) {
-        final List<String> outcomes = new ArrayList<>();
+    private static void propagated(
+            final Map<String, ApplicationPlan.Binding> bindings,
+            final List<String> outcomes
+    ) {
         bindings.values().forEach(binding -> {
             if (binding instanceof ApplicationPlan.StepsBinding steps && steps.propagatesOutcomes()) {
                 steps.steps().forEach(step -> step.step().outcomes().stream()
@@ -1504,22 +1502,15 @@ public final class ProjectCompiler {
                         .filter(outcome -> !outcomes.contains(outcome))
                         .forEach(outcomes::add));
             } else if (binding instanceof ApplicationPlan.ChoiceBinding choice) {
-                propagated(choice.inputs()).stream()
-                        .filter(outcome -> !outcomes.contains(outcome))
-                        .forEach(outcomes::add);
+                propagated(choice.inputs(), outcomes);
             } else if (binding instanceof ApplicationPlan.CandidatesBinding candidates) {
-                candidates.candidates().forEach(candidate -> propagated(candidate.source().inputs()).stream()
-                        .filter(outcome -> !outcomes.contains(outcome))
-                        .forEach(outcomes::add));
+                candidates.candidates().forEach(candidate -> propagated(candidate.source().inputs(), outcomes));
             } else if (binding instanceof ApplicationPlan.MatcherGroupsBinding matcherGroups) {
                 matcherGroups.groups().forEach(group -> group.forEach(matcher ->
-                        propagated(matcher.source().inputs()).stream()
-                                .filter(outcome -> !outcomes.contains(outcome))
-                                .forEach(outcomes::add)
+                        propagated(matcher.source().inputs(), outcomes)
                 ));
             }
         });
-        return outcomes;
     }
 
     private static PathRead path(final RailixValue value, final String path, final boolean write) {
@@ -1715,7 +1706,6 @@ public final class ProjectCompiler {
             List<Link> links,
             List<List<Link>> outgoing,
             int[] incoming,
-            int[][] connections,
             int[][] destinations,
             int app
     ) {
@@ -1725,7 +1715,6 @@ public final class ProjectCompiler {
                     List.of(),
                     List.of(),
                     new int[0],
-                    new int[0][],
                     new int[0][],
                     ApplicationPlan.END
             );

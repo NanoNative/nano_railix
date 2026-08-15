@@ -481,10 +481,10 @@ public final class CreatorServer implements AutoCloseable {
             return getOnly(exchange, json(200, icons.listing()));
         }
         if (path.startsWith("/api/run/")) {
-            return run(exchange, path.substring("/api/run/".length()));
+            return execute(exchange, path.substring("/api/run/".length()), false);
         }
         if (path.startsWith("/api/preview/")) {
-            return preview(exchange, path.substring("/api/preview/".length()));
+            return execute(exchange, path.substring("/api/preview/".length()), true);
         }
         return resource(exchange, path);
     }
@@ -509,11 +509,7 @@ public final class CreatorServer implements AutoCloseable {
         }
         final String projectSource;
         try {
-            projectSource = StandardCharsets.UTF_8.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(body.value()))
-                    .toString();
+            projectSource = utf8(body.value());
         } catch (final CharacterCodingException exception) {
             return json(422, diagnostics(List.of(Diagnostic.atPath(
                     "PROJECT_UTF8_INVALID",
@@ -538,11 +534,7 @@ public final class CreatorServer implements AutoCloseable {
         }
         final String metadata;
         try {
-            metadata = StandardCharsets.UTF_8.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(body.value()))
-                    .toString();
+            metadata = utf8(body.value());
         } catch (final CharacterCodingException exception) {
             return json(422, diagnostics(List.of(Diagnostic.atPath(
                     "CREATOR_UTF8_INVALID",
@@ -736,25 +728,12 @@ public final class CreatorServer implements AutoCloseable {
         )));
     }
 
-    private Response run(
-            final HttpExchange exchange,
-            final String trigger
-    ) throws IOException {
-        return execute(exchange, new String[]{trigger}, false);
-    }
-
-    private Response preview(
-            final HttpExchange exchange,
-            final String target
-    ) throws IOException {
-        return execute(exchange, target.split("/", -1), true);
-    }
-
     private Response execute(
             final HttpExchange exchange,
-            final String[] target,
+            final String suffix,
             final boolean preview
     ) throws IOException {
+        final String[] target = preview ? suffix.split("/", -1) : new String[]{suffix};
         if (!"POST".equals(exchange.getRequestMethod())) {
             return methodNotAllowed();
         }
@@ -1126,14 +1105,18 @@ public final class CreatorServer implements AutoCloseable {
         }
         final byte[] source = Files.readAllBytes(project);
         try {
-            return StandardCharsets.UTF_8.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(source))
-                    .toString();
+            return utf8(source);
         } catch (final CharacterCodingException exception) {
             throw new IOException("Creator project is not valid UTF-8.", exception);
         }
+    }
+
+    private static String utf8(final byte[] source) throws CharacterCodingException {
+        return StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(source))
+                .toString();
     }
 
     private static void persist(final Path project, final String source) throws IOException {

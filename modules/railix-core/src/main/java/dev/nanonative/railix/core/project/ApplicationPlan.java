@@ -19,54 +19,12 @@ record ApplicationPlan(String projectId, List<NodePlan> nodes, List<TriggerPlan>
         triggers = List.copyOf(triggers);
     }
 
-    record TriggerPlan(int node, List<StepDefinition.Result> results, int start, String path) {
-        TriggerPlan {
-            results = List.copyOf(results);
-        }
-    }
-
-    record ExecutableStep(
-            String use,
-            StepDefinition.Kind kind,
-            List<StepDefinition.Port> receives,
-            List<StepDefinition.Port> returns,
-            List<String> outcomes,
-            String source,
-            Map<String, String> responses
-    ) {
-        ExecutableStep {
-            if (use == null || use.isBlank() || kind == null || source == null) {
-                throw new IllegalArgumentException("Executable Step contract must be supplied.");
-            }
-            receives = List.copyOf(receives);
-            returns = List.copyOf(returns);
-            outcomes = List.copyOf(outcomes);
-            responses = Collections.unmodifiableMap(new LinkedHashMap<>(responses));
-            if (outcomes.isEmpty()) {
-                throw new IllegalArgumentException("Executable Step must declare an outcome.");
-            }
-        }
-
-        static ExecutableStep from(final StepDefinition definition) {
-            return new ExecutableStep(
-                    definition.id(),
-                    definition.kind(),
-                    definition.receives(),
-                    definition.returns(),
-                    definition.outcomes(),
-                    definition.source().map(StepDefinition.Source::name).orElse(""),
-                    definition.source().map(StepDefinition.Source::responses).orElse(Map.of())
-            );
-        }
-
-        String primaryOutcome() {
-            return outcomes.getFirst();
-        }
+    record TriggerPlan(int node, int start) {
     }
 
     record NodePlan(
             String id,
-            ExecutableStep step,
+            StepDefinition step,
             Map<String, Binding> inputs,
             Map<String, Path> receives,
             Map<String, Path> returns,
@@ -76,9 +34,6 @@ record ApplicationPlan(String projectId, List<NodePlan> nodes, List<TriggerPlan>
             String path
     ) {
         NodePlan {
-            inputs = Collections.unmodifiableMap(new LinkedHashMap<>(inputs));
-            receives = Collections.unmodifiableMap(new LinkedHashMap<>(receives));
-            returns = Collections.unmodifiableMap(new LinkedHashMap<>(returns));
             destinations = destinations.clone();
             outcomes = List.copyOf(outcomes);
         }
@@ -160,7 +115,7 @@ record ApplicationPlan(String projectId, List<NodePlan> nodes, List<TriggerPlan>
         }
     }
 
-    record NestedStepPlan(ExecutableStep step, Map<String, Binding> inputs, String path) {
+    record NestedStepPlan(StepDefinition step, Map<String, Binding> inputs, String path) {
         NestedStepPlan {
             inputs = Collections.unmodifiableMap(new LinkedHashMap<>(inputs));
         }

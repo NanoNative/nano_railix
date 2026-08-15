@@ -38,9 +38,10 @@ final class ProductionRuntimeSoakE2eTest {
     private static final int ARRAY_ITEMS = 4_096;
     private static final int ARRAY_READ_STEPS = 32;
     private static final int MULTI_WRITE_STEPS = 1_800;
-    // Local JDK 25 generated-flow calibrations measured 728 B/Step; 800 leaves 9% headroom.
-    private static final long FLOW_ALLOCATION_BUDGET_BYTES_PER_STEP = 800;
-    private static final long ARRAY_READ_ALLOCATION_BUDGET_BYTES_PER_CALL = 256L * 1_024;
+    // Local JDK 25 generated-flow calibrations measured 672-673 B/Step; 750 leaves 11% headroom.
+    private static final long FLOW_ALLOCATION_BUDGET_BYTES_PER_STEP = 750;
+    // Local JDK 25 array-read calibrations measured 103,285-103,301 B/call; 128 KiB leaves 27% headroom.
+    private static final long ARRAY_READ_ALLOCATION_BUDGET_BYTES_PER_CALL = 128L * 1_024;
     private static final Duration CHILD_TIMEOUT = Duration.ofSeconds(120);
     private static final String PROBE_CLASS = "dev.nanonative.railix.core.project.ProductionRuntimeSoakProbe";
 
