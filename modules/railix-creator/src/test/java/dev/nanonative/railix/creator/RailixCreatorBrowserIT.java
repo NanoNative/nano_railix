@@ -1683,17 +1683,19 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         addTrigger();
         waitForText("#build-state", "Built");
         final String generated = presentationName().inputValue();
+        final String edited = "quiet-vector".equals(generated) ? "rapid-quark" : "quiet-vector";
         final String pid = applicationPid();
 
-        presentationName().fill("quiet-vector");
+        presentationName().fill(edited);
         clickAndWaitForCreatorSave(() -> presentationName().press("Tab"));
 
         assertThat(generated).matches("[a-z]+-[a-z]+");
-        assertThat(page.locator(".trigger-node").textContent()).contains("quiet-vector");
+        assertThat(edited).isNotEqualTo(generated);
+        assertThat(page.locator(".trigger-node").textContent()).contains(edited);
         assertThat(page.evaluate("""
-                async () => Object.values((await (await fetch('/api/project')).json()).creator.steps)
-                  .filter(step => step.name === 'quiet-vector').length
-                """)).isEqualTo(1);
+                async edited => Object.values((await (await fetch('/api/project')).json()).creator.steps)
+                  .filter(step => step.name === edited).length
+                """, edited)).isEqualTo(1);
         assertThat(applicationPid()).isEqualTo(pid);
     }
 
