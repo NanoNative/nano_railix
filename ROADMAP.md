@@ -289,10 +289,12 @@ Current evidence:
 - A real 129-Step production flow executes 322,500 verified Steps with zero traces. The clean gate
   measures 86,704 allocated bytes and 37,465 median nanoseconds per call: 672 bytes and 290
   nanoseconds per Step, with 2,680 retained bytes. A one-million-call soak stays inside a 64 MiB
-  heap with 130,512 retained bytes. The single-Step boundary and escaped result each remain bounded
-  at 3,544 allocated bytes per call; median single-call latency is 730 nanoseconds. Three valid
-  flow calibrations measured 672-673 bytes per Step, so the enforced allocation budget is 750;
-  array-read calibrations measured 103,285-103,301 bytes per call against a 128 KiB budget.
+  heap with 130,512 retained bytes. The single-Step boundary and escaped result each report 3,544
+  allocated bytes per call; median single-call latency is 730 nanoseconds. Local flow calibrations
+  measured 672-673 bytes per Step and hosted Zulu JDK 25 measured 768; array-read calibrations
+  measured 103,285-103,301 bytes per call. Allocation and latency baselines are advisory and never
+  fail the build; constrained-heap, retained-growth, trace, execution, and correctness assertions
+  remain acceptance gates.
 - The maximum 16,384-node generated monolith executes all 16,381 ordinary Steps exactly once in
   authored order. Generated applications currently admit at most 512 Triggers; exact-boundary
   production and development builds pass, while Trigger 513 is rejected before source allocation.
