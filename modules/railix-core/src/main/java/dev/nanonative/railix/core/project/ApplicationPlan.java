@@ -90,12 +90,16 @@ record ApplicationPlan(String projectId, List<NodePlan> nodes, List<TriggerPlan>
 
     record CandidatePlan(
             ChoiceBinding source,
+            String outcome,
             List<NestedStepPlan> transforms,
             List<List<NestedStepPlan>> predicates
     ) {
         CandidatePlan {
             if (source == null) {
                 throw new IllegalArgumentException("Candidate plan source must be supplied.");
+            }
+            if (outcome == null) {
+                throw new IllegalArgumentException("Candidate plan outcome cannot be Java null.");
             }
             transforms = List.copyOf(transforms);
             predicates = predicates.stream().map(List::copyOf).toList();

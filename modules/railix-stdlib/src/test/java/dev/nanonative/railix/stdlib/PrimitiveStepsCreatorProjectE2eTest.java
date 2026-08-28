@@ -81,7 +81,10 @@ class PrimitiveStepsCreatorProjectE2eTest {
         assertThat(definition.inputs()).extracting(StepDefinition.Field::name)
                 .containsExactly("conditions");
         assertThat(definition.inputs().getFirst().input())
-                .isInstanceOf(StepDefinition.CandidatesInput.class);
+                .isInstanceOfSatisfying(StepDefinition.CandidatesInput.class, candidates ->
+                        assertThat(candidates.options().get(1).inputs().getFirst().input())
+                                .isInstanceOfSatisfying(StepDefinition.JsonInput.class, literal ->
+                                        assertThat(literal.defaultValue()).isEmpty()));
         assertThat(definition.outcomes()).containsExactly("match", "otherwise");
     }
 
@@ -97,8 +100,32 @@ class PrimitiveStepsCreatorProjectE2eTest {
         assertThat(definition.inputs()).extracting(StepDefinition.Field::name)
                 .containsExactly("conditions");
         assertThat(definition.inputs().getFirst().input())
-                .isInstanceOf(StepDefinition.MatcherGroupsInput.class);
+                .isInstanceOfSatisfying(StepDefinition.MatcherGroupsInput.class, groups ->
+                        assertThat(groups.options().get(1).inputs().getFirst().input())
+                                .isInstanceOfSatisfying(StepDefinition.JsonInput.class, literal ->
+                                        assertThat(literal.defaultValue()).isEmpty()));
         assertThat(definition.outcomes()).containsExactly("match", "otherwise");
+    }
+
+    @Test
+    void switchDeclaresAnOrdinaryStepWithGenericCasesAndOtherwisePrimary() {
+        final StepDefinition definition = StandardLibrary.catalog()
+                .find("railix.switch")
+                .orElseThrow();
+
+        assertThat(definition.kind()).isEqualTo(StepDefinition.Kind.STEP);
+        assertThat(definition.receives()).isEmpty();
+        assertThat(definition.returns()).isEmpty();
+        assertThat(definition.inputs()).extracting(StepDefinition.Field::name)
+                .containsExactly("cases");
+        assertThat(definition.inputs().getFirst().input())
+                .isInstanceOfSatisfying(StepDefinition.CandidatesInput.class, cases -> {
+                    assertThat(cases.authoredOutcomes()).isTrue();
+                    assertThat(cases.options().get(1).inputs().getFirst().input())
+                            .isInstanceOfSatisfying(StepDefinition.JsonInput.class, literal ->
+                                    assertThat(literal.defaultValue()).contains(RailixValue.nullValue()));
+                });
+        assertThat(definition.outcomes()).containsExactly("otherwise");
     }
 
     @Test

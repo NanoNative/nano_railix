@@ -794,7 +794,7 @@ final class ApplicationGenerator {
                     "WorkflowRuntime.StepPlan",
                     runtimeStep(
                             plan.id(), plan.step(), plan.step().kind() == StepDefinition.Kind.STEP,
-                            receives, returns, plan.path()
+                            receives, returns, plan.outcomes(), plan.path()
                     )
             );
             return fields.append(methods).toString();
@@ -886,6 +886,7 @@ final class ApplicationGenerator {
                 plans.add(field(
                         "WorkflowRuntime.CandidatePlan",
                         "new WorkflowRuntime.CandidatePlan(" + quote(source.option()) + ", "
+                                + quote(candidate.outcome()) + ", "
                                 + resolver(dataName(), source.inputs()) + ", "
                                 + references(source.valueSources()) + ", " + program(candidate.transforms())
                                 + ", " + list(predicates) + ")"
@@ -900,7 +901,10 @@ final class ApplicationGenerator {
                 final String resolver = resolver(dataName(), step.inputs());
                 final String plan = field(
                         "WorkflowRuntime.StepPlan",
-                        runtimeStep(step.step().id(), step.step(), false, "Map.of()", "Map.of()", step.path())
+                        runtimeStep(
+                                step.step().id(), step.step(), false, "Map.of()", "Map.of()",
+                                step.step().outcomes(), step.path()
+                        )
                 );
                 nested.add(field(
                         "WorkflowRuntime.NestedStep",
@@ -949,6 +953,7 @@ final class ApplicationGenerator {
             final boolean mappedReceives,
             final String receives,
             final String returns,
+            final List<String> outcomes,
             final String path
     ) {
         return "new WorkflowRuntime.StepPlan(\n"
@@ -957,7 +962,7 @@ final class ApplicationGenerator {
                 + indent(Boolean.toString(mappedReceives), 1) + ",\n"
                 + indent(list(step.receives().stream().map(ApplicationGenerator::port).toList()), 1) + ",\n"
                 + indent(list(step.returns().stream().map(ApplicationGenerator::port).toList()), 1) + ",\n"
-                + indent(strings(step.outcomes()), 1) + ",\n"
+                + indent(strings(outcomes), 1) + ",\n"
                 + indent(receives, 1) + ",\n"
                 + indent(returns, 1) + ",\n"
                 + indent(quote(path), 1) + "\n)";

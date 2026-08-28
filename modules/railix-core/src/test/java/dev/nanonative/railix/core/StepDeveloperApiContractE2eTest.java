@@ -99,6 +99,54 @@ final class StepDeveloperApiContractE2eTest {
     }
 
     @Test
+    void selectedAuthoredOutcomeIsAvailableFromItsCandidatesInput() {
+        final StepInput selected = new StepInput(
+                Map.of(), Map.of(), Map.of(), Map.of(), "case-first"
+        );
+        final StepInput input = new StepInput(
+                Map.of(), Map.of(), Map.of(), Map.of("cases", selected), "otherwise"
+        );
+
+        assertThat(input.selectedOutcome("cases")).isEqualTo("case-first");
+    }
+
+    @Test
+    void absentAuthoredOutcomeIsRejectedWhenRead() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StepInput(
+                        Map.of(), Map.of(), Map.of(), Map.of(), "otherwise"
+                ).selectedOutcome("cases"))
+                .withMessage("Selected input is not available: cases");
+    }
+
+    @Test
+    void absentAuthoredOutcomeUsesThePrimaryOutcomeWhenRequested() {
+        final StepInput input = new StepInput(
+                Map.of(), Map.of(), Map.of(), Map.of(), "otherwise"
+        );
+
+        assertThat(input.selectedOutcomeOrPrimary("cases")).isEqualTo("otherwise");
+    }
+
+    @Test
+    void JavaNullAuthoredOutcomeInputNameIsRejected() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StepInput(
+                        Map.of(), Map.of(), Map.of(), Map.of(), "otherwise"
+                ).selectedOutcome(null))
+                .withMessage("Selected input name must be a non-blank string.");
+    }
+
+    @Test
+    void blankAuthoredOutcomeInputNameIsRejected() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StepInput(
+                        Map.of(), Map.of(), Map.of(), Map.of(), "otherwise"
+                ).selectedOutcomeOrPrimary(" "))
+                .withMessage("Selected input name must be a non-blank string.");
+    }
+
+    @Test
     void missingStepInputValueIsRejected() {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> input().value("missing"))

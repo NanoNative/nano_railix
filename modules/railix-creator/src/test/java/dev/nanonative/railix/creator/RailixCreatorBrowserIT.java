@@ -7,9 +7,11 @@ import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.TimeoutError;
+import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
+import dev.nanonative.railix.core.value.ValueShape;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -36,6 +38,8 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
+
+import thirdparty.conformance.MatcherConformanceSteps;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -312,6 +316,335 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                     .sort().join('|');
                 }
                 """)).isEqualTo(".match:end|.otherwise:end");
+    }
+
+    @Test
+    void addingASwitchPersistsFlatCatalogDerivedRoutes() {
+        addSwitchAfterTrigger();
+        page.locator("[data-add-candidate='field']").click();
+        waitForText("#build-state", "Built");
+        page.locator("[data-add-candidate='literal']").click();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const workspace = await (await fetch('/api/project')).json();
+                  const project = workspace.project;
+                  const step = project.nodes.find(node => node.use === 'railix.switch');
+                  const cases = step.inputs.cases;
+                  const routes = project.links.filter(link => link.from.startsWith(step.id + '.'));
+                  const labels = workspace.creator.steps[step.id].outcomes;
+                  return cases.length + '|' + cases.map(item => labels[item.outcome]).join(',') + '|'
+                    + cases.every(item => !Object.hasOwn(item, 'label')) + '|'
+                    + cases.every(item => /^case-[0-9a-f-]{36}$/.test(item.outcome)) + '|'
+                    + routes.length + '|' + routes.every(link => link.to === 'end');
+                }
+                """)).isEqualTo("2|Case 1,Case 2|true|true|3|true");
+        assertThat(page.locator(".branch-route").count()).isEqualTo(3);
+        assertThat(page.locator(".branch-routes").textContent()).contains("Case 1", "Case 2", "Otherwise");
+    }
+
+    @Test
+    void renamingAndReorderingSwitchCasesPreservesOutcomeIdsAcrossReload() {
+        addSwitchAfterTrigger();
+        page.locator("[data-add-candidate='field']").click();
+        waitForText("#build-state", "Built");
+        page.locator("[data-add-candidate='literal']").click();
+        waitForText("#build-state", "Built");
+        final String before = String.valueOf(page.evaluate("""
+                async () => {
+                  const project = (await (await fetch('/api/project')).json()).project;
+                  return project.nodes.find(node => node.use === 'railix.switch').inputs.cases
+                    .map(item => item.outcome).join('|');
+                }
+                """));
+
+        page.locator("[data-candidate-label]").first().fill("Alpha");
+        page.locator("[data-candidate-label]").first().press("Tab");
+        waitForText("#build-state", "Built");
+        page.locator("[data-move-candidate='1'][data-direction='-1']").click();
+        waitForText("#build-state", "Built");
+        page.reload();
+        waitForText("#build-state", "Built");
+        final String id = String.valueOf(page.evaluate("""
+                async () => (await (await fetch('/api/project')).json()).project.nodes
+                  .find(node => node.use === 'railix.switch').id
+                """));
+        page.locator("[data-select-step='" + id + "']").click();
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const workspace = await (await fetch('/api/project')).json();
+                  const step = workspace.project.nodes.find(node => node.use === 'railix.switch');
+                  const labels = workspace.creator.steps[step.id].outcomes;
+                  return step.inputs.cases.map(item => item.outcome + ':' + labels[item.outcome]).join('|');
+                }
+                """)).isEqualTo(before.split("\\|")[1] + ":Case 2|" + before.split("\\|")[0] + ":Alpha");
+    }
+
+    @Test
+    void changingSwitchCaseSourcePreservesItsOutcomeRoute() {
+        addSwitchAfterTrigger();
+        page.locator("[data-add-candidate='field']").click();
+        waitForText("#build-state", "Built");
+        final String outcome = String.valueOf(page.evaluate("""
+                async () => {
+                  const project = (await (await fetch('/api/project')).json()).project;
+                  return project.nodes.find(node => node.use === 'railix.switch').inputs.cases[0].outcome;
+                }
+                """));
+
+        page.locator("[data-candidate-option]").selectOption("literal");
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async outcome => {
+                  const workspace = await (await fetch('/api/project')).json();
+                  const step = workspace.project.nodes.find(node => node.use === 'railix.switch');
+                  const candidate = step.inputs.cases[0];
+                  const route = workspace.project.links.find(link => link.from === step.id + '.' + outcome);
+                  return [candidate.outcome, candidate.option, route?.to,
+                    workspace.creator.steps[step.id].outcomes[outcome]].join('|');
+                }
+                """, outcome)).isEqualTo(outcome + "|literal|end|Case 1");
+    }
+
+    @Test
+    void removingATerminalSwitchCaseRemovesOnlyItsRoute() {
+        addSwitchAfterTrigger();
+        page.locator("[data-add-candidate='field']").click();
+        waitForText("#build-state", "Built");
+
+        page.locator("[data-remove-candidate='0']").click();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const workspace = await (await fetch('/api/project')).json();
+                  const project = workspace.project;
+                  const step = project.nodes.find(node => node.use === 'railix.switch');
+                  return step.inputs.cases.length + ':' + project.links
+                    .filter(link => link.from.startsWith(step.id + '.'))
+                    .map(link => link.from.substring(step.id.length + 1)).join('|') + ':'
+                    + Object.keys(workspace.creator.steps[step.id]?.outcomes || {}).length;
+                }
+                """)).isEqualTo("0:otherwise:0");
+    }
+
+    @Test
+    void connectedSwitchCaseCannotBeRemoved() {
+        addSwitchAfterTrigger();
+        page.locator("[data-add-candidate='field']").click();
+        waitForText("#build-state", "Built");
+        final Map<?, ?> route = (Map<?, ?>) page.evaluate("""
+                async () => {
+                  const project = (await (await fetch('/api/project')).json()).project;
+                  const step = project.nodes.find(node => node.use === 'railix.switch');
+                  return {id: step.id, outcome: step.inputs.cases[0].outcome};
+                }
+                """);
+
+        page.locator("[data-add-outcome='" + route.get("outcome") + "']").click();
+        page.locator("#step-search").fill("field manipulation");
+        page.locator("[data-add-step='railix.field-manipulation']").click();
+        waitForText("#build-state", "Built");
+        page.locator("[data-select-step='" + route.get("id") + "']").click();
+
+        assertThat(page.locator("[data-remove-candidate='0']").isDisabled()).isTrue();
+        assertThat(page.evaluate("""
+                async route => {
+                  const project = (await (await fetch('/api/project')).json()).project;
+                  const link = project.links.find(item => item.from === route.id + '.' + route.outcome);
+                  return project.nodes.find(node => node.id === link?.to)?.use;
+                }
+                """, route)).isEqualTo("railix.field-manipulation");
+    }
+
+    @Test
+    void updateAllAddsOccurrenceLocalSwitchRoutesAndSharedLabels() {
+        openProject(switchPairProject());
+        shareSwitchPair();
+        editFirstSharedSwitch();
+
+        page.locator("[data-add-candidate='field']").click();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const workspace = await (await fetch('/api/project')).json();
+                  const steps = workspace.project.nodes.filter(node => node.id === 'one' || node.id === 'two');
+                  const outcomes = steps.map(step => step.inputs.cases[0].outcome);
+                  return [
+                    outcomes[0] !== outcomes[1],
+                    workspace.project.links.some(link => link.from === 'one.' + outcomes[0]),
+                    workspace.project.links.some(link => link.from === 'two.' + outcomes[1]),
+                    workspace.creator.steps.one.outcomes[outcomes[0]],
+                    workspace.creator.steps.two.outcomes[outcomes[1]]
+                  ].join('|');
+                }
+                """)).isEqualTo("true|true|true|Case 1|Case 1");
+    }
+
+    @Test
+    void updateAllRenamesEachOccurrencesLocalSwitchOutcome() {
+        openProject(configuredSwitchPairProject());
+        shareSwitchPair();
+        editFirstSharedSwitch();
+
+        final Locator label = page.locator("[data-candidate-label]").first();
+        label.fill("Shared case");
+        clickAndWaitForCreatorSave(() -> label.press("Tab"));
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const creator = (await (await fetch('/api/project')).json()).creator;
+                  return creator.steps.one.outcomes['case-one'] + '|'
+                    + creator.steps.two.outcomes['case-two'];
+                }
+                """)).isEqualTo("Shared case|Shared case");
+    }
+
+    @Test
+    void collapsedSwitchGroupDisplaysCasesBeforeOtherwise() {
+        openProject(configuredSwitchPairProject());
+        groupSteps("one", "one");
+
+        assertThat(page.evaluate("""
+                () => [...document.querySelector('.branch-routes')
+                  .querySelectorAll(':scope > .branch-route > .branch-route-label')]
+                  .map(label => label.textContent).join('|')
+                """)).isEqualTo("Case one|Case one extra|Otherwise");
+    }
+
+    @Test
+    void configuredSwitchesWithDifferentCaseIdsGroupAndSynchronizeWithoutLosingRoutes() {
+        openProject(configuredSwitchPairProject());
+        final String pid = applicationPid();
+        shareSwitchPair();
+        assertThat(applicationPid()).isEqualTo(pid);
+
+        editFirstSharedSwitch();
+        final Locator literal = page.locator("[data-candidate-index='0'] [data-input-json]").first();
+        literal.fill("\"shared\"");
+        literal.press("Tab");
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const project = (await (await fetch('/api/project')).json()).project;
+                  const one = project.nodes.find(node => node.id === 'one');
+                  const two = project.nodes.find(node => node.id === 'two');
+                  return [
+                    one.inputs.cases[0].outcome,
+                    two.inputs.cases[0].outcome,
+                    one.inputs.cases[0].inputs.value,
+                    two.inputs.cases[0].inputs.value,
+                    project.links.some(link => link.from === 'one.case-one'),
+                    project.links.some(link => link.from === 'two.case-two')
+                  ].join('|');
+                }
+                """)).isEqualTo("case-one|case-two|shared|shared|true|true");
+    }
+
+    @Test
+    void sharedSwitchInsertionUsesEachOccurrencesOwnCaseId() {
+        openProject(configuredSwitchPairProject());
+        shareSwitchPair();
+        editFirstSharedSwitch();
+
+        page.locator("[data-add-outcome='case-one']").click();
+        page.locator("#step-search").fill("field manipulation");
+        page.locator("[data-add-step='railix.field-manipulation']").click();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const workspace = await (await fetch('/api/project')).json();
+                  const target = id => workspace.project.nodes.find(node => node.id === id)?.use;
+                  const one = workspace.project.links.find(link => link.from === 'one.case-one')?.to;
+                  const two = workspace.project.links.find(link => link.from === 'two.case-two')?.to;
+                  const occurrences = workspace.creator.groups[0].occurrences;
+                  return [
+                    target(one), target(two),
+                    Object.keys(occurrences[0].steps).length,
+                    Object.keys(occurrences[1].steps).length,
+                    Object.keys(occurrences[0].steps).join() === Object.keys(occurrences[1].steps).join()
+                  ].join('|');
+                }
+                """)).isEqualTo("railix.field-manipulation|railix.field-manipulation|2|2|true");
+    }
+
+    @Test
+    void sharedSwitchReorderPreservesEachOccurrencesOwnCaseIds() {
+        openProject(configuredSwitchPairProject());
+        shareSwitchPair();
+        editFirstSharedSwitch();
+
+        page.locator("[data-move-candidate='1'][data-direction='-1']").click();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const project = (await (await fetch('/api/project')).json()).project;
+                  const cases = id => project.nodes.find(node => node.id === id).inputs.cases
+                    .map(candidate => candidate.outcome).join(',');
+                  return cases('one') + '|' + cases('two');
+                }
+                """)).isEqualTo("case-one-extra,case-one|case-two-extra,case-two");
+    }
+
+    @Test
+    void sharedSwitchRemovalDeletesEachOccurrencesOwnTerminalRoute() {
+        openProject(configuredSwitchPairProject());
+        shareSwitchPair();
+        editFirstSharedSwitch();
+
+        page.locator("[data-remove-candidate='0']").click();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const project = (await (await fetch('/api/project')).json()).project;
+                  const cases = id => project.nodes.find(node => node.id === id).inputs.cases
+                    .map(candidate => candidate.outcome).join(',');
+                  return [
+                    cases('one'), cases('two'),
+                    project.links.some(link => link.from === 'one.case-one'),
+                    project.links.some(link => link.from === 'two.case-two'),
+                    project.links.some(link => link.from === 'one.case-one-extra'),
+                    project.links.some(link => link.from === 'two.case-two-extra')
+                  ].join('|');
+                }
+                """)).isEqualTo("case-one-extra|case-two-extra|false|false|true|true");
+    }
+
+    @Test
+    void authoredRouteStepsAreNotOfferedInsideNestedPrograms() {
+        preparePrimitiveSearch("{\"payload\":{\"value\":\"Railix\"}}", "switch");
+
+        assertThat(page.locator("#steps-options [data-add-nested='railix.switch']").count()).isZero();
+        assertThat(page.locator("#steps-options").textContent()).contains("No compatible Step matches.");
+    }
+
+    @Test
+    void authoredRouteStepsAreNotOfferedAsConditionPredicates() throws Exception {
+        creator.close();
+        GeneratedApplicationFixture.installedCatalog(
+                directory,
+                List.of(authoredBooleanStep()),
+                MatcherConformanceSteps.AuthoredTrue.class
+        );
+        creator = CreatorServer.start(0, directory.resolve("project.json"), directory.resolve("railix-home"));
+        page.navigate(creator.baseUri().toString());
+        waitForText("#build-state", "Built");
+        prepareSizeChoiceMatcher(2);
+
+        final Locator search = page.locator("[data-matcher-group='0'] [data-predicate-query]");
+        search.fill("authored routes");
+
+        assertThat(page.locator("[data-add-predicate='test.authored-boolean']").count()).isZero();
+        assertThat(page.locator("[data-matcher-group='0'] [data-predicate-options]").textContent())
+                .contains("No compatible matcher found.");
     }
 
     @Test
@@ -825,6 +1158,24 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                     return Math.abs(dropTop - busY) < 1 && Math.abs(dropBottom - branchBox.top) < 1;
                   });
                 })
+                """)).isEqualTo(true);
+    }
+
+    @Test
+    void nestedSwitchRoutesKeepTheirTerminalCardsSeparate() {
+        openProject(nestedSwitchProject());
+        positions();
+
+        assertThat(page.evaluate("""
+                () => {
+                  const routes = [...document.querySelectorAll('.branch-routes')]
+                    .find(candidate => candidate.querySelectorAll(':scope > .branch-route').length === 5);
+                  if (!routes) return false;
+                  const terminals = [...routes.querySelectorAll(':scope > .branch-route')]
+                    .map(branch => branch.querySelector(':scope > .end-node')?.getBoundingClientRect());
+                  return terminals.every(Boolean) && terminals.every((box, index) =>
+                    index === 0 || terminals[index - 1].right <= box.left + 0.5);
+                }
                 """)).isEqualTo(true);
     }
 
@@ -4408,6 +4759,101 @@ abstract class RailixCreatorBrowserSupport {
                 """;
     }
 
+    static String switchPairProject() {
+        return """
+                {"format":1,"id":"switch-pair","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
+                    "name":"example","payload":[],"context":{"payload":{}}
+                  }]},
+                  {"id":"one","use":"railix.switch","inputs":{"cases":[]}},
+                  {"id":"two","use":"railix.switch","inputs":{"cases":[]}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"one"},
+                  {"from":"one.otherwise","to":"two"},
+                  {"from":"two.otherwise","to":"end"}
+                ]}
+                """;
+    }
+
+    static String nestedSwitchProject() {
+        return """
+                {"format":1,"id":"nested-switch","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
+                    "name":"example","payload":[],"context":{"payload":{"value":"allow"}}
+                  }]},
+                  {"id":"choice","use":"railix.choice","inputs":{"conditions":[[{
+                    "option":"field","inputs":{"field":["context","payload","value"]},
+                    "when":{"transforms":[],"all":[[{
+                      "use":"value.equals","inputs":{"expected":"allow"}
+                    }]]}
+                  }]]}},
+                  {"id":"switch","use":"railix.switch","inputs":{"cases":[
+                    {"outcome":"one","option":"literal","inputs":{"value":1},"when":{"transforms":[],"all":[]}},
+                    {"outcome":"two","option":"literal","inputs":{"value":2},"when":{"transforms":[],"all":[]}},
+                    {"outcome":"three","option":"literal","inputs":{"value":3},"when":{"transforms":[],"all":[]}},
+                    {"outcome":"four","option":"literal","inputs":{"value":4},"when":{"transforms":[],"all":[]}}
+                  ]}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"choice"},
+                  {"from":"choice.match","to":"switch"},
+                  {"from":"choice.otherwise","to":"end"},
+                  {"from":"switch.one","to":"end"},
+                  {"from":"switch.two","to":"end"},
+                  {"from":"switch.three","to":"end"},
+                  {"from":"switch.four","to":"end"},
+                  {"from":"switch.otherwise","to":"end"}
+                ]}
+                """;
+    }
+
+    static String configuredSwitchPairProject() {
+        return """
+                {"format":1,"id":"configured-switch-pair","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
+                    "name":"example","payload":[],"context":{"payload":{}}
+                  }]},
+                  {"id":"one","use":"railix.switch","inputs":{"cases":[{
+                    "outcome":"case-one","option":"literal","inputs":{"value":"one"},
+                    "when":{"transforms":[],"all":[]}},{
+                    "outcome":"case-one-extra","option":"literal","inputs":{"value":"one-extra"},
+                    "when":{"transforms":[],"all":[]}}]}},
+                  {"id":"two","use":"railix.switch","inputs":{"cases":[{
+                    "outcome":"case-two","option":"literal","inputs":{"value":"two"},
+                    "when":{"transforms":[],"all":[]}},{
+                    "outcome":"case-two-extra","option":"literal","inputs":{"value":"two-extra"},
+                    "when":{"transforms":[],"all":[]}}]}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"one"},
+                  {"from":"one.case-one","to":"end"},
+                  {"from":"one.case-one-extra","to":"end"},
+                  {"from":"one.otherwise","to":"two"},
+                  {"from":"two.case-two","to":"end"},
+                  {"from":"two.case-two-extra","to":"end"},
+                  {"from":"two.otherwise","to":"end"}
+                ]}
+                """;
+    }
+
+    static StepDefinition authoredBooleanStep() {
+        return StepDefinition.named("test.authored-boolean", "1")
+                .searchTerms("authored", "routes")
+                .receive("value", ValueShape.ANY)
+                .returns("value", ValueShape.BOOLEAN)
+                .input("cases", StepDefinition.Input.candidates(
+                        StepDefinition.Input.option("literal")
+                                .input("value", StepDefinition.Input.json(ValueShape.ANY)
+                                        .defaultValue(RailixValue.nullValue()))
+                                .fromOwned("value")
+                ).withAuthoredOutcomes())
+                .run(MatcherConformanceSteps.AuthoredTrue.class);
+    }
+
     void addTrigger() {
         page.locator("#add-trigger").click();
         page.locator("#step-search").fill("cli");
@@ -4430,6 +4876,31 @@ abstract class RailixCreatorBrowserSupport {
         page.locator("#step-search").fill("choice");
         page.locator("[data-add-step='railix.choice']").click();
         waitForText("#build-state", "Built");
+    }
+
+    void addSwitchAfterTrigger() {
+        addTrigger();
+        openInspectorTab("inspect");
+        page.locator("#add-next-step").click();
+        page.locator("#step-search").fill("switch");
+        page.locator("[data-add-step='railix.switch']").click();
+        waitForText("#build-state", "Built");
+    }
+
+    void shareSwitchPair() {
+        groupSteps("one", "one");
+        page.locator("[data-inspector-mode='groups']").click();
+        page.locator("[data-add-occurrence]").click();
+        page.locator("[data-select-step='two']").click();
+        clickAndWaitForCreatorSave(() -> page.locator("[data-select-step='two']").click());
+    }
+
+    void editFirstSharedSwitch() {
+        page.locator("[data-inspector-mode='groups']").click();
+        page.locator("[data-manage-occurrence]").first().click();
+        page.locator("#open-group").click();
+        page.locator("[data-select-step='one']").click();
+        page.locator("[data-shared-action='all']").click();
     }
 
     void prepareSizeChoiceMatcher() {

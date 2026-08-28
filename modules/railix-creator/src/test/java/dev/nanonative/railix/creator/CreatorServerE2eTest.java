@@ -143,7 +143,9 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
         final Path project = directory.resolve("railix.project.json");
         Files.writeString(project, CreatorProjects.grouping(), StandardCharsets.UTF_8);
         final String creatorSource = """
-                {"format":1,"steps":{"lowercase-text":{"name":"Normalize text"}},"groups":[{
+                {"format":1,"steps":{"lowercase-text":{
+                  "name":"Normalize text","outcomes":{"next":"Continue"}
+                }},"groups":[{
                   "id":"group-8494a3c7-bda5-4f72-96f8-1ca7d76ac7ec",
                   "name":"Normalize and return",
                   "occurrences":[{
@@ -171,9 +173,10 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
 
             assertThat(saved.statusCode()).isEqualTo(200);
             assertThat(Files.readString(project)).isEqualTo(functional)
-                    .doesNotContain("presentation", "groups", "occurrences");
+                    .doesNotContain("presentation", "groups", "occurrences", "Continue");
             assertThat(Files.readString(directory.resolve("railix.creator.json"))).contains(
                     "\"name\":\"Normalize text\"",
+                    "\"outcomes\":{\"next\":\"Continue\"}",
                     "\"name\":\"Normalize and return\"",
                     "\"slot-lowercase\":\"lowercase-text\""
             );
@@ -266,6 +269,11 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
                 Arguments.of("presentation name must be text", creatorStep("{\"name\":1}"), "CREATOR_PRESENTATION_NAME_INVALID", "steps.lowercase-text.name"),
                 Arguments.of("presentation name is bounded", creatorStep("{\"name\":\"" + "x".repeat(129) + "\"}"), "CREATOR_PRESENTATION_NAME_INVALID", "steps.lowercase-text.name"),
                 Arguments.of("presentation color must be text", creatorStep("{\"color\":1}"), "CREATOR_PRESENTATION_COLOR_INVALID", "steps.lowercase-text.color"),
+                Arguments.of("presentation outcomes must be an object", creatorStep("{\"outcomes\":[]}"), "CREATOR_PRESENTATION_OUTCOMES_INVALID", "steps.lowercase-text.outcomes"),
+                Arguments.of("presentation outcome must be connected", creatorStep("{\"outcomes\":{\"missing\":\"Missing\"}}"), "CREATOR_PRESENTATION_OUTCOME_UNKNOWN", "steps.lowercase-text.outcomes.missing"),
+                Arguments.of("presentation outcome label must be text", creatorStep("{\"outcomes\":{\"next\":1}}"), "CREATOR_PRESENTATION_OUTCOME_LABEL_INVALID", "steps.lowercase-text.outcomes.next"),
+                Arguments.of("presentation outcome label must be non-blank", creatorStep("{\"outcomes\":{\"next\":\" \"}}"), "CREATOR_PRESENTATION_OUTCOME_LABEL_INVALID", "steps.lowercase-text.outcomes.next"),
+                Arguments.of("presentation outcome label is bounded", creatorStep("{\"outcomes\":{\"next\":\"" + "x".repeat(129) + "\"}}"), "CREATOR_PRESENTATION_OUTCOME_LABEL_INVALID", "steps.lowercase-text.outcomes.next"),
                 Arguments.of("icon rejects unknown fields", creatorIcon("{\"media_type\":\"image/svg+xml\",\"data\":\"PHN2Zy8+\",\"noise\":true}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon.noise"),
                 Arguments.of("icon requires both fields", creatorIcon("{\"media_type\":\"image/svg+xml\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon"),
                 Arguments.of("icon media type must be text", creatorIcon("{\"media_type\":1,\"data\":\"PHN2Zy8+\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon"),

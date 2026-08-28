@@ -29,6 +29,9 @@ public final class ProjectCompiler {
     private static final Set<String> LINK_FIELDS = Set.of("from", "to");
     private static final Set<String> OPTION_FIELDS = Set.of("option", "inputs");
     private static final Set<String> CANDIDATE_FIELDS = Set.of("option", "inputs", "when");
+    private static final Set<String> AUTHORED_OUTCOME_CANDIDATE_FIELDS = Set.of(
+            "outcome", "option", "inputs", "when"
+    );
     private static final Set<String> NESTED_FIELDS = Set.of("use", "inputs");
     private static final Set<String> CONDITION_FIELDS = Set.of("transforms", "all");
 
@@ -310,6 +313,13 @@ public final class ProjectCompiler {
             final List<Diagnostic> exampleDiagnostics = examples(object, definition, path);
             if (!exampleDiagnostics.isEmpty()) {
                 return new NodeRead(List.of(), exampleDiagnostics);
+            }
+            final Optional<Diagnostic> authoredCollision = authoredOutcomeCollision(
+                    definition,
+                    compiled.bindings()
+            );
+            if (authoredCollision.isPresent()) {
+                return new NodeRead(List.of(), List.of(authoredCollision.get()));
             }
             final List<String> outcomes = outcomes(definition, compiled.bindings());
             if (new LinkedHashSet<>(outcomes).size() != outcomes.size()) {
@@ -652,13 +662,22 @@ public final class ProjectCompiler {
             );
         }
         final List<ApplicationPlan.CandidatePlan> plans = new ArrayList<>();
+        final Set<String> outcomes = new LinkedHashSet<>();
         for (int index = 0; index < array.values().size(); index++) {
             final String candidatePath = path + "[" + index + "]";
             final CandidateRead candidate = candidate(
-                    array.values().get(index), declaration.options(), candidatePath, catalog, previous, "Candidate", "CANDIDATE"
+                    array.values().get(index), declaration.options(), candidatePath, catalog, previous,
+                    "Candidate", "CANDIDATE", declaration.authoredOutcomes()
             );
             if (!candidate.diagnostics().isEmpty()) {
                 return new InputRead(new ApplicationPlan.JsonBinding(List.of()), candidate.diagnostics());
+            }
+            if (declaration.authoredOutcomes() && !outcomes.add(candidate.plan().outcome())) {
+                return InputRead.rejected(
+                        "PROJECT_CANDIDATE_OUTCOME_DUPLICATE",
+                        "Candidate outcome is already declared: " + candidate.plan().outcome() + ".",
+                        candidatePath + ".outcome"
+                );
             }
             plans.add(candidate.plan());
         }
@@ -707,7 +726,8 @@ public final class ProjectCompiler {
                         catalog,
                         previous,
                         "Matcher",
-                        "MATCHER"
+                        "MATCHER",
+                        false
                 );
                 if (!matcher.diagnostics().isEmpty()) {
                     return new InputRead(new ApplicationPlan.JsonBinding(List.of()), matcher.diagnostics());
@@ -726,7 +746,8 @@ public final class ProjectCompiler {
             final StepCatalog catalog,
             final Map<String, ApplicationPlan.Binding> previous,
             final String label,
-            final String code
+            final String code,
+            final boolean authoredOutcomes
     ) {
         if (!(candidate instanceof RailixValue.ObjectValue object)) {
             return CandidateRead.rejected(
@@ -735,9 +756,38 @@ public final class ProjectCompiler {
                     path
             );
         }
-        final InputRead source = choice(object, options, path, catalog, CANDIDATE_FIELDS, label, code);
+        final InputRead source = choice(
+                object,
+                options,
+                path,
+                catalog,
+                authoredOutcomes ? AUTHORED_OUTCOME_CANDIDATE_FIELDS : CANDIDATE_FIELDS,
+                label,
+                code
+        );
         if (!source.diagnostics().isEmpty()) {
             return CandidateRead.rejected(source.diagnostics());
+        }
+        String outcome = "";
+        if (authoredOutcomes) {
+            final TextRead outcomeRead = text(
+                    object,
+                    "outcome",
+                    "PROJECT_CANDIDATE_OUTCOME_REQUIRED",
+                    "Candidate outcome must be a non-blank string.",
+                    path + ".outcome"
+            );
+            if (!outcomeRead.diagnostics().isEmpty()) {
+                return CandidateRead.rejected(outcomeRead.diagnostics());
+            }
+            if (!safeId(outcomeRead.value())) {
+                return CandidateRead.rejected(
+                        "PROJECT_CANDIDATE_OUTCOME_INVALID",
+                        "Candidate outcome must be a safe lowercase identifier.",
+                        path + ".outcome"
+                );
+            }
+            outcome = outcomeRead.value();
         }
         final ConditionRead condition = condition(object.values().get("when"), path + ".when", catalog, label, code);
         if (!condition.diagnostics().isEmpty()) {
@@ -766,7 +816,7 @@ public final class ProjectCompiler {
             }
         }
         return new CandidateRead(
-                new ApplicationPlan.CandidatePlan(selected, transforms, predicates),
+                new ApplicationPlan.CandidatePlan(selected, outcome, transforms, predicates),
                 List.of()
         );
     }
@@ -1021,6 +1071,15 @@ public final class ProjectCompiler {
                 return NestedRead.rejected(
                         "PROJECT_NESTED_STEP_KIND_INVALID",
                         "Nested value programs accept only ordinary Steps: " + use.value() + ".",
+                        stepPath + ".use"
+                );
+            }
+            if (definition.inputs().stream().anyMatch(field ->
+                    field.input() instanceof StepDefinition.CandidatesInput candidates
+                            && candidates.authoredOutcomes())) {
+                return NestedRead.rejected(
+                        "PROJECT_NESTED_STEP_AUTHORED_OUTCOMES_UNSUPPORTED",
+                        "Nested Steps cannot author workflow routes: " + use.value() + ".",
                         stepPath + ".use"
                 );
             }
@@ -1485,10 +1544,39 @@ public final class ProjectCompiler {
             final Map<String, ApplicationPlan.Binding> bindings
     ) {
         final List<String> outcomes = new ArrayList<>(definition.outcomes());
+        bindings.values().stream()
+                .filter(ApplicationPlan.CandidatesBinding.class::isInstance)
+                .map(ApplicationPlan.CandidatesBinding.class::cast)
+                .flatMap(candidates -> candidates.candidates().stream())
+                .map(ApplicationPlan.CandidatePlan::outcome)
+                .filter(outcome -> !outcome.isEmpty())
+                .forEach(outcomes::add);
         final List<String> propagated = new ArrayList<>();
         propagated(bindings, propagated);
         outcomes.addAll(propagated);
         return List.copyOf(outcomes);
+    }
+
+    private static Optional<Diagnostic> authoredOutcomeCollision(
+            final StepDefinition definition,
+            final Map<String, ApplicationPlan.Binding> bindings
+    ) {
+        for (final ApplicationPlan.Binding binding : bindings.values()) {
+            if (!(binding instanceof ApplicationPlan.CandidatesBinding candidates)) {
+                continue;
+            }
+            for (int index = 0; index < candidates.candidates().size(); index++) {
+                final String outcome = candidates.candidates().get(index).outcome();
+                if (!outcome.isEmpty() && definition.outcomes().contains(outcome)) {
+                    return Optional.of(Diagnostic.atPath(
+                            "PROJECT_CANDIDATE_OUTCOME_COLLISION",
+                            "Candidate outcome collides with a fixed Step outcome: " + outcome + ".",
+                            candidates.path() + "[" + index + "].outcome"
+                    ));
+                }
+            }
+        }
+        return Optional.empty();
     }
 
     private static void propagated(
@@ -1789,6 +1877,7 @@ public final class ProjectCompiler {
             return new CandidateRead(
                     new ApplicationPlan.CandidatePlan(
                             new ApplicationPlan.ChoiceBinding("rejected", Map.of(), List.of()),
+                            "",
                             List.of(),
                             List.of()
                     ),

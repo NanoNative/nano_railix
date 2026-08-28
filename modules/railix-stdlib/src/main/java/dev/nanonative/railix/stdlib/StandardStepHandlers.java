@@ -43,4 +43,12 @@ public final class StandardStepHandlers {
             );
         }
     }
+
+    /** Routes the first accepted authored candidate, or the Step's primary fallback. */
+    public static final class Switch implements StepHandler {
+        @Override
+        public StepResult run(final StepInput input) {
+            return StepResult.outcome(input.selectedOutcomeOrPrimary("cases"));
+        }
+    }
 }

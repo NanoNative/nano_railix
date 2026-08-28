@@ -360,7 +360,7 @@ function renderRoutes(trigger, changed, routes, scope = null) {
     }
     seen.add(operation.id);
     fragments.push(stepNode(operation, changed));
-    const declared = routes.definitions.get(operation.use)?.outcomes || [];
+    const declared = displayOutcomes(operation);
     if (declared.length === 1) {
       pending.push({ source: operation.id, outcome: declared[0] });
       continue;
@@ -379,7 +379,7 @@ function pushBranchRoutes(fragments, pending, routes) {
   if (!routes.length) {
     return false;
   }
-  fragments.push(`<div class="branch-routes" style="--branch-start:${50 / routes.length}%">
+  fragments.push(`<div class="branch-routes" style="--branch-count:${routes.length};--branch-start:${50 / routes.length}%">
     <span class="branch-trunk" aria-hidden="true"></span>`);
   pending.push({ html: "</div>" });
   for (let index = routes.length - 1; index >= 0; index--) {
@@ -396,11 +396,11 @@ function pushBranchRoutes(fragments, pending, routes) {
 
 function groupRouteLabel(route, routes) {
   if (routes.every(candidate => candidate.source === route.source)) {
-    return inputLabel(route.outcome);
+    return outcomeLabel(node(route.source), route.outcome);
   }
   const source = node(route.source);
   const name = stepPresentation(route.source).name || stepName(definitionFor(source));
-  return name + " · " + inputLabel(route.outcome);
+  return name + " · " + outcomeLabel(source, route.outcome);
 }
 
 function terminalNode(route) {
@@ -417,7 +417,7 @@ function groupExitNode(source, outcome, target) {
     <article class="node end-node group-exit" data-node-id="exit-${html(source)}-${html(outcome)}"
              data-group-exit="${html(source)}.${html(outcome)}">
       <div class="node-kicker">Group exit</div>
-      <h2>${html(inputLabel(outcome))}</h2>
+      <h2>${html(outcomeLabel(node(source), outcome))}</h2>
       <p>${target === "end" ? "End" : html(target)}</p>
     </article>`;
 }
@@ -940,7 +940,7 @@ function portPathInput(operation, definition, direction, port) {
 }
 
 function nextStepControls(operation) {
-  const declared = outcomes(operation);
+  const declared = displayOutcomes(operation);
   if (declared.length === 1) {
     return `<button class="button" type="button" id="add-next-step"
                     ${insertionAllowed(operation, declared[0]) ? "" : "disabled"}>Add next Step</button>`;
@@ -953,7 +953,7 @@ function nextStepControls(operation) {
       const repeated = target && state.project.links.filter(link => link.to === target.id).length !== 1;
       const insertable = insertionAllowed(operation, outcome);
       return `<div>
-        <span><strong>${html(inputLabel(outcome))}</strong><small>${html(
+        <span><strong>${html(outcomeLabel(operation, outcome))}</strong><small>${html(
           destinations.length > 1 ? "Multiple links"
             : repeated ? "Repeated Step"
               : target ? stepPresentation(target.id).name || stepName(definitionFor(target))
@@ -1063,7 +1063,9 @@ function candidatesInput(operation, input, locator, candidates, scopeInputs, sco
   const query = queryAt(state.candidateQueries, locator);
   return `
     <section class="inspector-section candidate-input" data-input-name="${html(input.name)}">
-      <div class="section-heading"><strong>${html(inputLabel(input.name))}</strong><span>First accepted value</span></div>
+      <div class="section-heading"><strong>${html(inputLabel(input.name))}</strong><span>${
+        input.authored_outcomes ? "First matching case" : "First accepted value"
+      }</span></div>
       <div class="candidate-list">
         ${candidates.map((candidate, index) => candidateEditor(
           operation,
@@ -1174,7 +1176,11 @@ function candidateEditor(
   const candidateLocator = [...locator, index];
   const path = view.selectable === false ? "" : inputDiagnosticPath(operation.id, locator);
   const selected = Boolean(path) && state.preview?.selected_candidates?.[path] === index;
-  const noun = view.noun || "Candidate";
+  const authored = input.authored_outcomes === true;
+  const noun = authored ? "Case" : view.noun || "Candidate";
+  const removable = size > (view.minimum || 0)
+    && (!authored || alignedCandidates(operation, index)
+      .every(item => item.candidate && outcomeTarget(item.operation, item.candidate.outcome) === "end"));
   const predicateName = view.predicateName || input.name + "[" + index + "].when";
   const condition = conditionOf(candidate.when);
   const predicateStatus = !condition.transforms.length && !condition.all.length
@@ -1189,15 +1195,21 @@ function candidateEditor(
         <strong>${html(noun)} ${index + 1}</strong>
         <div>
           <button type="button" data-move-candidate="${index}" data-direction="-1"
-                  data-candidate-locator="${locatorToken(locator)}" ${index === 0 ? "disabled" : ""}>Up</button>
+                  data-candidate-locator="${locatorToken(locator)}" data-input-meta="${metaToken(input)}"
+                  ${index === 0 ? "disabled" : ""}>Up</button>
           <button type="button" data-move-candidate="${index}" data-direction="1"
-                  data-candidate-locator="${locatorToken(locator)}" ${index === size - 1 ? "disabled" : ""}>Down</button>
+                  data-candidate-locator="${locatorToken(locator)}" data-input-meta="${metaToken(input)}"
+                  ${index === size - 1 ? "disabled" : ""}>Down</button>
           <button type="button" data-remove-candidate="${index}"
-                  data-candidate-locator="${locatorToken(locator)}" ${
-                    size <= (view.minimum || 0) ? "disabled" : ""
-                  }>Remove</button>
+                  data-candidate-locator="${locatorToken(locator)}" data-input-meta="${metaToken(input)}"
+                  ${removable ? "" : "disabled"}>Remove</button>
         </div>
       </div>
+      ${authored ? `
+        <label for="${html(inputId(candidateLocator))}-label">Label</label>
+        <input id="${html(inputId(candidateLocator))}-label" type="text"
+               value="${html(stepPresentation(operation.id).outcomes?.[candidate.outcome] || "")}" data-candidate-label="${locatorToken(locator)}"
+               data-candidate-index="${index}" autocomplete="off">` : ""}
       <label for="${html(inputId(candidateLocator))}-option">Source</label>
       <select id="${html(inputId(candidateLocator))}-option"
               data-candidate-option="${locatorToken(locator)}" data-candidate-index="${index}"
@@ -1336,6 +1348,7 @@ function predicateOptions(candidateLocator, shape) {
   const query = queryAt(state.candidateQueries, queryLocator).trim().toLowerCase();
   return state.catalog
     .filter(definition => definition.kind === "step")
+    .filter(definition => !authoredOutcomeInput(definition))
     .filter(definition => definition.receives.length === 1 && definition.returns.length === 1)
     .filter(definition => definition.outcomes.length === 1 && definition.returns[0].shape === "boolean")
     .filter(definition => portAcceptsValue(definition.receives[0], shape, []))
@@ -1533,6 +1546,7 @@ function nestedOptions(operation, input, locator, scopeInputs, scopeBase) {
   const query = queryAt(state.stepQueries, locator).trim().toLowerCase();
   const options = state.catalog
     .filter(definition => definition.kind === "step")
+    .filter(definition => !authoredOutcomeInput(definition))
     .filter(definition => definition.receives.length === 1 && definition.returns.length === 1)
     .filter(definition => !predicate || definition.outcomes.length === 1)
     .filter(definition => input.program_role !== "transform" || definition.returns[0]?.shape !== "boolean")
@@ -1778,7 +1792,11 @@ function insertStep(afterId, definition, selectedOutcome = "") {
     return false;
   }
   const targets = structuralStepIds(afterId);
-  if (targets.some(target => !insertionAllowed(node(target), outcome))) {
+  const targetOutcomes = new Map(targets.map(target => [
+    target,
+    alignedOutcome(after, node(target), outcome)
+  ]));
+  if (targets.some(target => !insertionAllowed(node(target), targetOutcomes.get(target)))) {
     return false;
   }
   const bindings = new Map(targets.map(target => [target, graphBindings(node(target), definition)]));
@@ -1790,7 +1808,7 @@ function insertStep(afterId, definition, selectedOutcome = "") {
     target,
     definition,
     inserted.get(target),
-    outcome,
+    targetOutcomes.get(target),
     bindings.get(target)
   ));
   const slots = new Map();
@@ -2161,12 +2179,24 @@ function addCandidate(locator, input, optionName) {
   if (!option) {
     return;
   }
-  let candidates = valueAt(selectedOperation(), locator);
-  if (!Array.isArray(candidates)) {
-    candidates = [];
-    setAt(selectedOperation(), locator, candidates);
-  }
-  candidates.push(authoredCandidate(option));
+  const operation = selectedOperation();
+  const targets = input.authored_outcomes
+    ? structuralStepIds(operation.id).map(node).filter(Boolean)
+    : [operation];
+  const label = input.authored_outcomes ? nextCaseLabel(operation) : "";
+  targets.forEach(target => {
+    let candidates = valueAt(target, locator);
+    if (!Array.isArray(candidates)) {
+      candidates = [];
+      setAt(target, locator, candidates);
+    }
+    const candidate = authoredCandidate(option, input);
+    candidates.push(candidate);
+    if (input.authored_outcomes) {
+      state.project.links.push({ from: target.id + "." + candidate.outcome, to: "end" });
+      setOutcomeLabel(target.id, candidate.outcome, label);
+    }
+  });
   delete state.candidateQueries[locatorToken(locator)];
   dirty();
 }
@@ -2186,8 +2216,25 @@ function addMatcherGroup(locator, input, optionName) {
   dirty();
 }
 
-function authoredCandidate(option) {
-  return { option: option.name, inputs: defaultInputs(option.inputs), when: conditionOf(null) };
+function authoredCandidate(option, input = {}) {
+  return {
+    ...(input.authored_outcomes ? {
+      outcome: opaqueId("case")
+    } : {}),
+    option: option.name,
+    inputs: defaultInputs(option.inputs),
+    when: conditionOf(null)
+  };
+}
+
+function nextCaseLabel(operation) {
+  const labels = new Set(Object.values(stepPresentation(operation.id).outcomes || {}));
+  for (let index = 1; ; index++) {
+    const label = "Case " + index;
+    if (!labels.has(label)) {
+      return label;
+    }
+  }
 }
 
 function selectCandidate(locator, input, index, optionName) {
@@ -2198,6 +2245,7 @@ function selectCandidate(locator, input, index, optionName) {
   }
   state.jsonDraft = null;
   candidates[index] = {
+    ...candidates[index],
     option: option.name,
     inputs: defaultInputs(option.inputs),
     when: conditionOf(candidates[index].when)
@@ -2205,14 +2253,32 @@ function selectCandidate(locator, input, index, optionName) {
   dirty();
 }
 
-function moveListItem(locator, index, direction) {
+function updateCandidateLabel(locator, index, value) {
+  const candidates = valueAt(selectedOperation(), locator);
+  const label = value.trim();
+  if (!Array.isArray(candidates) || !candidates[index] || !label || label.length > 128) {
+    render();
+    return;
+  }
+  alignedCandidates(selectedOperation(), index)
+    .forEach(item => setOutcomeLabel(item.operation.id, item.candidate.outcome, label));
+  creatorDirty();
+}
+
+function moveListItem(locator, index, direction, input = {}) {
   const items = valueAt(selectedOperation(), locator);
   const target = index + direction;
   if (!Array.isArray(items) || target < 0 || target >= items.length) {
     return;
   }
+  const lists = input.authored_outcomes
+    ? structuralStepIds(selectedOperation().id).map(id => valueAt(node(id), locator))
+    : [items];
+  if (lists.some(list => !Array.isArray(list) || target >= list.length)) {
+    return;
+  }
   moveDraft(locator, index, target);
-  [items[index], items[target]] = [items[target], items[index]];
+  lists.forEach(list => [list[index], list[target]] = [list[target], list[index]]);
   clearInputQueries();
   dirty();
 }
@@ -2230,12 +2296,26 @@ function moveDraft(locator, index, target) {
   }
 }
 
-function removeListItem(locator, index) {
+function removeListItem(locator, index, input = {}) {
   const items = valueAt(selectedOperation(), locator);
   if (!Array.isArray(items) || index < 0 || index >= items.length) {
     return;
   }
-  items.splice(index, 1);
+  if (input.authored_outcomes) {
+    const aligned = alignedCandidates(selectedOperation(), index);
+    if (aligned.some(item => !item.candidate
+        || outcomeTarget(item.operation, item.candidate.outcome) !== "end")) {
+      return;
+    }
+    const routes = new Set(aligned.map(item => item.operation.id + "." + item.candidate.outcome));
+    state.project.links = state.project.links.filter(link => !routes.has(link.from));
+    aligned.forEach(item => {
+      setOutcomeLabel(item.operation.id, item.candidate.outcome);
+      valueAt(item.operation, locator).splice(index, 1);
+    });
+  } else {
+    items.splice(index, 1);
+  }
   state.jsonDraft = null;
   clearInputQueries();
   dirty();
@@ -3450,7 +3530,54 @@ function availableTriggers() {
 }
 
 function outcomes(candidate) {
-  return definitionFor(candidate)?.outcomes || [];
+  return [
+    ...(definitionFor(candidate)?.outcomes || []),
+    ...authoredOutcomes(candidate).map(item => item.outcome)
+  ];
+}
+
+function displayOutcomes(candidate) {
+  const authored = authoredOutcomes(candidate).map(item => item.outcome);
+  const declared = definitionFor(candidate)?.outcomes || [];
+  return authored.length ? [...authored, ...declared] : declared;
+}
+
+function authoredOutcomes(candidate) {
+  const definition = definitionFor(candidate);
+  if (!candidate || !definition) {
+    return [];
+  }
+  const input = authoredOutcomeInput(definition);
+  const configured = input && candidate.inputs?.[input.name];
+  return Array.isArray(configured)
+    ? configured.filter(item => typeof item.outcome === "string" && item.outcome)
+    : [];
+}
+
+function authoredOutcomeInput(definition) {
+  return (definition?.inputs || [])
+    .find(field => field.type === "candidates" && field.authored_outcomes);
+}
+
+function alignedCandidates(operation, index) {
+  return structuralStepIds(operation.id).map(id => {
+    const target = node(id);
+    return { operation: target, candidate: authoredOutcomes(target)[index] };
+  });
+}
+
+function alignedOutcome(source, target, outcome) {
+  const index = authoredOutcomes(source).findIndex(candidate => candidate.outcome === outcome);
+  return index < 0 ? outcome : authoredOutcomes(target)[index]?.outcome || "";
+}
+
+function topologyOutcome(operation, outcome) {
+  const index = authoredOutcomes(operation).findIndex(candidate => candidate.outcome === outcome);
+  return index < 0 ? outcome : "@case[" + index + "]";
+}
+
+function outcomeLabel(candidate, outcome) {
+  return stepPresentation(candidate?.id).outcomes?.[outcome] || inputLabel(outcome);
 }
 
 function outcomeTarget(candidate, outcome) {
@@ -3532,7 +3659,7 @@ function occurrenceRegion(occurrence) {
   const operations = occurrenceSteps(occurrence);
   const ids = new Set(operations.map(operation => operation.id));
   const incoming = state.project.links.filter(link => ids.has(link.to) && !ids.has(linkNode(link)));
-  const exits = operations.flatMap(operation => outcomes(operation).flatMap(outcome => {
+  const exits = operations.flatMap(operation => displayOutcomes(operation).flatMap(outcome => {
     const destinations = outcomeDestinations(operation, outcome);
     return destinations.length !== 1 || !ids.has(destinations[0])
       ? [{ source: operation.id, outcome }]
@@ -3555,7 +3682,7 @@ function occurrenceTopology(occurrence) {
     nodes: Object.keys(occurrence.steps).sort().map(slot => {
       const operation = node(occurrence.steps[slot]);
       return [slot, operation?.use || "", outcomes(operation).map(outcome => [
-        outcome,
+        topologyOutcome(operation, outcome),
         concreteSlots.get(outcomeTarget(operation, outcome)) || ""
       ])];
     })
@@ -3577,6 +3704,25 @@ function groupName(group) {
 
 function stepPresentation(id) {
   return state.creator.steps[id] || {};
+}
+
+function setOutcomeLabel(id, outcome, label) {
+  const presentation = state.creator.steps[id] || {};
+  const outcomes = presentation.outcomes || {};
+  if (label === undefined) {
+    delete outcomes[outcome];
+  } else {
+    outcomes[outcome] = label;
+  }
+  if (Object.keys(outcomes).length) {
+    presentation.outcomes = outcomes;
+    state.creator.steps[id] = presentation;
+  } else {
+    delete presentation.outcomes;
+    if (!Object.keys(presentation).length) {
+      delete state.creator.steps[id];
+    }
+  }
 }
 
 function startGroupDraft(group = null) {
@@ -3860,9 +4006,21 @@ function propagateSharedOperation() {
     const target = node(occurrence.steps[membership.slot]);
     if (target && target !== source) {
       target.use = source.use;
-      target.inputs = clone(source.inputs);
+      target.inputs = sharedInputs(source, target);
     }
   });
+}
+
+function sharedInputs(source, target) {
+  const inputs = clone(source.inputs);
+  const authored = authoredOutcomeInput(definitionFor(source));
+  const sourceCandidates = authored && inputs?.[authored.name];
+  const targetCandidates = authored && target.inputs?.[authored.name];
+  if (Array.isArray(sourceCandidates) && Array.isArray(targetCandidates)
+      && sourceCandidates.length === targetCandidates.length) {
+    sourceCandidates.forEach((candidate, index) => candidate.outcome = targetCandidates[index].outcome);
+  }
+  return inputs;
 }
 
 function removeCreatorReferences(ids) {
@@ -4304,7 +4462,8 @@ document.addEventListener("click", event => {
   if (removeCandidateButton) {
     removeListItem(
       parseToken(removeCandidateButton.dataset.candidateLocator),
-      Number(removeCandidateButton.dataset.removeCandidate)
+      Number(removeCandidateButton.dataset.removeCandidate),
+      parseToken(removeCandidateButton.dataset.inputMeta)
     );
     return;
   }
@@ -4313,7 +4472,8 @@ document.addEventListener("click", event => {
     moveListItem(
       parseToken(moveCandidateButton.dataset.candidateLocator),
       Number(moveCandidateButton.dataset.moveCandidate),
-      Number(moveCandidateButton.dataset.direction)
+      Number(moveCandidateButton.dataset.direction),
+      parseToken(moveCandidateButton.dataset.inputMeta)
     );
     return;
   }
@@ -4481,6 +4641,12 @@ document.addEventListener("change", event => {
     selectCandidate(
       parseToken(target.dataset.candidateOption),
       parseToken(target.dataset.inputMeta),
+      Number(target.dataset.candidateIndex),
+      target.value
+    );
+  } else if (target.matches("[data-candidate-label]")) {
+    updateCandidateLabel(
+      parseToken(target.dataset.candidateLabel),
       Number(target.dataset.candidateIndex),
       target.value
     );

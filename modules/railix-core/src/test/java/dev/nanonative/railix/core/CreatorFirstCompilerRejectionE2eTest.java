@@ -164,6 +164,30 @@ final class CreatorFirstCompilerRejectionE2eTest {
     }
 
     @Test
+    void arbitraryOrdinaryStepDerivesOutcomesFromAuthoredCases() {
+        assertCompiled(
+                authoredOutcomeProject("""
+                        [{"outcome":"case-first","option":"literal",
+                          "inputs":{"value":"one"},"when":{"transforms":[],"all":[]}},
+                         {"outcome":"case-second","option":"literal",
+                          "inputs":{"value":"two"},"when":{"transforms":[],"all":[]}}]
+                        """, "case-first", "case-second"),
+                catalog(app(), trigger(), authoredOutcomeStep(), primitive())
+        );
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("authoredOutcomeRejections")
+    void malformedAuthoredOutcomesAreRejected(final RejectionCase rejection) {
+        assertRejected(
+                rejection.source(),
+                catalog(app(), trigger(), authoredOutcomeStep(), primitive()),
+                rejection.code(),
+                rejection.path()
+        );
+    }
+
+    @Test
     void omittedOptionalJsonInputCompiles() {
         final StepDefinition optional = StepDefinition.named("example.step", "1")
                 .input("value", Input.json(ValueShape.STRING).optional())
@@ -590,6 +614,29 @@ final class CreatorFirstCompilerRejectionE2eTest {
         );
     }
 
+    private static Stream<RejectionCase> authoredOutcomeRejections() {
+        return Stream.of(
+                new RejectionCase("missingOutcomeIsRejected", authoredOutcomeProject("""
+                        [{"option":"literal","inputs":{"value":"one"},
+                          "when":{"transforms":[],"all":[]}}]
+                        """), "PROJECT_CANDIDATE_OUTCOME_REQUIRED", "nodes[2].inputs.cases[0].outcome"),
+                new RejectionCase("unsafeOutcomeIsRejected", authoredOutcomeProject("""
+                        [{"outcome":"Case.First","option":"literal",
+                          "inputs":{"value":"one"},"when":{"transforms":[],"all":[]}}]
+                        """), "PROJECT_CANDIDATE_OUTCOME_INVALID", "nodes[2].inputs.cases[0].outcome"),
+                new RejectionCase("duplicateOutcomeIsRejected", authoredOutcomeProject("""
+                        [{"outcome":"case-same","option":"literal",
+                          "inputs":{"value":"one"},"when":{"transforms":[],"all":[]}},
+                         {"outcome":"case-same","option":"literal",
+                          "inputs":{"value":"two"},"when":{"transforms":[],"all":[]}}]
+                        """), "PROJECT_CANDIDATE_OUTCOME_DUPLICATE", "nodes[2].inputs.cases[1].outcome"),
+                new RejectionCase("fixedOutcomeCollisionIsRejected", authoredOutcomeProject("""
+                        [{"outcome":"otherwise","option":"literal",
+                          "inputs":{"value":"one"},"when":{"transforms":[],"all":[]}}]
+                        """), "PROJECT_CANDIDATE_OUTCOME_COLLISION", "nodes[2].inputs.cases[0].outcome")
+        );
+    }
+
     private static Stream<RejectionCase> exampleRejections() {
         return Stream.of(
                 new RejectionCase("nonTriggerNodeCannotDeclareExamples",
@@ -763,7 +810,18 @@ final class CreatorFirstCompilerRejectionE2eTest {
                         .receive("value", ValueShape.ANY)
                         .returns("value", ValueShape.ANY)
                         .result("result", ValueShape.ANY, RailixValue.nullValue())
-                        .run(TestStepHandlers.PrimaryOutcome.class), "PROJECT_NESTED_STEP_CONTRACT_INVALID")
+                        .run(TestStepHandlers.PrimaryOutcome.class), "PROJECT_NESTED_STEP_CONTRACT_INVALID"),
+                Arguments.of("authored workflow outcomes", StepDefinition.named("nested.routes", "1")
+                        .receive("value", ValueShape.ANY)
+                        .returns("value", ValueShape.ANY)
+                        .input("cases", Input.candidates(
+                                Input.option("literal")
+                                        .input("value", Input.json(ValueShape.ANY)
+                                                .defaultValue(RailixValue.nullValue()))
+                                        .fromOwned("value")
+                        ).withAuthoredOutcomes())
+                        .run(TestStepHandlers.PrimaryOutcome.class),
+                        "PROJECT_NESTED_STEP_AUTHORED_OUTCOMES_UNSUPPORTED")
         );
     }
 
@@ -838,6 +896,17 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 .run(TestStepHandlers.PrimaryIdentity.class);
     }
 
+    private static StepDefinition authoredOutcomeStep() {
+        return StepDefinition.named("thirdparty.router", "1")
+                .primaryOutcome("otherwise")
+                .input("cases", Input.candidates(
+                        Input.option("literal")
+                                .input("value", Input.json(ValueShape.ANY))
+                                .fromOwned("value")
+                ).withAuthoredOutcomes())
+                .run(TestStepHandlers.PrimaryOutcome.class);
+    }
+
     private static String baseProject(final String stepInputs) {
         return """
                 {"format":1,"id":"generic-project","nodes":[
@@ -864,6 +933,26 @@ final class CreatorFirstCompilerRejectionE2eTest {
                   {"from":"step.next","to":"end"}
                 ]}
                 """.formatted(appNode(), examples(), stepUse, stepInputs);
+    }
+
+    private static String authoredOutcomeProject(final String cases, final String... outcomes) {
+        final String dynamicLinks = Stream.of(outcomes)
+                .map(outcome -> "{\"from\":\"router." + outcome + "\",\"to\":\"end\"}")
+                .collect(java.util.stream.Collectors.joining(","));
+        return """
+                {"format":1,"id":"authored-outcomes","nodes":[
+                  %s,
+                  {"id":"trigger","use":"example.trigger","inputs":{},"examples":%s},
+                  {"id":"router","use":"thirdparty.router","inputs":{"cases":%s}}
+                ],"links":[
+                  {"from":"app.start","to":"trigger"},
+                  {"from":"trigger.next","to":"router"},
+                  {"from":"router.otherwise","to":"end"}%s
+                ]}
+                """.formatted(
+                appNode(), examples(), cases,
+                dynamicLinks.isEmpty() ? "" : "," + dynamicLinks
+        );
     }
 
     private static String primitiveProject(final String receives, final String returns) {

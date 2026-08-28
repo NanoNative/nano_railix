@@ -134,7 +134,7 @@ public final class StepDefinition {
             if (options == null) {
                 throw new IllegalArgumentException("Candidate options cannot be Java null.");
             }
-            return new CandidatesInput(List.of(options), List.of());
+            return new CandidatesInput(List.of(options), List.of(), false);
         }
 
         /**
@@ -429,8 +429,18 @@ public final class StepDefinition {
      *
      * @param options available candidate source alternatives
      * @param defaults zero or one default candidate option name
+     * @param authoredOutcomes whether each project candidate owns one stable workflow outcome
      */
-    public record CandidatesInput(List<Option> options, List<String> defaults) implements Input {
+    public record CandidatesInput(
+            List<Option> options,
+            List<String> defaults,
+            boolean authoredOutcomes
+    ) implements Input {
+        /** Preserves the ordinary candidate contract for direct construction. */
+        public CandidatesInput(final List<Option> options, final List<String> defaults) {
+            this(options, defaults, false);
+        }
+
         /** Validates direct canonical construction; prefer {@link Input#candidates(Option...)}. */
         public CandidatesInput {
             if (options == null || options.isEmpty()) {
@@ -452,6 +462,11 @@ public final class StepDefinition {
                     && options.stream().noneMatch(option -> option.name().equals(defaultName))) {
                 throw new IllegalArgumentException("Candidates input default must name a declared option.");
             }
+            if (authoredOutcomes && !defaults.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "Authored-outcome candidates cannot declare a default candidate."
+                );
+            }
         }
 
         /**
@@ -461,7 +476,7 @@ public final class StepDefinition {
          * @return input with the supplied single default candidate
          */
         public CandidatesInput defaultCandidate(final String option) {
-            return new CandidatesInput(options, List.of(requiredText(option, "Default candidate")));
+            return new CandidatesInput(options, List.of(requiredText(option, "Default candidate")), authoredOutcomes);
         }
 
         /**
@@ -471,6 +486,19 @@ public final class StepDefinition {
          */
         public Optional<String> defaultCandidate() {
             return defaults.stream().findFirst();
+        }
+
+        /**
+         * Makes every project-authored candidate declare one stable workflow outcome.
+         *
+         * <p>The enclosing ordinary Step may declare this capability on one top-level input. The
+         * candidate list must remain explicit because Railix cannot invent stable route identities
+         * for a default candidate.</p>
+         *
+         * @return candidate input whose authored items become workflow routes
+         */
+        public CandidatesInput withAuthoredOutcomes() {
+            return new CandidatesInput(options, defaults, true);
         }
     }
 
@@ -801,6 +829,7 @@ public final class StepDefinition {
             });
         }
         validateReferences(inputs);
+        validateAuthoredOutcomes(inputs, kind);
     }
 
     /**
@@ -1413,6 +1442,37 @@ public final class StepDefinition {
             }
             declared.put(field.name(), field.input());
         }
+    }
+
+    private static void validateAuthoredOutcomes(final List<Field> fields, final Kind kind) {
+        final long direct = fields.stream()
+                .map(Field::input)
+                .filter(CandidatesInput.class::isInstance)
+                .map(CandidatesInput.class::cast)
+                .filter(CandidatesInput::authoredOutcomes)
+                .count();
+        if (direct > 1) {
+            throw new IllegalArgumentException("A Step may declare only one authored-outcome candidates input.");
+        }
+        if (fields.stream().map(Field::input).anyMatch(StepDefinition::hasNestedAuthoredOutcomes)) {
+            throw new IllegalArgumentException("Authored-outcome candidates must be a top-level Step input.");
+        }
+        if (direct == 1 && kind != Kind.STEP) {
+            throw new IllegalArgumentException("Only ordinary Steps may declare authored-outcome candidates.");
+        }
+    }
+
+    private static boolean hasNestedAuthoredOutcomes(final Input input) {
+        final List<Option> options = switch (input) {
+            case OptionsInput value -> value.options();
+            case CandidatesInput value -> value.options();
+            case MatcherGroupsInput value -> value.options();
+            default -> List.of();
+        };
+        return options.stream().flatMap(option -> option.inputs().stream()).anyMatch(field ->
+                field.input() instanceof CandidatesInput candidates && candidates.authoredOutcomes()
+                        || hasNestedAuthoredOutcomes(field.input())
+        );
     }
 
     private static void validateOptionReferences(

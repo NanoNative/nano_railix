@@ -241,7 +241,8 @@ body[data-build="unavailable"] .build-dot {
   position: relative;
   display: grid;
   width: 100%;
-  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  min-width: calc(var(--branch-count) * 204px);
+  grid-template-columns: repeat(var(--branch-count), minmax(auto, 1fr));
   padding-top: 54px;
 }
 
@@ -268,7 +269,7 @@ body[data-build="unavailable"] .build-dot {
 .branch-route {
   position: relative;
   display: flex;
-  min-width: 0;
+  min-width: 204px;
   align-items: center;
   flex-direction: column;
   padding-inline: 12px;

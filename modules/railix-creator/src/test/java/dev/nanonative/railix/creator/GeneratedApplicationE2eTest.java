@@ -299,6 +299,44 @@ final class GeneratedApplicationE2eTest {
         assertThat(result).isEqualTo(new ProcessResult(0, "\"production\""));
     }
 
+    @ParameterizedTest(name = "production JAR routes Switch case: {0}")
+    @MethodSource("switchRoutes")
+    void productionJarRoutesTheFirstAcceptedSwitchCaseOrOtherwise(
+            final String scenario,
+            final String cases,
+            final String expected
+    ) throws Exception {
+        final String source = switchProject(cases);
+        final Path project = project(directory.resolve("production-switch-" + scenario), source);
+
+        final ProcessResult result = runJar(productionArtifact(project, source).jar(), "go");
+
+        assertThat(result).isEqualTo(new ProcessResult(0, RailixJson.write(RailixValue.string(expected))));
+    }
+
+    @ParameterizedTest(name = "generated child routes Switch case: {0}")
+    @MethodSource("switchRoutes")
+    void generatedChildRoutesTheFirstAcceptedCaseOrOtherwise(
+            final String scenario,
+            final String cases,
+            final String expected
+    ) throws Exception {
+        final Path project = project(directory.resolve("switch-" + scenario), switchProject(cases));
+
+        try (CreatorServer creator = start(project)) {
+            assertThat(runResult(creator.baseUri(), "go")).isEqualTo(RailixValue.string(expected));
+        }
+    }
+
+    @Test
+    void generatedChildKeepsAuthoredOutcomeTablesLocalToEachSwitchNode() throws Exception {
+        final Path project = project(directory.resolve("switch-node-local"), nodeLocalSwitchProject());
+
+        try (CreatorServer creator = start(project)) {
+            assertThat(runResult(creator.baseUri(), "go")).isEqualTo(RailixValue.string("both"));
+        }
+    }
+
     @ParameterizedTest(name = "generated JAR preserves {0}")
     @MethodSource("javaStringEscapes")
     void generatedJarPreservesCanonicalJsonStringLiterals(
@@ -732,6 +770,91 @@ final class GeneratedApplicationE2eTest {
         final Path project = workspace.resolve("railix.project.json");
         Files.writeString(project, source, StandardCharsets.UTF_8);
         return project;
+    }
+
+    private static Stream<Arguments> switchRoutes() {
+        return Stream.of(
+                Arguments.of("first-match", switchCases("go", "go"), "first"),
+                Arguments.of("later-match", switchCases("other", "go"), "second"),
+                Arguments.of("otherwise", switchCases("other", "still-other"), "otherwise")
+        );
+    }
+
+    private static String switchCases(final String firstExpected, final String secondExpected) {
+        return """
+                [{"outcome":"case-first","option":"field","inputs":{
+                    "field":["context","payload","arguments",0]},"when":{"transforms":[],"all":[[
+                    {"use":"value.equals","inputs":{"expected":"%s"}}]]}},
+                 {"outcome":"case-second","option":"field","inputs":{
+                    "field":["context","payload","arguments",0]},"when":{"transforms":[],"all":[[
+                    {"use":"value.equals","inputs":{"expected":"%s"}}]]}}]
+                """.formatted(firstExpected, secondExpected);
+    }
+
+    private static String switchProject(final String cases) {
+        return """
+                {"format":1,"id":"switch-generated","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"route","payload":["go"]}]},
+                  {"id":"switch","use":"railix.switch","inputs":{"cases":%s}},
+                  {"id":"first","use":"railix.field-manipulation","inputs":{
+                    "field":["context","result"],"value":[{"option":"literal","inputs":{
+                    "literal":"first"},"when":{"transforms":[],"all":[]}}],"steps":[]}},
+                  {"id":"second","use":"railix.field-manipulation","inputs":{
+                    "field":["context","result"],"value":[{"option":"literal","inputs":{
+                    "literal":"second"},"when":{"transforms":[],"all":[]}}],"steps":[]}},
+                  {"id":"fallback","use":"railix.field-manipulation","inputs":{
+                    "field":["context","result"],"value":[{"option":"literal","inputs":{
+                    "literal":"otherwise"},"when":{"transforms":[],"all":[]}}],"steps":[]}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"switch"},
+                  {"from":"switch.case-first","to":"first"},
+                  {"from":"switch.case-second","to":"second"},
+                  {"from":"switch.otherwise","to":"fallback"},
+                  {"from":"first.next","to":"end"},
+                  {"from":"second.next","to":"end"},
+                  {"from":"fallback.next","to":"end"}
+                ]}
+                """.formatted(cases);
+    }
+
+    private static String nodeLocalSwitchProject() {
+        return """
+                {"format":1,"id":"node-local-switch","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"route","payload":["go"]}]},
+                  {"id":"switch-one","use":"railix.switch","inputs":{"cases":[{
+                    "outcome":"case-one","option":"field","inputs":{
+                    "field":["context","payload","arguments",0]},"when":{"transforms":[],"all":[[
+                    {"use":"value.equals","inputs":{"expected":"go"}}]]}}]}},
+                  {"id":"switch-two","use":"railix.switch","inputs":{"cases":[{
+                    "outcome":"case-two","option":"field","inputs":{
+                    "field":["context","payload","arguments",0]},"when":{"transforms":[],"all":[[
+                    {"use":"value.equals","inputs":{"expected":"go"}}]]}}]}},
+                  {"id":"success","use":"railix.field-manipulation","inputs":{
+                    "field":["context","result"],"value":[{"option":"literal","inputs":{
+                    "literal":"both"},"when":{"transforms":[],"all":[]}}],"steps":[]}},
+                  {"id":"first-fallback","use":"railix.field-manipulation","inputs":{
+                    "field":["context","result"],"value":[{"option":"literal","inputs":{
+                    "literal":"first-fallback"},"when":{"transforms":[],"all":[]}}],"steps":[]}},
+                  {"id":"second-fallback","use":"railix.field-manipulation","inputs":{
+                    "field":["context","result"],"value":[{"option":"literal","inputs":{
+                    "literal":"second-fallback"},"when":{"transforms":[],"all":[]}}],"steps":[]}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"switch-one"},
+                  {"from":"switch-one.case-one","to":"switch-two"},
+                  {"from":"switch-one.otherwise","to":"first-fallback"},
+                  {"from":"switch-two.case-two","to":"success"},
+                  {"from":"switch-two.otherwise","to":"second-fallback"},
+                  {"from":"success.next","to":"end"},
+                  {"from":"first-fallback.next","to":"end"},
+                  {"from":"second-fallback.next","to":"end"}
+                ]}
+                """;
     }
 
     private static String lowercaseChain(final int steps) {

@@ -121,6 +121,17 @@ final class StepDefinitionContractE2eTest {
     }
 
     @Test
+    void authoredCandidateOutcomesRemainExplicitAndHaveNoDefault() {
+        final CandidatesInput candidates = Input.candidates(
+                Input.option("field").fromOwned("value")
+                        .input("value", Input.json(ValueShape.ANY))
+        ).withAuthoredOutcomes();
+
+        assertThat(candidates.authoredOutcomes()).isTrue();
+        assertThat(candidates.defaultCandidate()).isEmpty();
+    }
+
+    @Test
     void optionalGenericInputsRemainOptionalWithoutDefaults() {
         assertThat(Input.json(STRING).optional().required()).isFalse();
         assertThat(Input.path(READ).optional().required()).isFalse();
@@ -294,6 +305,26 @@ final class StepDefinitionContractE2eTest {
                                         .input("value", Input.json(ValueShape.ANY))
                         ).defaultCandidate("missing"),
                         "Candidates input default must name a declared option."),
+                invalid("authored outcomes with a default candidate", () -> Input.candidates(
+                                Input.option("known").fromOwned("value")
+                                        .input("value", Input.json(ValueShape.ANY))
+                        ).defaultCandidate("known").withAuthoredOutcomes(),
+                        "Authored-outcome candidates cannot declare a default candidate."),
+                invalid("multiple authored-outcome inputs", () -> StepDefinition.named("example.routes", "1")
+                                .input("first", authoredCandidates())
+                                .input("second", authoredCandidates())
+                                .run(NEXT),
+                        "A Step may declare only one authored-outcome candidates input."),
+                invalid("nested authored-outcome input", () -> StepDefinition.named("example.routes", "1")
+                                .input("nested", Input.options(Input.option("branch")
+                                        .input("cases", authoredCandidates())))
+                                .run(NEXT),
+                        "Authored-outcome candidates must be a top-level Step input."),
+                invalid("trigger authored-outcome input", () -> StepDefinition.named("example.trigger", "1")
+                                .kind(StepDefinition.Kind.TRIGGER)
+                                .input("cases", authoredCandidates())
+                                .run(NEXT),
+                        "Only ordinary Steps may declare authored-outcome candidates."),
                 invalid("null JSON shape", () -> new JsonInput(null, List.of(), List.of(), true),
                         "JSON input shape cannot be Java null."),
                 invalid("wrong JSON default shape", () -> Input.json(STRING).defaultValue(RailixValue.number(1)),
@@ -569,6 +600,13 @@ final class StepDefinitionContractE2eTest {
                                 .run(NEXT),
                         "Nested Step missing outcomes must differ from enclosing Step outcomes.")
         );
+    }
+
+    private static CandidatesInput authoredCandidates() {
+        return Input.candidates(
+                Input.option("field").fromOwned("value")
+                        .input("value", Input.json(ValueShape.ANY))
+        ).withAuthoredOutcomes();
     }
 
     private static Arguments invalid(
