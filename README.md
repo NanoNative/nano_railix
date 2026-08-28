@@ -26,7 +26,7 @@ environment-secret delivery are a protected boundary: application Flows may enfo
 policy, but cannot grant themselves project, build, deployment, or production-observation access.
 The exact planned operating model and its status live in [ROADMAP.md](ROADMAP.md).
 
-## Current Implemented Journey
+## First Accepted Journey
 
 The current accepted journey is deliberately smaller than that direction:
 
@@ -269,6 +269,20 @@ matchers. Built-in matchers start with total defaults: JSON `null` for equality,
 comparisons, and an empty string for literal text boundaries. Regex is not in the standard catalog
 until a bounded engine is accepted.
 
+## Switch
+
+Switch is an ordinary `STEP`. Its generic `CANDIDATES` input is marked for authored outcomes, so
+each configured case owns one stable safe route ID in `railix.project.json`. Cases resolve and
+short-circuit in order: the first present candidate accepted by its condition selects its route;
+no accepted candidate selects the primary `otherwise` route.
+
+Compiler, runtime, and Creator derive this capability from the Step contract rather than the
+`railix.switch` ID. Optional human labels live under the Step's `outcomes` presentation in
+`railix.creator.json` and never enter compilation. Generated applications use the concrete route
+table of each node and keep the selected outcome invocation-local. Authored outcomes are currently
+top-level graph routes; nested programs reject such Steps explicitly because they have no graph
+destinations.
+
 ## Develop A Unary Step
 
 "Primitive" is a compact Creator presentation and product role, not a `StepDefinition.Kind`.
@@ -311,8 +325,8 @@ the reusable Step template remain roadmap Item 4.
 
 - `railix-core`: canonical values, Step contracts, project validation, Java application generation,
   generated-application runtime contracts, and stateless workflow execution.
-- `railix-stdlib`: App, CLI Trigger, Field Manipulation, Filter, Choice, and built-in total or
-  explicitly fallible unary Steps.
+- `railix-stdlib`: App, CLI Trigger, Field Manipulation, Filter, Choice, Switch, and built-in total
+  or explicitly fallible unary Steps.
 - `railix-creator`: Creator HTTP/UI, optional development-only run and preview HTTP capability,
   rolling child JVM, launcher, and executable shaded JAR.
 
@@ -338,8 +352,8 @@ commands are identical.
 ## Unsupported Scope
 
 The current implementation does not claim additional Trigger/I/O catalogs, dependency acquisition
-from remote repositories, Switch/Merge/Split/Loop Steps, global reusable groups, assertions, live
-metrics, remote attachment, queues, permissions, sharding, or final per-project minimal
+from remote repositories, Merge/Split/Loop Steps, global reusable groups, assertions, live metrics,
+remote attachment, queues, permissions, sharding, or final per-project minimal
 `jlink`/`jpackage` application output. These remain explicit roadmap checkpoints.
 
 ## Verification

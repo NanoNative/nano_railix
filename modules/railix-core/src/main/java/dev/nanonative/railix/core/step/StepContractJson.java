@@ -250,6 +250,9 @@ public final class StepContractJson {
             case StepDefinition.CandidatesInput candidates -> {
                 value.put("type", RailixValue.string("candidates"));
                 candidates.defaultCandidate().ifPresent(item -> value.put("default", RailixValue.string(item)));
+                if (candidates.authoredOutcomes()) {
+                    value.put("authored_outcomes", RailixValue.bool(true));
+                }
                 value.put("options", options(candidates.options()));
             }
             case StepDefinition.MatcherGroupsInput groups -> {
@@ -377,9 +380,12 @@ public final class StepContractJson {
                 );
             }
             case "candidates" -> {
-                object(value, Set.of("default", "name", "options", "type"), path, Set.of("default", "name"));
+                object(value, Set.of("authored_outcomes", "default", "name", "options", "type"),
+                        path, Set.of("authored_outcomes", "default", "name"));
                 yield new StepDefinition.CandidatesInput(
-                        options(value, path), optionalText(value, "default", path).map(List::of).orElseGet(List::of)
+                        options(value, path),
+                        optionalText(value, "default", path).map(List::of).orElseGet(List::of),
+                        optionalBoolean(value, "authored_outcomes", path).orElse(false)
                 );
             }
             case "matcher_groups" -> {

@@ -158,4 +158,30 @@ public final class StepInput {
     public String primaryOutcome() {
         return primaryOutcome;
     }
+
+    /**
+     * Returns the stable route selected by one accepted authored candidate.
+     *
+     * @param name owning candidates input name
+     * @return selected authored workflow outcome
+     * @throws IllegalArgumentException when the name is blank or no candidate matched
+     */
+    public String selectedOutcome(final String name) {
+        return selected(name).primaryOutcome();
+    }
+
+    /**
+     * Returns one accepted authored route, or this Step's primary outcome when no candidate matched.
+     *
+     * @param name owning candidates input name
+     * @return selected authored outcome or the primary outcome
+     * @throws IllegalArgumentException when the name is blank
+     */
+    public String selectedOutcomeOrPrimary(final String name) {
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("Selected input name must be a non-blank string.");
+        }
+        final StepInput selected = selectedInputs.get(name);
+        return selected == null ? primaryOutcome : selected.primaryOutcome();
+    }
 }

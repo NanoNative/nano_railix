@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted on 2026-07-29. Refined through 2026-08-12 to separate the flat functional graph from
+Accepted on 2026-07-29. Refined through 2026-08-28 to separate the flat functional graph from
 optional Creator metadata, remove compiler-expanded reusable flows, and add generic explicit
 flow-control inputs.
 
@@ -86,7 +86,7 @@ third-party definitions:
 - canonical `JSON` values;
 - readable, writable, or read/write workflow `PATH` values;
 - tagged `OPTIONS` with owned inputs;
-- ordered `CANDIDATES` with explicit value sources and conditions;
+- ordered `CANDIDATES` with explicit value sources, conditions, and optional authored outcomes;
 - Boolean `MATCHER_GROUPS` containing ordered OR groups of ordered AND matchers;
 - ordered nested `STEPS` bound to one earlier value source.
 
@@ -178,7 +178,30 @@ apply to every generic Step search. Built-in equality, exact-number, and literal
 declare total defaults so inserting one never creates a missing-input diagnostic. Classification,
 compatibility, and defaulting use only Step contracts, never Step IDs.
 
-This fixed Choice does not claim dynamic outcomes, Switch, Merge, Split, or bounded Loop behavior.
+Choice itself owns only the fixed `match` and `otherwise` outcomes. It does not claim Merge, Split,
+or bounded Loop behavior; Switch owns authored outcomes through the generic contract below.
+
+### Switch
+
+Switch is one ordinary standard-library `STEP`, not a kind or compiler intrinsic. Its top-level
+`cases` input is a generic `CandidatesInput` enabled through `.withAuthoredOutcomes()`. Every
+configured candidate owns one non-blank safe lowercase route ID that is unique within the node and
+does not collide with a fixed Step outcome. Cases resolve in authored order. The first present
+candidate accepted by its condition selects that candidate's route; no accepted candidate selects
+the primary `otherwise` route. Every route has one explicit flat project link.
+
+Authored outcomes are a third-party Step capability. One ordinary Step may declare one such
+top-level candidates input; it cannot also declare a default candidate. Nested programs reject
+Steps with authored outcomes because a nested invocation has no graph destination for those
+routes. Creator derives availability and editing from the contract and excludes such Steps from
+nested Transform and Matcher searches; neither compiler nor Creator branches on `railix.switch`.
+
+The functional project owns stable route IDs and links. Optional human labels live only in the
+owning Step's Creator presentation and merely reference those IDs. Shared group occurrences align
+authored routes by ordered candidate slot while preserving each occurrence's concrete route IDs and
+labels. Compilation adds the configured routes to that node's immutable outcome plan. Generated
+applications initialize the node-specific candidate routes once, while each invocation holds only
+its own selected outcome.
 
 ### Optional Creator Metadata
 
@@ -187,7 +210,7 @@ This fixed Choice does not claim dynamic outcomes, Switch, Merge, Split, or boun
 ```text
 format  metadata contract version
 groups  visual semantic-zoom groups
-steps   per-Step name/color/icon presentation
+steps   per-Step name/color/icon and outcome-label presentation
 ```
 
 The compiler and application never read this file. Removing it cannot change compilation,
@@ -252,11 +275,11 @@ edits keep the previous application running. Creator-only presentation/group edi
 restarting the application. Creator shows the project path, exact child launch path/classpath,
 child PID, graph counts, and last successful build time.
 
-The current Creator authors every declared route of a fixed-outcome ordinary control Step. Unscoped
-layout follows deterministic declared-outcome depth-first order through an explicit traversal
-stack, so nesting depth does not consume the JavaScript call stack. All add, edit, delete, grouping,
-and appearance controls live in the Inspector rather than graph nodes. Diagnostics and malformed
-route states appear on their owning node, outcome, or group.
+The current Creator authors every declared route of fixed- or authored-outcome ordinary control
+Steps. Unscoped layout follows deterministic declared-outcome depth-first order through an explicit
+traversal stack, so nesting depth does not consume the JavaScript call stack. All add, edit, delete,
+grouping, and appearance controls live in the Inspector rather than graph nodes. Diagnostics and
+malformed route states appear on their owning node, outcome, or group.
 
 ### CLI Trigger
 
@@ -297,7 +320,9 @@ debugging remain roadmap work. Current examples never sample production traffic.
 - Filter selects exactly one explicit `match` or `otherwise` successor.
 - Choice evaluates ordered OR/AND matcher groups and selects exactly one explicit `match` or
   `otherwise` successor.
-- Merge, Split, Switch, and Loop behavior requires explicit Step contracts.
+- Switch selects the first accepted authored candidate route or its explicit `otherwise`
+  successor.
+- Merge, Split, and Loop behavior requires explicit Step contracts.
 - Creator never replaces a valid running application with an invalid project.
 - Runtime and release dependencies derive from the complete project, not UI selection.
 
@@ -325,11 +350,11 @@ Application -> CLI Trigger -> Lowercase[arguments[0] -> result] -> End
 
 The mapped Lowercase invocation is an ordinary graph node. Its receive reads
 `context.payload.arguments[0]`, its return writes `context.result`, and its `ok` outcome links to
-End. The active control checkpoint additionally proves ordinary Filter and Choice definitions,
-generic ordered OR/AND matcher groups, explicit flat outcome links, deterministic branch layout,
-route-specific insertion and deletion, branch-aware semantic zoom with exact boundary exits,
-rolling-built example execution and previews, preserved existing groups, and separate
-desktop/mobile proof.
+End. The active control checkpoint additionally proves ordinary Filter, Choice, and Switch
+definitions, generic ordered OR/AND matcher groups, generic authored candidate outcomes, explicit
+flat outcome links, deterministic branch layout, route-specific insertion and deletion,
+branch-aware semantic zoom with exact boundary exits, rolling-built example execution and previews,
+preserved shared groups with occurrence-local route IDs, and separate desktop/mobile proof.
 
 ## Supersedes
 

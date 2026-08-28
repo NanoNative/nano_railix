@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
 final class CreatorDocument {
     static final String EMPTY = "{\"format\":1,\"groups\":[],\"steps\":{}}";
     private static final Set<String> FIELDS = Set.of("format", "groups", "steps");
-    private static final Set<String> PRESENTATION_FIELDS = Set.of("name", "color", "icon");
+    private static final Set<String> PRESENTATION_FIELDS = Set.of("name", "color", "icon", "outcomes");
     private static final Set<String> GROUP_FIELDS = Set.of(
             "id", "name", "color", "icon", "occurrences"
     );
@@ -83,7 +83,7 @@ final class CreatorDocument {
                     "steps"
             );
         }
-        final Result stepResult = presentations(steps, graph.kinds().keySet());
+        final Result stepResult = presentations(steps, graph);
         if (!stepResult.diagnostics().isEmpty()) {
             return stepResult;
         }
@@ -109,11 +109,11 @@ final class CreatorDocument {
 
     private static Result presentations(
             final RailixValue.ObjectValue steps,
-            final Set<String> nodeIds
+            final Graph graph
     ) {
         for (final Map.Entry<String, RailixValue> entry : steps.values().entrySet()) {
             final String path = "steps." + entry.getKey();
-            if (!nodeIds.contains(entry.getKey())) {
+            if (!graph.kinds().containsKey(entry.getKey())) {
                 return Result.rejected(
                         "CREATOR_STEP_UNKNOWN",
                         "Creator presentation references an unknown Step: " + entry.getKey() + ".",
@@ -137,7 +137,11 @@ final class CreatorDocument {
             if (unknown.isPresent()) {
                 return Result.rejected(unknown.get());
             }
-            final Optional<Diagnostic> diagnostic = presentation(presentation, path);
+            final Optional<Diagnostic> diagnostic = presentation(
+                    presentation,
+                    path,
+                    graph.outgoing().getOrDefault(entry.getKey(), Map.of()).keySet()
+            );
             if (diagnostic.isPresent()) {
                 return Result.rejected(diagnostic.get());
             }
@@ -444,7 +448,10 @@ final class CreatorDocument {
             final String concrete = ((RailixValue.StringValue) value).value();
             final Map<String, String> routes = new LinkedHashMap<>();
             graph.outgoing().getOrDefault(concrete, Map.of()).forEach((outcome, target) ->
-                    routes.put(outcome, concreteSlots.getOrDefault(target, ""))
+                    routes.put(
+                            graph.outcomeSlots().getOrDefault(concrete, Map.of()).getOrDefault(outcome, outcome),
+                            concreteSlots.getOrDefault(target, "")
+                    )
             );
             nodes.put(slot, new NodeShape(graph.uses().get(concrete), Map.copyOf(routes)));
         });
@@ -454,6 +461,14 @@ final class CreatorDocument {
     private static Optional<Diagnostic> presentation(
             final RailixValue.ObjectValue value,
             final String path
+    ) {
+        return presentation(value, path, Set.of());
+    }
+
+    private static Optional<Diagnostic> presentation(
+            final RailixValue.ObjectValue value,
+            final String path,
+            final Set<String> outcomes
     ) {
         final RailixValue name = value.values().get("name");
         if (name != null && (!(name instanceof RailixValue.StringValue text)
@@ -474,7 +489,42 @@ final class CreatorDocument {
             ));
         }
         final RailixValue icon = value.values().get("icon");
-        return icon == null ? Optional.empty() : icon(icon, path + ".icon");
+        if (icon != null) {
+            final Optional<Diagnostic> diagnostic = icon(icon, path + ".icon");
+            if (diagnostic.isPresent()) {
+                return diagnostic;
+            }
+        }
+        final RailixValue labels = value.values().get("outcomes");
+        if (labels == null) {
+            return Optional.empty();
+        }
+        if (!(labels instanceof RailixValue.ObjectValue object)) {
+            return Optional.of(Diagnostic.atPath(
+                    "CREATOR_PRESENTATION_OUTCOMES_INVALID",
+                    "Presentation outcomes must be an object of route labels.",
+                    path + ".outcomes"
+            ));
+        }
+        for (final Map.Entry<String, RailixValue> label : object.values().entrySet()) {
+            final String labelPath = path + ".outcomes." + label.getKey();
+            if (!outcomes.contains(label.getKey())) {
+                return Optional.of(Diagnostic.atPath(
+                        "CREATOR_PRESENTATION_OUTCOME_UNKNOWN",
+                        "Presentation outcome must reference a connected Step route: " + label.getKey() + ".",
+                        labelPath
+                ));
+            }
+            if (!(label.getValue() instanceof RailixValue.StringValue text)
+                    || text.value().isBlank() || text.value().length() > MAX_NAME_LENGTH) {
+                return Optional.of(Diagnostic.atPath(
+                        "CREATOR_PRESENTATION_OUTCOME_LABEL_INVALID",
+                        "Presentation outcome label must be a non-blank string up to 128 characters.",
+                        labelPath
+                ));
+            }
+        }
+        return Optional.empty();
     }
 
     private static Optional<Diagnostic> icon(final RailixValue value, final String path) {
@@ -566,6 +616,7 @@ final class CreatorDocument {
     ) {
         final Map<String, StepDefinition.Kind> kinds = new LinkedHashMap<>();
         final Map<String, String> uses = new LinkedHashMap<>();
+        final Map<String, Map<String, String>> outcomeSlots = new LinkedHashMap<>();
         final RailixValue.ArrayValue nodes = (RailixValue.ArrayValue) project.values().get("nodes");
         nodes.values().stream().map(RailixValue.ObjectValue.class::cast).forEach(node -> {
             final String id = ((RailixValue.StringValue) node.values().get("id")).value();
@@ -573,6 +624,10 @@ final class CreatorDocument {
             final StepDefinition definition = catalog.find(use).orElseThrow();
             kinds.put(id, definition.kind());
             uses.put(id, use);
+            final Map<String, String> slots = authoredOutcomeSlots(node, definition);
+            if (!slots.isEmpty()) {
+                outcomeSlots.put(id, slots);
+            }
         });
         final Map<String, List<String>> links = new LinkedHashMap<>();
         final Map<String, List<String>> incoming = new LinkedHashMap<>();
@@ -597,7 +652,31 @@ final class CreatorDocument {
         kinds.entrySet().stream()
                 .filter(entry -> entry.getValue() == StepDefinition.Kind.TRIGGER)
                 .forEach(trigger -> owners(trigger.getKey(), kinds, links, owners));
-        return new Graph(kinds, uses, owners, neighbors, incoming, outgoing);
+        return new Graph(kinds, uses, owners, neighbors, incoming, outgoing, outcomeSlots);
+    }
+
+    private static Map<String, String> authoredOutcomeSlots(
+            final RailixValue.ObjectValue node,
+            final StepDefinition definition
+    ) {
+        final Optional<StepDefinition.Field> authored = definition.inputs().stream()
+                .filter(field -> field.input() instanceof StepDefinition.CandidatesInput candidates
+                        && candidates.authoredOutcomes())
+                .findFirst();
+        final RailixValue inputs = node.values().get("inputs");
+        if (authored.isEmpty() || !(inputs instanceof RailixValue.ObjectValue configured)
+                || !(configured.values().get(authored.get().name()) instanceof RailixValue.ArrayValue candidates)) {
+            return Map.of();
+        }
+        final Map<String, String> slots = new LinkedHashMap<>();
+        for (int index = 0; index < candidates.values().size(); index++) {
+            final RailixValue candidate = candidates.values().get(index);
+            if (candidate instanceof RailixValue.ObjectValue object
+                    && object.values().get("outcome") instanceof RailixValue.StringValue outcome) {
+                slots.put(outcome.value(), "@case[" + index + "]");
+            }
+        }
+        return Map.copyOf(slots);
     }
 
     private static void owners(
@@ -656,7 +735,8 @@ final class CreatorDocument {
             Map<String, Set<String>> owners,
             Map<String, Set<String>> neighbors,
             Map<String, List<String>> incoming,
-            Map<String, Map<String, String>> outgoing
+            Map<String, Map<String, String>> outgoing,
+            Map<String, Map<String, String>> outcomeSlots
     ) {
     }
 

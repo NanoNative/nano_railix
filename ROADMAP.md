@@ -1,6 +1,6 @@
 # Railix II Roadmap
 
-Updated: 2026-08-15
+Updated: 2026-08-28
 
 ## Product Goal
 
@@ -65,16 +65,14 @@ spreading them across unconnected application, CI/CD, observability, and orchest
 - Railix production certification: **0%**; the full product is not certified by one core gate
 - Current item: **5. Flow Control, Groups, And Flat Compilation**
 - Current item progress: **5/7 checkpoints complete (71%); 29% left**
-- Active delivery checkpoint: **Core Simplification And Direct Compilation, 100% integrated;
-  0% implementation left**
-- Publication vehicle: **PR #1; merge remains pending**
-- Next roadmap feature: **5.6 Switch control slice, 0% integrated; 100% left**
+- Active delivery checkpoint: **Switch Control Slice, 100% integrated; 0% left**
+- Publication vehicle: **PR #1 merged at `e98aec7`**
+- Next roadmap feature: **5.6 Merge/fan-in control slice, 0% integrated; 100% left**
 - Core/base certification checkpoint: **Complete, 6/6 gates (100%; 0% left)**
 - Feature roadmap: **resumed after the 2026-08-13 core/base clean gate passed**
 - Retained incomplete item: **3. Primitive Contract And Standard Library, 4/6 complete
   (67%); 33% left**
-- Latest completed core checkpoint: **direct generated plan, allocation and duplicate-model
-  cleanup, contribution hygiene, and truthful clean certification, 2026-08-15**
+- Latest accepted control slice: **generic authored-outcome Switch, 2026-08-28**
 
 Completion percentages count accepted checkpoints, not lines written. A roadmap item reaches 100%
 only after its public acceptance gate, coverage report, complexity audit, stability checks,
@@ -224,10 +222,18 @@ Current contract:
 - `railix.choice` is an ordinary Step using generic ordered OR groups whose values pass through one
   shared Transform program and then independent non-empty AND Matcher programs, with missing
   sources false and canonical JSON values present;
+- `railix.switch` is an ordinary Step whose generic top-level `CANDIDATES` input authors one stable
+  outcome per case; the first accepted case selects its route and no accepted case selects the
+  primary `otherwise` route;
+- authored route identities and links are owned by the functional project, optional labels live
+  only in Creator metadata, and compiler/runtime/Creator derive both fixed and authored routes from
+  the contract;
+- nested authored-outcome Steps are rejected because nested programs have no graph destinations,
+  and Creator excludes those Steps from nested Transform and Matcher searches;
 - Creator renders matcher groups from the generic catalog input, while the rolling-built
   application owns short-circuit execution, failures, routing, and previews;
 - Creator lays out every declared route in deterministic iterative depth-first order and edits each
-  Filter route from the Inspector;
+  control route from the Inspector;
 - malformed links are rejected at the functional boundary and remain diagnostic-only with Step
   insertion disabled if transient browser state is corrupted.
 
@@ -247,16 +253,19 @@ Checkpoints:
 5. **Done (2026-08-06): Public rejection and recovery proof.** Reject empty, unknown,
    non-contiguous, overlapping, cyclic, mismatched, and out-of-parent metadata; prove flat startup
    fallback, desktop/mobile UX, deterministic layout, reload, and functional-Step preservation.
-6. **Partial (2026-08-12, 3/7 control slices accepted):** Filter, Choice, and branch-aware groups
-   are accepted. Filter and Choice are ordinary Steps with generic inputs, explicit `match` /
-   `otherwise` links, rolling-built execution and previews, and iterative route authoring. Choice
-   additionally proves ordered
+6. **Partial (2026-08-28, 4/7 control slices accepted):** Filter, Choice, branch-aware groups, and
+   Switch are accepted. Filter and Choice are ordinary Steps with generic inputs, explicit
+   `match` / `otherwise` links, rolling-built execution and previews, and iterative route
+   authoring. Choice additionally proves ordered
    short-circuiting, exact missing/present semantics, predicate failure propagation, restored UI,
    and position-independent editor state. Branch-aware semantic zoom accepts control Steps,
    reversible path boundaries, full connected branch regions through metadata, every exact external
    route, non-primary insertion, topology-equivalent shared edits, nested detach, and metadata-only
-   deletion. Sibling boundaries on different paths are rejected explicitly. Remaining slices are
-   Switch, Merge plus fan-in cardinality, Split plus fan-out cardinality, and bounded Loop.
+   deletion. Sibling boundaries on different paths are rejected explicitly. Switch adds generic
+   authored candidate outcomes, node-occurrence-local route identities, metadata-only labels,
+   generated per-node route plans, whole-flow execution, and shared-group mutation with different
+   concrete route IDs. Nested authored routes fail explicitly. Remaining slices are Merge plus fan-in
+   cardinality, Split plus fan-out cardinality, and bounded Loop.
    Choice hardening on 2026-08-11 adds generic Step search aliases, contract-derived
    Matcher/Transform labels, buildable predicate defaults, `value.not-equals`, three CLI example
    templates, canonical shared Transforms plus independent AND Matcher programs, legacy program
@@ -286,15 +295,14 @@ Current evidence:
 - Generated synchronous calls return primitive outcome indexes; one stored terminal `RunResult`
   represents rejection, failure, or cancellation. No success-path routing object, exception,
   future, or scheduler remains between a Step and its authored integer destination.
-- A real 129-Step production flow executes 322,500 verified Steps with zero traces. The clean gate
-  measures 86,704 allocated bytes and 37,465 median nanoseconds per call: 672 bytes and 290
-  nanoseconds per Step, with 2,680 retained bytes. A one-million-call soak stays inside a 64 MiB
-  heap with 130,512 retained bytes. The single-Step boundary and escaped result each report 3,544
-  allocated bytes per call; median single-call latency is 730 nanoseconds. Local flow calibrations
-  measured 672-673 bytes per Step and hosted Zulu JDK 25 measured 768; array-read calibrations
-  measured 103,285-103,301 bytes per call. Allocation and latency baselines are advisory and never
-  fail the build; constrained-heap, retained-growth, trace, execution, and correctness assertions
-  remain acceptance gates.
+- A real 129-Step production flow executes 322,500 verified Steps with zero traces. The clean
+  advisory reports 86,704 allocated bytes and 39,090 median nanoseconds per call: 672 bytes and
+  303 nanoseconds per Step, with 2,680 retained bytes. A one-million-call soak stays inside a
+  64 MiB heap with 128,960 retained bytes. The single-Step boundary and escaped result each report
+  3,544 allocated bytes per call; median single-call latency is 640 nanoseconds, and the array-read
+  calibration reports 103,301 bytes per call. Allocation and latency are advisory and never fail
+  the build; constrained-heap, retained-growth, trace, execution, and correctness assertions remain
+  acceptance gates.
 - The maximum 16,384-node generated monolith executes all 16,381 ordinary Steps exactly once in
   authored order. Generated applications currently admit at most 512 Triggers; exact-boundary
   production and development builds pass, while Trigger 513 is rejected before source allocation.
@@ -317,23 +325,23 @@ Current evidence:
   generated artifacts, child JVMs, HTTP, CLI, or browser boundaries. Five unique HTTP cases were
   consolidated into the canonical generated-child suite; one duplicate 33-case integration suite,
   two obsolete handler files, and 26 unreferenced nested test handlers were removed.
-- Clean `./mvnw clean verify` passes **2,082/2,082 tests** with no failure, error, or skip: core 757,
-  standard library 71, Creator Surefire 928, desktop browser 282, package and soak 43, and mobile
-  browser 1. The complete local gate takes 9:38; the two real desktop suites pass 127 and 155 cases
-  in 335.1 and 357.8 seconds and remain a measured contribution-speed target, not a reason to
+- Clean `./mvnw clean verify` passes **2,127/2,127 tests** with no failure, error, or skip: core 774,
+  standard library 72, Creator Surefire 940, desktop browser 297, package and soak 43, and mobile
+  browser 1. The complete local gate takes 9:41; the two real desktop suites pass 127 and 170 cases
+  in 303.8 and 355.3 seconds and remain a measured contribution-speed target, not a reason to
   replace public-boundary proof with mocks.
-- Clean aggregate JaCoCo is **95.0698% lines (6,942/7,302)** and **90.3001% branches
-  (3,491/3,866)**. Core is 97.3690%/92.7729%, standard library 100%/97.2222%, and Creator
-  89.8046%/83.8795% (line/branch). The visible non-failing 95%/90% target is met without changing
+- Clean aggregate JaCoCo is **95.1203% lines (7,076/7,439)** and **90.3429% branches
+  (3,583/3,966)**. Core is 97.3526%/92.8015%, standard library 100%/97.2222%, and Creator
+  89.9791%/84.0069% (line/branch). The visible non-failing 95%/90% target is met without changing
   the build into a coverage gate.
 - The generated development dispatch avoids the JDK 25 conditional-method-reference compiler
   crash through one explicit observation branch. A source-shape regression guards that contract,
   and clean desktop/mobile Failsafe reports contain no compiler exception, NPE, `LambdaToMethod`,
   or conditional-tree crash.
-- Current production inventory is three modules, 33 Java files, 15,433 Java lines, and 21,459 total
-  module source lines with no third-party Maven runtime dependency. This cleanup removes 71 net
-  production source lines while retaining every public behavior. The executable Creator JAR is
-  505,868 bytes. Its universal
+- Current production inventory is three modules, 33 Java files, 15,733 Java lines, and 21,926 total
+  module source lines with no third-party Maven runtime dependency. The Switch slice adds no
+  production file, module, or dependency and extends 12 existing production files. The executable
+  Creator JAR is 512,448 bytes. Its universal
   application image includes every stable build-JDK module so Creator can compile and run arbitrary
   locked Step bundles without ambient Java; unsupported incubator modules are excluded, and
   per-project minimal images remain Item 8. Packaging rejects empty output paths and JDKs without
@@ -354,17 +362,18 @@ Next delivery sequence:
    process inspection, and production complexity audit;
 5. **Done:** publish exact current evidence without presenting the advisory coverage target as a
    build failure;
-6. **Done:** close the public-boundary coverage deficit without padding and rerun the exact clean
-   certification gate at 95.2033% lines and 90.0104% branches;
-7. **Queued after PR publication:** implement and accept Switch as the next ordinary control Step,
-   then continue with Merge, Split, and bounded Loop.
+6. **Done:** close the public-boundary coverage deficit without padding, rerun clean certification,
+   and record 95.2033% lines and 90.0104% branches in the separate advisory coverage report;
+7. **Done:** implement and accept Switch as an ordinary control Step through the generic authored-
+   outcome candidate contract, generated child applications, shared groups, and browser E2Es;
+8. **Queued:** implement and accept Merge/fan-in, then continue with Split and bounded Loop.
 
 PR-readiness hardening is tracked separately from feature completion: one root build, one hosted
 verification workflow, a checksum-verified Maven wrapper, minimal cross-editor settings, pinned
 lifecycle plugins, host/browser requirements, compiler bounds, cross-process build ownership,
 quiet deterministic packaging, and contributor rules are integrated.
 The public target is `NanoNative/nano_railix` and its Apache-2.0 license is preserved. Publication
-is tracked in PR #1; merge status does not change Item 5 completion.
+status does not change Item 5 completion.
 
 Global reusable groups, automatic group suggestions, and parameter suggestions remain unsupported.
 No Item 5 screenshot is current because the item is not 100%.

@@ -43,6 +43,18 @@ public final class MatcherConformanceSteps {
         }
     }
 
+    /** Returns true through the first matched authored route, or the primary route. */
+    public static final class AuthoredTrue implements StepHandler {
+        public AuthoredTrue() {
+        }
+
+        @Override
+        public StepResult run(final StepInput input) {
+            return StepResult.outcome(input.selectedOutcomeOrPrimary("cases"))
+                    .output("value", RailixValue.bool(true));
+        }
+    }
+
     /** Throws to prove deterministic nested implementation-fault handling. */
     public static final class Fault implements StepHandler {
         public Fault() {

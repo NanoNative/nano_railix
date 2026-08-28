@@ -71,9 +71,9 @@ invoking host code, so a handler cannot inject an unrelated source value.
   `invalid`, or `empty` therefore preserves the target and the host follows its ordinary `next`.
 - Creator does not synthesize `missing`, `invalid`, or `empty` graph routes for standard Field
   Manipulation. Termination, Choice, fan-in, fan-out, and loops remain explicit control Steps.
-- A third-party ordinary Step may explicitly propagate nested outcomes through the same generic
-  core contract, but it must declare and connect those outcomes itself; no Step id receives magic
-  handling.
+- A third-party ordinary Step may explicitly propagate fixed declared nested outcomes through the
+  same generic core contract, but it must declare and connect those outcomes itself; no Step id
+  receives magic handling.
 - There is no nested `on` object, exception route, implicit fallback, or second execution engine.
 
 Fallible Primitives still expose `ok, invalid`, and collection Primitives may expose

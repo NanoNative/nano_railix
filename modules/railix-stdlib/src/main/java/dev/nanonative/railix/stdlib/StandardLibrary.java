@@ -26,7 +26,8 @@ public final class StandardLibrary {
                 cli(),
                 fieldManipulation(),
                 filter(),
-                choice()
+                choice(),
+                switchStep()
         ));
         definitions.addAll(PrimitiveSteps.definitions());
         return StepCatalog.of(definitions.toArray(StepDefinition[]::new));
@@ -99,13 +100,27 @@ public final class StandardLibrary {
                 .run(StandardStepHandlers.Choice.class);
     }
 
+    private static StepDefinition switchStep() {
+        return StepDefinition.named("railix.switch", "1")
+                .searchTerms("route", "case", "branch")
+                .primaryOutcome("otherwise")
+                .input("cases", Input.candidates(fieldOrLiteral(
+                        Input.json(ValueShape.ANY).defaultValue(RailixValue.nullValue())
+                )).withAuthoredOutcomes())
+                .run(StandardStepHandlers.Switch.class);
+    }
+
     private static StepDefinition.Option[] fieldOrLiteral() {
+        return fieldOrLiteral(Input.json(ValueShape.ANY));
+    }
+
+    private static StepDefinition.Option[] fieldOrLiteral(final StepDefinition.JsonInput literal) {
         return new StepDefinition.Option[]{
                 Input.option("field")
                         .input("field", Input.path(READ).defaultPath("context", "payload"))
                         .fromOwned("field"),
                 Input.option("literal")
-                        .input("value", Input.json(ValueShape.ANY))
+                        .input("value", literal)
                         .fromOwned("value")
         };
     }

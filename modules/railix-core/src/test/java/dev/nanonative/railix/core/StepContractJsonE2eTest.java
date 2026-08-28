@@ -67,6 +67,20 @@ final class StepContractJsonE2eTest {
     }
 
     @Test
+    void authoredOutcomeInputRoundTripsItsCaseContract() {
+        final StepDefinition definition = StepDefinition.named("codec.routes", "1")
+                .input("cases", Input.candidates(
+                        Input.option("literal")
+                                .input("value", Input.json(ValueShape.ANY))
+                                .fromOwned("value")
+                ).withAuthoredOutcomes())
+                .run(CodecHandler.class);
+
+        assertThat(StepContractJson.write(definition)).contains("\"authored_outcomes\":true");
+        assertRoundTrip(definition);
+    }
+
+    @Test
     void matcherGroupsInputRoundTripsOrderedBooleanSources() {
         assertRoundTrip(StepDefinition.named("codec.matchers", "1")
                 .input("current", Input.path(StepDefinition.PathAccess.READ))

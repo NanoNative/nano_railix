@@ -534,7 +534,9 @@ public final class WorkflowRuntime {
                     merge(evaluation.children());
                     values.put(name, evaluation.value());
                     options = put(options, name, candidate.option());
-                    selected = put(selected, name, evaluation.children().input());
+                    selected = put(selected, name, evaluation.children().input(
+                            candidate.outcome().isEmpty() ? primaryOutcome : candidate.outcome()
+                    ));
                     if (execution.capture != null) {
                         execution.capture.selectedCandidate(path, index);
                     }
@@ -645,7 +647,11 @@ public final class WorkflowRuntime {
         }
 
         private StepInput input() {
-            return new StepInput(values, options, programs, selected, primaryOutcome);
+            return input(primaryOutcome);
+        }
+
+        private StepInput input(final String outcome) {
+            return new StepInput(values, options, programs, selected, outcome);
         }
 
         private void closePrograms() {
@@ -1361,6 +1367,7 @@ public final class WorkflowRuntime {
 
     record CandidatePlan(
             String option,
+            String outcome,
             InputResolver inputs,
             List<InputReference> valueSources,
             NestedProgram transforms,
