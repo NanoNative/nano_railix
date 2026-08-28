@@ -51,7 +51,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 final class RailixPackageIT {
     private static final Path APP_IMAGE = Path.of("target", "app-image").toAbsolutePath().normalize();
     private static final Path EXECUTABLE = packagedExecutable(APP_IMAGE);
-    private static final Path LAUNCHER = Path.of("..", "..", "railix").toAbsolutePath().normalize();
     private static final Path PACKAGE_SCRIPT =
             Path.of("..", "..", "scripts", "package-creator-app.sh").toAbsolutePath().normalize();
     private static final Path CREATOR_JAR = Path.of("target", "railix.jar").toAbsolutePath().normalize();
@@ -263,10 +262,10 @@ final class RailixPackageIT {
     }
 
     @Test
-    void rootLauncherNeverTreatsASameNamedFileAsTheProject() throws Exception {
+    void packagedExecutableNeverTreatsASameNamedFileAsTheProject() throws Exception {
         Files.writeString(directory.resolve("creator"), "{\"format\":1}", StandardCharsets.UTF_8);
 
-        try (PackagedCreator creator = PackagedCreator.startDefault(LAUNCHER, directory, noSystemJavaEnvironment())) {
+        try (PackagedCreator creator = PackagedCreator.startDefault(EXECUTABLE, directory, noSystemJavaEnvironment())) {
             final HttpResponse<String> response = request(creator.uri(), "GET", "/api/project", "");
 
             assertThat(response.statusCode()).isEqualTo(200);

@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted on 2026-07-27; release distribution clarified on 2026-08-13.
+Accepted on 2026-07-27; release distribution clarified on 2026-08-13; launcher ownership clarified
+on 2026-08-28.
 
 ## Context
 
@@ -21,8 +22,8 @@ There are no JPMS descriptors, reflection, runtime scanning, framework runtime, 
 Maven runtime dependencies. Locked third-party Step bundles are explicit project inputs, not
 Railix runtime dependencies. Maven, JUnit, AssertJ, JaCoCo, Shade, and Playwright are build/test
 tools only. The build creates one shaded Creator JAR and one host-native Creator application image;
-the permanent tracked root launcher never starts a build implicitly and Maven never creates,
-changes, or removes it.
+Maven owns both artifacts and removes them during `clean`. No Creator distribution launcher is
+tracked outside the module build directory.
 
 Creator dynamically compiles and runs arbitrary locked Step bundles with the Java installation in
 its own application image. The current universal Creator image therefore includes every module in
@@ -41,7 +42,8 @@ target after the Java contracts and application are stable; it is not a developm
 - Transport and Step implementation details stay outside core.
 - Registration and dependency wiring remain explicit.
 - The production runtime remains independent of Node and native libraries.
-- The development launcher is tracked source and remains present across every Maven lifecycle.
+- Every Creator distribution launcher is Maven-generated under `modules/railix-creator/target` and
+  absent from source control.
 - The final Creator distribution includes its Java runtime and launches without Maven or an
   ambient JDK.
 - The universal Creator image retains the complete build-JDK module set until Railix defines and
@@ -64,7 +66,8 @@ development builds are rejected.
 - [`modules/railix-core/pom.xml`](../modules/railix-core/pom.xml)
 - [`modules/railix-stdlib/pom.xml`](../modules/railix-stdlib/pom.xml)
 - [`modules/railix-creator/pom.xml`](../modules/railix-creator/pom.xml)
-- [`development launcher`](../railix)
+- [`scripts/package-creator-app.sh`](../scripts/package-creator-app.sh)
+- [`RailixPackageIT.java`](../modules/railix-creator/src/test/java/dev/nanonative/railix/creator/RailixPackageIT.java)
 
 `jdeps --print-module-deps modules/railix-creator/target/railix.jar` reports
 `java.base,java.compiler,java.desktop,java.net.http,jdk.httpserver`; this describes current Creator

@@ -70,33 +70,52 @@ and desktop/mobile browser scenario:
 ./mvnw clean verify
 ```
 
-The repository provides the development launcher. The build creates both the executable Creator
-JAR and a host-native Creator application image:
+Maven creates both the executable Creator JAR and the host-native Creator launcher during
+`package`:
+
+```sh
+./mvnw -pl modules/railix-creator -am package
+```
 
 ```text
 modules/railix-creator/target/railix.jar
-./railix
+modules/railix-creator/target/app-image/railix.app/Contents/MacOS/railix  # macOS
+modules/railix-creator/target/app-image/railix/bin/railix                # Linux
 ```
 
 `railix.jar` is Creator itself, not the final environment-specific monolith. Self-contained
 Creator output already uses `jlink` and `jpackage`; minimal environment-specific images and
 installers for applications generated from a project remain Roadmap Item 8.
 
+Choose the generated launcher for the build host.
+
+macOS:
+
+```sh
+RAILIX="$PWD/modules/railix-creator/target/app-image/railix.app/Contents/MacOS/railix"
+```
+
+Linux:
+
+```sh
+RAILIX="$PWD/modules/railix-creator/target/app-image/railix/bin/railix"
+```
+
 Start Creator with its default project file and an automatically selected loopback port:
 
 ```sh
-./railix creator
+"$RAILIX" creator
 ```
 
 Or select both:
 
 ```sh
-./railix creator path/to/railix.project.json 7310
+"$RAILIX" creator path/to/railix.project.json 7310
 ```
 
 Creator prints the URL to open. `Ctrl-C` stops Creator and its owned development-application JVM.
-`./mvnw clean` removes the generated JAR and application image but never the tracked root launcher.
-Railix has no third-party runtime libraries. Playwright is test-only.
+`./mvnw clean` removes the generated JAR and application image. Railix has no third-party runtime
+libraries. Playwright is test-only.
 
 The printed URL contains a random Creator token in its fragment. Every Creator API request requires
 that token and the exact loopback `Host`; the browser client supplies both without storing the token
@@ -143,7 +162,7 @@ examples are independent cases. Creator unions their paths and shapes for field 
 without merging their values. Run a built CLI project as a one-shot application with:
 
 ```sh
-(cd examples/lowercase-app && ../../railix run "Hello RAILIX")
+(cd examples/lowercase-app && "$RAILIX" run "Hello RAILIX")
 ```
 
 The CLI Trigger writes the ordered arguments to its declared target path, by default
