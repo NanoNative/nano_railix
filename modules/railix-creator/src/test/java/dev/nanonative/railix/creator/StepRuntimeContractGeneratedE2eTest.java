@@ -87,7 +87,6 @@ final class StepRuntimeContractGeneratedE2eTest {
                     switch (source.result()) {
                         case RunResult.Succeeded succeeded -> {
                             value.put("status", RailixValue.string("succeeded"));
-                            value.put("steps", RailixValue.number(succeeded.steps().size()));
                         }
                         case RunResult.Rejected rejected -> {
                             final Diagnostic diagnostic = rejected.diagnostics().getFirst();
@@ -95,18 +94,15 @@ final class StepRuntimeContractGeneratedE2eTest {
                             value.put("code", RailixValue.string(diagnostic.code()));
                             value.put("message", RailixValue.string(diagnostic.message()));
                             value.put("path", RailixValue.string(diagnostic.path()));
-                            value.put("steps", RailixValue.number(rejected.steps().size()));
                         }
                         case RunResult.Failed failed -> {
                             value.put("status", RailixValue.string("failed"));
                             value.put("code", RailixValue.string(failed.failure().code()));
                             value.put("message", RailixValue.string(failed.failure().message()));
                             value.put("step", RailixValue.string(failed.failure().stepId()));
-                            value.put("steps", RailixValue.number(failed.steps().size()));
                         }
                         case RunResult.Cancelled cancelled -> {
                             value.put("status", RailixValue.string("cancelled"));
-                            value.put("steps", RailixValue.number(cancelled.steps().size()));
                         }
                     }
                     return RailixValue.object(value);
@@ -327,15 +323,6 @@ final class StepRuntimeContractGeneratedE2eTest {
     }
 
     @Test
-    void developmentPreviewReportsNoncanonicalPayload() throws Exception {
-        assertInvalidDevelopmentResponse(graphApplication.preview(
-                "payload-number-domain",
-                "payload-number-domain-step",
-                graphContext("payload-number-domain")
-        ));
-    }
-
-    @Test
     void writeDescendsIntoExistingArrayObject() throws Exception {
         final RailixValue.ObjectValue payload = payload(runGraph("array-descend"));
         final RailixValue.ObjectValue item = (RailixValue.ObjectValue)
@@ -460,7 +447,6 @@ final class StepRuntimeContractGeneratedE2eTest {
                 .isEqualTo("Trigger source value value is incompatible: " + reason);
         assertThat(string(result, "path")).isEqualTo("nodes[1].value");
         assertThat(number(result, "responses")).isZero();
-        assertThat(number(result, "steps")).isZero();
     }
 
     private static void assertFailure(

@@ -37,16 +37,31 @@ const state = {
   candidateQueries: {},
   exampleIndex: 0,
   exampleDraft: null,
+  exampleIds: new Map(),
+  exampleInventoryKey: "",
+  exampleCoverageKey: "",
   revision: 0,
   saveTimer: 0,
-  writePromise: Promise.resolve(),
+  writeActive: false,
+  pendingWrite: null,
   runResult: "",
-  runRevision: 0,
-  runController: null,
   preview: null,
   previewCases: [],
-  pathPreview: null,
-  previewController: null,
+  traceCases: [],
+  traceCasesKey: "",
+  traceCasesPid: 0,
+  traceContext: "",
+  traceSummary: null,
+  traceSummaryKey: "",
+  traceStep: null,
+  traceKey: "",
+  traceController: null,
+  applicationPollTimer: 0,
+  applicationRefreshing: false,
+  metrics: null,
+  metricsNode: "",
+  metricsController: null,
+  metricsPollTimer: 0,
   inspectorMode: "inspect",
   groupDraft: null,
   groupStack: [],
@@ -100,7 +115,8 @@ async function boot() {
     state.iconDiagnostics = icons.diagnostics;
     state.build = "Built";
     render();
-    runExamples();
+    scheduleApplicationPoll(0);
+    scheduleMetricsPoll(0);
   } catch (error) {
     document.querySelector("#build-state").textContent = "Unavailable";
     document.querySelector("#inspector").innerHTML = `
@@ -142,6 +158,7 @@ function render() {
       break;
     }
   }
+  applyExampleCoverage();
 }
 
 function renderBuildStatus() {
@@ -802,12 +819,26 @@ function appInspector(issues) {
         <div><dt>Project path</dt><dd id="project-path">${html(state.workspace.project_path || "")}</dd></div>
         <div><dt>Build path</dt><dd id="build-path">${html(state.application.build_path || "")}</dd></div>
         <div><dt>PID</dt><dd id="application-pid">${html(state.application.pid || "")}</dd></div>
+        <div><dt>Build state</dt><dd id="application-build-state">${html(state.build)}</dd></div>
+        <div><dt>Run state</dt><dd id="application-run-state">${html(
+          inputLabel(state.application.state || "unavailable")
+        )}</dd></div>
         <div><dt>Graph</dt><dd>${count(workspaceCount("flow_count", triggerNodes().length), "flow")} / ${
           count(workspaceCount("step_count", state.project.nodes.length), "step")
         }</dd></div>
-        <div><dt>Last build</dt><dd>${builtAt ? html(new Date(builtAt).toLocaleString()) : "Not built"}</dd></div>
+        <div><dt>Examples</dt><dd id="example-suite-progress">${html(exampleProgress())}</dd></div>
+        <div><dt>Example state</dt><dd id="example-suite-state">${html(
+          inputLabel(state.application.examples?.state || "unavailable")
+        )}</dd></div>
+        <div><dt>Trace storage</dt><dd id="example-trace-storage">${html(
+          formatBytes(state.application.examples?.storage_bytes)
+        )}</dd></div>
+        <div><dt>Last build</dt><dd id="application-last-build">${
+          builtAt ? html(new Date(builtAt).toLocaleString()) : "Not built"
+        }</dd></div>
       </dl>
     </section>
+    <div id="metrics-panel">${metricsPanel()}</div>
     <section class="inspector-section">
       <label for="project-id">Project name</label>
       <input id="project-id" value="${html(state.project.id)}" autocomplete="off">
@@ -825,6 +856,8 @@ function triggerInspector(trigger, issues) {
     ${inspectorHeader("Trigger", stepPresentation(trigger.id).name || stepName(definition), trigger.use)}
     ${issues}
     ${inputFields(trigger, definition.inputs, ["inputs"])}
+    ${metricsSetting(trigger)}
+    <div id="metrics-panel">${metricsPanel()}</div>
     <section class="inspector-section">
       <div class="section-heading"><strong>Expected results</strong><span>Trigger contract</span></div>
       <div class="contract-list">${definition.results.map(result => `
@@ -899,6 +932,8 @@ function stepInspector(operation, issues) {
     ${issues}
     ${portMappings(operation, definition)}
     ${inputFields(operation, definition.inputs, ["inputs"])}
+    ${metricsSetting(operation)}
+    <div id="metrics-panel">${metricsPanel()}</div>
     <div id="preview-values" aria-live="polite">${previewSource(operation)}</div>
     <footer class="inspector-actions">
       ${nextStepControls(operation)}
@@ -1516,12 +1551,13 @@ function programEditor(operation, input, locator, steps, scopeInputs, scopeBase)
 
 function nestedStep(operation, input, locator, step, index, size) {
   const definition = definitionOf(step.use);
+  const previewInput = programPath(locator);
   return `
     <div class="nested-step">
       <div class="nested-step-summary">
         <span>${html(stepName(definition))}</span>
-        <span data-preview-input="${html(input.name)}" data-preview-slot="${index}">${
-          previewStage(operation, input.name, index)
+        <span data-preview-input="${html(previewInput)}" data-preview-slot="${index}">${
+          previewStage(operation, previewInput, index)
         }</span>
         ${inputFields(operation, definition.inputs, [...locator, index, "inputs"])}
       </div>
@@ -1541,7 +1577,10 @@ function nestedOptions(operation, input, locator, scopeInputs, scopeBase) {
   const predicate = input.program_role === "predicate";
   const configuredShape = programValueShape(operation, input, locator, scopeInputs, scopeBase);
   const shapes = new Set(values.map(valueShape));
-  const shape = configuredShape || (shapes.size === 1 ? [...shapes][0] : shapes.size ? "mixed" : "");
+  const observedShape = shapes.size === 1 ? [...shapes][0] : shapes.size ? "mixed" : "";
+  const shape = configuredShape === "mixed" && observedShape
+    ? observedShape
+    : configuredShape || observedShape;
   const stats = values.map(valueStats);
   const query = queryAt(state.stepQueries, locator).trim().toLowerCase();
   const options = state.catalog
@@ -1845,7 +1884,11 @@ function insertFlatStep(afterId, definition, id, outcome, bindings) {
 }
 
 function graphBindings(after, definition) {
-  const available = availablePaths(after)
+  if (state.build !== "Built" && definition.receives.length) {
+    return null;
+  }
+  const context = definitionFor(after)?.kind === "trigger" ? "trigger" : "output";
+  const available = availablePaths(after, context)
     .filter(entry => entry.path[1] !== "runtime" && entry.examples === entry.total);
   const receives = {};
   for (const port of definition.receives) {
@@ -1995,10 +2038,9 @@ function selectExample(index) {
   const trigger = node(state.selection.id);
   state.exampleIndex = Math.max(0, Math.min(index, trigger.examples.length - 1));
   state.exampleDraft = null;
-  cancelRuns();
-  state.runResult = "";
-  clearPreview();
+  clearPreview(true, false);
   render();
+  requestSelectedTrace();
 }
 
 function addExample() {
@@ -2134,9 +2176,7 @@ function invalidateDraft() {
   clearTimeout(state.saveTimer);
   state.pendingProject = false;
   state.revision++;
-  cancelRuns();
-  state.runResult = "";
-  clearPreview();
+  clearPreview(true, false);
 }
 
 function jsonEditorValue(locator, value) {
@@ -2560,7 +2600,7 @@ function programValues(operation, input, locator, scopeInputs, scopeBase) {
         return [];
       }
       let value = inputs[sourceName];
-      const stages = preview.stages.filter(stage => stage.input === input.name);
+      const stages = preview.stages.filter(stage => stage.input === programPath(locator));
       for (let index = 0; index < steps.length; index++) {
         if (!stages[index] || !Object.hasOwn(stages[index], "value")) {
           return [];
@@ -2570,22 +2610,23 @@ function programValues(operation, input, locator, scopeInputs, scopeBase) {
       return [value];
     });
   }
-  const count = triggerFor(operation.id)?.examples.length || 1;
+  const count = observedRoots(operation).length || 1;
   const values = Array(count).fill(undefined);
   for (const sourceName of programSourceNames(input)) {
     const source = scopeInputs.find(candidate => candidate.name === sourceName);
-    if (source) {
-      const candidates = configuredInputValues(
-        operation,
-        source,
-        [...scopeBase, source.name],
-        scopeInputs,
-        scopeBase
-      );
-      for (let index = 0; index < values.length; index++) {
-        if (values[index] === undefined && candidates[index] !== undefined) {
-          values[index] = candidates[index];
-        }
+    if (!source) {
+      continue;
+    }
+    const candidates = configuredInputValues(
+      operation,
+      source,
+      [...scopeBase, source.name],
+      scopeInputs,
+      scopeBase
+    );
+    for (let index = 0; index < values.length; index++) {
+      if (values[index] === undefined && candidates[index] !== undefined) {
+        values[index] = candidates[index];
       }
     }
   }
@@ -2602,7 +2643,7 @@ function candidateProgramValues(operation, input, locator, scopeInputs, scopeBas
   const previews = state.previewCases.filter(preview => preview.step === operation.id);
   if (steps.length && previews.length) {
     return previews.flatMap(preview => {
-      const stages = preview.stages.filter(stage => stage.input === input.name);
+      const stages = preview.stages.filter(stage => stage.input === programPath(locator));
       const finalStage = stages[steps.length - 1];
       return finalStage && Object.hasOwn(finalStage, "value") ? [finalStage.value] : [];
     });
@@ -2790,7 +2831,8 @@ function configuredInputShape(operation, input, locator, scopeInputs, scopeBase)
     return value === undefined ? "" : valueShape(value);
   }
   if (input.type === "path") {
-    return availablePaths(operation).find(entry => samePath(entry.path, value))?.shape || "";
+    return availablePaths(operation).find(entry => samePath(entry.path, value))?.shape
+      || (Array.isArray(value) ? "mixed" : "");
   }
   if (input.type === "options") {
     const option = input.options.find(candidate => candidate.name === value?.option);
@@ -2812,16 +2854,15 @@ function configuredInputShape(operation, input, locator, scopeInputs, scopeBase)
 }
 
 function configuredInputValues(operation, input, locator, scopeInputs, scopeBase) {
-  const trigger = triggerFor(operation.id);
-  const count = trigger?.examples.length || 1;
+  const count = observedRoots(operation).length || 1;
   const value = valueAt(operation, locator);
   if (input.type === "json") {
     return Array(count).fill(value);
   }
   if (input.type === "path") {
-    return trigger && Array.isArray(value)
-      ? trigger.examples.map((_example, index) => valueAt(exampleRoot(trigger, index), value))
-      : Array(count).fill(undefined);
+    return observedRoots(operation).map(root => Array.isArray(value)
+      ? valueAt(root, value)
+      : undefined);
   }
   if (input.type === "options") {
     const option = input.options.find(candidate => candidate.name === value?.option);
@@ -2884,7 +2925,7 @@ function sourceShape(operation, option, ownerLocator, scopeInputs, scopeBase) {
 
 function sourceValues(operation, option, ownerLocator, scopeInputs, scopeBase) {
   const reference = sourceReference(option, ownerLocator, scopeInputs, scopeBase);
-  const count = triggerFor(operation.id)?.examples.length || 1;
+  const count = observedRoots(operation).length || 1;
   return reference ? configuredInputValues(
     operation,
     reference.input,
@@ -2960,108 +3001,731 @@ function inputDiagnosticPath(nodeId, locator) {
     : path + "." + part, "");
 }
 
-function clearPreview() {
-  state.previewController?.abort();
-  state.previewController = null;
+function clearPreview(clearSummary = false, clearCases = true) {
+  state.traceController?.abort();
+  state.traceController = null;
+  state.traceStep = null;
+  state.traceKey = "";
+  if (clearCases) {
+    state.traceCases = [];
+    state.traceCasesKey = "";
+    state.traceCasesPid = 0;
+    state.traceContext = "";
+  }
+  if (clearSummary) {
+    state.traceSummary = null;
+    state.traceSummaryKey = "";
+  }
   state.preview = null;
   state.previewCases = [];
-  state.pathPreview = null;
+  state.runResult = "";
 }
 
-async function requestPreview() {
-  clearPreview();
-  if (state.build !== "Built"
-      || state.selection.type !== "step"
-      || state.jsonDraft?.node === state.selection.id
-      || state.exampleDraft) {
+function replaceApplication(application) {
+  const changed = !currentApplication(application);
+  if (changed) {
+    clearPreview(true);
+    state.exampleIds = new Map();
+    state.exampleInventoryKey = "";
+    state.exampleCoverageKey = "";
+  }
+  state.application = changed ? application : { ...state.application, ...application };
+  return changed;
+}
+
+function currentApplication(application) {
+  return state.application.fingerprint === application.fingerprint
+    && state.application.pid === application.pid
+    && state.application.state === application.state;
+}
+
+function scheduleApplicationPoll(delay = 250) {
+  clearTimeout(state.applicationPollTimer);
+  state.applicationPollTimer = window.setTimeout(refreshApplication, delay);
+}
+
+function observationRetryDelay() {
+  return document.hidden ? 2_000 : 500;
+}
+
+async function refreshApplication() {
+  state.applicationPollTimer = 0;
+  if (state.applicationRefreshing) {
     return;
   }
-  const operation = selectedOperation();
-  if (definitionFor(operation)?.kind !== "step") {
-    return;
-  }
-  const trigger = operation ? triggerFor(operation.id) : null;
-  if (!operation || !trigger) {
-    return;
-  }
-  const revision = state.revision;
-  const operationId = operation.id;
-  const fingerprint = state.application.fingerprint;
-  const exampleIndex = state.exampleIndex;
-  const controller = new AbortController();
-  state.previewController = controller;
+  let nextDelay;
+  state.applicationRefreshing = true;
   try {
-    const url = "/api/preview/" + encodeURIComponent(trigger.id) + "/" + encodeURIComponent(operationId);
-    const cases = await Promise.all(trigger.examples.map(async (_example, index) => {
-      const response = await fetch(url, {
-          method: "POST",
-          headers: mutationHeaders(),
-          body: JSON.stringify(exampleContext(trigger, index)),
-          signal: controller.signal
-        });
-      return previewCase(parseExact(await response.text()), operationId, response.ok);
-    }));
-    if (!previewRequestIsCurrent(controller, revision, operationId, fingerprint)) {
+    const response = await fetch("/api/application", { cache: "no-store" });
+    if (response.ok) {
+      const application = parseExact(await response.text());
+      const processChanged = replaceApplication(application);
+      if (processChanged) {
+        resetMetrics(true);
+        refreshApplicationFacts();
+        refreshTraceView();
+      }
+      if (application.state !== "running") {
+        return;
+      }
+      const cachedExampleId = selectedExampleId();
+      const [examplesResponse, exampleResponse] = await Promise.all([
+        fetch("/api/examples/status", { cache: "no-store" }),
+        cachedExampleId
+          ? fetch(`/api/examples/${encodeURIComponent(cachedExampleId)}`, { cache: "no-store" })
+          : Promise.resolve(null)
+      ]);
+      if (!currentApplication(application)) {
+        nextDelay = 25;
+        return;
+      }
+      const examples = examplesResponse.ok
+        ? parseExact(await examplesResponse.text())
+        : { state: "unavailable" };
+      if (examples.application_pid !== undefined
+          && Number(examples.application_pid) !== Number(application.pid)) {
+        nextDelay = 25;
+        return;
+      }
+      const inventoryReady = await refreshExampleIds(application);
+      if (!inventoryReady) {
+        nextDelay = observationRetryDelay();
+        return;
+      }
+      const coverageReady = await refreshExampleCoverage(application, examples);
+      if (!coverageReady) {
+        nextDelay = observationRetryDelay();
+        return;
+      }
+      const exampleId = selectedExampleId();
+      const selectedResponse = exampleId === cachedExampleId
+        ? exampleResponse
+        : exampleId
+          ? await fetch(`/api/examples/${encodeURIComponent(exampleId)}`, { cache: "no-store" })
+          : null;
+      if (selectedResponse && !selectedResponse.ok) {
+        nextDelay = observationRetryDelay();
+        return;
+      }
+      const example = selectedResponse ? parseExact(await selectedResponse.text()) : null;
+      if (!currentApplication(application)
+          || (example?.application_pid !== undefined
+          && Number(example.application_pid) !== Number(application.pid))) {
+        nextDelay = 25;
+        return;
+      }
+      application.examples = examples;
+      application.example = example;
+      const currentExamples = state.application.examples || {};
+      const currentExample = state.application.example || {};
+      const suiteChanged = currentExamples.application_pid !== examples.application_pid
+        || currentExamples.revision !== examples.revision
+        || currentExamples.state !== examples.state
+        || currentExample.id !== example?.id
+        || currentExample.status !== example?.status
+        || currentExample.events !== example?.events;
+      replaceApplication(application);
+      if (suiteChanged || processChanged) {
+        refreshApplicationFacts();
+        applyExampleCoverage();
+      }
+      await requestSelectedTrace();
+    } else {
+      nextDelay = observationRetryDelay();
+    }
+  } catch (_error) {
+    // The current build state remains visible while the rolling application restarts.
+    nextDelay = observationRetryDelay();
+  } finally {
+    state.applicationRefreshing = false;
+    const running = ["queued", "running"].includes(state.application.examples?.state);
+    scheduleApplicationPoll(nextDelay ?? (document.hidden ? 2_000 : running ? 100 : 500));
+  }
+}
+
+async function refreshExampleIds(application) {
+  const key = JSON.stringify([application.fingerprint || "", application.pid || 0]);
+  if (state.exampleInventoryKey === key) {
+    return true;
+  }
+  const response = await fetch("/api/examples", { cache: "no-store" });
+  if (!response.ok) {
+    if (currentApplication(application)) {
+      state.exampleIds = new Map();
+      state.exampleInventoryKey = "";
+    }
+    return false;
+  }
+  const inventory = parseExact(await response.text());
+  if (!currentApplication(application)
+      || !Array.isArray(inventory.cases)
+      || Number(inventory.application_pid) !== Number(application.pid)) {
+    return false;
+  }
+  const ids = new Map();
+  inventory.cases.forEach(example => {
+    if (!plainObject(example) || typeof example.trigger !== "string"
+        || !Number.isInteger(Number(example.index)) || typeof example.id !== "string") {
       return;
     }
-    state.previewController = null;
-    state.previewCases = cases;
-    state.preview = cases[exampleIndex];
-    if (plainObject(state.preview?.input_context)) {
-      state.pathPreview = {
-        trigger: trigger.id,
-        step: operationId,
-        example: exampleIndex,
-        context: clone(state.preview.input_context)
-      };
+    const trigger = ids.get(example.trigger) || new Map();
+    trigger.set(Number(example.index), example.id);
+    ids.set(example.trigger, trigger);
+  });
+  state.exampleIds = ids;
+  state.exampleInventoryKey = key;
+  return true;
+}
+
+async function refreshExampleCoverage(application, examples) {
+  if (examples.state !== "completed") {
+    state.exampleCoverageKey = "";
+    return true;
+  }
+  const key = JSON.stringify([
+    application.fingerprint || "",
+    application.pid || 0,
+    examples.revision || 0
+  ]);
+  const previous = state.application.examples || {};
+  if (state.exampleCoverageKey === key && previous.coverage_bits !== undefined) {
+    examples.coverage_bits = previous.coverage_bits;
+    examples.covered_steps = previous.covered_steps;
+    return true;
+  }
+  const response = await fetch("/api/examples/coverage", { cache: "no-store" });
+  if (!response.ok) {
+    return false;
+  }
+  const coverage = parseExact(await response.text());
+  if (!currentApplication(application)
+      || Number(coverage.application_pid) !== Number(application.pid)
+      || Number(coverage.revision) !== Number(examples.revision)
+      || typeof coverage.coverage_bits !== "string") {
+    return false;
+  }
+  examples.coverage_bits = coverage.coverage_bits;
+  examples.covered_steps = coverage.covered_steps;
+  state.exampleCoverageKey = key;
+  return true;
+}
+
+function selectedExampleId() {
+  const operation = ["trigger", "step"].includes(state.selection.type)
+    ? node(state.selection.id)
+    : null;
+  const trigger = operation ? triggerFor(operation.id) : null;
+  if (!trigger?.examples.length) {
+    return "";
+  }
+  const index = Math.max(0, Math.min(state.exampleIndex, trigger.examples.length - 1));
+  return state.exampleIds.get(trigger.id)?.get(index) || "";
+}
+
+function refreshApplicationFacts() {
+  const builtAt = Number(state.application.built_at || 0);
+  const values = {
+    "application-pid": state.application.pid || "",
+    "build-path": state.application.build_path || "",
+    "application-build-state": state.build,
+    "application-run-state": inputLabel(state.application.state || "unavailable"),
+    "last-build": builtAt ? new Date(builtAt).toLocaleString() : "Not built",
+    "application-last-build": builtAt ? new Date(builtAt).toLocaleString() : "Not built",
+    "example-suite-state": inputLabel(state.application.examples?.state || "unavailable"),
+    "example-suite-progress": exampleProgress(),
+    "example-trace-storage": formatBytes(state.application.examples?.storage_bytes)
+  };
+  Object.entries(values).forEach(([id, value]) => {
+    const target = document.getElementById(id);
+    if (target) {
+      target.textContent = value;
     }
+  });
+}
+
+function exampleProgress() {
+  const examples = state.application.examples;
+  return examples?.total === undefined
+    ? "Unavailable"
+    : `${examples.completed || 0} / ${examples.total}`;
+}
+
+function metricsSetting(operation) {
+  return `
+    <section class="inspector-section metric-setting">
+      <label class="check-line" for="node-metrics">
+        <span>Operational metrics</span>
+        <input id="node-metrics" type="checkbox" data-node-metrics
+               ${operation.metrics === false ? "" : "checked"}>
+      </label>
+    </section>`;
+}
+
+function metricTarget() {
+  if (state.inspectorMode !== "inspect") {
+    return "";
+  }
+  if (state.selection.type === "app") {
+    return "app";
+  }
+  return ["trigger", "step"].includes(state.selection.type) ? state.selection.id : "";
+}
+
+function scheduleMetricsPoll(delay = 1_000) {
+  clearTimeout(state.metricsPollTimer);
+  state.metricsPollTimer = window.setTimeout(refreshMetrics, delay);
+}
+
+function resetMetrics(poll = false) {
+  clearTimeout(state.metricsPollTimer);
+  state.metricsPollTimer = 0;
+  state.metricsController?.abort();
+  state.metricsController = null;
+  state.metrics = null;
+  state.metricsNode = "";
+  renderMetrics();
+  if (poll && metricTarget()) {
+    scheduleMetricsPoll(0);
+  }
+}
+
+async function refreshMetrics() {
+  state.metricsPollTimer = 0;
+  const target = metricTarget();
+  if (!target) {
+    resetMetrics();
+    return;
+  }
+  if (document.hidden || state.build !== "Built" || state.pendingProject) {
+    scheduleMetricsPoll(500);
+    return;
+  }
+  state.metricsController?.abort();
+  const controller = new AbortController();
+  const application = {
+    fingerprint: state.application.fingerprint,
+    pid: state.application.pid,
+    state: state.application.state
+  };
+  state.metricsController = controller;
+  try {
+    const path = target === "app"
+      ? "/api/metrics"
+      : "/api/metrics/nodes/" + encodeURIComponent(target);
+    const response = await fetch(path, { cache: "no-store", signal: controller.signal });
+    if (!response.ok) {
+      throw new Error("Runtime metrics are unavailable.");
+    }
+    const metrics = parseExact(await response.text());
+    if (state.metricsController !== controller
+        || metricTarget() !== target
+        || !currentApplication(application)
+        || Number(metrics.application_pid) !== Number(application.pid)) {
+      return;
+    }
+    state.metrics = metrics;
+    state.metricsNode = target;
+  } catch (_error) {
+    if (state.metricsController !== controller) {
+      return;
+    }
+    state.metrics = null;
+    state.metricsNode = "";
+  } finally {
+    if (state.metricsController === controller) {
+      state.metricsController = null;
+      renderMetrics();
+      scheduleMetricsPoll(1_000);
+    }
+  }
+}
+
+function renderMetrics() {
+  const panel = document.querySelector("#metrics-panel");
+  if (panel) {
+    panel.innerHTML = metricsPanel();
+  }
+}
+
+function metricsPanel() {
+  const target = metricTarget();
+  if (!target || state.metricsNode !== target || !plainObject(state.metrics)) {
+    return "";
+  }
+  if (target === "app") {
+    const application = state.metrics.application?.metrics || {};
+    const process = state.metrics.process || {};
+    return metricFacts("Runtime metrics", [
+      ["Uptime", formatMillis(process.uptime_millis)],
+      ["Executions", formatInteger(application.executions)],
+      ["Errors", formatInteger(application.errors)],
+      ["Cancelled", formatInteger(application.cancelled)],
+      ["In flight", formatInteger(application.in_flight)],
+      ["Heap", process.heap_used_bytes === undefined ? null
+        : `${formatBytes(process.heap_used_bytes)} / ${formatBytes(process.heap_committed_bytes)}`],
+      ["CPU", process.process_cpu_load_ppm === undefined
+        ? null : formatPercentPpm(process.process_cpu_load_ppm)],
+      ["Threads", process.live_threads === undefined ? null
+        : `${formatInteger(process.live_threads)} / ${formatInteger(process.peak_threads)} peak`],
+      ["GC", process.gc_collections === undefined ? null
+        : `${formatInteger(process.gc_collections)} / ${formatMillis(process.gc_millis)}`],
+      ["Metric counters", formatBytes(state.metrics.metric_counter_bytes)]
+    ]);
+  }
+  const steps = Array.isArray(state.metrics.steps) ? state.metrics.steps : [];
+  const flows = Array.isArray(state.metrics.flows) ? state.metrics.flows : [];
+  const step = steps.find(candidate => candidate.id === target)?.metrics;
+  const flow = flows.find(candidate => candidate.id === target)?.metrics;
+  if (!step && !flow) {
+    return "";
+  }
+  const rows = [];
+  if (step) {
+    rows.push(
+      [flow ? "Step executions" : "Executions", formatInteger(step.executions)],
+      [flow ? "Step errors" : "Errors", formatInteger(step.errors)],
+      [flow ? "Step cancelled" : "Cancelled", formatInteger(step.cancelled)],
+      [flow ? "Step in flight" : "In flight",
+        step.in_flight === undefined ? null : formatInteger(step.in_flight)],
+      [flow ? "Step sampled average" : "Sampled average", averageNanos(step)],
+      [flow ? "Step sampled maximum" : "Sampled maximum", formatNanos(step.duration_nanos_max)]
+    );
+  }
+  if (flow) {
+    rows.push(
+      ["Flow executions", formatInteger(flow.executions)],
+      ["Flow errors", formatInteger(flow.errors)],
+      ["Flow cancelled", formatInteger(flow.cancelled)],
+      ["Flow in flight", formatInteger(flow.in_flight)],
+      ["Flow average", averageNanos(flow)],
+      ["Flow maximum", formatNanos(flow.duration_nanos_max)]
+    );
+  }
+  return metricFacts("Operational metrics", rows);
+}
+
+function metricFacts(title, rows) {
+  const facts = rows
+    .filter(([_label, value]) => value !== null && value !== undefined)
+    .map(([label, value]) => `<div><dt>${html(label)}</dt><dd>${html(value)}</dd></div>`)
+    .join("");
+  return `<section class="inspector-section facts runtime-metrics">
+    <div class="section-heading"><strong>${html(title)}</strong><span>Connected</span></div>
+    <dl>${facts}</dl>
+  </section>`;
+}
+
+function averageNanos(metrics) {
+  const samples = metricNumber(metrics.duration_samples);
+  return formatNanos(samples ? metricNumber(metrics.duration_nanos_total) / samples : 0);
+}
+
+function metricNumber(value) {
+  const number = Number(numberText(value === undefined ? 0 : value));
+  return Number.isFinite(number) ? number : 0;
+}
+
+function formatInteger(value) {
+  const source = String(numberText(value === undefined ? 0 : value));
+  const sign = source.startsWith("-") ? "-" : "";
+  const digits = sign ? source.slice(1) : source;
+  return sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function formatBytes(value) {
+  const bytes = Math.max(0, metricNumber(value));
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let amount = bytes;
+  let unit = 0;
+  while (amount >= 1_024 && unit < units.length - 1) {
+    amount /= 1_024;
+    unit++;
+  }
+  return `${unit ? amount.toFixed(amount >= 10 ? 0 : 1) : formatInteger(Math.round(amount))} ${units[unit]}`;
+}
+
+function formatMillis(value) {
+  const millis = Math.max(0, metricNumber(value));
+  if (millis < 1_000) {
+    return `${formatInteger(Math.round(millis))} ms`;
+  }
+  if (millis < 60_000) {
+    return `${(millis / 1_000).toFixed(1)} s`;
+  }
+  if (millis < 3_600_000) {
+    return `${Math.floor(millis / 60_000)}m ${Math.floor(millis % 60_000 / 1_000)}s`;
+  }
+  if (millis < 86_400_000) {
+    return `${Math.floor(millis / 3_600_000)}h ${Math.floor(millis % 3_600_000 / 60_000)}m`;
+  }
+  return `${Math.floor(millis / 86_400_000)}d ${Math.floor(millis % 86_400_000 / 3_600_000)}h`;
+}
+
+function formatNanos(value) {
+  const nanos = Math.max(0, metricNumber(value));
+  if (nanos < 1_000) {
+    return `${Math.round(nanos)} ns`;
+  }
+  if (nanos < 1_000_000) {
+    return `${(nanos / 1_000).toFixed(nanos >= 10_000 ? 0 : 1)} us`;
+  }
+  if (nanos < 1_000_000_000) {
+    return `${(nanos / 1_000_000).toFixed(nanos >= 10_000_000 ? 0 : 1)} ms`;
+  }
+  return `${(nanos / 1_000_000_000).toFixed(2)} s`;
+}
+
+function formatPercentPpm(value) {
+  return `${(metricNumber(value) / 10_000).toFixed(1)}%`;
+}
+
+async function requestSelectedTrace() {
+  if (state.build === "Building" || !state.application.pid || state.jsonDraft || state.exampleDraft) {
+    return;
+  }
+  const example = selectedTraceCase();
+  if (!example || ["queued", "running"].includes(example.status)) {
+    if (state.traceKey || state.traceSummaryKey) {
+      clearPreview(true);
+      renderPreview();
+      renderRunResult();
+    }
+    return;
+  }
+  const summaryKey = [
+    state.application.fingerprint || "",
+    state.application.pid || 0,
+    example.id,
+    example.status,
+    example.events
+  ].join(":");
+  const operation = ["trigger", "step"].includes(state.selection.type)
+    ? selectedOperation()
+    : null;
+  const observation = operation ? observationFor(operation) : null;
+  if (!observation) {
+    return;
+  }
+  const casesKey = [
+    state.application.fingerprint || "",
+    state.application.pid || 0,
+    state.application.examples?.state === "completed"
+      ? "complete"
+      : `selected:${example.id}:${example.status}:${example.events}`,
+    observation.node,
+    observation.context,
+    operation.id
+  ].join(":");
+  const key = summaryKey + ":" + casesKey;
+  if (state.traceKey === key && state.traceSummary && state.traceCasesKey === casesKey) {
+    selectTracePreview(example);
+    return;
+  }
+  state.traceController?.abort();
+  const controller = new AbortController();
+  state.traceController = controller;
+  state.traceKey = key;
+  const applicationPid = Number(state.application.pid);
+  try {
+    const summaryRequest = state.traceSummaryKey === summaryKey && state.traceSummary
+      ? Promise.resolve(state.traceSummary)
+      : readExampleProjection(
+        `/api/examples/${encodeURIComponent(example.id)}/view`,
+        controller.signal
+      );
+    const casesRequest = state.traceCasesKey === casesKey
+      ? Promise.resolve({
+        application_pid: state.traceCasesPid,
+        node: observation.node,
+        cases: state.traceCases
+      })
+      : readExampleProjection(`/api/examples/steps/${observation.node}`, controller.signal);
+    const [summary, stepCases] = await Promise.all([summaryRequest, casesRequest]);
+    summary.nodes = summary.nodes instanceof Set
+      ? summary.nodes
+      : new Set((summary.nodes || []).filter(Number.isInteger));
+    if (Number(summary.application_pid) !== applicationPid
+        || !Array.isArray(stepCases.cases)
+        || Number(stepCases.application_pid) !== applicationPid
+        || Number(stepCases.node) !== observation.node) {
+      throw new Error("Built Example projection is from another application process.");
+    }
+    if (controller.signal.aborted || state.traceController !== controller || state.traceKey !== key) {
+      return;
+    }
+    state.traceSummary = summary;
+    state.traceSummaryKey = summaryKey;
+    state.traceCases = stepCases.cases.filter(plainObject);
+    state.traceCasesKey = casesKey;
+    state.traceCasesPid = Number(stepCases.application_pid);
+    state.traceContext = observation.context;
+    const selected = state.traceCases.find(candidate => candidate.id === example.id);
+    state.traceStep = state.selection.type === "step"
+        && observation.context === "input"
+        && plainObject(selected?.projection)
+      ? selected.projection
+      : null;
+    state.previewCases = observation.context === "input"
+      ? state.traceCases.flatMap(candidate => plainObject(candidate.projection)
+      ? [{
+        ...candidate.projection,
+        step: candidate.projection.id,
+        trigger: candidate.trigger,
+        example: candidate.index,
+        example_name: candidate.name
+      }]
+      : [])
+      : [];
+    state.traceController = null;
+    selectTracePreview(example);
   } catch (error) {
-    if (!previewRequestIsCurrent(controller, revision, operationId, fingerprint)) {
+    if (controller.signal.aborted || state.traceController !== controller) {
       return;
     }
-    state.previewController = null;
+    state.traceController = null;
+    state.traceStep = null;
+    state.traceCases = [];
+    state.traceCasesKey = "";
+    state.traceCasesPid = 0;
+    state.traceContext = "";
     state.previewCases = [];
     state.preview = {
-      step: operationId,
+      step: state.selection.id,
       status: "unavailable",
       inputs: {},
       stages: [],
-      message: "Built application preview is unavailable."
+      message: error instanceof Error ? error.message : "Built example trace is unavailable."
     };
+    state.runResult = "";
+    refreshTraceView();
   }
+}
+
+async function readExampleProjection(path, signal) {
+  const response = await fetch(path, { cache: "no-store", signal });
+  const source = await response.text();
+  if (!response.ok) {
+    const failure = parseExact(source);
+    throw new Error(failure.message || "Built example trace is unavailable.");
+  }
+  const projection = parseExact(source);
+  if (!plainObject(projection)) {
+    throw new Error("Built example view is invalid.");
+  }
+  return projection;
+}
+
+function selectedTraceCase() {
+  const operation = state.selection.type === "trigger" || state.selection.type === "step"
+    ? node(state.selection.id)
+    : null;
+  const trigger = operation ? triggerFor(operation.id) : null;
+  if (!trigger) {
+    return null;
+  }
+  const index = Math.max(0, Math.min(state.exampleIndex, trigger.examples.length - 1));
+  const example = state.application.example;
+  return example?.trigger === trigger.id && Number(example.index) === index ? example : null;
+}
+
+function selectTracePreview(example = selectedTraceCase()) {
+  const summary = state.traceSummary || {};
+  const operation = state.selection.type === "step" ? selectedOperation() : null;
+  const reached = operation && plainObject(state.traceStep) ? state.traceStep : null;
+  if (reached) {
+    state.preview = {
+      ...reached,
+      step: reached.id,
+      selected_candidates: selectedCandidates(operation, reached.options || {})
+    };
+  } else {
+    state.preview = null;
+  }
+  if (plainObject(summary.result)) {
+    const result = { example: example?.name, ...summary.result };
+    state.runResult = JSON.stringify(result, null, 2);
+  } else if (example && !["succeeded", "running", "queued"].includes(example.status)) {
+    state.runResult = JSON.stringify({
+      example: example.name,
+      status: example.status,
+      ...(example.message ? { message: example.message } : {})
+    }, null, 2);
+  } else {
+    state.runResult = "";
+  }
+  refreshTraceView();
+}
+
+function selectedCandidates(operation, options) {
+  const selected = {};
+  const definition = definitionFor(operation);
+  definition?.inputs.filter(input => input.type === "candidates").forEach(input => {
+    const candidates = operation.inputs?.[input.name] || [];
+    const index = candidates.findIndex(candidate => candidate.option === options[input.name]);
+    if (index >= 0) {
+      selected[inputDiagnosticPath(operation.id, ["inputs", input.name])] = index;
+    }
+  });
+  return selected;
+}
+
+function refreshTraceView() {
+  applyExampleCoverage();
+  refreshPickerOptions();
   if (state.pathPicker) {
     renderBuildStatus();
-    if (!refreshPathPicker()) {
-      render();
-    }
-  } else {
-    renderPreview();
-    refreshNestedOptions();
+    refreshPathPicker();
+    return;
+  }
+  refreshNestedOptions();
+  renderPreview();
+  renderRunResult();
+}
+
+function refreshPickerOptions() {
+  const options = document.querySelector("#step-options");
+  if (options && state.picker && observationMayReplace(options)) {
+    options.innerHTML = pickerOptions();
   }
 }
 
-function previewCase(payload, operationId, available) {
-  return {
-    step: payload.preview?.step || operationId,
-    status: payload.status || "failed",
-    inputs: payload.preview?.inputs || {},
-    stages: payload.preview?.stages || [],
-    selected_candidates: payload.preview?.selected_candidates || {},
-    input_context: payload.preview?.input_context,
-    context: payload.context,
-    message: payload.diagnostics?.[0]?.message
-      || (available ? "" : "Built application preview is unavailable.")
-  };
+function observationMayReplace(container) {
+  if (!container.querySelector("button")) {
+    return true;
+  }
+  const active = document.activeElement;
+  return !container.matches(":hover") && !(active instanceof Element && container.contains(active));
 }
 
-function previewRequestIsCurrent(controller, revision, operationId, fingerprint) {
-  return !controller.signal.aborted
-    && state.previewController === controller
-    && state.revision === revision
-    && state.selection.type === "step"
-    && state.selection.id === operationId
-    && state.build === "Built"
-    && state.application.fingerprint === fingerprint;
+function applyExampleCoverage() {
+  const examples = state.application.examples;
+  if (!state.project || !examples) {
+    return;
+  }
+  const deployed = state.builtProject || state.project;
+  const covered = exampleCoverage(examples.coverage_bits, deployed);
+  const selected = new Set([...(state.traceSummary?.nodes || [])]
+    .map(index => deployed.nodes[index]?.id)
+    .filter(Boolean));
+  if (selectedTraceCase()?.trigger) {
+    selected.add(selectedTraceCase().trigger);
+  }
+  const complete = examples.state === "completed";
+  document.querySelectorAll("[data-node-id]").forEach(element => {
+    const id = element.dataset.nodeId;
+    element.classList.toggle("example-reached", selected.has(id));
+    element.classList.toggle("example-uncovered", complete
+      && !["app", selectedTraceCase()?.trigger].includes(id)
+      && !covered.has(id));
+  });
+}
+
+function exampleCoverage(encoded, project) {
+  const bytes = encoded
+    ? Uint8Array.from(atob(encoded), character => character.charCodeAt(0))
+    : new Uint8Array();
+  return new Set(project.nodes.filter((_operation, index) =>
+    (bytes[index >> 3] & (1 << (index & 7))) !== 0).map(operation => operation.id));
 }
 
 function renderPreview() {
@@ -3097,6 +3761,9 @@ function refreshCandidateSelection() {
 function refreshNestedOptions() {
   const operation = selectedOperation();
   document.querySelectorAll("[data-step-options]").forEach(options => {
+    if (!observationMayReplace(options)) {
+      return;
+    }
     const scope = parseToken(options.dataset.inputScope);
     options.innerHTML = nestedOptions(
       operation,
@@ -3107,6 +3774,9 @@ function refreshNestedOptions() {
     );
   });
   document.querySelectorAll("[data-predicate-options]").forEach(options => {
+    if (!observationMayReplace(options)) {
+      return;
+    }
     const scope = parseToken(options.dataset.inputScope);
     options.innerHTML = predicateOptionsFor(
       operation,
@@ -3146,13 +3816,10 @@ function previewSource(operation) {
     .filter(input => input.type !== "path" && input.type !== "steps" && !consumed.has(input.name))
     .filter(input => Object.hasOwn(previewInputs, input.name))
     .forEach(input => values.push([input.name, previewInputs[input.name]]));
-  const outputs = definition.returns.flatMap(port => {
-    const path = operation.returns?.[port.name];
-    const value = Array.isArray(path) && plainObject(preview.context)
-      ? valueAt({ context: preview.context }, path)
-      : undefined;
-    return value === undefined ? [] : [[port.name, value]];
-  });
+  const returned = preview.returns || {};
+  const outputs = definition.returns.flatMap(port => Object.hasOwn(returned, port.name)
+    ? [[port.name, returned[port.name]]]
+    : []);
   if (!values.length && preview.status !== "succeeded") {
     return `
       <section class="inspector-section preview-error">
@@ -3211,64 +3878,14 @@ function renderRunResult() {
   }
 }
 
-async function runExamples() {
-  const triggers = triggerNodes();
-  if (!triggers.length || state.jsonDraft || state.exampleDraft) {
-    return;
-  }
-  const revision = state.revision;
-  state.runController?.abort();
-  const controller = new AbortController();
-  state.runController = controller;
-  const runRevision = ++state.runRevision;
-  state.runResult = "";
-  renderRunResult();
-  let result;
-  try {
-    const cases = [];
-    for (const trigger of triggers) {
-      for (let index = 0; index < trigger.examples.length; index++) {
-        const example = trigger.examples[index];
-        const response = await fetch("/api/run/" + encodeURIComponent(trigger.id), {
-          method: "POST",
-          headers: mutationHeaders(),
-          body: JSON.stringify(exampleContext(trigger, index)),
-          signal: controller.signal
-        });
-        cases.push({ flow: stepPresentation(trigger.id).name || trigger.id,
-          name: example.name, result: parseExact(await response.text()) });
-      }
-    }
-    result = JSON.stringify(cases, null, 2);
-  } catch (error) {
-    if (controller.signal.aborted) {
-      return;
-    }
-    result = JSON.stringify({ status: "failed", message: "Run request failed." }, null, 2);
-  }
-  if (revision !== state.revision || runRevision !== state.runRevision
-      || state.jsonDraft || state.exampleDraft) {
-    return;
-  }
-  state.runController = null;
-  state.runResult = result;
-  renderRunResult();
-}
-
-function cancelRuns() {
-  state.runController?.abort();
-  state.runController = null;
-  state.runRevision++;
-}
-
 function dirty(projectChanged = true) {
-  cancelRuns();
   if (projectChanged) {
     propagateSharedOperation();
     if (state.jsonDraft && !node(state.jsonDraft.node)) {
       state.jsonDraft = null;
     }
-    clearPreview();
+    clearPreview(false, state.selection.type === "trigger");
+    resetMetrics();
     state.pendingProject = true;
     state.build = "Building";
     state.runResult = "";
@@ -3283,7 +3900,7 @@ function dirty(projectChanged = true) {
     state.pendingProject = false;
     const projectSource = JSON.stringify(state.project);
     const creatorSource = JSON.stringify(state.creator);
-    enqueueWrite(() => save(revision, functional, projectSource, creatorSource));
+    enqueueWrite({ revision, projectChanged: functional, projectSource, creatorSource });
   }, 120);
   render();
 }
@@ -3292,10 +3909,23 @@ function creatorDirty() {
   dirty(false);
 }
 
-function enqueueWrite(task) {
-  const pending = state.writePromise.then(task, task);
-  state.writePromise = pending.then(() => undefined, () => undefined);
-  return pending;
+function enqueueWrite(write) {
+  state.pendingWrite = state.pendingWrite
+    ? { ...write, projectChanged: state.pendingWrite.projectChanged || write.projectChanged }
+    : write;
+  if (!state.writeActive) {
+    state.writeActive = true;
+    void drainWrites();
+  }
+}
+
+async function drainWrites() {
+  while (state.pendingWrite) {
+    const write = state.pendingWrite;
+    state.pendingWrite = null;
+    await save(write.revision, write.projectChanged, write.projectSource, write.creatorSource);
+  }
+  state.writeActive = false;
 }
 
 async function save(revision, projectChanged, projectSource, creatorSource) {
@@ -3313,7 +3943,9 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
       payload = parseExact(await projectResponse.text());
       if (!projectResponse.ok) {
         if (revision === state.revision) {
-          state.application = payload.application || state.application;
+          if (payload.application) {
+            replaceApplication(payload.application);
+          }
           state.diagnostics = payload.diagnostics || [{
             code: "CREATOR_SAVE_FAILED",
             message: payload.message || "Project is not buildable.",
@@ -3334,7 +3966,9 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     if (revision !== state.revision) {
       return creatorResponse.ok;
     }
-    state.application = payload.application || state.application;
+    if (payload.application) {
+      replaceApplication(payload.application);
+    }
     if (!creatorResponse.ok) {
       state.diagnostics = payload.diagnostics || [{
         code: "CREATOR_METADATA_SAVE_FAILED",
@@ -3360,8 +3994,8 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
       render();
     }
     if (projectChanged) {
-      requestPreview();
-      runExamples();
+      scheduleApplicationPoll(0);
+      scheduleMetricsPoll(0);
     }
     return true;
   } catch (error) {
@@ -3401,24 +4035,13 @@ function changedIds() {
   return changed;
 }
 
-function availablePaths(operation) {
+function availablePaths(operation, context = state.traceContext) {
   const trigger = triggerFor(operation.id);
   if (!trigger) {
     return [];
   }
+  const roots = observedRoots(operation, context);
   const merged = new Map();
-  const roots = trigger.examples.map((_example, index) => exampleRoot(trigger, index));
-  const previews = state.previewCases.filter(preview => plainObject(preview.input_context));
-  if (previews.length === roots.length) {
-    previews.forEach((preview, index) => {
-      roots[index] = { context: clone(preview.input_context) };
-    });
-  } else if (state.pathPreview?.trigger === trigger.id
-      && state.pathPreview.step === operation.id
-      && state.pathPreview.example < roots.length
-      && plainObject(state.pathPreview.context)) {
-    roots[state.pathPreview.example] = { context: clone(state.pathPreview.context) };
-  }
   roots.forEach(root => {
     const entries = [];
     collectPaths(root, [], entries);
@@ -3430,65 +4053,65 @@ function availablePaths(operation) {
       merged.set(key, value);
     });
   });
-  return [...merged.values()].map(entry => ({
+  const total = Math.max(1, trigger.examples.length);
+  const cases = state.traceCases.filter(example => example.trigger === trigger.id);
+  const settled = cases.length === total
+    && cases.every(example => !["queued", "running"].includes(example.status));
+  const paths = [...merged.values()].map(entry => ({
     path: entry.path,
-    shape: entry.shapes.size === 1 ? [...entry.shapes][0] : "mixed",
+    shape: settled && entry.shapes.size === 1 ? [...entry.shapes][0] : "mixed",
     examples: entry.examples,
-    total: roots.length
+    total
   }));
+  definitionOf(trigger.use).results
+    .filter(result => Object.hasOwn(result, "default"))
+    .forEach(result => {
+      const path = ["context", result.name];
+      const existing = paths.find(entry => samePath(entry.path, path));
+      if (existing) {
+        existing.examples = total;
+      } else {
+        paths.push({ path, shape: result.shape, examples: total, total });
+      }
+    });
+  return paths;
 }
 
-function exampleRoot(trigger, index) {
-  const context = exampleContext(trigger, index);
-  context.runtime = { test: true, trigger: trigger.id };
-  definitionOf(trigger.use).results.forEach(result => {
-    delete context[result.name];
-    if (Object.hasOwn(result, "default")) {
-      context[result.name] = clone(result.default);
+function observationFor(operation) {
+  const built = state.builtProject?.nodes || [];
+  let candidate = operation;
+  let context = definitionFor(candidate)?.kind === "trigger" ? "trigger" : "input";
+  const visited = new Set();
+  while (candidate && visited.add(candidate.id)) {
+    const index = built.findIndex(deployed => deployed.id === candidate.id);
+    if (index >= 0) {
+      return { node: index, context };
     }
-  });
-  return { context };
-}
-
-function exampleContext(trigger, index) {
-  const example = trigger.examples[index];
-  const context = plainObject(example.context) ? clone(example.context) : {};
-  const definition = definitionOf(trigger.use);
-  const target = definition.inputs.find(input => input.name === definition.example_target);
-  const path = target
-    ? trigger.inputs?.[definition.example_target] || defaultInput(target)
-    : undefined;
-  if (Array.isArray(path) && path.length > 1) {
-    writePath({ context }, path, clone(example.payload));
+    const incoming = state.project.links.filter(link => link.to === candidate.id);
+    if (incoming.length !== 1) {
+      return null;
+    }
+    candidate = node(linkNode(incoming[0]));
+    context = definitionFor(candidate)?.kind === "trigger" ? "trigger" : "output";
   }
-  return context;
+  return null;
 }
 
-function writePath(root, path, value) {
-  let owner = root;
-  for (let index = 0; index < path.length; index++) {
-    const part = path[index];
-    if (index === path.length - 1) {
-      defineValue(owner, part, value);
-      return root;
-    }
-    const array = typeof path[index + 1] === "number";
-    const child = Object.hasOwn(owner, part) ? owner[part] : undefined;
-    if ((array && !Array.isArray(child)) || (!array && !plainObject(child))) {
-      defineValue(owner, part, array ? [] : {});
-    }
-    owner = owner[part];
+function observedRoots(operation, context = state.traceContext) {
+  const trigger = triggerFor(operation.id);
+  if (!trigger) {
+    return [];
   }
-  return root;
-}
-
-function defineValue(owner, field, value) {
-  Object.defineProperty(owner, field, {
-    value,
-    configurable: true,
-    enumerable: true,
-    writable: true
-  });
+  return state.traceCases
+    .filter(example => example.trigger === trigger.id)
+    .flatMap(example => {
+      const value = context === "trigger"
+        ? example.initial_context
+        : context === "output"
+          ? example.projection?.context
+          : example.projection?.input_context;
+      return plainObject(value) ? [{ context: value }] : [];
+    });
 }
 
 function collectPaths(value, path, entries) {
@@ -4062,6 +4685,7 @@ function selectedOperation() {
 
 function selectStep(id) {
   clearPreview();
+  resetMetrics();
   state.exampleDraft = null;
   state.selection = { type: "step", id };
   state.inspectorMode = "inspect";
@@ -4069,8 +4693,9 @@ function selectStep(id) {
   state.pathPicker = null;
   clearInputQueries();
   render();
+  scheduleMetricsPoll(0);
   if (definitionFor(node(id))?.kind === "step") {
-    requestPreview();
+    requestSelectedTrace();
   }
 }
 
@@ -4200,6 +4825,10 @@ function pathPart(part) {
   return typeof part === "number" ? "[" + part + "]" : part;
 }
 
+function programPath(locator) {
+  return displayPath(locator[0] === "inputs" ? locator.slice(1) : locator);
+}
+
 function displayPath(path) {
   return path.reduce((value, part) => typeof part === "number"
     ? value + "[" + part + "]"
@@ -4287,8 +4916,10 @@ document.addEventListener("click", event => {
   }
   const inspectorMode = target.closest("[data-inspector-mode]");
   if (inspectorMode) {
+    resetMetrics();
     state.inspectorMode = inspectorMode.dataset.inspectorMode;
     render();
+    scheduleMetricsPoll(0);
     return;
   }
   if (target.closest("#new-group")) {
@@ -4550,6 +5181,7 @@ document.addEventListener("click", event => {
   }
   const group = target.closest("[data-select-group]");
   if (group) {
+    resetMetrics();
     state.selection = { type: "group", id: group.dataset.selectGroup };
     state.inspectorMode = "inspect";
     state.editScope = null;
@@ -4559,6 +5191,7 @@ document.addEventListener("click", event => {
   const selected = target.closest("[data-select-node]");
   if (selected) {
     clearPreview();
+    resetMetrics();
     state.exampleDraft = null;
     const id = selected.dataset.selectNode;
     state.selection = id === "app" ? { type: "app", id } : { type: "trigger", id };
@@ -4570,6 +5203,10 @@ document.addEventListener("click", event => {
     state.pathPicker = null;
     clearInputQueries();
     render();
+    scheduleMetricsPoll(0);
+    if (id !== "app") {
+      requestSelectedTrace();
+    }
   }
 });
 
@@ -4650,6 +5287,16 @@ document.addEventListener("change", event => {
       Number(target.dataset.candidateIndex),
       target.value
     );
+  } else if (target.matches("[data-node-metrics]")) {
+    const operation = selectedOperation();
+    if (operation) {
+      if (target.checked) {
+        delete operation.metrics;
+      } else {
+        operation.metrics = false;
+      }
+      dirty();
+    }
   } else if (target.id === "project-id") {
     state.project.id = target.value;
     dirty();
@@ -4682,4 +5329,10 @@ document.addEventListener("keydown", event => {
   }
   event.preventDefault();
   selectable.click();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    scheduleMetricsPoll(0);
+  }
 });

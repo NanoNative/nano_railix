@@ -2,6 +2,7 @@ package dev.nanonative.railix.core.project;
 
 import dev.nanonative.railix.core.runtime.RunFailure;
 import dev.nanonative.railix.core.runtime.RunResult;
+import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixData;
@@ -22,7 +23,6 @@ import java.util.Optional;
  * Graph selection and routing stay outside this class.
  */
 public final class WorkflowRuntime {
-    private static final List<RunResult.StepExecution> NO_HISTORY = List.of();
     private static final int ABORTED = -1;
     private static final int WRITE_OK = 0;
     private static final int WRITE_CONFLICT = 1;
@@ -34,66 +34,53 @@ public final class WorkflowRuntime {
     }
 
     static Execution execution(
-            final String triggerId,
             final List<ResultPlan> results,
             final RailixValue.ObjectValue context,
-            final boolean test,
-            final boolean history
+            final RailixValue.ObjectValue runtime
     ) {
-        return new Execution(triggerId, results, context, test, history);
+        return new Execution(results, context, runtime);
     }
 
     static Optional<RunResult> validateSource(
             final StepPlan step,
             final Map<String, RailixValue> values,
-            final String path,
-            final List<RunResult.StepExecution> history
+            final String path
     ) {
-        return validateReceives(step, values, path, history);
+        return validateReceives(step, values, path);
     }
 
     static RunResult rejectedResult(
             final String code,
             final String message,
-            final String path,
-            final List<RunResult.StepExecution> history
+            final String path
     ) {
-        return rejected(code, message, path, history);
+        return rejected(code, message, path);
     }
 
     static RunResult failedResult(
             final String code,
             final String message,
-            final String step,
-            final List<RunResult.StepExecution> history
+            final String step
     ) {
-        return failed(code, message, step, history);
+        return failed(code, message, step);
     }
 
     static Inputs inputs(final Map<String, RailixValue> received, final String primaryOutcome) {
         return new Inputs(received, primaryOutcome);
     }
 
-    static final class Execution {
+    static class Execution {
         private EventFrame frame;
         private RailixValue.ObjectValue frozenContext;
         private RunResult aborted;
-        private Capture capture;
         private final List<ResultPlan> results;
-        private final List<RunResult.StepExecution> history;
 
-        private Execution(
-                final String triggerId,
+        Execution(
                 final List<ResultPlan> results,
                 final RailixValue.ObjectValue streamContext,
-                final boolean test,
-                final boolean history
+                final RailixValue.ObjectValue runtime
         ) {
-            if (streamContext == null) {
-                throw new IllegalArgumentException("Workflow context cannot be Java null.");
-            }
             this.results = results;
-            this.history = history ? new ArrayList<>() : NO_HISTORY;
             final LinkedHashMap<String, Object> context = new LinkedHashMap<>(streamContext.values());
             for (final ResultPlan result : results) {
                 context.remove(result.name());
@@ -101,10 +88,7 @@ public final class WorkflowRuntime {
                     context.put(result.name(), result.defaultValue().getFirst());
                 }
             }
-            context.put("runtime", RailixValue.object(Map.of(
-                    "test", RailixValue.bool(test),
-                    "trigger", RailixValue.string(triggerId)
-            )));
+            context.put("runtime", runtime);
             frame = new EventFrame(context);
         }
 
@@ -114,40 +98,8 @@ public final class WorkflowRuntime {
                 final Map<String, RailixValue> received,
                 final InputResolver resolver
         ) {
-            return invoke(plan, implementation, received, resolver, null);
-        }
-
-        int observe(
-                final StepPlan plan,
-                final StepCall implementation,
-                final Map<String, RailixValue> received,
-                final InputResolver resolver,
-                final Capture capture
-        ) {
-            if (capture == null) {
-                throw new IllegalArgumentException("Workflow observation capture cannot be Java null.");
-            }
-            capture.inputContext(frame.snapshot());
-            return invoke(plan, implementation, received, resolver, capture);
-        }
-
-        private int invoke(
-                final StepPlan plan,
-                final StepCall implementation,
-                final Map<String, RailixValue> received,
-                final InputResolver resolver,
-                final Capture observed
-        ) {
-            if (plan == null || implementation == null || received == null || resolver == null) {
-                return abort(failed(
-                        "RUN_PLAN_MISSING",
-                        "Compiled Step invocation is incomplete.",
-                        plan == null ? "" : plan.id(),
-                        history
-                ));
-            }
             if (Thread.currentThread().isInterrupted()) {
-                return abort(new RunResult.Cancelled(history));
+                return abort(new RunResult.Cancelled());
             }
             Map<String, RailixValue> resolvedReceives = received;
             if (plan.mappedReceives() && !plan.receives().isEmpty()) {
@@ -159,8 +111,7 @@ public final class WorkflowRuntime {
                         return abort(rejected(
                                 "RUN_STEP_RECEIVE_REQUIRED",
                                 "Step receive path has no value: " + port.name() + ".",
-                                plan.path() + ".receives." + port.name(),
-                                history
+                                plan.path() + ".receives." + port.name()
                         ));
                     }
                     if (!port.shape().accepts(value)) {
@@ -168,8 +119,7 @@ public final class WorkflowRuntime {
                                 "RUN_STEP_RECEIVE_INCOMPATIBLE",
                                 "Step receive " + port.name() + " requires " + shape(port.shape())
                                         + " but receives " + shape(ValueShape.shapeOf(value)) + ".",
-                                plan.path() + ".receives." + port.name(),
-                                history
+                                plan.path() + ".receives." + port.name()
                         ));
                     }
                     final Optional<String> rejection = port.refinement().rejection(value);
@@ -177,42 +127,20 @@ public final class WorkflowRuntime {
                         return abort(rejected(
                                 "RUN_STEP_RECEIVE_INCOMPATIBLE",
                                 "Step receive " + port.name() + " is incompatible: " + rejection.get(),
-                                plan.path() + ".receives." + port.name(),
-                                history
+                                plan.path() + ".receives." + port.name()
                         ));
                     }
                     mapped.put(port.name(), value);
                 }
                 resolvedReceives = mapped;
             }
-            final Capture previous = capture;
-            capture = observed;
-            try {
-                final Inputs resolved = resolver.resolve(this, resolvedReceives, plan.primaryOutcome());
-                if (resolved == null) {
-                    return abort(failed(
-                            "RUN_PLAN_MISSING",
-                            "Compiled Step input resolver returned Java null.",
-                            plan.id(),
-                            history
-                    ));
-                }
-                return WorkflowRuntime.call(plan, implementation, this, resolved);
-            } finally {
-                capture = previous;
-            }
+            final Inputs resolved = resolver.resolve(this, resolvedReceives, plan.primaryOutcome());
+            return WorkflowRuntime.call(plan, implementation, this, resolved);
         }
 
         int abort(final RunResult result) {
-            if (result == null) {
-                throw new IllegalArgumentException("Aborted execution result cannot be Java null.");
-            }
             aborted = result;
             return ABORTED;
-        }
-
-        void record(final String stepId, final String outcome) {
-            WorkflowRuntime.record(history, stepId, outcome);
         }
 
         RunResult finish() {
@@ -220,7 +148,7 @@ public final class WorkflowRuntime {
                 return aborted;
             }
             if (Thread.currentThread().isInterrupted()) {
-                return new RunResult.Cancelled(history);
+                return new RunResult.Cancelled();
             }
             final RailixValue.ObjectValue context = context();
             for (final ResultPlan result : results) {
@@ -229,8 +157,7 @@ public final class WorkflowRuntime {
                     return rejected(
                             "RUN_RESULT_REQUIRED",
                             "Trigger result is missing: " + result.name() + ".",
-                            "context." + result.name(),
-                            history
+                            "context." + result.name()
                     );
                 }
                 if (!result.shape().accepts(value)) {
@@ -238,8 +165,7 @@ public final class WorkflowRuntime {
                             "RUN_RESULT_INCOMPATIBLE",
                             "Trigger result " + result.name() + " requires " + shape(result.shape())
                                     + " but receives " + shape(ValueShape.shapeOf(value)) + ".",
-                            "context." + result.name(),
-                            history
+                            "context." + result.name()
                     );
                 }
                 final Optional<String> rejection = canonicalResultRejection(value);
@@ -247,12 +173,11 @@ public final class WorkflowRuntime {
                     return rejected(
                             "RUN_RESULT_INCOMPATIBLE",
                             "Trigger result " + result.name() + " is incompatible: " + rejection.get(),
-                            "context." + result.name(),
-                            history
+                            "context." + result.name()
                     );
                 }
             }
-            return new RunResult.Succeeded(context, history);
+            return new RunResult.Succeeded(context);
         }
 
         Map<String, RailixValue> responses(final Map<String, String> slots) {
@@ -264,19 +189,19 @@ public final class WorkflowRuntime {
             return Collections.unmodifiableMap(responses);
         }
 
-        List<RunResult.StepExecution> history() {
-            return List.copyOf(history);
-        }
-
         RailixValue resolve(final Path path) {
             return frame.resolve(path);
         }
 
-        private RailixValue.ObjectValue context() {
+        RailixValue.ObjectValue context() {
             if (frozenContext == null) {
                 frozenContext = frame.snapshot();
             }
             return frozenContext;
+        }
+
+        StepResult nested(final NestedStep step, final StepInput input) throws InterruptedException {
+            return step.handler().run(input);
         }
     }
 
@@ -286,24 +211,10 @@ public final class WorkflowRuntime {
             final Execution execution,
             final Inputs resolution
     ) {
-        final List<RunResult.StepExecution> history = execution.history;
-        final Capture capture = execution.capture;
         final EventFrame frame = execution.frame;
         if (resolution.failure != null) {
             resolution.closePrograms();
             return execution.abort(resolution.failure);
-        }
-        if (capture != null) {
-            capture.inputs(resolution.values);
-        }
-        if (plan.use().isEmpty()) {
-            resolution.closePrograms();
-            return execution.abort(failed(
-                    "STEP_HANDLER_REQUIRED",
-                    "Executable Step has no handler.",
-                    plan.id(),
-                    history
-            ));
         }
         final StepResult result;
         try {
@@ -312,26 +223,24 @@ public final class WorkflowRuntime {
             return execution.abort(abort.result());
         } catch (final InterruptedException exception) {
             Thread.currentThread().interrupt();
-            return execution.abort(new RunResult.Cancelled(history));
+            return execution.abort(new RunResult.Cancelled());
         } catch (final RuntimeException exception) {
             return execution.abort(failed(
                     "STEP_IMPLEMENTATION_FAULT",
                     "Step implementation threw an unexpected exception.",
-                    plan.id(),
-                    history
+                    plan.id()
             ));
         } finally {
             resolution.closePrograms();
         }
         if (Thread.currentThread().isInterrupted()) {
-            return execution.abort(new RunResult.Cancelled(history));
+            return execution.abort(new RunResult.Cancelled());
         }
         if (result == null) {
             return execution.abort(failed(
                     "STEP_RESULT_REQUIRED",
                     "Step implementation returned Java null.",
-                    plan.id(),
-                    history
+                    plan.id()
             ));
         }
         final int outcome = plan.outcomes().indexOf(result.outcome());
@@ -339,16 +248,14 @@ public final class WorkflowRuntime {
             return execution.abort(failed(
                     "STEP_OUTCOME_INVALID",
                     "Step returned undeclared outcome: " + result.outcome() + ".",
-                    plan.id(),
-                    history
+                    plan.id()
             ));
         }
         if (!plan.primaryOutcome().equals(result.outcome()) && !result.outputs().isEmpty()) {
             return execution.abort(failed(
                     "STEP_OUTPUT_UNEXPECTED",
                     "Step returned output for outcome " + result.outcome() + ".",
-                    plan.id(),
-                    history
+                    plan.id()
             ));
         }
         final boolean primary = plan.primaryOutcome().equals(result.outcome());
@@ -361,8 +268,7 @@ public final class WorkflowRuntime {
                 return execution.abort(failed(
                         "STEP_OUTPUT_INVALID",
                         "Step did not return every declared output exactly once.",
-                        plan.id(),
-                        history
+                        plan.id()
                 ));
             }
             for (final Port port : plan.returns()) {
@@ -371,8 +277,7 @@ public final class WorkflowRuntime {
                     return execution.abort(failed(
                             "STEP_OUTPUT_INVALID",
                             "Step output " + port.name() + " requires " + shape(port.shape()) + ".",
-                            plan.id(),
-                            history
+                            plan.id()
                     ));
                 }
                 final Optional<String> rejection = port.refinement().rejection(output);
@@ -383,17 +288,7 @@ public final class WorkflowRuntime {
                             "STEP_OUTPUT_INVALID",
                             "Step output " + port.name() + " is incompatible."
                                     + rejection.map(value -> " " + value).orElse(""),
-                            plan.id(),
-                            history
-                    ));
-                }
-                final Path target = plan.returnPaths().get(port.name());
-                if (target == null) {
-                    return execution.abort(failed(
-                            "STEP_RETURN_TARGET_REQUIRED",
-                            "Compiled Step return target is missing: " + port.name() + ".",
-                            plan.id(),
-                            history
+                            plan.id()
                     ));
                 }
             }
@@ -402,10 +297,9 @@ public final class WorkflowRuntime {
             final PathBinding target = resolution.paths.get(write.getKey());
             if (target == null || !target.writable()) {
                 return execution.abort(failed(
-                        "STEP_WRITE_UNDECLARED",
-                        "Step wrote through an undeclared writable PATH input: " + write.getKey() + ".",
-                        plan.id(),
-                        history
+                    "STEP_WRITE_UNDECLARED",
+                    "Step wrote through an undeclared writable PATH input: " + write.getKey() + ".",
+                    plan.id()
                 ));
             }
         }
@@ -417,8 +311,7 @@ public final class WorkflowRuntime {
                 if (status != WRITE_OK) {
                     return execution.abort(writeFailure(
                             status,
-                            plan.path() + ".returns." + port.name(),
-                            history
+                            plan.path() + ".returns." + port.name()
                     ));
                 }
             }
@@ -432,8 +325,7 @@ public final class WorkflowRuntime {
             if (status != WRITE_OK) {
                 return execution.abort(writeFailure(
                         status,
-                        plan.path() + ".inputs." + path.getKey(),
-                        history
+                        plan.path() + ".inputs." + path.getKey()
                 ));
             }
         }
@@ -510,20 +402,17 @@ public final class WorkflowRuntime {
         void candidates(
                 final String name,
                 final List<CandidatePlan> candidates,
-                final String path,
                 final Execution execution
         ) {
             if (failure != null) {
                 return;
             }
-            for (int index = 0; index < candidates.size(); index++) {
-                final CandidatePlan candidate = candidates.get(index);
+            for (final CandidatePlan candidate : candidates) {
                 final MatcherEvaluation evaluation = evaluate(
                         candidate,
                         values,
                         execution,
-                        primaryOutcome,
-                        name + "[" + index + "].when"
+                        primaryOutcome
                 );
                 if (evaluation.failure() != null) {
                     evaluation.children().closePrograms();
@@ -537,9 +426,6 @@ public final class WorkflowRuntime {
                     selected = put(selected, name, evaluation.children().input(
                             candidate.outcome().isEmpty() ? primaryOutcome : candidate.outcome()
                     ));
-                    if (execution.capture != null) {
-                        execution.capture.selectedCandidate(path, index);
-                    }
                     return;
                 }
                 evaluation.children().closePrograms();
@@ -556,15 +442,13 @@ public final class WorkflowRuntime {
             }
             boolean matched = false;
             groupLoop:
-            for (int groupIndex = 0; groupIndex < groups.size(); groupIndex++) {
-                final List<CandidatePlan> group = groups.get(groupIndex);
-                for (int matcherIndex = 0; matcherIndex < group.size(); matcherIndex++) {
+            for (final List<CandidatePlan> group : groups) {
+                for (final CandidatePlan candidate : group) {
                     final MatcherEvaluation evaluation = evaluate(
-                            group.get(matcherIndex),
+                            candidate,
                             values,
                             execution,
-                            primaryOutcome,
-                            name + "[" + groupIndex + "][" + matcherIndex + "].when"
+                            primaryOutcome
                     );
                     if (evaluation.failure() != null) {
                         evaluation.children().closePrograms();
@@ -597,8 +481,7 @@ public final class WorkflowRuntime {
                     values.get(sourceInput),
                     missingOutcome.isEmpty() ? primaryOutcome : missingOutcome,
                     execution,
-                    primaryOutcome,
-                    name
+                    primaryOutcome
             );
             programs = put(programs, name, program::run);
             if (programScopes == null) {
@@ -608,15 +491,6 @@ public final class WorkflowRuntime {
         }
 
         private void merge(final Inputs children) {
-            if (children == null) {
-                fail(failed(
-                        "RUN_PLAN_MISSING",
-                        "Compiled child input resolver returned Java null.",
-                        "",
-                        List.of()
-                ));
-                return;
-            }
             if (children.programScopes != null && !children.programScopes.isEmpty()) {
                 if (programScopes == null) {
                     programScopes = new ArrayList<>();
@@ -668,20 +542,9 @@ public final class WorkflowRuntime {
             final CandidatePlan candidate,
             final Map<String, RailixValue> values,
             final Execution execution,
-            final String primaryOutcome,
-            final String predicateInput
+            final String primaryOutcome
     ) {
         final Inputs children = candidate.inputs().resolve(execution, Map.of(), primaryOutcome);
-        if (children == null) {
-            final Inputs failed = inputs(Map.of(), primaryOutcome);
-            failed.fail(failed(
-                    "RUN_PLAN_MISSING",
-                    "Compiled candidate input resolver returned Java null.",
-                    "",
-                    execution.history
-            ));
-            return new MatcherEvaluation(false, null, failed, failed.failure);
-        }
         if (children.failure != null) {
             return new MatcherEvaluation(false, null, children, children.failure);
         }
@@ -703,17 +566,14 @@ public final class WorkflowRuntime {
                             candidate.transforms(),
                             candidateValue,
                             execution,
-                            primaryOutcome,
-                            predicateInput + ".transforms"
+                            primaryOutcome
                     ).values().getFirst();
-            for (int index = 0; index < candidate.predicates().size(); index++) {
-                final NestedProgram condition = candidate.predicates().get(index);
+            for (final NestedProgram condition : candidate.predicates()) {
                 final StepInput.ProgramResult predicate = program(
                         condition,
                         prepared,
                         execution,
-                        primaryOutcome,
-                        predicateInput + ".all[" + index + "]"
+                        primaryOutcome
                 );
                 if (!((RailixValue.BooleanValue) predicate.values().getFirst()).value()) {
                     return new MatcherEvaluation(false, candidateValue, children, null);
@@ -724,7 +584,7 @@ public final class WorkflowRuntime {
             return new MatcherEvaluation(false, null, children, abort.result());
         } catch (final InterruptedException exception) {
             Thread.currentThread().interrupt();
-            return new MatcherEvaluation(false, null, children, new RunResult.Cancelled(execution.history));
+            return new MatcherEvaluation(false, null, children, new RunResult.Cancelled());
         }
     }
 
@@ -732,36 +592,28 @@ public final class WorkflowRuntime {
             final NestedProgram program,
             RailixValue value,
             final Execution execution,
-            final String enclosingOutcome,
-            final String inputName
+            final String enclosingOutcome
     ) throws InterruptedException {
-        final List<RunResult.StepExecution> history = execution.history;
-        final Capture capture = execution.capture;
         for (final NestedStep step : program.steps()) {
             final StepPlan executable = step.step();
             final Port receive = executable.receives().getFirst();
             if (!receive.shape().accepts(value)) {
-                capture(capture, inputName, step, "rejected", List.of());
                 throw new ProgramAbort(rejected(
                         "RUN_NESTED_INPUT_INCOMPATIBLE",
                         "Nested Step " + executable.use() + " requires " + shape(receive.shape())
                                 + " but receives " + shape(ValueShape.shapeOf(value)) + ".",
-                        step.path(),
-                        history
+                        step.path()
                 ));
             }
             final Optional<String> inputRejection = receive.refinement().rejection(value);
             if (inputRejection.isPresent()) {
-                capture(capture, inputName, step, "rejected", List.of());
                 throw new ProgramAbort(rejected(
                         "RUN_NESTED_INPUT_INCOMPATIBLE",
                         "Nested Step " + executable.use() + " rejects value: " + inputRejection.get(),
-                        step.path(),
-                        history
+                        step.path()
                 ));
             }
             if (Thread.currentThread().isInterrupted()) {
-                capture(capture, inputName, step, "cancelled", List.of());
                 throw new InterruptedException();
             }
             final Inputs resolved = step.inputs().resolve(
@@ -769,135 +621,94 @@ public final class WorkflowRuntime {
                     Map.of(receive.name(), value),
                     executable.primaryOutcome()
             );
-            if (resolved == null) {
-                throw new ProgramAbort(failed(
-                        "RUN_PLAN_MISSING",
-                        "Compiled nested input resolver returned Java null.",
-                        executable.use(),
-                        step.path(),
-                        history
-                ));
-            }
             if (resolved.failure != null) {
                 resolved.closePrograms();
                 throw new ProgramAbort(resolved.failure);
             }
-            if (executable.use().isEmpty()) {
-                resolved.closePrograms();
-                throw new ProgramAbort(failed(
-                        "STEP_HANDLER_REQUIRED",
-                        "Nested Step has no handler.",
-                        executable.use(),
-                        step.path(),
-                        history
-                ));
-            }
             final StepResult result;
             try {
-                result = step.call().run(resolved.input());
+                result = execution.nested(step, resolved.input());
             } catch (final InterruptedException exception) {
-                capture(capture, inputName, step, "cancelled", List.of());
                 throw exception;
             } catch (final ProgramAbort abort) {
                 throw abort;
             } catch (final RuntimeException exception) {
-                capture(capture, inputName, step, "failed", List.of());
                 throw new ProgramAbort(failed(
                         "STEP_IMPLEMENTATION_FAULT",
                         "Step implementation threw an unexpected exception.",
                         executable.use(),
-                        step.path(),
-                        history
+                        step.path()
                 ));
             } finally {
                 resolved.closePrograms();
             }
             if (Thread.currentThread().isInterrupted()) {
-                capture(capture, inputName, step, "cancelled", List.of());
                 throw new InterruptedException();
             }
             if (result == null) {
-                capture(capture, inputName, step, "failed", List.of());
                 throw new ProgramAbort(failed(
                         "STEP_RESULT_REQUIRED",
                         "Step implementation returned Java null.",
                         executable.use(),
-                        step.path(),
-                        history
+                        step.path()
                 ));
             }
             if (!executable.outcomes().contains(result.outcome())) {
-                capture(capture, inputName, step, "failed", List.of());
                 throw new ProgramAbort(failed(
                         "STEP_OUTCOME_INVALID",
                         "Nested Step returned undeclared outcome: " + result.outcome() + ".",
                         executable.use(),
-                        step.path(),
-                        history
+                        step.path()
                 ));
             }
             if (!result.writes().isEmpty()) {
-                capture(capture, inputName, step, "failed", List.of());
                 throw new ProgramAbort(failed(
                         "STEP_WRITE_UNEXPECTED",
                         "Nested Step attempted to write workflow context.",
                         executable.use(),
-                        step.path(),
-                        history
+                        step.path()
                 ));
             }
             if (!executable.primaryOutcome().equals(result.outcome())) {
                 if (!result.outputs().isEmpty()) {
-                    capture(capture, inputName, step, "failed", List.copyOf(result.outputs().values()));
                     throw new ProgramAbort(failed(
                             "STEP_OUTPUT_UNEXPECTED",
                             "Nested Step returned output for outcome " + result.outcome() + ".",
                             executable.use(),
-                            step.path(),
-                            history
+                            step.path()
                     ));
                 }
-                capture(capture, inputName, step, result.outcome(), List.of());
-                record(history, executable.use(), result.outcome());
                 return new StepInput.ProgramResult(enclosingOutcome, result.outcome(), List.of());
             }
             final Port output = executable.returns().getFirst();
             final RailixValue next = result.outputs().get(output.name());
             if (next == null || result.outputs().size() != 1 || !output.shape().accepts(next)) {
-                capture(capture, inputName, step, "failed", next == null ? List.of() : List.of(next));
                 throw new ProgramAbort(failed(
                         "STEP_OUTPUT_INVALID",
                         "Nested Step did not return its one declared compatible value.",
                         executable.use(),
-                        step.path(),
-                        history
+                        step.path()
                 ));
             }
             final Optional<String> outputRejection = output.refinement().rejection(next);
             if (outputRejection.isPresent()) {
-                capture(capture, inputName, step, "failed", List.of(next));
                 throw new ProgramAbort(failed(
                         "STEP_OUTPUT_INVALID",
                         "Nested Step returned an incompatible value: " + outputRejection.get(),
                         executable.use(),
-                        step.path(),
-                        history
+                        step.path()
                 ));
             }
             if (next instanceof RailixValue.NumberValue number
                     && !RailixData.fitsCanonicalNumber(number.value())) {
-                capture(capture, inputName, step, "failed", List.of(next));
                 throw new ProgramAbort(failed(
                         "STEP_OUTPUT_INVALID",
                         "Nested Step returned a number outside the canonical domain.",
                         executable.use(),
-                        step.path(),
-                        history
+                        step.path()
                 ));
             }
             value = next;
-            capture(capture, inputName, step, "succeeded", List.of(value));
-            record(history, executable.use(), result.outcome());
         }
         return new StepInput.ProgramResult(enclosingOutcome, enclosingOutcome, List.of(value));
     }
@@ -905,8 +716,7 @@ public final class WorkflowRuntime {
     private static Optional<RunResult> validateReceives(
             final StepPlan step,
             final Map<String, RailixValue> values,
-            final String path,
-            final List<RunResult.StepExecution> history
+            final String path
     ) {
         for (final String name : values.keySet()) {
             boolean declared = false;
@@ -917,8 +727,7 @@ public final class WorkflowRuntime {
                 return Optional.of(rejected(
                         "RUN_SOURCE_VALUE_UNKNOWN",
                         "Trigger source value is not declared: " + name + ".",
-                        path + "." + name,
-                        history
+                        path + "." + name
                 ));
             }
         }
@@ -928,16 +737,14 @@ public final class WorkflowRuntime {
                 return Optional.of(rejected(
                         "RUN_SOURCE_VALUE_REQUIRED",
                         "Trigger source value is required: " + port.name() + ".",
-                        path + "." + port.name(),
-                        history
+                        path + "." + port.name()
                 ));
             }
             if (!port.shape().accepts(value)) {
                 return Optional.of(rejected(
                         "RUN_SOURCE_VALUE_INCOMPATIBLE",
                         "Trigger source value " + port.name() + " requires " + shape(port.shape()) + ".",
-                        path + "." + port.name(),
-                        history
+                        path + "." + port.name()
                 ));
             }
             final Optional<String> refinementRejection = port.refinement().rejection(value);
@@ -946,30 +753,16 @@ public final class WorkflowRuntime {
                         "RUN_SOURCE_VALUE_INCOMPATIBLE",
                         "Trigger source value " + port.name() + " is incompatible: "
                                 + refinementRejection.get(),
-                        path + "." + port.name(),
-                        history
+                        path + "." + port.name()
                 ));
             }
         }
         return Optional.empty();
     }
 
-    private static void capture(
-            final Capture capture,
-            final String input,
-            final NestedStep step,
-            final String status,
-            final List<RailixValue> value
-    ) {
-        if (capture != null) {
-            capture.stage(input, step.path(), step.step().use(), status, value);
-        }
-    }
-
     private static RunResult writeFailure(
             final int status,
-            final String path,
-            final List<RunResult.StepExecution> history
+            final String path
     ) {
         final Diagnostic diagnostic = status == WRITE_SPARSE
                 ? Diagnostic.atPath(
@@ -982,45 +775,32 @@ public final class WorkflowRuntime {
                         "PATH write crosses an existing primitive value.",
                         path
                 );
-        return new RunResult.Rejected(List.of(diagnostic), history);
+        return new RunResult.Rejected(List.of(diagnostic));
     }
 
     private static RunResult rejected(
             final String code,
             final String message,
-            final String path,
-            final List<RunResult.StepExecution> history
+            final String path
     ) {
-        return new RunResult.Rejected(List.of(Diagnostic.atPath(code, message, path)), history);
+        return new RunResult.Rejected(List.of(Diagnostic.atPath(code, message, path)));
+    }
+
+    private static RunResult failed(
+            final String code,
+            final String message,
+            final String step
+    ) {
+        return new RunResult.Failed(new RunFailure(code, message, step));
     }
 
     private static RunResult failed(
             final String code,
             final String message,
             final String step,
-            final List<RunResult.StepExecution> history
+            final String path
     ) {
-        return new RunResult.Failed(new RunFailure(code, message, step), history);
-    }
-
-    private static RunResult failed(
-            final String code,
-            final String message,
-            final String step,
-            final String path,
-            final List<RunResult.StepExecution> history
-    ) {
-        return new RunResult.Failed(new RunFailure(code, message, step, path), history);
-    }
-
-    private static void record(
-            final List<RunResult.StepExecution> history,
-            final String step,
-            final String outcome
-    ) {
-        if (history != NO_HISTORY) {
-            history.add(new RunResult.StepExecution(step, outcome));
-        }
+        return new RunResult.Failed(new RunFailure(code, message, step, path));
     }
 
     private static final class EventFrame {
@@ -1316,17 +1096,6 @@ public final class WorkflowRuntime {
         }
     }
 
-    /** Optional development sink; production execution never creates or invokes one. */
-    interface Capture {
-        void inputContext(RailixValue.ObjectValue context);
-
-        void inputs(Map<String, RailixValue> inputs);
-
-        void stage(String input, String invocation, String use, String status, List<RailixValue> values);
-
-        void selectedCandidate(String path, int index);
-    }
-
     @FunctionalInterface
     interface StepCall {
         StepResult run(StepInput input) throws InterruptedException;
@@ -1382,7 +1151,7 @@ public final class WorkflowRuntime {
             StepPlan step,
             InputResolver inputs,
             String path,
-            StepCall call
+            StepHandler handler
     ) {
     }
 
@@ -1413,15 +1182,13 @@ public final class WorkflowRuntime {
         private String missingOutcome;
         private Execution execution;
         private String primaryOutcome;
-        private String inputName;
 
         private ProgramScope(
                 final NestedProgram steps,
                 final RailixValue value,
                 final String missingOutcome,
                 final Execution execution,
-                final String primaryOutcome,
-                final String inputName
+                final String primaryOutcome
         ) {
             owner = Thread.currentThread();
             this.steps = steps;
@@ -1429,7 +1196,6 @@ public final class WorkflowRuntime {
             this.missingOutcome = missingOutcome;
             this.execution = execution;
             this.primaryOutcome = primaryOutcome;
-            this.inputName = inputName;
         }
 
         private StepInput.ProgramResult run() throws InterruptedException {
@@ -1441,7 +1207,7 @@ public final class WorkflowRuntime {
             }
             return value == null
                     ? new StepInput.ProgramResult(primaryOutcome, missingOutcome, List.of())
-                    : program(steps, value, execution, primaryOutcome, inputName);
+                    : program(steps, value, execution, primaryOutcome);
         }
 
         private void close() {
@@ -1451,7 +1217,6 @@ public final class WorkflowRuntime {
             missingOutcome = null;
             execution = null;
             primaryOutcome = null;
-            inputName = null;
         }
     }
 

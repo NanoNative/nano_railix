@@ -31,6 +31,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 final class ProductionRuntimeSoakE2eTest {
     private static final long MAX_HEAP_BYTES = 64L * 1024 * 1024;
     private static final long RETAINED_GROWTH_BUDGET_BYTES = 2L * 1024 * 1024;
+    private static final long RUN_ALLOCATION_BUDGET_BYTES = 8L * 1024;
+    private static final long RUN_LATENCY_BUDGET_NANOS = 5_000;
+    private static final long FLOW_ALLOCATION_BUDGET_BYTES_PER_STEP = 1_024;
+    private static final long FLOW_LATENCY_BUDGET_NANOS_PER_STEP = 2_000;
+    private static final long ARRAY_ALLOCATION_BUDGET_BYTES = 256L * 1024;
     private static final int FLOW_STEPS = 129;
     private static final int ARRAY_ITEMS = 4_096;
     private static final int ARRAY_READ_STEPS = 32;
@@ -53,20 +58,7 @@ final class ProductionRuntimeSoakE2eTest {
     }
 
     @Test
-    void everyOneOfFiftyThousandSampledProductionResultsIsTraceFree(
-            @TempDir final Path workspace
-    ) throws Exception {
-        final ProcessResult result = probe(workspace).run("trace");
-        System.out.println(result.output());
-
-        assertThat(result.exitCode()).as(result.output()).isZero();
-        assertThat(result.output()).startsWith("TRACE|");
-        assertThat(metric(result.output(), "sampled")).isEqualTo(50_000);
-        assertThat(metric(result.output(), "traced")).isZero();
-    }
-
-    @Test
-    void productionRunSourceReportsAllocationAfterOneHundredThousandWarmups(
+    void productionRunSourceStaysInsideAllocationBudgetAfterOneHundredThousandWarmups(
             @TempDir final Path workspace
     ) throws Exception {
         final ProcessResult result = probe(workspace).run("allocation");
@@ -76,11 +68,13 @@ final class ProductionRuntimeSoakE2eTest {
         assertThat(result.output()).doesNotStartWith("ALLOCATION_UNSUPPORTED|");
         assertThat(result.output()).startsWith("ALLOCATION|");
         assertThat(metric(result.output(), "measured_calls")).isEqualTo(200_000);
-        assertThat(metric(result.output(), "bytes_per_call")).isPositive();
+        assertThat(metric(result.output(), "bytes_per_call"))
+                .isPositive()
+                .isLessThanOrEqualTo(RUN_ALLOCATION_BUDGET_BYTES);
     }
 
     @Test
-    void escapingProductionResultsReportMeasuredAllocation(
+    void escapingProductionResultsStayInsideAllocationBudget(
             @TempDir final Path workspace
     ) throws Exception {
         final ProcessResult result = probe(workspace).run("escape-allocation");
@@ -90,11 +84,13 @@ final class ProductionRuntimeSoakE2eTest {
         assertThat(result.output()).doesNotStartWith("ESCAPE_ALLOCATION_UNSUPPORTED|");
         assertThat(result.output()).startsWith("ESCAPE_ALLOCATION|");
         assertThat(metric(result.output(), "measured_calls")).isEqualTo(200_000);
-        assertThat(metric(result.output(), "bytes_per_call")).isPositive();
+        assertThat(metric(result.output(), "bytes_per_call"))
+                .isPositive()
+                .isLessThanOrEqualTo(RUN_ALLOCATION_BUDGET_BYTES);
     }
 
     @Test
-    void warmedProductionRunSourceReportsFiveRoundMedianLatency(
+    void warmedProductionRunSourceStaysInsideFiveRoundMedianLatencyBudget(
             @TempDir final Path workspace
     ) throws Exception {
         final ProcessResult result = probe(workspace).run("latency");
@@ -104,11 +100,13 @@ final class ProductionRuntimeSoakE2eTest {
         assertThat(result.output()).startsWith("LATENCY|");
         assertThat(metric(result.output(), "rounds")).isEqualTo(5);
         assertThat(metric(result.output(), "calls_per_round")).isEqualTo(200_000);
-        assertThat(metric(result.output(), "median_ns_per_call")).isPositive();
+        assertThat(metric(result.output(), "median_ns_per_call"))
+                .isPositive()
+                .isLessThanOrEqualTo(RUN_LATENCY_BUDGET_NANOS);
     }
 
     @Test
-    void warmed129StepProductionFlowReportsHotPathBaseline(
+    void warmed129StepProductionFlowStaysInsidePerStepHotPathBudgets(
             @TempDir final Path workspace
     ) throws Exception {
         final ProcessResult result = probe(workspace, lowercaseChain(FLOW_STEPS)).run("flow-baseline");
@@ -120,14 +118,17 @@ final class ProductionRuntimeSoakE2eTest {
         assertThat(metric(result.output(), "steps_per_call")).isEqualTo(FLOW_STEPS);
         assertThat(metric(result.output(), "measured_calls")).isEqualTo(2_500);
         assertThat(metric(result.output(), "verified_steps")).isEqualTo(322_500);
-        assertThat(metric(result.output(), "traced")).isZero();
         assertThat(metric(result.output(), "retained")).isLessThanOrEqualTo(RETAINED_GROWTH_BUDGET_BYTES);
-        assertThat(metric(result.output(), "bytes_per_step")).isPositive();
-        assertThat(metric(result.output(), "median_ns_per_step")).isPositive();
+        assertThat(metric(result.output(), "bytes_per_step"))
+                .isPositive()
+                .isLessThanOrEqualTo(FLOW_ALLOCATION_BUDGET_BYTES_PER_STEP);
+        assertThat(metric(result.output(), "median_ns_per_step"))
+                .isPositive()
+                .isLessThanOrEqualTo(FLOW_LATENCY_BUDGET_NANOS_PER_STEP);
     }
 
     @Test
-    void repeatedReadsOfAMaterializedLargeArrayReportAllocation(
+    void repeatedReadsOfAMaterializedLargeArrayStayInsideAllocationBudget(
             @TempDir final Path workspace
     ) throws Exception {
         final ProcessResult result = probe(workspace, arrayReadChain(ARRAY_READ_STEPS)).run("array-read");
@@ -139,7 +140,9 @@ final class ProductionRuntimeSoakE2eTest {
         assertThat(metric(result.output(), "items")).isEqualTo(ARRAY_ITEMS);
         assertThat(metric(result.output(), "reads_per_call")).isEqualTo(ARRAY_READ_STEPS);
         assertThat(metric(result.output(), "measured_calls")).isEqualTo(200);
-        assertThat(metric(result.output(), "bytes_per_call")).isPositive();
+        assertThat(metric(result.output(), "bytes_per_call"))
+                .isPositive()
+                .isLessThanOrEqualTo(ARRAY_ALLOCATION_BUDGET_BYTES);
     }
 
     @Test
@@ -385,7 +388,6 @@ final class ProductionRuntimeSoakE2eTest {
 
                 public final class ProductionRuntimeSoakProbe {
                     private static final int SOAK_CALLS = 1_000_000;
-                    private static final int TRACE_SAMPLES = 50_000;
                     private static final int WARMUP_CALLS = 100_000;
                     private static final int MEASURED_CALLS = 200_000;
                     private static final int LATENCY_ROUNDS = 5;
@@ -416,7 +418,6 @@ final class ProductionRuntimeSoakE2eTest {
                         final RuntimeApplication application = RailixApplication.runtime();
                         switch (arguments[0]) {
                             case "soak" -> soak(application);
-                            case "trace" -> trace(application);
                             case "allocation" -> allocation(application);
                             case "escape-allocation" -> escapeAllocation(application);
                             case "latency" -> latency(application);
@@ -428,8 +429,8 @@ final class ProductionRuntimeSoakE2eTest {
 
                     private static void soak(final RuntimeApplication application) throws InterruptedException {
                         final long before = compactedHeap();
-                        long checksum = execute(application, WARMUP_CALLS, true);
-                        checksum += execute(application, SOAK_CALLS, true);
+                        long checksum = execute(application, WARMUP_CALLS);
+                        checksum += execute(application, SOAK_CALLS);
                         final long after = compactedHeap();
                         final long retained = Math.max(0, after - before);
                         if (retained > RETAINED_BUDGET) {
@@ -441,25 +442,8 @@ final class ProductionRuntimeSoakE2eTest {
                                 + "|checksum=" + checksum);
                     }
 
-                    private static void trace(final RuntimeApplication application) {
-                        long checksum = 0;
-                        long traced = 0;
-                        for (int index = 0; index < TRACE_SAMPLES; index++) {
-                            final WorkflowRuntime.SourceResult source = application.runSource(
-                                    "application.arguments", INPUT
-                            );
-                            checksum += verify(source, false);
-                            if (!steps(source.result()).isEmpty()) {
-                                traced++;
-                            }
-                        }
-                        System.out.print("TRACE|sampled=" + TRACE_SAMPLES
-                                + "|traced=" + traced
-                                + "|checksum=" + checksum);
-                    }
-
                     private static void allocation(final RuntimeApplication application) {
-                        execute(application, WARMUP_CALLS, true);
+                        execute(application, WARMUP_CALLS);
                         allocation(application, false, "ALLOCATION");
                     }
 
@@ -486,7 +470,7 @@ final class ProductionRuntimeSoakE2eTest {
                         final long before = bean.getThreadAllocatedBytes(thread);
                         final long checksum = escape
                                 ? executeEscaping(application, MEASURED_CALLS)
-                                : execute(application, MEASURED_CALLS, true);
+                                : execute(application, MEASURED_CALLS);
                         final long after = bean.getThreadAllocatedBytes(thread);
                         if (before < 0 || after < before) {
                             throw new AssertionError("Thread allocation counter returned invalid values.");
@@ -498,12 +482,12 @@ final class ProductionRuntimeSoakE2eTest {
                     }
 
                     private static void latency(final RuntimeApplication application) {
-                        execute(application, WARMUP_CALLS, true);
+                        execute(application, WARMUP_CALLS);
                         final long[] rounds = new long[LATENCY_ROUNDS];
                         long checksum = 0;
                         for (int round = 0; round < LATENCY_ROUNDS; round++) {
                             final long start = System.nanoTime();
-                            checksum += execute(application, MEASURED_CALLS, true);
+                            checksum += execute(application, MEASURED_CALLS);
                             rounds[round] = System.nanoTime() - start;
                         }
                         Arrays.sort(rounds);
@@ -530,10 +514,9 @@ final class ProductionRuntimeSoakE2eTest {
                         final long thread = Thread.currentThread().threadId();
                         final long allocatedBefore = bean.getThreadAllocatedBytes(thread);
                         final long[] rounds = new long[LATENCY_ROUNDS];
-                        long traced = 0;
                         for (int round = 0; round < LATENCY_ROUNDS; round++) {
                             final long start = System.nanoTime();
-                            traced += executeFlow(application, FLOW_CALLS_PER_ROUND);
+                            executeFlow(application, FLOW_CALLS_PER_ROUND);
                             rounds[round] = System.nanoTime() - start;
                         }
                         final long allocatedAfter = bean.getThreadAllocatedBytes(thread);
@@ -550,7 +533,6 @@ final class ProductionRuntimeSoakE2eTest {
                         System.out.print("FLOW_BASELINE|steps_per_call=" + FLOW_STEPS
                                 + "|measured_calls=" + calls
                                 + "|verified_steps=" + verifiedSteps
-                                + "|traced=" + traced
                                 + "|retained=" + retained
                                 + "|bytes_per_call=" + ((allocatedAfter - allocatedBefore) / calls)
                                 + "|bytes_per_step=" + ((allocatedAfter - allocatedBefore) / verifiedSteps)
@@ -560,11 +542,10 @@ final class ProductionRuntimeSoakE2eTest {
                                 + (rounds[LATENCY_ROUNDS / 2] / (FLOW_CALLS_PER_ROUND * FLOW_STEPS)));
                     }
 
-                    private static long executeFlow(
+                    private static void executeFlow(
                             final RuntimeApplication application,
                             final int calls
                     ) {
-                        long traced = 0;
                         for (int index = 0; index < calls; index++) {
                             sink = application.runSource("application.arguments", FLOW_INPUT);
                             if (!(sink.result() instanceof RunResult.Succeeded succeeded)) {
@@ -575,11 +556,7 @@ final class ProductionRuntimeSoakE2eTest {
                                     || !FLOW_OUTPUT.equals(succeeded.context().values().get("result"))) {
                                 throw new AssertionError("Production flow returned unexpected output.");
                             }
-                            if (!succeeded.steps().isEmpty()) {
-                                traced++;
-                            }
                         }
-                        return traced;
                     }
 
                     private static void arrayRead(final RuntimeApplication application) {
@@ -620,8 +597,7 @@ final class ProductionRuntimeSoakE2eTest {
                             }
                             if (!expected.equals(sink.responses().get("output"))
                                     || !ZERO.equals(sink.responses().get("status"))
-                                    || !expected.equals(succeeded.context().values().get("result"))
-                                    || !succeeded.steps().isEmpty()) {
+                                    || !expected.equals(succeeded.context().values().get("result"))) {
                                 throw new AssertionError("Array-read flow returned unexpected output.");
                             }
                             checksum += ((RailixValue.ArrayValue) ((RailixValue.ObjectValue)
@@ -633,12 +609,11 @@ final class ProductionRuntimeSoakE2eTest {
 
                     private static long execute(
                             final RuntimeApplication application,
-                            final int calls,
-                            final boolean requireTraceFree
+                            final int calls
                     ) {
                         long checksum = 0;
                         for (int index = 0; index < calls; index++) {
-                            checksum += verify(application.runSource("application.arguments", INPUT), requireTraceFree);
+                            checksum += verify(application.runSource("application.arguments", INPUT));
                         }
                         return checksum;
                     }
@@ -650,35 +625,20 @@ final class ProductionRuntimeSoakE2eTest {
                         long checksum = 0;
                         for (int index = 0; index < calls; index++) {
                             sink = application.runSource("application.arguments", INPUT);
-                            checksum += verify(sink, true);
+                            checksum += verify(sink);
                         }
                         return checksum;
                     }
 
-                    private static int verify(
-                            final WorkflowRuntime.SourceResult source,
-                            final boolean requireTraceFree
-                    ) {
+                    private static int verify(final WorkflowRuntime.SourceResult source) {
                         if (!(source.result() instanceof RunResult.Succeeded succeeded)) {
                             throw new AssertionError("Production execution did not succeed: " + source.result());
-                        }
-                        if (requireTraceFree && !succeeded.steps().isEmpty()) {
-                            throw new AssertionError("Production execution retained step history.");
                         }
                         if (!NULL.equals(source.responses().get("output"))
                                 || !ZERO.equals(source.responses().get("status"))) {
                             throw new AssertionError("Production source returned unexpected response defaults.");
                         }
                         return succeeded.context().values().size() + source.responses().size();
-                    }
-
-                    private static List<RunResult.StepExecution> steps(final RunResult result) {
-                        return switch (result) {
-                            case RunResult.Succeeded succeeded -> succeeded.steps();
-                            case RunResult.Rejected rejected -> rejected.steps();
-                            case RunResult.Failed failed -> failed.steps();
-                            case RunResult.Cancelled cancelled -> cancelled.steps();
-                        };
                     }
 
                     private static Map<String, RailixValue> arrayInput() {

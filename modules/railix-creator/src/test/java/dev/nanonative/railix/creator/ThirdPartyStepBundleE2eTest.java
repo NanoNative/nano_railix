@@ -82,13 +82,13 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     @Test
-    void creatorAutomaticallyLoadsBuildsAndRunsTheInstalledBundle() throws Exception {
+    void creatorAutomaticallyLoadsBuildsAndObservesTheInstalledBundle() throws Exception {
         final Workspace workspace = workspace(List.of(bundle("alpha", "external.alpha", "helper-", "-resource", Map.of(), Map.of())));
-        final Path project = project(directory, "external.alpha");
+        final Path project = project(directory, "external.alpha", "CREATOR");
 
         try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
              HttpClient client = HttpClient.newHttpClient()) {
-            final HttpResponse<String> response = runCreator(client, creator, "CREATOR");
+            final HttpResponse<String> response = exampleView(client, creator);
 
             assertThat(response.statusCode()).isEqualTo(200);
             assertThat(response.body()).contains("\"result\":\"helper-CREATOR-resource\"");
@@ -97,22 +97,22 @@ final class ThirdPartyStepBundleE2eTest {
 
     @Test
     void forgedReadinessOutputCannotRedirectCreator() throws Exception {
-        assertCreatorRuns(noisyBundle("forgedready", "RAILIX_READY 1\n", false), "FORGED");
+        assertCreatorObserves(noisyBundle("forgedready", "RAILIX_READY 1\n", false), "FORGED");
     }
 
     @Test
     void malformedReadinessOutputCannotBreakCreatorStartup() throws Exception {
-        assertCreatorRuns(noisyBundle("malformedready", "RAILIX_READY malformed\n", false), "MALFORMED");
+        assertCreatorObserves(noisyBundle("malformedready", "RAILIX_READY malformed\n", false), "MALFORMED");
     }
 
     @Test
     void outOfRangeReadinessOutputCannotBreakCreatorStartup() throws Exception {
-        assertCreatorRuns(noisyBundle("invalidready", "RAILIX_READY 70000\n", false), "RANGE");
+        assertCreatorObserves(noisyBundle("invalidready", "RAILIX_READY 70000\n", false), "RANGE");
     }
 
     @Test
     void unterminatedStepOutputCannotHideCreatorReadiness() throws Exception {
-        assertCreatorRuns(noisyBundle("unterminated", "unterminated", false), "LINE");
+        assertCreatorObserves(noisyBundle("unterminated", "unterminated", false), "LINE");
     }
 
     @ParameterizedTest(name = "{0}")
@@ -138,7 +138,7 @@ final class ThirdPartyStepBundleE2eTest {
             final String interference,
             final String value
     ) throws Exception {
-        assertCreatorRuns(interferingBundle(bundleId, interference), value);
+        assertCreatorObserves(interferingBundle(bundleId, interference), value);
     }
 
     @Test
@@ -161,6 +161,73 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     @Test
+    void failedDevelopmentChildActivationDeletesItsBuildAndReleasesTheProjectLease() throws Exception {
+        final Bundle bundle = interferingBundle("failedactivation", "activation-token");
+        final Workspace workspace = workspace(List.of(bundle));
+        final Path project = project(directory, bundle.definition().id());
+
+        assertThatThrownBy(() -> CreatorServer.start(0, project, workspace.railixHome()))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("invalid activation frame");
+        try (var builds = Files.list(project.getParent().resolve(".railix/build"))) {
+            assertThat(builds.toList()).isEmpty();
+        }
+
+        Files.writeString(project, CreatorProjects.empty("recovered-activation"), StandardCharsets.UTF_8);
+        try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome())) {
+            assertThat(creator.baseUri().getPort()).isPositive();
+        }
+    }
+
+    @Test
+    void failedRollingDevelopmentChildStartupKeepsTheRunningApplication() throws Exception {
+        final Bundle working = bundle(
+                "rollingworking",
+                "external.rollingworking",
+                "helper-",
+                "-resource",
+                Map.of(),
+                Map.of()
+        );
+        final Bundle failing = interferingBundle("rollingfailedstartup", "fail");
+        final Workspace workspace = workspace(List.of(working, failing));
+        final Path project = project(directory, working.definition().id());
+
+        try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
+             HttpClient client = HttpClient.newHttpClient()) {
+            final RailixValue.ObjectValue before = CreatorServerE2eSupport.application(creator.baseUri());
+            final String persisted = Files.readString(project, StandardCharsets.UTF_8);
+            final long buildsBefore;
+            try (var builds = Files.list(project.getParent().resolve(".railix/build"))) {
+                buildsBefore = builds.count();
+            }
+
+            final HttpResponse<String> response = CreatorServerE2eSupport.request(
+                    creator.baseUri(),
+                    "POST",
+                    "/api/project",
+                    projectSource(failing.definition().id())
+            );
+            final RailixValue.ObjectValue after = CreatorServerE2eSupport.application(creator.baseUri());
+            final long buildsAfter;
+            try (var builds = Files.list(project.getParent().resolve(".railix/build"))) {
+                buildsAfter = builds.count();
+            }
+
+            assertThat(response.statusCode()).isEqualTo(503);
+            assertThat(response.body()).contains("Generated application did not build and start.");
+            assertThat(CreatorServerE2eSupport.number(after, "pid"))
+                    .isEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+            assertThat(CreatorServerE2eSupport.string(after, "fingerprint"))
+                    .isEqualTo(CreatorServerE2eSupport.string(before, "fingerprint"));
+            assertThat(Files.readString(project, StandardCharsets.UTF_8)).isEqualTo(persisted);
+            assertThat(buildsAfter).isEqualTo(buildsBefore);
+            assertThat(exampleView(client, creator).body())
+                    .contains("\"result\":\"helper-value-resource\"");
+        }
+    }
+
+    @Test
     void markerShapedRuntimeOutputCannotStopDrainingTheApplicationPipe() throws Exception {
         final Bundle bundle = noisyBundle("runtimeoutput", "", true);
         final Workspace workspace = workspace(List.of(bundle));
@@ -170,12 +237,12 @@ final class ThirdPartyStepBundleE2eTest {
         try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
              HttpClient client = HttpClient.newHttpClient()) {
             pid = applicationPid(client, creator);
-            final HttpResponse<String> first = runCreator(client, creator, "FIRST");
-            final HttpResponse<String> second = runCreator(client, creator, "SECOND");
+            final HttpResponse<String> first = exampleView(client, creator);
+            final HttpResponse<String> second = exampleView(client, creator);
             assertThat(first.statusCode()).isEqualTo(200);
-            assertThat(first.body()).contains("\"result\":\"helper-FIRST-resource\"");
+            assertThat(first.body()).contains("\"result\":\"helper-value-resource\"");
             assertThat(second.statusCode()).isEqualTo(200);
-            assertThat(second.body()).contains("\"result\":\"helper-SECOND-resource\"");
+            assertThat(second.body()).contains("\"result\":\"helper-value-resource\"");
         }
 
         assertThat(awaitStopped(pid)).isTrue();
@@ -207,6 +274,31 @@ final class ThirdPartyStepBundleE2eTest {
             )).isEqualTo("-resource");
         }
         assertThat(runJar(application.jar(), "RESOURCE").output()).isEqualTo("\"helper-RESOURCE-resource\"");
+    }
+
+    @Test
+    void bundleDirectoriesAndJarIndexMetadataDoNotEnterTheGeneratedApplication() throws Exception {
+        final Bundle bundle = bundle(
+                "ignoredmetadata",
+                "external.ignored-metadata",
+                "helper-",
+                "-resource",
+                Map.of("META-INF/INDEX.LIST", "index", "thirdparty/ignored/", ""),
+                Map.of()
+        );
+        final Workspace workspace = workspace(List.of(bundle));
+
+        final ApplicationBuilder.Artifact application = build(
+                workspace,
+                bundle.definition().id(),
+                directory.resolve("ignored-metadata-app")
+        );
+
+        assertThat(runJar(application.jar(), "value").output()).isEqualTo("\"helper-value-resource\"");
+        try (JarFile jar = new JarFile(application.jar().toFile())) {
+            assertThat(jar.getJarEntry("META-INF/INDEX.LIST")).isNull();
+            assertThat(jar.getJarEntry("thirdparty/ignored/")).isNull();
+        }
     }
 
     @Test
@@ -414,6 +506,19 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     @Test
+    void dependencyLockCannotListTheSameStepTwice() throws Exception {
+        final Bundle bundle = bundle(
+                "duplicatelock", "external.duplicate-lock", "helper-", "-resource", Map.of(), Map.of()
+        );
+        final Workspace workspace = workspace(List.of(bundle));
+        replaceLockedSteps(workspace, List.of(lockedStep(bundle), lockedStep(bundle)));
+
+        assertThatThrownBy(workspace::catalog)
+                .isInstanceOf(StepCatalog.DependencyException.class)
+                .hasMessage("DEPENDENCY_LOCK_NON_CANONICAL: Bundle Steps must be sorted by unique id.");
+    }
+
+    @Test
     void lockStepMissingFromTheBundleManifestIsRejected() throws Exception {
         final Bundle bundle = bundle("alpha", "external.alpha", "helper-", "-resource", Map.of(), Map.of());
         final Workspace workspace = workspace(List.of(bundle));
@@ -517,6 +622,42 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     @Test
+    void bundleManifestCannotListTheSameStepTwice() throws Exception {
+        final Bundle bundle = bundle(
+                "duplicatemanifest", "external.duplicate-manifest", "helper-", "-resource", Map.of(), Map.of()
+        );
+        final RailixValue.ObjectValue step = manifestStep(
+                bundle.definition(), bundle.implementation(), bundle.rootClass()
+        );
+        replaceManifest(bundle, RailixJson.write(RailixValue.object(Map.of(
+                "format", RailixValue.number(1),
+                "steps", RailixValue.array(List.of(step, step))
+        ))));
+        final Workspace workspace = workspace(List.of(bundle));
+
+        assertThatThrownBy(workspace::catalog)
+                .isInstanceOf(StepCatalog.DependencyException.class)
+                .hasMessage("STEP_DEPENDENCY_MANIFEST_NON_CANONICAL: Manifest Steps must be sorted by unique id.");
+    }
+
+    @Test
+    void installedBundleCannotDeclareTheReservedApplicationStep() throws Exception {
+        final Bundle bundle = bundle(
+                "application", "external.application", "helper-", "-resource", Map.of(), Map.of()
+        );
+        replaceManifest(bundle, manifest(
+                StepDefinition.named("railix.app", "1").kind(StepDefinition.Kind.APP).define(),
+                bundle.implementation(),
+                bundle.rootClass()
+        ));
+        final Workspace workspace = workspace(List.of(bundle));
+
+        assertThatThrownBy(workspace::catalog)
+                .isInstanceOf(StepCatalog.DependencyException.class)
+                .hasMessage("STEP_DEPENDENCY_CONTRACT_INVALID: Installed bundles cannot replace railix.app.");
+    }
+
+    @Test
     void bundleManifestContractDigestMustMatchItsContract() throws Exception {
         final Bundle bundle = bundle("digest", "external.digest", "helper-", "-resource", Map.of(), Map.of());
         replaceManifest(bundle, manifest(bundle).replace(bundle.contractDigest(), "sha256:" + "0".repeat(64)));
@@ -555,6 +696,25 @@ final class ThirdPartyStepBundleE2eTest {
         assertThatThrownBy(() -> ApplicationBuilder.buildProduction(project, compiled))
                 .isInstanceOf(IOException.class)
                 .hasMessageStartingWith("DEPENDENCY_ENTRY_CONFLICT:");
+    }
+
+    @Test
+    void sameLengthDifferentBytesAtTheSameReachableEntryAreRejected() throws Exception {
+        final Bundle bundle = bundle(
+                "samebytes",
+                "external.same-bytes",
+                "helper-",
+                "-resource",
+                Map.of("thirdparty/shared.txt", "root"),
+                Map.of("thirdparty/shared.txt", "evil")
+        );
+        final Workspace workspace = workspace(List.of(bundle));
+        final CompileResult.Compiled compiled = compile(workspace, bundle.definition().id());
+        final Path project = project(directory.resolve("same-length-conflict"), bundle.definition().id());
+
+        assertThatThrownBy(() -> ApplicationBuilder.buildProduction(project, compiled))
+                .isInstanceOf(IOException.class)
+                .hasMessage("DEPENDENCY_ENTRY_CONFLICT: Entry has different bytes: thirdparty/shared.txt.");
     }
 
     @Test
@@ -626,6 +786,28 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     @Test
+    void mergedServiceDescriptorCannotExceedItsBound() throws Exception {
+        final String service = "META-INF/services/example.Service";
+        final Bundle bundle = bundle(
+                "mergedservice",
+                "external.merged-service",
+                "helper-",
+                "-resource",
+                Map.of(service, "a".repeat(600_000) + "\n"),
+                Map.of(service, "b".repeat(600_000) + "\n")
+        );
+        final Workspace workspace = workspace(List.of(bundle));
+
+        assertThatThrownBy(() -> build(
+                workspace,
+                bundle.definition().id(),
+                directory.resolve("merged-service-app")
+        )).isInstanceOf(IOException.class)
+                .hasMessage("DEPENDENCY_ENTRY_CONFLICT: Merged service descriptor exceeds 1048576 bytes: "
+                        + service + ".");
+    }
+
+    @Test
     void identicalReachableEntriesAreStoredOnce() throws Exception {
         final String shared = "thirdparty/shared.txt";
         final Bundle bundle = bundle(
@@ -680,7 +862,8 @@ final class ThirdPartyStepBundleE2eTest {
             "backslash entry, backslash, unsafe\\entry.txt, DEPENDENCY_LOCAL_ENTRY_UNSAFE:",
             "parent traversal, parent, unsafe/../entry.txt, DEPENDENCY_LOCAL_ENTRY_UNSAFE:",
             "current-directory segment, current, unsafe/./entry.txt, DEPENDENCY_LOCAL_ENTRY_UNSAFE:",
-            "empty path segment, segment, unsafe//entry.txt, DEPENDENCY_LOCAL_ENTRY_UNSAFE:"
+            "empty path segment, segment, unsafe//entry.txt, DEPENDENCY_LOCAL_ENTRY_UNSAFE:",
+            "generated application resource, generatedresource, META-INF/railix/examples.json, DEPENDENCY_RESERVED_RESOURCE_FORBIDDEN:"
     })
     void unsafeDependencyEntryIsRejected(
             final String scenario,
@@ -735,16 +918,50 @@ final class ThirdPartyStepBundleE2eTest {
         final Workspace workspace = workspace(List.of(bundle("alpha", "external.alpha", "helper-", "-resource", Map.of(), Map.of())));
         final Path project = project(directory.resolve("cache-development-source"), "external.alpha");
         final CompileResult.Compiled compiled = compile(workspace, "external.alpha");
-        final ApplicationBuilder.Artifact first = ApplicationBuilder.build(project, compiled);
+        final ApplicationBuilder.Artifact first;
+        try (ApplicationBuilder.DevelopmentBuild build = ApplicationBuilder.build(project, compiled)) {
+            first = build.artifact();
+        }
         final Path launcher = first.directory().resolve(
                 "src/dev/nanonative/railix/core/project/RailixDevelopmentApplication.java"
         );
         Files.writeString(launcher, "corrupt", StandardCharsets.UTF_8);
 
-        final ApplicationBuilder.Artifact rebuilt = ApplicationBuilder.build(project, compiled);
+        try (ApplicationBuilder.DevelopmentBuild build = ApplicationBuilder.build(project, compiled)) {
+            assertThat(build.artifact().reused()).isFalse();
+            assertThat(Files.readString(launcher)).isEqualTo(compiled.developmentLauncherSource());
+        }
+    }
 
-        assertThat(rebuilt.reused()).isFalse();
-        assertThat(Files.readString(launcher)).isEqualTo(compiled.developmentLauncherSource());
+    @Test
+    void liveDevelopmentArtifactIsNeverReplacedWhenItsCacheIsCorrupt() throws Exception {
+        final Workspace workspace = workspace(List.of(bundle(
+                "alpha",
+                "external.alpha",
+                "helper-",
+                "-resource",
+                Map.of(),
+                Map.of()
+        )));
+        final Path project = project(directory.resolve("leased-corrupt-development"), "external.alpha");
+        final CompileResult.Compiled compiled = compile(workspace, "external.alpha");
+
+        try (ApplicationBuilder.DevelopmentBuild publication = ApplicationBuilder.build(project, compiled)) {
+            final ApplicationBuilder.Artifact artifact = publication.artifact();
+            final Path launcher = artifact.directory().resolve(
+                    "src/dev/nanonative/railix/core/project/RailixDevelopmentApplication.java"
+            );
+            Files.writeString(launcher, "corrupt", StandardCharsets.UTF_8);
+
+            assertThatThrownBy(() -> {
+                try (ApplicationBuilder.DevelopmentBuild ignored = ApplicationBuilder.build(project, compiled)) {
+                    // A live artifact cannot be replaced even when its cache is invalid.
+                }
+            }).isInstanceOf(IOException.class)
+                    .hasMessageContaining("Development application artifact is in use");
+            assertThat(artifact.directory()).isDirectory();
+            assertThat(Files.readString(launcher)).isEqualTo("corrupt");
+        }
     }
 
     @Test
@@ -775,6 +992,28 @@ final class ThirdPartyStepBundleE2eTest {
         );
         final byte[] expected = Files.readAllBytes(generatedClass);
         Files.write(generatedClass, new byte[]{0});
+
+        final ApplicationBuilder.Artifact rebuilt = ApplicationBuilder.buildProduction(project, compiled);
+
+        assertThat(rebuilt.reused()).isFalse();
+        assertThat(Files.readAllBytes(generatedClass)).isEqualTo(expected);
+    }
+
+    @Test
+    void cachedApplicationWithSameLengthChangedGeneratedClassIsRebuilt() throws Exception {
+        final Workspace workspace = workspace(List.of(bundle(
+                "sameclass", "external.same-class", "helper-", "-resource", Map.of(), Map.of()
+        )));
+        final Path project = project(directory.resolve("cache-same-length-class"), "external.same-class");
+        final CompileResult.Compiled compiled = compile(workspace, "external.same-class");
+        final ApplicationBuilder.Artifact first = ApplicationBuilder.buildProduction(project, compiled);
+        final Path generatedClass = first.classes().resolve(
+                "dev/nanonative/railix/core/project/RailixApplication.class"
+        );
+        final byte[] expected = Files.readAllBytes(generatedClass);
+        final byte[] changed = expected.clone();
+        changed[changed.length - 1] ^= 1;
+        Files.write(generatedClass, changed);
 
         final ApplicationBuilder.Artifact rebuilt = ApplicationBuilder.buildProduction(project, compiled);
 
@@ -874,6 +1113,7 @@ final class ThirdPartyStepBundleE2eTest {
         final long resourceBytes = 128L * 1024 * 1024;
         final Bundle bundle = largeBundle(resourceBytes);
         final Workspace workspace = workspace(List.of(bundle));
+        Files.delete(bundle.root());
         final Path project = project(directory, bundle.definition().id());
         final LinkedHashSet<Path> classpath = new LinkedHashSet<>(List.of(
                 location(ThirdPartyBuildProbe.class),
@@ -1137,6 +1377,7 @@ final class ThirdPartyStepBundleE2eTest {
                                         Integer.parseInt(parts[2])
                                 )) {
                                     final String response = switch (interference) {
+                                        case "activation-token" -> "READY " + parts[1] + " 1" + (char) 10;
                                         case "wrong-token" -> "READY wrong-token 1" + (char) 10;
                                         case "partial" -> "READY partial";
                                         case "oversized" -> "x".repeat(129) + (char) 10;
@@ -1158,12 +1399,35 @@ final class ThirdPartyStepBundleE2eTest {
                                     };
                                     callback.getOutputStream().write(response.getBytes(StandardCharsets.UTF_8));
                                     callback.getOutputStream().flush();
-                                    if (!"stalled".equals(interference)) {
+                                    if ("activation-token".equals(interference)) {
+                                        boolean activationComplete = false;
+                                        for (int index = 0; index < 128; index++) {
+                                            final int next = ownership.read();
+                                            if (next < 0) {
+                                                throw new java.io.IOException("Creator activation frame ended early.");
+                                            }
+                                            if (next == 10) {
+                                                activationComplete = true;
+                                                break;
+                                            }
+                                        }
+                                        if (!activationComplete) {
+                                            throw new java.io.IOException("Creator activation frame exceeded 128 bytes.");
+                                        }
+                                        callback.getOutputStream().write(
+                                                ("ACTIVATED wrong-token" + (char) 10)
+                                                        .getBytes(StandardCharsets.UTF_8)
+                                        );
+                                        callback.getOutputStream().flush();
                                         callback.shutdownOutput();
-                                    }
-                                    callback.setSoTimeout(5_000);
-                                    if (callback.getInputStream().read() >= 0) {
-                                        throw new java.io.IOException("Creator wrote to an invalid callback.");
+                                    } else {
+                                        if (!"stalled".equals(interference)) {
+                                            callback.shutdownOutput();
+                                        }
+                                        callback.setSoTimeout(5_000);
+                                        if (callback.getInputStream().read() >= 0) {
+                                            throw new java.io.IOException("Creator wrote to an invalid callback.");
+                                        }
                                     }
                                 }
                             } catch (final java.io.IOException | NumberFormatException failure) {
@@ -1240,19 +1504,27 @@ final class ThirdPartyStepBundleE2eTest {
             final String implementation,
             final String implementationEntry
     ) {
+        return RailixJson.write(RailixValue.object(Map.of(
+                "format", RailixValue.number(1),
+                "steps", RailixValue.array(List.of(manifestStep(definition, implementation, implementationEntry)))
+        )));
+    }
+
+    private static RailixValue.ObjectValue manifestStep(
+            final StepDefinition definition,
+            final String implementation,
+            final String implementationEntry
+    ) {
         final RailixValue.ObjectValue contract = StepContractJson.value(definition);
         final String contractDigest = "sha256:" + sha256(
                 RailixJson.write(contract).getBytes(StandardCharsets.UTF_8)
         );
-        return RailixJson.write(RailixValue.object(Map.of(
-                "format", RailixValue.number(1),
-                "steps", RailixValue.array(List.of(RailixValue.object(Map.of(
-                        "contract", contract,
-                        "contract_digest", RailixValue.string(contractDigest),
-                        "implementation", RailixValue.string(implementation),
-                        "implementation_entry", RailixValue.string(implementationEntry)
-                ))))
-        )));
+        return RailixValue.object(Map.of(
+                "contract", contract,
+                "contract_digest", RailixValue.string(contractDigest),
+                "implementation", RailixValue.string(implementation),
+                "implementation_entry", RailixValue.string(implementationEntry)
+        ));
     }
 
     private Bundle largeBundle(final long bytes) throws Exception {
@@ -1320,18 +1592,30 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     private static Path project(final Path directory, final String stepId) throws IOException {
+        return project(directory, stepId, "value");
+    }
+
+    private static Path project(
+            final Path directory,
+            final String stepId,
+            final String example
+    ) throws IOException {
         Files.createDirectories(directory);
         final Path project = directory.resolve("railix.project.json");
-        Files.writeString(project, projectSource(stepId), StandardCharsets.UTF_8);
+        Files.writeString(project, projectSource(stepId, example), StandardCharsets.UTF_8);
         return project;
     }
 
     private static String projectSource(final String stepId) {
+        return projectSource(stepId, "value");
+    }
+
+    private static String projectSource(final String stepId, final String example) {
         return """
                 {"format":1,"id":"external-step-app","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
                   {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
-                    "name":"external","payload":["value"]
+                    "name":"external","payload":[%s]
                   }]},
                   {"id":"external","use":"%s","inputs":{},
                     "receives":{"value":["context","payload","arguments",0]},
@@ -1341,7 +1625,7 @@ final class ThirdPartyStepBundleE2eTest {
                   {"from":"command.next","to":"external"},
                   {"from":"external.next","to":"end"}
                 ]}
-                """.formatted(stepId);
+                """.formatted(RailixJson.write(RailixValue.string(example)), stepId);
     }
 
     private static Path source(
@@ -1615,34 +1899,51 @@ final class ThirdPartyStepBundleE2eTest {
                 .hasMessageStartingWith(diagnostic);
     }
 
-    private void assertCreatorRuns(final Bundle bundle, final String argument) throws Exception {
+    private void assertCreatorObserves(final Bundle bundle, final String argument) throws Exception {
         final Workspace workspace = workspace(List.of(bundle));
-        final Path project = project(directory, bundle.definition().id());
+        final Path project = project(directory, bundle.definition().id(), argument);
         try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
              HttpClient client = HttpClient.newHttpClient()) {
-            final HttpResponse<String> response = runCreator(client, creator, argument);
+            final HttpResponse<String> response = exampleView(client, creator);
             assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
             assertThat(response.body()).contains("\"result\":\"helper-" + argument + "-resource\"");
         }
     }
 
-    private static HttpResponse<String> runCreator(
+    private static HttpResponse<String> exampleView(
             final HttpClient client,
-            final CreatorServer creator,
-            final String argument
+            final CreatorServer creator
     ) throws IOException, InterruptedException {
-        return client.send(
-                HttpRequest.newBuilder(creator.baseUri().resolve("/api/run/command"))
+        final long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+        HttpResponse<String> status;
+        do {
+            status = client.send(
+                    HttpRequest.newBuilder(creator.baseUri().resolve("/api/examples"))
                         .timeout(Duration.ofSeconds(8))
-                        .header("Content-Type", "application/json")
                         .header(
                                 "X-Railix-Creator-Token",
                                 creator.baseUri().getRawFragment().substring("token=".length())
                         )
-                        .POST(HttpRequest.BodyPublishers.ofString(
-                                "{\"payload\":{\"arguments\":[\"" + argument + "\"]}}",
-                                StandardCharsets.UTF_8
-                        ))
+                        .GET()
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+            final RailixValue.ObjectValue examples = (RailixValue.ObjectValue)
+                    ((RailixJson.Parsed) RailixJson.parse(status.body())).value();
+            if (((RailixValue.NumberValue) examples.values().get("completed")).value().intValueExact() == 1) {
+                break;
+            }
+            Thread.sleep(20);
+        } while (System.nanoTime() < deadline);
+        assertThat(status.statusCode()).as(status.body()).isEqualTo(200);
+        return client.send(
+                HttpRequest.newBuilder(creator.baseUri().resolve("/api/examples/command:0/view"))
+                        .timeout(Duration.ofSeconds(8))
+                        .header(
+                                "X-Railix-Creator-Token",
+                                creator.baseUri().getRawFragment().substring("token=".length())
+                        )
+                        .GET()
                         .build(),
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
         );

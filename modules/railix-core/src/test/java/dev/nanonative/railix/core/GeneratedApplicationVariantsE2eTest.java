@@ -23,6 +23,10 @@ final class GeneratedApplicationVariantsE2eTest {
         assertThat(compiled().productionApplicationSource())
                 .doesNotContain(
                         "public RunResult run(",
+                        "DevelopmentRuntime.Metrics",
+                        "startFlow(",
+                        "startStep(",
+                        "TraceExecution",
                         " observe(",
                         "WorkflowRuntime.Capture",
                         "ObservationCapture",
@@ -31,6 +35,28 @@ final class GeneratedApplicationVariantsE2eTest {
                         "railix.development",
                         "jdk.httpserver"
                 );
+    }
+
+    @Test
+    void developmentApplicationOwnsMetricsOutsideStepHandlers() {
+        assertThat(compiled().developmentApplicationSource())
+                .contains(
+                        "DevelopmentRuntime.Metrics",
+                        "startFlow(",
+                        "startStep("
+                )
+                .doesNotContain("Metrics.invoke(", "execution.test()", "new boolean[]{");
+    }
+
+    @Test
+    void traceExecutionNeverRecordsOperationalMetrics() {
+        final String source = compiled().developmentApplicationSource();
+        final String trace = source.substring(
+                source.indexOf("private static RunResult trace_1"),
+                source.indexOf("private static WorkflowRuntime.SourceResult source_1")
+        );
+
+        assertThat(trace).doesNotContain("METRICS");
     }
 
     @Test
@@ -43,6 +69,17 @@ final class GeneratedApplicationVariantsE2eTest {
         assertThat(source).doesNotContain("execution.record(");
         assertThat(executor).isNotNegative();
         assertThat(outcomeName).isGreaterThan(unrouted);
+    }
+
+    @Test
+    void productionStepCallsContainNoTraceOnlyArgumentsOrSelectors() {
+        assertThat(compiled().productionApplicationSource())
+                .contains("WorkflowRuntime.StepCall CALL_0 = HANDLER_0::run;")
+                .doesNotContain(
+                        "final String invocation",
+                        "private static String use_",
+                        "DevelopmentRuntime.Trace"
+                );
     }
 
     @Test
@@ -83,28 +120,95 @@ final class GeneratedApplicationVariantsE2eTest {
     }
 
     @Test
-    void developmentApplicationAddsRunAndSinglePassObservation() {
+    void developmentApplicationAddsOnePassWholeFlowTracing() {
         assertThat(compiled().developmentApplicationSource())
                 .contains("public final class RailixApplication implements DevelopmentRuntime.Application")
                 .contains("public RunResult run(")
-                .contains("public DevelopmentRuntime.Observation observe(")
-                .contains("implements WorkflowRuntime.Capture")
-                .contains("execution.observe(")
-                .contains("execution.call(");
+                .contains("public RunResult trace(")
+                .contains("DevelopmentRuntime.Trace.start(")
+                .contains("execution.call(")
+                .doesNotContain(
+                        "DevelopmentRuntime.Observation",
+                        "WorkflowRuntime.Capture",
+                        "execution.observe(",
+                        "preview"
+                );
     }
 
     @Test
-    void developmentDispatchAvoidsConditionalMethodReferenceCompilerCrash() {
+    void developmentDispatchHasNoPerStepObservationBranch() {
         assertThat(compiled().developmentApplicationSource())
                 .contains(
-                        "if (observe) {",
-                        "yield execution.observe(",
-                        "yield execution.call("
+                        "DevelopmentRuntime.Trace.before(",
+                        "DevelopmentRuntime.Trace.after(",
+                        "execution.call("
                 )
                 .doesNotContain(
-                        "observe ? execution.observe(",
-                        ": execution.call("
+                        "if (observe)",
+                        "selected",
+                        "ObservationCapture"
                 );
+    }
+
+    @Test
+    void developmentSelectsNormalOrTraceHandlersOnceAtTheFlowBoundary() {
+        final String source = compiled().developmentApplicationSource();
+
+        assertThat(source)
+                .contains(
+                        "private static final WorkflowRuntime.StepCall[] CALLS = calls();",
+                        "private static final WorkflowRuntime.StepCall[] TRACE_CALLS = traceCalls();",
+                        "(execution, 2, CALLS, false);",
+                        "(execution, 2, TRACE_CALLS));"
+                )
+                .containsPattern("calls\\[\\d+] = HANDLER_\\d+::run;")
+                .containsPattern("calls\\[\\d+] = RailixApplication::traceHandler_\\d+;");
+    }
+
+    @Test
+    void normalDevelopmentExecutorDoesNotEnterTheTraceRuntime() {
+        final String source = compiled().developmentApplicationSource();
+        final String executor = source.substring(
+                source.indexOf("private static RunResult execute_1"),
+                source.indexOf("private static RunResult traceExecute_1")
+        );
+
+        assertThat(executor)
+                .contains("dispatch_1(execution, current, calls, measure)")
+                .doesNotContain("DevelopmentRuntime.Trace", "TRACE_CALLS");
+    }
+
+    @Test
+    void nestedStepsShareOneInputPlanAndTraceOnlyThroughTheExecutionBoundary() {
+        final CompileResult.Compiled compiled = compiled();
+        final String development = compiled.developmentApplicationSource();
+        final String production = compiled.productionApplicationSource();
+        final String developmentPlans = development.substring(
+                development.indexOf("private static final class Plans_0"),
+                development.indexOf("private RailixApplication()")
+        );
+        final String productionPlans = production.substring(
+                production.indexOf("private static final class Plans_0"),
+                production.indexOf("private RailixApplication()")
+        );
+
+        assertThat(development)
+                .contains(
+                        "private static final class TraceExecution extends WorkflowRuntime.Execution",
+                        "new TraceExecution(",
+                        "DevelopmentRuntime.Trace.invoke("
+                );
+        assertThat(developmentPlans)
+                .contains("WorkflowRuntime.InputResolver INPUTS_2")
+                .containsPattern("new WorkflowRuntime\\.NestedStep\\([^;]+HANDLER_\\d+\\)")
+                .doesNotContain(
+                        "TRACE_INPUTS_",
+                        "TRACE_DATA_",
+                        "traceResolve_",
+                        "DevelopmentRuntime.Trace.invoke(",
+                        "CALLS["
+                );
+        assertThat(developmentPlans).isEqualTo(productionPlans);
     }
 
     @Test

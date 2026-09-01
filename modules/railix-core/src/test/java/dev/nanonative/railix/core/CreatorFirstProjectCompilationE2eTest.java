@@ -137,6 +137,123 @@ class CreatorFirstProjectCompilationE2eTest {
     }
 
     @Test
+    void nodeMetricsMayBeDisabledAtCompilation() {
+        final String source = contextProject().replace(
+                "{\"id\":\"normalise-name\"",
+                "{\"id\":\"normalise-name\",\"metrics\":false"
+        );
+
+        assertThat(ProjectCompiler.compileApplication(source, contextCatalog()))
+                .isInstanceOfSatisfying(CompileResult.Compiled.class, compiled -> {
+                    assertThat(compiled.source()).contains("\"metrics\":false");
+                    assertThat(compiled.developmentApplicationSource())
+                            .contains(
+                                    "new DevelopmentRuntime.Metrics(PROJECT_ID, "
+                                            + "new String[]{\"command\"}, "
+                                            + "new String[]{\"command\", \"return-name\"})",
+                                    "case 2 -> execution.call("
+                            )
+                            .doesNotContain("new boolean[]{");
+                });
+    }
+
+    @Test
+    void nodeMetricsDefaultToEnabled() {
+        assertThat(ProjectCompiler.compileApplication(contextProject(), contextCatalog()))
+                .isInstanceOfSatisfying(CompileResult.Compiled.class, compiled ->
+                        assertThat(compiled.developmentApplicationSource()).contains(
+                                "new String[]{\"command\", \"normalise-name\", \"return-name\"}"
+                        ));
+    }
+
+    @Test
+    void nodeMetricsMayBeExplicitlyEnabled() {
+        final String source = contextProject().replace(
+                "{\"id\":\"normalise-name\"",
+                "{\"id\":\"normalise-name\",\"metrics\":true"
+        );
+
+        assertThat(ProjectCompiler.compileApplication(source, contextCatalog()))
+                .isInstanceOfSatisfying(CompileResult.Compiled.class, compiled ->
+                        assertThat(compiled.developmentApplicationSource()).contains(
+                                "new String[]{\"command\", \"normalise-name\", \"return-name\"}"
+                        ));
+    }
+
+    @Test
+    void nodeMetricsRejectsNonBooleanConfiguration() {
+        final String source = contextProject().replace(
+                "{\"id\":\"normalise-name\"",
+                "{\"id\":\"normalise-name\",\"metrics\":\"sometimes\""
+        );
+
+        assertThat(ProjectCompiler.compileApplication(source, contextCatalog()))
+                .isInstanceOfSatisfying(CompileResult.Rejected.class, rejected ->
+                        assertThat(rejected.diagnostics()).singleElement().satisfies(diagnostic ->
+                                assertThat(diagnostic).extracting(
+                                        Diagnostic::code,
+                                        Diagnostic::message,
+                                        Diagnostic::path
+                                ).containsExactly(
+                                        "PROJECT_NODE_METRICS_BOOLEAN_REQUIRED",
+                                        "Node metrics must be true or false.",
+                                        "nodes[2].metrics"
+                                )
+                        )
+                );
+    }
+
+    @Test
+    void nodeMetricsRejectsNumericConfiguration() {
+        final String source = contextProject().replace(
+                "{\"id\":\"normalise-name\"",
+                "{\"id\":\"normalise-name\",\"metrics\":1"
+        );
+
+        assertThat(ProjectCompiler.compileApplication(source, contextCatalog()))
+                .isInstanceOfSatisfying(CompileResult.Rejected.class, rejected ->
+                        assertThat(rejected.diagnostics()).singleElement().satisfies(diagnostic ->
+                                assertThat(diagnostic.code()).isEqualTo("PROJECT_NODE_METRICS_BOOLEAN_REQUIRED")
+                        ));
+    }
+
+    @Test
+    void nodeMetricsRejectsNullConfiguration() {
+        final String source = contextProject().replace(
+                "{\"id\":\"normalise-name\"",
+                "{\"id\":\"normalise-name\",\"metrics\":null"
+        );
+
+        assertThat(ProjectCompiler.compileApplication(source, contextCatalog()))
+                .isInstanceOfSatisfying(CompileResult.Rejected.class, rejected ->
+                        assertThat(rejected.diagnostics()).singleElement().satisfies(diagnostic ->
+                                assertThat(diagnostic.code()).isEqualTo("PROJECT_NODE_METRICS_BOOLEAN_REQUIRED")
+                        ));
+    }
+
+    @Test
+    void appNodeRejectsMetricsConfiguration() {
+        final String source = contextProject().replace(
+                "{\"id\":\"app\",\"use\":\"railix.app\"",
+                "{\"id\":\"app\",\"use\":\"railix.app\",\"metrics\":false"
+        );
+
+        assertThat(ProjectCompiler.compileApplication(source, contextCatalog()))
+                .isInstanceOfSatisfying(CompileResult.Rejected.class, rejected ->
+                        assertThat(rejected.diagnostics()).singleElement().satisfies(diagnostic ->
+                                assertThat(diagnostic).extracting(
+                                        Diagnostic::code,
+                                        Diagnostic::message,
+                                        Diagnostic::path
+                                ).containsExactly(
+                                        "PROJECT_APP_METRICS_UNSUPPORTED",
+                                        "App is structural and has no executable metrics.",
+                                        "nodes[0].metrics"
+                                )
+                        ));
+    }
+
+    @Test
     void applicationWithoutInstalledTriggersCompiles() {
         final String source = """
                 {"format":1,"id":"empty-project","nodes":[
@@ -156,9 +273,9 @@ class CreatorFirstProjectCompilationE2eTest {
         final StepDefinition trigger = StepDefinition.named("example.trigger", "1")
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source("application.example")
-                .run(TestStepHandlers.PrimaryOutcome.class);
+                .run(TestStepHandlers.CompilationMustNotExecute.class);
         final StepDefinition step = StepDefinition.named("example.step", "1")
-                .run(TestStepHandlers.PrimaryOutcome.class);
+                .run(TestStepHandlers.CompilationMustNotExecute.class);
         final String source = """
                 {"format":1,"id":"pure-compilation","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},

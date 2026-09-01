@@ -18,15 +18,21 @@ public final class SlowStepHandler implements StepHandler {
 
     @Override
     public StepResult run(final StepInput input) throws InterruptedException {
-        try {
-            Files.writeString(Path.of(input.string("marker")), "started", StandardCharsets.UTF_8);
-        } catch (final IOException exception) {
-            throw new IllegalStateException("Slow Step marker cannot be written.", exception);
-        }
+        final Path marker = Path.of(input.string("marker"));
+        write(marker, "started");
         final long delay = ((RailixValue.NumberValue) input.value("delay_millis"))
                 .value()
                 .longValueExact();
         Thread.sleep(delay);
+        write(marker, "finished");
         return StepResult.outcome(input.primaryOutcome());
+    }
+
+    private static void write(final Path marker, final String state) {
+        try {
+            Files.writeString(marker, state, StandardCharsets.UTF_8);
+        } catch (final IOException exception) {
+            throw new IllegalStateException("Slow Step marker cannot be written.", exception);
+        }
     }
 }

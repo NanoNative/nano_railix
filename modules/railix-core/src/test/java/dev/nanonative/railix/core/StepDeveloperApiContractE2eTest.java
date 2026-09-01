@@ -46,9 +46,23 @@ final class StepDeveloperApiContractE2eTest {
     }
 
     @Test
+    void nestedProgramPrimaryOutcomeCannotBeBlank() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StepInput.ProgramResult(" ", "next", List.of()))
+                .withMessage("Nested Step outcomes must be non-blank strings.");
+    }
+
+    @Test
     void nestedProgramOutcomeIsRequired() {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> new StepInput.ProgramResult("next", " ", List.of(RailixValue.string("value"))))
+                .withMessage("Nested Step outcomes must be non-blank strings.");
+    }
+
+    @Test
+    void nestedProgramOutcomeCannotBeJavaNull() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StepInput.ProgramResult("next", null, List.of()))
                 .withMessage("Nested Step outcomes must be non-blank strings.");
     }
 
@@ -58,6 +72,25 @@ final class StepDeveloperApiContractE2eTest {
 
         assertThat(result.outcome()).isEqualTo(result.primaryOutcome());
         assertThat(result.values()).isEmpty();
+    }
+
+    @Test
+    void completedNestedProgramWithoutAValueContinuesWhenWritten() {
+        final StepResult result = new StepInput.ProgramResult("next", "next", List.of()).write("field");
+
+        assertThat(result.outcome()).isEqualTo("next");
+        assertThat(result.writes()).isEmpty();
+    }
+
+    @Test
+    void completedNestedProgramCannotReturnMultipleValues() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StepInput.ProgramResult(
+                        "next",
+                        "next",
+                        List.of(RailixValue.string("one"), RailixValue.string("two"))
+                ))
+                .withMessage("Completed nested Steps may return at most one value.");
     }
 
     @Test
@@ -95,6 +128,13 @@ final class StepDeveloperApiContractE2eTest {
     void stepInputPrimaryOutcomeIsRequired() {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> new StepInput(Map.of(), Map.of(), Map.of(), Map.of(), " "))
+                .withMessage("Step primary outcome must be a non-blank string.");
+    }
+
+    @Test
+    void stepInputPrimaryOutcomeCannotBeJavaNull() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new StepInput(Map.of(), Map.of(), Map.of(), Map.of(), null))
                 .withMessage("Step primary outcome must be a non-blank string.");
     }
 
@@ -161,6 +201,13 @@ final class StepDeveloperApiContractE2eTest {
     }
 
     @Test
+    void JavaNullOptionalStepInputNameIsRejected() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> input().optionalValue(null))
+                .withMessage("Step input name must be a non-blank string.");
+    }
+
+    @Test
     void nonStringStepInputCannotBeReadAsAString() {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> input().string("number"))
@@ -172,6 +219,18 @@ final class StepDeveloperApiContractE2eTest {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> input().option(" "))
                 .withMessage("Step option name must be a non-blank string.");
+    }
+
+    @Test
+    void JavaNullStepOptionNameIsRejected() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> input().option(null))
+                .withMessage("Step option name must be a non-blank string.");
+    }
+
+    @Test
+    void selectedStepOptionIsAvailable() {
+        assertThat(input().option("choice")).isEqualTo("literal");
     }
 
     @Test
@@ -204,6 +263,13 @@ final class StepDeveloperApiContractE2eTest {
     void blankNestedStepInputNameIsRejected() {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> input().run(" "))
+                .withMessage("Nested Step input name must be a non-blank string.");
+    }
+
+    @Test
+    void JavaNullNestedStepInputNameIsRejected() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> input().run(null))
                 .withMessage("Nested Step input name must be a non-blank string.");
     }
 

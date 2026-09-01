@@ -3,40 +3,25 @@ package dev.nanonative.railix.core.runtime;
 import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.value.RailixValue;
 
-import java.util.List;
-
 /** Canonical trigger-independent run result without exception-driven user control flow. */
 public sealed interface RunResult permits
         RunResult.Succeeded,
         RunResult.Rejected,
         RunResult.Failed,
         RunResult.Cancelled {
-    record Succeeded(RailixValue.ObjectValue context, List<StepExecution> steps) implements RunResult {
-        public Succeeded {
-            steps = List.copyOf(steps);
-        }
+    record Succeeded(RailixValue.ObjectValue context) implements RunResult {
     }
 
-    record Rejected(List<Diagnostic> diagnostics, List<StepExecution> steps) implements RunResult {
+    record Rejected(java.util.List<Diagnostic> diagnostics) implements RunResult {
         public Rejected {
-            diagnostics = List.copyOf(diagnostics);
-            steps = List.copyOf(steps);
+            diagnostics = java.util.List.copyOf(diagnostics);
         }
     }
 
-    record Failed(RunFailure failure, List<StepExecution> steps) implements RunResult {
-        public Failed {
-            steps = List.copyOf(steps);
-        }
+    record Failed(RunFailure failure) implements RunResult {
     }
 
-    /** Cancellation observed at an execution boundary, after the listed Steps completed. */
-    record Cancelled(List<StepExecution> steps) implements RunResult {
-        public Cancelled {
-            steps = List.copyOf(steps);
-        }
-    }
-
-    record StepExecution(String stepId, String outcome) {
+    /** Cancellation observed at an execution boundary. */
+    record Cancelled() implements RunResult {
     }
 }

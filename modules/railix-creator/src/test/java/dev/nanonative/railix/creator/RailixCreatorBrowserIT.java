@@ -31,10 +31,9 @@ import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
@@ -71,6 +70,212 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     void appInspectorShowsTheRunningBuildPathAndPid() {
         assertThat(page.locator("#build-path").textContent()).isNotBlank();
         assertThat(page.locator("#application-pid").textContent()).matches("[1-9][0-9]*");
+    }
+
+    @Test
+    void appInspectorAutomaticallyShowsLiveRuntimeMetrics() {
+        page.locator(".runtime-metrics").waitFor();
+
+        assertThat(page.locator(".runtime-metrics").textContent())
+                .contains("Runtime metrics", "Connected", "Uptime", "Heap", "Metric counters")
+                .doesNotContain("Refresh");
+    }
+
+    @Test
+    void applicationStepHasNoOperationalMetricsSwitch() {
+        assertThat(page.locator("#node-metrics").count()).isZero();
+    }
+
+    @Test
+    void executableStepMetricsAreEnabledByDefault() {
+        addTrigger();
+
+        assertThat(page.locator("#node-metrics").isChecked()).isTrue();
+    }
+
+    @Test
+    void disablingExecutableStepMetricsCompilesTheOverride() {
+        addTrigger();
+        page.locator("#node-metrics").uncheck();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => (await (await fetch('/api/project')).json()).project.nodes
+                  .find(node => node.id !== 'app').metrics
+                """)).isEqualTo(false);
+    }
+
+    @Test
+    void reenablingExecutableStepMetricsRemovesTheOverride() {
+        addTrigger();
+        page.locator("#node-metrics").uncheck();
+        waitForText("#build-state", "Built");
+        page.locator("#node-metrics").check();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => !Object.hasOwn((await (await fetch('/api/project')).json()).project.nodes
+                  .find(node => node.id !== 'app'), 'metrics')
+                """)).isEqualTo(true);
+    }
+
+    @Test
+    void selectingATriggerAutomaticallyShowsItsStepAndFlowMetrics() {
+        addTrigger();
+        page.locator(".runtime-metrics").waitFor();
+
+        assertThat(page.locator(".runtime-metrics").textContent())
+                .contains("Operational metrics", "Connected", "Step executions", "Flow executions");
+    }
+
+    @Test
+    void selectedStepMetricsIdentifySampledTimingAndOmitUnsupportedInflightCounts() {
+        addTrigger();
+        page.locator(".runtime-metrics").waitFor();
+
+        assertThat(page.locator(".runtime-metrics").textContent())
+                .contains("Step sampled average", "Step sampled maximum")
+                .doesNotContain("Step in flight");
+    }
+
+    @Test
+    void stoppedApplicationRemovesStaleRuntimeMetrics() {
+        page.locator(".runtime-metrics").waitFor();
+        final long pid = ((Number) page.evaluate(
+                "async () => (await (await fetch('/api/application')).json()).pid"
+        )).longValue();
+        stopProcess(pid);
+
+        page.waitForFunction("() => document.querySelector('.runtime-metrics') === null");
+
+        assertThat(page.locator(".runtime-metrics").count()).isZero();
+    }
+
+    @Test
+    void stoppedApplicationDoesNotPollUnavailableExampleEndpoints() {
+        page.evaluate("""
+                () => {
+                  const request = window.fetch.bind(window);
+                  window.__stoppedExampleRequests = 0;
+                  window.fetch = (input, options = {}) => {
+                    const url = typeof input === 'string' ? input : input.url;
+                    if (url.startsWith('/api/examples')) {
+                      window.__stoppedExampleRequests++;
+                    }
+                    return request(input, options);
+                  };
+                }
+                """);
+        final long pid = ((Number) page.evaluate(
+                "async () => (await (await fetch('/api/application')).json()).pid"
+        )).longValue();
+
+        stopProcess(pid);
+        page.waitForFunction("() => state.application.state === 'stopped'");
+        page.evaluate("window.__stoppedExampleRequests = 0");
+        page.waitForTimeout(300);
+
+        assertThat(((Number) page.evaluate("window.__stoppedExampleRequests")).intValue())
+                .isLessThanOrEqualTo(1);
+    }
+
+    @Test
+    void metricsFromThePreviousApplicationCannotRenderAfterRollingReplacement() {
+        page.locator(".runtime-metrics").waitFor();
+        final String previousPid = applicationPid();
+        page.evaluate("""
+                pid => {
+                  const request = window.fetch.bind(window);
+                  const stale = {
+                    application_pid: Number(pid),
+                    application: {metrics: {executions: 987654}},
+                    flows: [],
+                    steps: [],
+                    process: {}
+                  };
+                  window.__staleMetricServed = false;
+                  window.fetch = (input, options = {}) => {
+                    const url = typeof input === 'string' ? input : input.url;
+                    if (!window.__staleMetricServed && url.startsWith('/api/metrics')
+                        && Number(state.application.pid) !== Number(pid)) {
+                      window.__staleMetricServed = true;
+                      return Promise.resolve(new Response(JSON.stringify(stale), {
+                        status: 200,
+                        headers: {'Content-Type': 'application/json'}
+                      }));
+                    }
+                    return request(input, options);
+                  };
+                }
+                """, previousPid);
+
+        page.locator("#project-id").fill("metrics-replacement");
+        page.locator("#project-id").press("Tab");
+        waitForText("#build-state", "Built");
+        page.waitForFunction("pid => Number(state.application.pid) !== Number(pid)", previousPid);
+        final String currentPid = applicationPid();
+        page.waitForFunction("window.__staleMetricServed === true");
+        final boolean staleNeverRendered = (Boolean) page.evaluate("""
+                pid => new Promise(resolve => {
+                  let clean = true;
+                  const observer = setInterval(() => {
+                    clean = clean && state.metrics?.application?.metrics?.executions !== 987654;
+                  }, 1);
+                  setTimeout(() => {
+                    clearInterval(observer);
+                    resolve(clean && Number(state.application.pid) === Number(pid));
+                  }, 100);
+                })
+                """, currentPid);
+
+        assertThat(staleNeverRendered).isTrue();
+        page.waitForFunction("pid => Number(state.metrics?.application_pid) === Number(pid)", currentPid);
+    }
+
+    @Test
+    void exampleProjectionFromThePreviousApplicationCannotRenderAfterRollingReplacement() {
+        addTrigger();
+        waitForText("#build-state", "Built");
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+        final String previousPid = applicationPid();
+        page.evaluate("""
+                pid => {
+                  const request = window.fetch.bind(window);
+                  const stale = {
+                    application_pid: Number(pid),
+                    initial_context: {},
+                    nodes: [1],
+                    result: {status: 'succeeded', context: {result: 'STALE_APPLICATION_RESULT'}}
+                  };
+                  window.__staleExampleServed = false;
+                  window.fetch = (input, options = {}) => {
+                    const url = typeof input === 'string' ? input : input.url;
+                    if (url.endsWith('/view') && Number(state.application.pid) !== Number(pid)) {
+                      window.__staleExampleServed = true;
+                      return Promise.resolve(new Response(JSON.stringify(stale), {
+                        status: 200,
+                        headers: {'Content-Type': 'application/json'}
+                      }));
+                    }
+                    return request(input, options);
+                  };
+                }
+                """, previousPid);
+
+        page.locator(".app-node").click();
+        page.locator("#project-id").fill("example-replacement");
+        page.locator("#project-id").press("Tab");
+        waitForText("#build-state", "Built");
+        page.waitForFunction("pid => Number(state.application.pid) !== Number(pid)", previousPid);
+        selectTrigger();
+        page.waitForFunction("window.__staleExampleServed === true");
+        page.waitForTimeout(100);
+
+        assertThat(page.evaluate("""
+                () => state.traceSummary === null
+                  && !state.runResult.includes('STALE_APPLICATION_RESULT')
+                """)).isEqualTo(true);
     }
 
     @Test
@@ -120,6 +325,18 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         page.waitForTimeout(250);
         page.locator("#project-id").fill("current-snapshot");
         page.locator("#project-id").press("Tab");
+        page.waitForTimeout(250);
+
+        assertThat(page.evaluate("""
+                () => ({
+                  active: state.writeActive,
+                  pending: JSON.parse(state.pendingWrite.projectSource).id
+                })
+                """)).isEqualTo(java.util.Map.of(
+                "active", true,
+                "pending", "current-snapshot"
+        ));
+
         page.evaluate("window.__railixReleaseProjectWrite()");
         waitForText("#build-state", "Built");
 
@@ -1823,6 +2040,87 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
+    void applicationInspectorRefreshesAutomaticExampleTraceStorage() {
+        addTrigger();
+        page.locator(".app-node").click();
+        waitForText("#example-suite-state", "Completed");
+        page.waitForFunction("""
+                () => document.querySelector('#example-trace-storage')?.textContent !== '0 B'
+                """);
+
+        assertThat(page.locator("#example-trace-storage").textContent()).matches(".*[1-9].*");
+    }
+
+    @Test
+    void selectedExampleHighlightsItsPathWhileUnionCoverageKeepsTheOtherReachedBranchNeutral() {
+        openProject(filterProject());
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+
+        assertThat(page.locator("[data-node-id='command']").getAttribute("class"))
+                .contains("example-reached");
+        assertThat(page.locator("[data-node-id='filter']").getAttribute("class"))
+                .contains("example-reached");
+        assertThat(page.locator("[data-node-id='matched']").getAttribute("class"))
+                .contains("example-reached");
+        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("class"))
+                .doesNotContain("example-reached", "example-uncovered");
+    }
+
+    @Test
+    void stepReachedByNoExampleIsHighlightedAsUncovered() {
+        openProject(filterProject());
+        selectTrigger();
+        openInspectorTab("examples");
+        page.locator("[data-select-example='1']").click();
+        page.locator("#delete-example").click();
+        waitForText("#build-state", "Built");
+        openInspectorTab("inspect");
+        page.locator(".run-result").waitFor();
+
+        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("class"))
+                .contains("example-uncovered")
+                .doesNotContain("example-reached");
+    }
+
+    @Test
+    void rejectedReorderedDraftKeepsCoverageBoundToTheRunningApplication() {
+        openProject(filterProject());
+        selectTrigger();
+        openInspectorTab("examples");
+        page.locator("[data-select-example='1']").click();
+        page.locator("#delete-example").click();
+        waitForText("#build-state", "Built");
+        openInspectorTab("inspect");
+        page.locator(".run-result").waitFor();
+
+        page.evaluate("""
+                () => {
+                  const matched = state.project.nodes.findIndex(node => node.id === 'matched');
+                  const otherwise = state.project.nodes.findIndex(node => node.id === 'otherwise');
+                  [state.project.nodes[matched], state.project.nodes[otherwise]] =
+                    [state.project.nodes[otherwise], state.project.nodes[matched]];
+                  state.project.format = 2;
+                  dirty(true);
+                }
+                """);
+        waitForText("#build-state", "Not built");
+        page.waitForFunction("""
+                () => document.querySelector("[data-node-id='matched']")
+                    ?.classList.contains('example-reached')
+                  && document.querySelector("[data-node-id='otherwise']")
+                    ?.classList.contains('example-uncovered')
+                """);
+
+        assertThat(page.locator("[data-node-id='matched']").getAttribute("class"))
+                .contains("example-reached")
+                .doesNotContain("example-uncovered");
+        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("class"))
+                .contains("example-uncovered")
+                .doesNotContain("example-reached");
+    }
+
+    @Test
     void examplePayloadFollowsTheCurrentTriggerTargetWhenTheBuiltApplicationRuns() {
         addTrigger();
         chooseCustomPathFor("target", "payload", "command");
@@ -1848,6 +2146,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
         page.locator("#add-next-step").click();
         page.locator("#step-search").fill("lowercase");
+        page.locator("[data-add-step='text.lowercase']").waitFor();
 
         assertThat(page.locator("[data-add-step='text.lowercase']").count()).isEqualTo(1);
 
@@ -1896,6 +2195,326 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
+    void browserReadsTheApplicationOwnedTraceWithoutExecutingTheExampleAgain() {
+        page.evaluate("""
+                () => {
+                  const request = window.fetch.bind(window);
+                  window.__railixExampleRequests = [];
+                  window.fetch = (input, options = {}) => {
+                    const url = typeof input === 'string' ? input : input.url;
+                    window.__railixExampleRequests.push((options.method || 'GET') + ' ' + url);
+                    return request(input, options);
+                  };
+                }
+                """);
+
+        addGraphPrimitive("\"RAILIX\"", "lowercase", "text.lowercase");
+        page.locator("#preview-source").waitFor();
+
+        @SuppressWarnings("unchecked")
+        final List<String> requests = (List<String>) page.evaluate("() => window.__railixExampleRequests");
+        assertThat(requests).anyMatch(request -> request.equals("GET /api/application"));
+        assertThat(requests).anyMatch(request -> request.equals("GET /api/examples"));
+        assertThat(requests).anyMatch(request -> request.equals("GET /api/examples/status"));
+        assertThat(requests).anyMatch(request -> request.matches("GET /api/examples/[^/]+$"));
+        assertThat(requests).anyMatch(request -> request.matches("GET /api/examples/[^/]+/view"));
+        assertThat(requests).anyMatch(request -> request.matches("GET /api/examples/steps/[0-9]+"));
+        assertThat(requests).noneMatch(request ->
+                request.matches("GET /api/examples/[^/]+/steps/[0-9]+"));
+        assertThat(requests).noneMatch(request ->
+                request.contains("/api/run/")
+                        || request.contains("/api/trace/")
+                        || request.contains("/api/preview/"));
+    }
+
+    @Test
+    void browserBacksOffAndRetriesTransientApplicationExampleInventoryFailure() {
+        addTrigger();
+        waitForText("#build-state", "Built");
+        page.evaluate("""
+                () => {
+                  const request = window.fetch.bind(window);
+                  window.__railixInventoryAttempts = 0;
+                  window.__railixInventoryAttemptTimes = [];
+                  window.fetch = (input, options = {}) => {
+                    const url = typeof input === 'string' ? input : input.url;
+                    if (url === '/api/examples') {
+                      window.__railixInventoryAttempts++;
+                      window.__railixInventoryAttemptTimes.push(performance.now());
+                      if (window.__railixInventoryAttempts === 1) {
+                        return Promise.resolve(new Response(
+                          '{"status":"unavailable"}',
+                          {status: 503, headers: {'Content-Type': 'application/json'}}
+                        ));
+                      }
+                    }
+                    return request(input, options);
+                  };
+                }
+                """);
+
+        openInspectorTab("examples");
+        examplePayload().fill("[\"retry\"]");
+        examplePayload().press("Tab");
+        waitForText("#build-state", "Built");
+        page.waitForFunction("window.__railixInventoryAttempts >= 2");
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+
+        assertThat(((Number) page.evaluate("window.__railixInventoryAttempts")).intValue())
+                .isGreaterThanOrEqualTo(2);
+        assertThat(((Number) page.evaluate(
+                "window.__railixInventoryAttemptTimes[1] - window.__railixInventoryAttemptTimes[0]"
+        )).doubleValue()).isGreaterThanOrEqualTo(400);
+    }
+
+    @Test
+    void browserBacksOffAfterTransientApplicationStatusFailure() {
+        addTrigger();
+        waitForText("#build-state", "Built");
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+        page.evaluate("""
+                () => {
+                  const request = window.fetch.bind(window);
+                  state.application.examples = {...state.application.examples, state: 'running'};
+                  window.__railixApplicationAttempts = 0;
+                  window.__railixApplicationAttemptTimes = [];
+                  window.fetch = (input, options = {}) => {
+                    const url = typeof input === 'string' ? input : input.url;
+                    if (url === '/api/application') {
+                      window.__railixApplicationAttempts++;
+                      window.__railixApplicationAttemptTimes.push(performance.now());
+                      if (window.__railixApplicationAttempts === 1) {
+                        return Promise.resolve(new Response(
+                          '{"status":"unavailable"}',
+                          {status: 503, headers: {'Content-Type': 'application/json'}}
+                        ));
+                      }
+                    }
+                    return request(input, options);
+                  };
+                  scheduleApplicationPoll(0);
+                }
+                """);
+
+        page.waitForFunction("window.__railixApplicationAttempts >= 2");
+
+        assertThat(((Number) page.evaluate(
+                "window.__railixApplicationAttemptTimes[1] - window.__railixApplicationAttemptTimes[0]"
+        )).doubleValue()).isGreaterThanOrEqualTo(400);
+    }
+
+    @Test
+    void browserBacksOffAfterTransientSelectedExampleFailure() {
+        addTrigger();
+        waitForText("#build-state", "Built");
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+        page.evaluate("""
+                () => {
+                  const request = window.fetch.bind(window);
+                  const exampleId = selectedExampleId();
+                  const running = JSON.stringify({
+                    application_pid: Number(state.application.pid),
+                    revision: Number(state.application.examples?.revision || 0),
+                    state: 'running'
+                  });
+                  window.__railixSelectedExampleAttempts = 0;
+                  window.__railixSelectedExampleAttemptTimes = [];
+                  window.fetch = (input, options = {}) => {
+                    const url = typeof input === 'string' ? input : input.url;
+                    if (url === '/api/examples/status') {
+                      return Promise.resolve(new Response(
+                        running,
+                        {status: 200, headers: {'Content-Type': 'application/json'}}
+                      ));
+                    }
+                    if (url === `/api/examples/${encodeURIComponent(exampleId)}`) {
+                      window.__railixSelectedExampleAttempts++;
+                      window.__railixSelectedExampleAttemptTimes.push(performance.now());
+                      if (window.__railixSelectedExampleAttempts === 1) {
+                        return Promise.resolve(new Response(
+                          '{"status":"unavailable"}',
+                          {status: 503, headers: {'Content-Type': 'application/json'}}
+                        ));
+                      }
+                    }
+                    return request(input, options);
+                  };
+                  state.application.examples = {...state.application.examples, state: 'running'};
+                  scheduleApplicationPoll(0);
+                }
+                """);
+
+        page.waitForFunction("window.__railixSelectedExampleAttempts >= 2");
+
+        assertThat(((Number) page.evaluate(
+                "window.__railixSelectedExampleAttemptTimes[1]"
+                        + " - window.__railixSelectedExampleAttemptTimes[0]"
+        )).doubleValue()).isGreaterThanOrEqualTo(400);
+    }
+
+    @Test
+    void sameArtifactRestartRefetchesEveryApplicationOwnedExampleProjection() {
+        addTrigger();
+        waitForText("#build-state", "Built");
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+        final long previousPid = Long.parseLong(applicationPid());
+        final String previousFingerprint = String.valueOf(page.evaluate(
+                "async () => (await (await fetch('/api/application')).json()).fingerprint"
+        ));
+        final String previousPath = String.valueOf(page.evaluate(
+                "async () => (await (await fetch('/api/application')).json()).build_path"
+        ));
+        page.evaluate("""
+                () => {
+                  const request = window.fetch.bind(window);
+                  window.__railixRestartExampleReads = [];
+                  window.fetch = async (input, options = {}) => {
+                    const url = typeof input === 'string' ? input : input.url;
+                    const response = await request(input, options);
+                    if ((options.method || 'GET') === 'GET' && url.startsWith('/api/examples')) {
+                      const observedPid = Number(state.application.pid || 0);
+                      response.clone().json().then(body => {
+                        window.__railixRestartExampleReads.push({
+                          url,
+                          status: response.status,
+                          pid: Number(body.application_pid || observedPid)
+                        });
+                      }).catch(() => {});
+                    }
+                    return response;
+                  };
+                }
+                """);
+
+        stopProcess(previousPid);
+        page.waitForFunction("pid => state.application.state === 'stopped'"
+                + " && Number(state.application.pid) === Number(pid)", Long.toString(previousPid));
+        final Number restartStatus = (Number) page.evaluate("""
+                async () => {
+                  const opened = await (await fetch('/api/project', {cache: 'no-store'})).json();
+                  return (await fetch('/api/project', {
+                    method: 'POST',
+                    headers: mutationHeaders(),
+                    body: JSON.stringify(opened.project)
+                  })).status;
+                }
+                """);
+        assertThat(restartStatus.intValue()).isEqualTo(200);
+        page.waitForFunction("pid => Number(state.application.pid) !== Number(pid)"
+                + " && state.application.state === 'running'"
+                + " && state.application.examples?.state === 'completed'", Long.toString(previousPid));
+        page.locator(".run-result").waitFor();
+        final long currentPid = ((Number) page.evaluate("Number(state.application.pid)")).longValue();
+        page.waitForFunction("""
+                pid => {
+                  const reads = window.__railixRestartExampleReads
+                    .filter(read => read.status === 200 && read.pid === Number(pid))
+                    .map(read => read.url);
+                  return reads.includes('/api/examples')
+                    && reads.includes('/api/examples/coverage')
+                    && reads.some(url => url.split('/').length === 4
+                      && !url.endsWith('/status') && !url.endsWith('/coverage'))
+                    && reads.some(url => url.split('/').length === 5 && url.endsWith('/view'))
+                    && reads.some(url => url.split('/').length === 5 && url.startsWith('/api/examples/steps/'));
+                }
+                """, Long.toString(currentPid));
+
+        assertThat(currentPid).isNotEqualTo(previousPid);
+        assertThat(page.evaluate(
+                "async () => (await (await fetch('/api/application')).json()).fingerprint"
+        )).isEqualTo(previousFingerprint);
+        assertThat(page.evaluate(
+                "async () => (await (await fetch('/api/application')).json()).build_path"
+        )).isEqualTo(previousPath);
+    }
+
+    @Test
+    void latePreviousApplicationCoverageCannotRestoreItsObservations() {
+        addTrigger();
+        waitForText("#build-state", "Built");
+        page.evaluate("""
+                () => {
+                  const request = window.fetch.bind(window);
+                  let delayed = false;
+                  window.__coverageStarted = false;
+                  window.__releaseCoverage = null;
+                  window.fetch = async (input, options = {}) => {
+                    const url = typeof input === 'string' ? input : input.url;
+                    const response = await request(input, options);
+                    if (!delayed && url === '/api/examples/coverage') {
+                      delayed = true;
+                      window.__coverageStarted = true;
+                      await new Promise(resolve => window.__releaseCoverage = resolve);
+                    }
+                    return response;
+                  };
+                }
+                """);
+
+        openInspectorTab("examples");
+        examplePayload().fill("[\"previous\"]");
+        examplePayload().press("Tab");
+        waitForText("#build-state", "Built");
+        page.waitForFunction("window.__coverageStarted === true");
+        final String previousPid = applicationPid();
+
+        examplePayload().fill("[\"current\"]");
+        examplePayload().press("Tab");
+        waitForText("#build-state", "Built");
+        page.waitForFunction("pid => Number(state.application.pid) !== Number(pid)", previousPid);
+        final String currentPid = applicationPid();
+        final boolean currentIdentityRemainedStable = (Boolean) page.evaluate("""
+                pid => new Promise(resolve => {
+                  let stable = true;
+                  const observer = setInterval(() => {
+                    stable = stable && Number(state.application.pid) === Number(pid);
+                  }, 1);
+                  window.__releaseCoverage();
+                  setTimeout(() => {
+                    clearInterval(observer);
+                    resolve(stable && Number(state.application.pid) === Number(pid));
+                  }, 100);
+                })
+                """, currentPid);
+        assertThat(currentIdentityRemainedStable).isTrue();
+        page.waitForFunction("pid => Number(state.application.pid) === Number(pid)"
+                + " && state.application.examples?.state === 'completed'", currentPid);
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+
+        assertThat(applicationPid()).isEqualTo(currentPid);
+        assertThat(page.locator(".run-result").textContent()).contains("current");
+    }
+
+    @Test
+    void browserDoesNotRequestCreatorTraceExecution() {
+        page.evaluate("""
+                () => {
+                  const request = window.fetch.bind(window);
+                  window.__railixTraceExecutionRequests = [];
+                  window.fetch = (input, options = {}) => {
+                    const url = typeof input === 'string' ? input : input.url;
+                    window.__railixTraceExecutionRequests.push((options.method || 'GET') + ' ' + url);
+                    return request(input, options);
+                  };
+                }
+                """);
+
+        addGraphPrimitive("\"RAILIX\"", "lowercase", "text.lowercase");
+        page.locator("#preview-source").waitFor();
+
+        @SuppressWarnings("unchecked")
+        final List<String> requests = (List<String>) page.evaluate(
+                "() => window.__railixTraceExecutionRequests"
+        );
+        assertThat(requests).noneMatch(request -> request.contains("/api/trace/"));
+    }
+
+    @Test
     void selectedGraphStepSourcePickerDoesNotOfferItsOwnReturnedPath() {
         prepareTextPayloadTrigger();
         page.locator("#add-next-step").click();
@@ -1915,29 +2534,37 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
     @Test
     void typeChangingPrimitiveWritesItsNumberToTheMappedTarget() {
-        final String stepId = addGraphPrimitive("\"12.9\"", "to number", "text.to-number");
-
-        selectTrigger();
-        page.locator(".run-result").waitFor();
-
-        assertThat(page.locator(".run-result").textContent())
-                .contains("\"value\": 12.9")
-                .contains("\"id\": \"" + stepId + "\"")
-                .contains("\"outcome\": \"ok\"");
-    }
-
-    @Test
-    void falliblePrimitiveUsesItsExplicitInvalidOutcomeWithoutFailingTheRun() {
-        final String stepId = addGraphPrimitive("\"not-a-number\"", "to number", "text.to-number");
+        addGraphPrimitive("\"12.9\"", "to number", "text.to-number");
 
         selectTrigger();
         page.locator(".run-result").waitFor();
 
         assertThat(page.locator(".run-result").textContent())
                 .contains("\"status\": \"succeeded\"")
-                .contains("\"value\": \"not-a-number\"")
-                .contains("\"id\": \"" + stepId + "\"")
-                .contains("\"outcome\": \"invalid\"");
+                .contains("\"value\": 12.9");
+    }
+
+    @Test
+    void nextStepCompatibilityUsesTheBuiltOutputOfTheCurrentStep() {
+        final String conversion = addGraphPrimitive("\"12.9\"", "to number", "text.to-number");
+
+        page.locator("[data-select-step='" + conversion + "']").click();
+        page.locator("[data-add-outcome='ok']").click();
+
+        assertThat(page.locator("[data-add-step='number.floor']").count()).isEqualTo(1);
+        assertThat(page.locator("[data-add-step='text.lowercase']").count()).isZero();
+    }
+
+    @Test
+    void falliblePrimitiveUsesItsExplicitInvalidOutcomeWithoutFailingTheRun() {
+        addGraphPrimitive("\"not-a-number\"", "to number", "text.to-number");
+
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+
+        assertThat(page.locator(".run-result").textContent())
+                .contains("\"status\": \"succeeded\"")
+                .contains("\"value\": \"not-a-number\"");
     }
 
     @Test
@@ -2864,6 +3491,36 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         assertThat(runResult()).isEqualTo(RailixValue.bool(expected));
     }
 
+    @Test
+    void hoveredEmptyPrimitiveResultsRefreshAfterTraceCompletes() {
+        addTrigger();
+        exampleContext().fill("{\"payload\":{\"value\":6}}");
+        exampleContext().press("Tab");
+        waitForText("#build-state", "Built");
+        addManipulationAfterSelected();
+        choosePath("field", "result");
+        page.locator("#value-0-option").selectOption("field");
+        waitForText("#build-state", "Built");
+
+        page.locator("#value-0-source-path").click();
+        page.locator("[data-path-depth='0']").click();
+        page.locator("[data-path-part='payload']").click();
+        page.locator("[data-path-part='value']").click();
+        delayNextTrace();
+        page.locator("#apply-path").click();
+        page.locator("#steps-search").fill("greater");
+        waitForText("#build-state", "Built");
+        page.waitForFunction("() => typeof window.__releaseTrace === 'function'");
+
+        final Locator option = page.locator("#steps-options [data-add-nested='number.greater-than']");
+        assertThat(option.count()).isZero();
+        page.locator("#steps-options").hover();
+        page.evaluate("window.__releaseTrace()");
+        page.waitForFunction("window.__traceCompleted === true");
+        page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+        assertThat(option.count()).isEqualTo(1);
+    }
+
 }
 
 final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
@@ -2887,8 +3544,11 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         choosePath("field", "payload", "text");
         page.locator("#steps-search").fill("lower");
 
+        waitForText("#build-state", "Built");
+        final Locator option = page.locator("#steps-options [data-add-nested='text.lowercase']");
+        option.waitFor();
         assertThat(page.locator("#steps-options [data-add-nested]").count()).isEqualTo(1);
-        page.locator("#steps-options [data-add-nested='text.lowercase']").click();
+        option.click();
         waitForText("#build-state", "Built");
         assertThat(page.locator(".step-node.selected").textContent()).contains("Lowercase");
     }
@@ -2896,11 +3556,14 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void unaryValueStepIsOfferedAsAStandaloneGraphNodeWhenInputIsAvailable() {
         addTrigger();
+        waitForText("#build-state", "Built");
 
         page.locator("#add-next-step").click();
         page.locator("#step-search").fill("to json");
 
-        assertThat(page.locator("[data-add-step='value.to-json']").count()).isEqualTo(1);
+        final Locator option = page.locator("[data-add-step='value.to-json']");
+        option.waitFor();
+        assertThat(option.count()).isEqualTo(1);
     }
 
     @Test
@@ -3089,7 +3752,8 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         expected.press("Tab");
         waitForText("#build-state", "Built");
         page.locator("[data-preview-stage='0']").waitFor();
-        assertThat(page.locator("[data-preview-stage='0']").textContent()).isEqualTo("true");
+        assertThat(page.locator("[data-preview-stage='0']").textContent())
+                .isEqualTo("true");
 
         selectTrigger();
         page.locator(".run-result").waitFor();
@@ -3104,39 +3768,54 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    void numberToTextIsHiddenBeyondTheCanonicalNumberLimit() {
-        preparePrimitiveSearch("{\"payload\":{\"value\":1e1024}}", "number.to-text");
+    void numberBeyondTheCanonicalLimitDoesNotReplaceTheRunningApplication() {
+        addTrigger();
+        waitForText("#build-state", "Built");
+        final String pid = applicationPid();
+        exampleContext().fill("{\"payload\":{\"value\":1e1024}}");
+        exampleContext().press("Tab");
+        waitForText("#build-state", "Not built");
 
-        assertThat(page.locator("#steps-options [data-add-nested='number.to-text']").count()).isZero();
+        assertThat(applicationPid()).isEqualTo(pid);
     }
 
     @Test
     void valueToJsonIsOfferedAtItsCanonicalJsonByteLimit() {
-        prepareLiteralPrimitiveSearch(canonicalJsonBytes(RailixData.DEFAULT_MAX_SOURCE_BYTES), "value.to-json");
+        prepareLiteralRefinementSearch(canonicalJsonBytes(RailixData.DEFAULT_MAX_SOURCE_BYTES), "value.to-json");
+        page.locator("#steps-options [data-add-nested='value.to-json']").waitFor();
 
         assertThat(page.locator("#steps-options [data-add-nested='value.to-json']").count()).isEqualTo(1);
     }
 
     @Test
     void valueToJsonIsHiddenBeyondItsCanonicalJsonByteLimit() {
-        prepareLiteralPrimitiveSearch(canonicalJsonBytes(RailixData.DEFAULT_MAX_SOURCE_BYTES + 1), "value.to-json");
+        prepareLiteralRefinementSearch(
+                canonicalJsonBytes(RailixData.DEFAULT_MAX_SOURCE_BYTES + 1),
+                "value.to-json"
+        );
+        page.locator("#steps-options .empty-options").waitFor();
 
         assertThat(page.locator("#steps-options [data-add-nested='value.to-json']").count()).isZero();
     }
 
     @Test
-    void primitiveRefinementHidesAValueWithoutRequiredDepthHeadroom() {
+    void overdeepExampleDoesNotReplaceTheRunningApplication() {
         String value = "null";
         for (int depth = 0; depth < 64; depth++) {
             value = "[" + value + "]";
         }
-        preparePrimitiveSearch("{\"payload\":{\"value\":" + value + "}}", "wrap list");
+        addTrigger();
+        waitForText("#build-state", "Built");
+        final String pid = applicationPid();
+        exampleContext().fill("{\"payload\":{\"value\":" + value + "}}");
+        exampleContext().press("Tab");
+        waitForText("#build-state", "Not built");
 
-        assertThat(page.locator("#steps-options [data-add-nested='value.wrap-list']").count()).isZero();
+        assertThat(applicationPid()).isEqualTo(pid);
     }
 
     @Test
-    void primitiveRefinementChecksEveryTriggerExample() {
+    void rejectedExampleDoesNotBecomeRuntimeFieldEvidence() {
         String deep = "null";
         for (int depth = 0; depth < 64; depth++) {
             deep = "[" + deep + "]";
@@ -3144,18 +3823,26 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         addTrigger();
         exampleContext().fill("{\"payload\":{\"value\":true}}");
         exampleContext().press("Tab");
+        waitForText("#build-state", "Built");
         page.locator("#add-example").click();
         exampleContext().fill("{\"payload\":{\"value\":" + deep + "}}");
         exampleContext().press("Tab");
         waitForText("#build-state", "Not built");
         page.locator("[data-select-example='0']").click();
+        openInspectorTab("inspect");
+        page.locator(".run-result").waitFor();
         addManipulationAfterSelected();
         choosePath("field", "result");
         page.locator("#value-0-option").selectOption("field");
-        choosePath("value-0-source", "payload", "value");
+        page.locator("#value-0-source-path").click();
+        page.locator("[data-path-depth='0']").click();
+        page.locator("[data-path-part='payload']").click();
+        page.locator("[data-path-part='value']").click();
+        page.locator("#apply-path").click();
         page.locator("#steps-search").fill("wrap list");
 
-        assertThat(page.locator("#steps-options [data-add-nested='value.wrap-list']").count()).isZero();
+        assertThat(page.locator("#steps-options [data-add-nested='value.wrap-list']").count())
+                .isEqualTo(1);
     }
 
     @Test
@@ -3164,7 +3851,8 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         for (int depth = 0; depth < 65; depth++) {
             value = "[" + value + "]";
         }
-        prepareLiteralPrimitiveSearch(value, "list.reverse");
+        prepareLiteralRefinementSearch(value, "list.reverse");
+        page.locator("#steps-options .empty-options").waitFor();
 
         assertThat(page.locator("#steps-options").isVisible()).isTrue();
         assertThat(page.locator("#steps-options [data-add-nested='list.reverse']").count()).isZero();
@@ -3190,7 +3878,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         page.locator(".run-result").waitFor();
 
         assertThat(page.locator(".run-result").textContent())
-                .contains("\"result\": 12.5", "\"id\": \"text.to-number\"", "\"outcome\": \"ok\"");
+                .contains("\"result\": 12.5");
     }
 
     @Test
@@ -3206,7 +3894,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         selectTrigger();
         page.locator(".run-result").waitFor();
         assertThat(page.locator(".run-result").textContent())
-                .contains("\"result\": null", "\"id\": \"text.to-number\"", "\"outcome\": \"invalid\"");
+                .contains("\"result\": null");
     }
 
     @Test
@@ -3248,7 +3936,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         page.locator(".run-result").waitFor();
 
         assertThat(page.locator(".run-result").textContent())
-                .contains("\"result\": 2", "\"id\": \"list.percentile\"", "\"outcome\": \"ok\"");
+                .contains("\"result\": 2");
     }
 
     @Test
@@ -3317,7 +4005,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         selectTrigger();
         page.locator(".run-result").waitFor();
         assertThat(page.locator(".run-result").textContent())
-                .contains("\"result\": null", "\"outcome\": \"empty\"");
+                .contains("\"result\": null");
     }
 
     @Test
@@ -3330,7 +4018,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         selectTrigger();
         page.locator(".run-result").waitFor();
         assertThat(page.locator(".run-result").textContent())
-                .contains("\"result\": null", "\"outcome\": \"invalid\"");
+                .contains("\"result\": null");
     }
 
     @Test
@@ -3362,6 +4050,8 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         choosePath("field", "payload", "text");
         page.locator("#steps-search").fill("floor");
 
+        waitForText("#build-state", "Built");
+        page.locator("#preview-source").waitFor();
         assertThat(page.locator("#steps-options [data-add-nested]").count()).isZero();
     }
 
@@ -3468,29 +4158,20 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    void selectingATriggerWhilePreviewStartsCannotRestoreStaleValues() {
+    void selectingATriggerWhileTraceLoadsCannotRestoreStaleValues() {
         createLowercaseJourney();
         page.locator("#preview-source").waitFor();
-        page.evaluate("""
-                () => {
-                  const request = window.fetch.bind(window);
-                  window.__previewStarted = false;
-                  window.__releasePreview = null;
-                  window.fetch = async (...arguments) => {
-                    const response = await request(...arguments);
-                    if (String(arguments[0]).startsWith("/api/preview/")) {
-                      window.__previewStarted = true;
-                      await new Promise(resolve => window.__releasePreview = resolve);
-                    }
-                    return response;
-                  };
-                }
-                """);
 
+        selectTrigger();
+        openInspectorTab("examples");
+        examplePayload().fill("[\"Fresh\"]");
+        delayNextTrace();
+        examplePayload().press("Tab");
         page.locator("[data-select-step]").first().click();
-        page.waitForFunction("window.__previewStarted === true");
+        waitForText("#build-state", "Built");
+        page.waitForFunction("window.__traceStarted === true");
         page.locator(".trigger-node").click();
-        page.evaluate("window.__releasePreview()");
+        page.evaluate("window.__releaseTrace()");
         page.evaluate("""
                 () => new Promise(resolve =>
                   requestAnimationFrame(() => requestAnimationFrame(resolve))
@@ -3501,7 +4182,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    void stoppedBuiltApplicationShowsPreviewUnavailable() {
+    void stoppedBuiltApplicationRemovesItsUnavailableExampleTrace() {
         createLowercaseJourney();
         page.locator("#preview-source").waitFor();
         final long pid = ((Number) page.evaluate(
@@ -3509,14 +4190,13 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         )).longValue();
         stopProcess(pid);
 
-        page.locator("[data-select-step]").first().click();
-        page.locator(".preview-error").waitFor();
+        page.waitForFunction("() => !document.querySelector('#preview-source')");
 
-        assertThat(page.locator(".preview-error").textContent()).contains("Preview unavailable");
+        assertThat(page.locator("#preview-source").count()).isZero();
     }
 
     @Test
-    void unavailableEarlierStepCannotReuseALaterStepsPreviewPaths() {
+    void earlierStepCannotReuseALaterStepsTracePathsAfterTheApplicationStops() {
         addTrigger();
         exampleContext().fill("{\"payload\":{}}");
         exampleContext().press("Tab");
@@ -3537,12 +4217,12 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         )).longValue();
         stopProcess(pid);
 
+        page.waitForFunction("() => !document.querySelector('#preview-source')");
         page.locator("[data-select-step]").first().click();
-        page.locator(".preview-error").waitFor();
         page.locator("#field-path").click();
         page.locator("[data-path-depth='0']").click();
-        page.locator("[data-path-part='payload']").click();
 
+        assertThat(page.locator("[data-path-part='payload']").count()).isZero();
         assertThat(page.locator(".path-choices").textContent()).doesNotContain("later");
     }
 
@@ -3563,7 +4243,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         selectTrigger();
         page.locator(".run-result").waitFor();
 
-        assertThat(page.locator(".run-result").textContent()).contains("\"id\": \"number.floor\"");
+        assertThat(page.locator(".run-result").textContent()).contains("\"result\": 2");
     }
 
     @Test
@@ -3607,11 +4287,13 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     void primitiveCanBeRemovedWithoutRemovingItsFieldOperation() {
         createLowercaseJourney();
         page.locator(".step-node").first().click();
+        page.locator("#preview-source").waitFor();
 
         page.locator("[data-remove-nested='0']").click();
         waitForText("#build-state", "Built");
+        page.locator("#steps-options [data-add-nested='text.lowercase']").waitFor();
 
-        assertThat(page.locator("#inspector").textContent()).contains("Steps", "Lowercase");
+        assertThat(page.locator("#steps-options [data-add-nested='text.lowercase']").count()).isEqualTo(1);
         assertThat(page.locator(".program-list .nested-step").count()).isZero();
     }
 
@@ -3691,6 +4373,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
                 }
                 """);
         exampleContext().press("Tab");
+        waitForText("#build-state", "Built");
         addManipulationAfterSelected();
         page.locator("#field-path").click();
         page.locator("[data-path-depth='0']").click();
@@ -3783,6 +4466,37 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
+    void changingAnExampleShapeInvalidatesPreviousPrimitiveCompatibility() {
+        addTrigger();
+        exampleContext().fill("{\"payload\":{\"value\":\"Railix\"}}");
+        exampleContext().press("Tab");
+        waitForText("#build-state", "Built");
+        addManipulationAfterSelected();
+        choosePath("field", "payload", "value");
+        page.locator("#steps-options [data-add-nested='text.lowercase']").waitFor();
+
+        assertThat(page.locator("#steps-options [data-add-nested='text.lowercase']").count())
+                .isEqualTo(1);
+
+        selectTrigger();
+        exampleContext().fill("{\"payload\":{\"value\":7}}");
+        exampleContext().press("Tab");
+
+        assertThat(page.locator("#build-state").textContent()).isEqualTo("Building");
+        page.locator(".step-node").click();
+
+        assertThat(page.locator("#steps-options [data-add-nested='text.lowercase']").count())
+                .isZero();
+        assertThat(page.locator("#steps-options [data-add-nested='number.floor']").count())
+                .isZero();
+
+        waitForText("#build-state", "Built");
+        page.locator("#steps-options [data-add-nested='number.floor']").waitFor();
+        assertThat(page.locator("#steps-options [data-add-nested='text.lowercase']").count())
+                .isZero();
+    }
+
+    @Test
     void allTriggerExamplesRunAsIndependentCases() {
         addTrigger();
         openInspectorTab("examples");
@@ -3795,8 +4509,14 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         page.locator(".run-result").waitFor();
 
         assertThat(page.locator(".run-result").textContent())
-                .contains("\"name\": \"no-arguments\"", "\"name\": \"second\"")
+                .contains("\"example\": \"second\"")
                 .contains("\"exit_code\": 0", "\"result\": null");
+        assertThat(page.evaluate("""
+                async () => (await (await fetch('/api/examples')).json()).cases
+                  .map(({name, status}) => `${name}:${status}`).join('|')
+                """)).isEqualTo(
+                        "no-arguments:succeeded|one-argument:succeeded|multiple-arguments:succeeded|second:succeeded"
+                );
     }
 
     @Test
@@ -3986,7 +4706,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    void runtimeShapeRefreshesWritablePathControlsWithoutReplacingThePicker() {
+    void writablePathControlsUseTheRunningApplicationsResolvedShape() {
         addTrigger();
         exampleContext().fill("{\"payload\":{\"dynamic\":{}}}");
         exampleContext().press("Tab");
@@ -3999,16 +4719,11 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         waitForText("#build-state", "Built");
         addManipulationAfterSelected();
         waitForText("#build-state", "Built");
-        delayNextPreview();
 
-        page.locator("#value-0-option").selectOption("literal");
         page.locator("#field-path").click();
         page.locator("[data-path-depth='0']").click();
         page.locator("[data-path-part='payload']").click();
         page.locator("[data-path-part='dynamic']").click();
-        page.locator("#append-path-field").waitFor();
-        page.waitForFunction("window.__previewStarted === true");
-        page.evaluate("window.__releasePreview()");
         page.locator("#append-path-index").waitFor();
 
         assertThat(List.of(
@@ -4045,6 +4760,17 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
 
     @Test
     void defaultNullTriggerResultIsOfferedAsAnExplicitSource() {
+        page.evaluate("""
+                () => {
+                  const request = window.fetch.bind(window);
+                  window.fetch = (input, options = {}) => {
+                    const url = typeof input === 'string' ? input : input.url;
+                    return url.includes('/api/examples')
+                      ? Promise.resolve(new Response('', {status: 503}))
+                      : request(input, options);
+                  };
+                }
+                """);
         addTrigger();
         addManipulationAfterSelected();
         choosePath("field", "result");
@@ -4117,37 +4843,38 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    void completedRunCannotOverwriteANewerDraft() {
+    void completedTraceCannotOverwriteANewerDraft() {
         createLowercaseJourney();
         selectTrigger();
-        delayNextRun();
+        delayNextTrace();
 
         exampleContext().fill("{\"payload\":{\"text\":\"Delayed\"}}");
         exampleContext().press("Tab");
-        page.waitForFunction("() => typeof window.releaseRailixRun === 'function'");
+        page.waitForFunction("() => typeof window.__releaseTrace === 'function'");
         presentationName().fill("newer-draft");
         presentationName().press("Tab");
-        page.evaluate("window.releaseRailixRun()");
+        page.evaluate("window.__releaseTrace()");
 
         assertThat(page.locator(".run-result").count()).isZero();
     }
 
     @Test
-    void completedExampleRunPreservesTheOpenStepPicker() {
+    void completedExampleTracePreservesTheOpenStepPicker() {
         addTrigger();
         waitForText("#build-state", "Built");
-        delayNextRun();
+        delayNextTrace();
         openInspectorTab("examples");
         examplePayload().fill("[\"delayed\"]");
         examplePayload().press("Tab");
         waitForText("#build-state", "Built");
-        page.waitForFunction("() => typeof window.releaseRailixRun === 'function'");
+        page.waitForFunction("() => typeof window.__releaseTrace === 'function'");
         openInspectorTab("inspect");
         page.locator("#add-next-step").click();
         page.locator("#step-search").fill("json");
+        page.locator("[data-add-step='value.to-json']").waitFor();
         assertThat(page.locator("[data-add-step='value.to-json']").count()).isEqualTo(1);
 
-        page.evaluate("window.releaseRailixRun()");
+        page.evaluate("window.__releaseTrace()");
         page.locator(".run-result").waitFor();
 
         assertThat(page.locator("#step-search").inputValue()).isEqualTo("json");
@@ -4159,17 +4886,17 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    void invalidExampleDraftCannotPublishOlderRunResult() {
+    void invalidExampleDraftCannotPublishAnOlderTrace() {
         addTrigger();
         waitForText("#build-state", "Built");
-        delayNextRun();
+        delayNextTrace();
 
         examplePayload().fill("[\"Delayed\"]");
         examplePayload().press("Tab");
-        page.waitForFunction("() => typeof window.releaseRailixRun === 'function'");
+        page.waitForFunction("() => typeof window.__releaseTrace === 'function'");
         examplePayload().fill("[");
         examplePayload().press("Tab");
-        page.evaluate("window.releaseRailixRun()");
+        page.evaluate("window.__releaseTrace()");
         openInspectorTab("inspect");
         page.evaluate("""
                 () => new Promise(resolve =>
@@ -4181,19 +4908,19 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    void invalidExampleDraftAbortsTheOlderRunRequest() {
+    void invalidExampleDraftAbortsTheOlderTraceRequest() {
         addTrigger();
         waitForText("#build-state", "Built");
-        delayNextRun();
+        delayNextTrace();
         examplePayload().fill("[\"Delayed\"]");
         examplePayload().press("Tab");
-        page.waitForFunction("() => typeof window.releaseRailixRun === 'function'");
+        page.waitForFunction("() => typeof window.__releaseTrace === 'function'");
 
         examplePayload().fill("[");
         examplePayload().press("Tab");
-        page.waitForFunction("window.railixRunAborted === true");
+        page.waitForFunction("window.railixTraceAborted === true");
 
-        assertThat(page.evaluate("window.railixRunAborted")).isEqualTo(true);
+        assertThat(page.evaluate("window.railixTraceAborted")).isEqualTo(true);
     }
 
     @Test
@@ -4231,7 +4958,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
 }
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@Timeout(40)
+@Timeout(60)
 abstract class RailixCreatorBrowserSupport {
     private static final int VIEWPORT_WIDTH = Integer.getInteger("railix.browser.viewport.width", 1_280);
 
@@ -4248,85 +4975,178 @@ abstract class RailixCreatorBrowserSupport {
     private String templateCreator;
     private Playwright playwright;
     private Browser browser;
-    private ProcessHandle playwrightDriver;
+    private List<Long> browserBaseline = List.of();
+    private final Map<Long, ProcessHandle> playwrightProcesses = new LinkedHashMap<>();
 
     @BeforeAll
     final void startBrowser(@TempDir final Path template) throws Exception {
         this.template = template;
         final ProcessHandle testProcess = ProcessHandle.current();
-        final List<Long> existingChildren = testProcess.children().map(ProcessHandle::pid).toList();
-        playwright = Playwright.create(new Playwright.CreateOptions().setEnv(Map.of(
-                "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
-                "1"
-        )));
-        final List<ProcessHandle> drivers = testProcess.children()
-                .filter(process -> !existingChildren.contains(process.pid()))
-                .toList();
-        assertThat(drivers).singleElement();
-        playwrightDriver = drivers.getFirst();
-        browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
-                .setChannel(System.getenv().getOrDefault("RAILIX_BROWSER_CHANNEL", "chrome"))
-                .setHeadless(true));
-        try (CreatorServer ignored = CreatorServer.start(
-                0,
-                template.resolve("project.json"),
-                template.resolve("railix-home")
-        )) {
-            templateProject = Files.readString(template.resolve("project.json"));
-            templateCreator = Files.readString(template.resolve("railix.creator.json"));
+        browserBaseline = testProcess.children().map(ProcessHandle::pid).toList();
+        try {
+            playwright = Playwright.create(new Playwright.CreateOptions().setEnv(Map.of(
+                    "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
+                    "1"
+            )));
+            final List<ProcessHandle> drivers = testProcess.children()
+                    .filter(process -> !browserBaseline.contains(process.pid()))
+                    .toList();
+            drivers.forEach(process -> playwrightProcesses.putIfAbsent(process.pid(), process));
+            assertThat(drivers).singleElement();
+            capturePlaywrightProcesses();
+            browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
+                    .setChannel(System.getenv().getOrDefault("RAILIX_BROWSER_CHANNEL", "chrome"))
+                    .setHeadless(true));
+            capturePlaywrightProcesses();
+            try (CreatorServer ignored = CreatorServer.start(
+                    0,
+                    template.resolve("project.json"),
+                    template.resolve("railix-home")
+            )) {
+                templateProject = Files.readString(template.resolve("project.json"));
+                templateCreator = Files.readString(template.resolve("railix.creator.json"));
+            }
+        } catch (final Exception | Error failure) {
+            try {
+                stopBrowser();
+            } catch (final RuntimeException | Error cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
         }
     }
 
     @AfterAll
-    final void stopBrowser() throws InterruptedException {
-        if (playwright == null) {
+    final void stopBrowser() {
+        capturePlaywrightProcesses();
+        if (playwright == null && playwrightProcesses.isEmpty()) {
             return;
         }
-        final List<ProcessHandle> processes = Stream.concat(
-                playwrightDriver.descendants(),
-                Stream.of(playwrightDriver)
-        ).toList();
+        boolean interrupted = Thread.interrupted();
         final AtomicReference<RuntimeException> failure = new AtomicReference<>();
-        final Thread closer = Thread.ofPlatform().name("railix-playwright-close").start(() -> {
-            try {
-                playwright.close();
-            } catch (final RuntimeException exception) {
-                failure.set(exception);
-            }
-        });
-        closer.join(java.time.Duration.ofSeconds(5));
-        if (closer.isAlive()) {
-            terminate(processes);
-            closer.join(java.time.Duration.ofSeconds(5));
-        } else if (!awaitExit(processes)) {
-            terminate(processes);
+        final Thread closer = playwright == null
+                ? null
+                : Thread.ofPlatform().daemon().name("railix-playwright-close").start(() -> {
+                    try {
+                        playwright.close();
+                    } catch (final RuntimeException exception) {
+                        failure.set(exception);
+                    }
+                });
+        interrupted |= joinThread(closer, 5);
+        BrowserWait processWait = awaitPlaywrightExit(2);
+        interrupted |= processWait.interrupted();
+        if (!processWait.complete()) {
+            processWait = terminatePlaywrightProcesses();
+            interrupted |= processWait.interrupted();
         }
-        assertThat(closer.isAlive()).isFalse();
-        assertThat(processes).noneMatch(ProcessHandle::isAlive);
-        if (failure.get() != null) {
-            throw failure.get();
+        if (closer != null && closer.isAlive()) {
+            interrupted |= joinThread(closer, 5);
+        }
+        capturePlaywrightProcesses();
+        RuntimeException cleanup = failure.get();
+        if (closer != null && closer.isAlive()) {
+            cleanup = merge(cleanup, new IllegalStateException("Playwright close thread did not terminate."));
+        }
+        if (!processWait.complete() || playwrightProcesses.values().stream().anyMatch(ProcessHandle::isAlive)) {
+            cleanup = merge(cleanup, new IllegalStateException("Playwright processes did not terminate."));
+        }
+        if (cleanup == null) {
+            playwright = null;
+            browser = null;
+            playwrightProcesses.clear();
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        if (cleanup != null) {
+            throw cleanup;
         }
     }
 
-    private static void terminate(final List<ProcessHandle> processes) {
-        processes.reversed().stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroy);
-        if (!awaitExit(processes)) {
-            processes.reversed().stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroyForcibly);
-            assertThat(awaitExit(processes)).isTrue();
-        }
+    private void capturePlaywrightProcesses() {
+        ProcessHandle.current().children()
+                .filter(process -> !browserBaseline.contains(process.pid()))
+                .forEach(process -> playwrightProcesses.putIfAbsent(process.pid(), process));
+        List.copyOf(playwrightProcesses.values()).forEach(process ->
+                process.descendants().forEach(descendant ->
+                        playwrightProcesses.putIfAbsent(descendant.pid(), descendant)
+                )
+        );
     }
 
-    private static boolean awaitExit(final List<ProcessHandle> processes) {
-        try {
-            CompletableFuture.allOf(processes.stream()
+    private BrowserWait terminatePlaywrightProcesses() {
+        boolean interrupted = false;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            capturePlaywrightProcesses();
+            final boolean force = attempt > 0;
+            playwrightProcesses.values().stream()
                     .filter(ProcessHandle::isAlive)
-                    .map(ProcessHandle::onExit)
-                    .toArray(CompletableFuture<?>[]::new)
-            ).orTimeout(2, TimeUnit.SECONDS).join();
-        } catch (final CompletionException ignoredTimeout) {
-            // The caller escalates from graceful to forced termination.
+                    .toList()
+                    .reversed()
+                    .forEach(process -> {
+                        if (force) {
+                            process.destroyForcibly();
+                        } else {
+                            process.destroy();
+                        }
+                    });
+            final BrowserWait wait = awaitPlaywrightExit(2);
+            interrupted |= wait.interrupted();
+            if (wait.complete()) {
+                return new BrowserWait(true, interrupted);
+            }
         }
-        return processes.stream().noneMatch(ProcessHandle::isAlive);
+        return new BrowserWait(false, interrupted);
+    }
+
+    private BrowserWait awaitPlaywrightExit(final int seconds) {
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds);
+        boolean interrupted = false;
+        capturePlaywrightProcesses();
+        while (playwrightProcesses.values().stream().anyMatch(ProcessHandle::isAlive)
+                && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(10);
+            } catch (final InterruptedException ignored) {
+                interrupted = true;
+            }
+            capturePlaywrightProcesses();
+        }
+        return new BrowserWait(
+                playwrightProcesses.values().stream().noneMatch(ProcessHandle::isAlive),
+                interrupted
+        );
+    }
+
+    private static boolean joinThread(final Thread thread, final int seconds) {
+        if (thread == null) {
+            return false;
+        }
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds);
+        boolean interrupted = false;
+        while (thread.isAlive() && System.nanoTime() < deadline) {
+            try {
+                TimeUnit.NANOSECONDS.timedJoin(thread, Math.max(1, deadline - System.nanoTime()));
+            } catch (final InterruptedException ignored) {
+                interrupted = true;
+            }
+        }
+        return interrupted;
+    }
+
+    private static RuntimeException merge(
+            final RuntimeException failure,
+            final RuntimeException next
+    ) {
+        if (failure == null) {
+            return next;
+        }
+        failure.addSuppressed(next);
+        return failure;
+    }
+
+    private record BrowserWait(boolean complete, boolean interrupted) {
     }
 
     @BeforeEach
@@ -4378,6 +5198,8 @@ abstract class RailixCreatorBrowserSupport {
         selectTrigger();
         addManipulationAfterSelected();
         choosePath("field", "payload", "text");
+        waitForText("#build-state", "Built");
+        page.locator("#preview-source").waitFor();
         page.locator("#steps-search").fill("lower");
         page.locator("#steps-options [data-add-nested='text.lowercase']").click();
         waitForText("#build-state", "Built");
@@ -4415,12 +5237,14 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     RailixValue runResult(final int index) {
-        final RailixValue.ArrayValue cases = (RailixValue.ArrayValue) (
+        selectTrigger();
+        openInspectorTab("examples");
+        page.locator("[data-select-example='" + index + "']").click();
+        openInspectorTab("inspect");
+        page.locator(".run-result").waitFor();
+        final RailixValue.ObjectValue response = (RailixValue.ObjectValue) (
                 (RailixJson.Parsed) RailixJson.parse(page.locator(".run-result").textContent())
         ).value();
-        final RailixValue.ObjectValue response = (RailixValue.ObjectValue) (
-                (RailixValue.ObjectValue) cases.values().get(index)
-        ).values().get("result");
         return ((RailixValue.ObjectValue) response.values().get("context"))
                 .values()
                 .get("result");
@@ -4453,14 +5277,17 @@ abstract class RailixCreatorBrowserSupport {
         addTrigger();
         exampleContext().fill(example);
         exampleContext().press("Tab");
+        waitForText("#build-state", "Built");
         addManipulationAfterSelected();
         choosePath("field", "result");
         page.locator("#value-0-option").selectOption("field");
         choosePath("value-0-source", "payload", "value");
+        waitForText("#build-state", "Built");
+        page.locator("#preview-source").waitFor();
         page.locator("#steps-search").fill(search);
     }
 
-    void prepareLiteralPrimitiveSearch(final String value, final String search) {
+    void prepareLiteralRefinementSearch(final String value, final String search) {
         addTrigger();
         addManipulationAfterSelected();
         choosePath("field", "result");
@@ -4481,16 +5308,22 @@ abstract class RailixCreatorBrowserSupport {
         addTrigger();
         exampleContext().fill("{\"payload\":{\"value\":[1,2]}}");
         exampleContext().press("Tab");
+        waitForText("#build-state", "Built");
         addManipulationAfterSelected();
         chooseCustomField("payload", "size");
         page.locator("#value-0-option").selectOption("field");
         choosePath("value-0-source", "payload", "value");
+        waitForText("#build-state", "Built");
+        page.locator("#preview-source").waitFor();
         page.locator("#steps-search").fill("size");
         page.locator("#steps-options [data-add-nested='list.size']").click();
+        waitForText("#build-state", "Built");
         addManipulationAfterSelected();
         choosePath("field", "result");
         page.locator("#value-0-option").selectOption("field");
         choosePath("value-0-source", "payload", "size");
+        waitForText("#build-state", "Built");
+        page.locator("#preview-source").waitFor();
     }
 
     void prepareDateNotChain(final int notCount) {
@@ -5039,40 +5872,26 @@ abstract class RailixCreatorBrowserSupport {
                 """);
     }
 
-    void delayNextPreview() {
+    void delayNextTrace() {
         page.evaluate("""
                 () => {
                   const request = window.fetch.bind(window);
                   let delayed = false;
-                  window.__previewStarted = false;
-                  window.fetch = async (...arguments) => {
-                    const response = await request(...arguments);
-                    if (!delayed && String(arguments[0]).startsWith('/api/preview/')) {
-                      delayed = true;
-                      window.__previewStarted = true;
-                      await new Promise(resolve => window.__releasePreview = resolve);
-                    }
-                    return response;
-                  };
-                }
-                """);
-    }
-
-    void delayNextRun() {
-        page.evaluate("""
-                () => {
-                  const request = window.fetch.bind(window);
-                  let delayed = false;
-                  window.railixRunAborted = false;
+                  window.__traceStarted = false;
+                  window.__traceCompleted = false;
+                  window.railixTraceAborted = false;
+                  window.__releaseTrace = null;
                   window.fetch = (input, options = {}) => {
-                    if (delayed || !String(input).includes('/api/run/')) {
+                    const url = typeof input === 'string' ? input : input.url;
+                    if (delayed || !(url.endsWith('/view') || url.includes('/steps/'))) {
                       return request(input, options);
                     }
                     delayed = true;
+                    window.__traceStarted = true;
                     return new Promise((resolve, reject) => {
                       const abort = () => {
-                        window.railixRunAborted = true;
-                        window.releaseRailixRun = () => {};
+                        window.railixTraceAborted = true;
+                        window.__releaseTrace = () => {};
                         reject(new DOMException('Aborted', 'AbortError'));
                       };
                       if (options.signal?.aborted) {
@@ -5080,9 +5899,12 @@ abstract class RailixCreatorBrowserSupport {
                         return;
                       }
                       options.signal?.addEventListener('abort', abort, {once: true});
-                      window.releaseRailixRun = () => {
+                      window.__releaseTrace = () => {
                         options.signal?.removeEventListener('abort', abort);
-                        request(input, options).then(resolve, reject);
+                        request(input, options).then(response => {
+                          window.__traceCompleted = true;
+                          resolve(response);
+                        }, reject);
                       };
                     });
                   };
@@ -5193,6 +6015,7 @@ abstract class RailixCreatorBrowserSupport {
         page.locator("#add-next-step").click();
         page.locator("#step-search").fill(query);
         final Locator option = page.locator("[data-add-step='" + id + "']");
+        option.waitFor();
         assertThat(option.count())
                 .as("Catalog options: %s; browser errors: %s", page.locator("#step-options").textContent(), pageErrors)
                 .isEqualTo(1);

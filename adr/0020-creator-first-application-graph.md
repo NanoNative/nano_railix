@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted on 2026-07-29. Refined through 2026-08-28 to separate the flat functional graph from
+Accepted on 2026-07-29. Refined through 2026-08-30 to separate the flat functional graph from
 optional Creator metadata, remove compiler-expanded reusable flows, and add generic explicit
-flow-control inputs.
+flow-control inputs and explicit Creator/compiler/generated-application ownership.
 
 ## Context
 
@@ -36,9 +36,10 @@ second selected-Step list. Link topology owns execution. JSON object key order d
 The platform supplies one `railix.app` Step at canonical node ID `app`. It is mandatory, unique,
 persisted, and non-deletable. Trigger definitions are catalog Steps connected from App. Each
 Trigger owns a non-empty list of named Examples. An Example has a required payload and an optional
-whole context object; Creator writes the payload to the Trigger's current example-target path.
-Every Example is an independent case. Creator unions paths and shapes for suggestions but never
-merges values into synthetic data.
+whole context object; compilation writes the payload to the Trigger's current example-target path
+inside the development artifact's Example manifest.
+Every Example is an independent case. The generated application returns the selected case's real
+contexts and Step projections; Creator never unions Example values into synthetic runtime data.
 
 Creator-generated mutable nodes use opaque UUID-backed IDs generated once. Reordering, insertion,
 and deletion never renumber existing IDs. IDs have no timestamp or ordering meaning. Hand-authored
@@ -59,10 +60,10 @@ runtime    reserved read-only Railix values
 ```
 
 Paths include the root, for example `context.payload.customer.name`. The runtime request body is
-the context itself. Creator examples carry `context.runtime.test=true` when sent to the built
-development application, allowing project Steps to react explicitly. Creator does not otherwise
-interpret that flag. There is no event entity, event bus, event store, or retained execution
-object.
+the context itself. The generated development application adds `context.runtime.test=true` when it
+executes a compiled Example, allowing project Steps to react explicitly. Creator only displays the
+result and does not interpret that flag. There is no event entity, event bus, event store, or
+retained execution object after the bounded trace completes.
 
 ### Minimal Step Kinds
 
@@ -258,17 +259,50 @@ Cancel
 Structural insertion or deletion under `Update all` creates or removes the corresponding concrete
 flat Step in every occurrence while preserving logical slots and ordinary project links.
 
-### Creator And Compiler Responsibilities
+### Ownership Boundaries
 
 Compilation is pure structural work. It parses, validates, applies Step defaults, builds the flat
 executable, and returns deterministic diagnostics. It never invokes a Trigger or Step handler.
 
-Creator edits, persists, compiles, starts one real development-application JVM, and observes that
-application through authenticated local development endpoints. Explicit named examples are sent
-to the built application and run as normal whole-flow executions. Creator does not execute a flow
-or individual Step in its own process. A Step preview returns the explicit Example context captured
-immediately before that Step plus the normal post-Step execution result; it never samples production
-traffic or changes application execution semantics.
+Creator edits, persists, invokes compilation, publishes one development artifact, starts its JVM,
+and observes it through authenticated local management endpoints. The compiler lowers explicit
+named Examples into a bounded manifest packaged in that artifact. The generated application reads
+the manifest and starts its own Examples as normal whole-flow executions. Creator has no Example
+execution endpoint, scheduler, trace store, or fallback result. A Step projection returns the
+explicit Example context captured immediately before that Step plus the normal post-Step execution
+result; it never samples production traffic or changes application execution semantics. Observation
+backpressure or storage failure stops trace recording, never the Flow. The Creator server relays
+application-owned Example inventory and projections through at most four transient 16 MiB buffers;
+it closes each application read before sending the response and never parses, persists, or caches
+it. The application also aggregates all real cases for one selected deployed node so the browser
+can derive union field choices and compatibility without replaying Examples or decoding trace
+events. Its browser parses and temporarily caches only the current deployment's responses needed
+for display.
+Contract-declared default paths form an authoring floor when management data is unavailable;
+application projections may refine or add observed paths, but cannot erase declarations or survive
+a PID, fingerprint, or process-state change. Only application projections provide observed values.
+Metric JSON identifies its owning application PID. Creator rechecks the child identity after each
+read, and the browser accepts a response only when its PID and captured deployment identity still
+match. Aggregate per-Step Example projection has one owner from its frozen case snapshot through
+response transport. Concurrent reads allocate no second case snapshot. The owner preflights all
+immutable completed trace sizes and rejects source replay above 64 MiB instead of allocating an
+index or duplicating full contexts into every trace event.
+
+Example interruption is cooperative for five seconds after the 30-second execution deadline. Java
+cannot safely reclaim a trusted Step that ignores interruption, so the generated development JVM is
+the hard ownership boundary and exits rather than retaining the worker. Management request bodies
+finish under a five-second, 48-reader budget before they may consume the independent 32-run or
+16-trace execution budgets. Missing or invalid tokens use a separate four-reader budget and cannot
+consume authenticated body or execution admission.
+
+`StepDefinition` owns only reusable declarative capability: identity, graph role, generic inputs,
+paths, outcomes, defaults, implementation address, and optional catalog presentation or starter
+Example values. Starter values are copied into the functional project when a Step is added. The
+project owns authored Flows, Steps, and Examples. Core owns canonical values, project validation,
+lowering, generated source, and runtime contracts. The generated application owns execution and
+development telemetry. Creator provides the project editor, build, child-process lifecycle, and
+read-only display; it does not own Example execution or results. These boundaries do not provide
+alternate execution paths for one another.
 
 Functional edits trigger a rolling replacement only after a valid application starts. Invalid
 edits keep the previous application running. Creator-only presentation/group edits persist without
@@ -295,9 +329,11 @@ silent success when the flow writes neither. Interactive terminal sessions are n
 ### Planned Environment Builds
 
 Final environment applications will derive direct Step calls, dependencies, JDK modules, `jlink`,
-and `jpackage` output from the complete flat project. Development project/build metadata, preview,
-trace, live error, queue, and metrics endpoints will be independently includable build modules.
-Omitted capabilities must contribute no route, class, dependency, or JDK module.
+and `jpackage` output from the complete flat project. Current production JARs physically omit the
+complete development runtime, Example manifest, traces, metrics, and management routes. Splitting
+project/build metadata, Example projection, live error, queue, and metrics into independently
+selectable environment capabilities remains planned. Every omitted capability must contribute no
+route, class, dependency, or JDK module.
 
 Remote attachment, aggregate metrics, queue control, permissions, sharding, and production
 debugging remain roadmap work. Current examples never sample production traffic.
@@ -311,6 +347,9 @@ debugging remain roadmap work. Current examples never sample production traffic.
 - Only `context.runtime` is reserved and read-only.
 - `APP`, `TRIGGER`, and `STEP` are the complete current kind set.
 - Compiler validation never invokes handlers.
+- Creator never invokes a Flow to execute an Example.
+- The generated development application owns Example execution, traces, metrics, and management
+  endpoints; the production artifact contains none of them.
 - Every functional Step and link is materialized in `railix.project.json`.
 - Creator metadata never enters executable JSON or dependency selection.
 - Missing or corrupt Creator metadata never changes functional behavior.

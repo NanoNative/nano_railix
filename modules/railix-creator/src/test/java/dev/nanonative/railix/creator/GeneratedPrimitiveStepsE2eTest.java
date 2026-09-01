@@ -55,8 +55,6 @@ final class GeneratedPrimitiveStepsE2eTest {
         final RunResult.Succeeded result = run(choiceApplication(choiceCondition()), "allow");
 
         assertThat(result.context().values().get("result")).isEqualTo(RailixValue.string("matched"));
-        assertThat(result.steps()).contains(new RunResult.StepExecution("choice", "match"));
-        assertThat(result.steps()).doesNotContain(new RunResult.StepExecution("otherwise", "next"));
     }
 
     @Test
@@ -64,8 +62,6 @@ final class GeneratedPrimitiveStepsE2eTest {
         final RunResult.Succeeded result = run(choiceApplication(choiceCondition()), "deny");
 
         assertThat(result.context().values().get("result")).isEqualTo(RailixValue.string("otherwise"));
-        assertThat(result.steps()).contains(new RunResult.StepExecution("choice", "otherwise"));
-        assertThat(result.steps()).doesNotContain(new RunResult.StepExecution("matched", "next"));
     }
 
     @Test
@@ -80,8 +76,6 @@ final class GeneratedPrimitiveStepsE2eTest {
         final RunResult.Succeeded result = run(filterApplication(filterCondition()), "allow");
 
         assertThat(result.context().values().get("result")).isEqualTo(RailixValue.string("matched"));
-        assertThat(result.steps()).contains(new RunResult.StepExecution("filter", "match"));
-        assertThat(result.steps()).doesNotContain(new RunResult.StepExecution("otherwise", "next"));
     }
 
     @Test
@@ -89,8 +83,6 @@ final class GeneratedPrimitiveStepsE2eTest {
         final RunResult.Succeeded result = run(filterApplication(filterCondition()), "deny");
 
         assertThat(result.context().values().get("result")).isEqualTo(RailixValue.string("otherwise"));
-        assertThat(result.steps()).contains(new RunResult.StepExecution("filter", "otherwise"));
-        assertThat(result.steps()).doesNotContain(new RunResult.StepExecution("matched", "next"));
     }
 
     @Test
@@ -183,7 +175,6 @@ final class GeneratedPrimitiveStepsE2eTest {
         assertThat(((RailixValue.ObjectValue) result.context().values().get("payload")).values().get("missing"))
                 .isEqualTo(RailixValue.string("not-a-number"));
         assertThat(result.context().values().get("result")).isEqualTo(RailixValue.string("continued"));
-        assertThat(result.steps()).contains(new RunResult.StepExecution("text.to-number", "invalid"));
     }
 
     @Test
@@ -466,7 +457,7 @@ final class GeneratedPrimitiveStepsE2eTest {
                 "RUN_NESTED_INPUT_INCOMPATIBLE",
                 "Nested Step text.contains requires string but receives number.",
                 application.nestedPath()
-        )), List.of()));
+        ))));
     }
 
     @Test
@@ -569,7 +560,7 @@ final class GeneratedPrimitiveStepsE2eTest {
                 "RUN_NESTED_INPUT_INCOMPATIBLE",
                 "Nested Step " + primitive + " requires string but receives number.",
                 application.nestedPath()
-        )), List.of()));
+        ))));
     }
 
     @ParameterizedTest(name = "{0} retains no earlier input")
@@ -801,7 +792,7 @@ final class GeneratedPrimitiveStepsE2eTest {
                 "RUN_NESTED_INPUT_INCOMPATIBLE",
                 "Nested Step " + primitive + " requires number but receives string.",
                 application.nestedPath()
-        )), List.of()));
+        ))));
     }
 
     @ParameterizedTest(name = "{0} retains no value between runs")
@@ -1691,7 +1682,6 @@ final class GeneratedPrimitiveStepsE2eTest {
                 context("[]")
         );
 
-        assertThat(result.steps()).contains(new RunResult.StepExecution("list.percentile", "empty"));
         assertThat(result.context().values().get("result")).isEqualTo(RailixValue.nullValue());
     }
 
@@ -1763,8 +1753,7 @@ final class GeneratedPrimitiveStepsE2eTest {
                         "RUN_NESTED_INPUT_INCOMPATIBLE",
                         "Nested Step " + primitive + " requires " + expected + " but receives " + actual + ".",
                         application.nestedPath()
-                )),
-                List.of()
+                ))
         ));
     }
 
@@ -1781,8 +1770,7 @@ final class GeneratedPrimitiveStepsE2eTest {
                         "RUN_NESTED_INPUT_INCOMPATIBLE",
                         "Nested Step " + primitive + " rejects value: " + rejection,
                         application.nestedPath()
-                )),
-                List.of()
+                ))
         ));
     }
 
@@ -1878,7 +1866,6 @@ final class GeneratedPrimitiveStepsE2eTest {
         final RunResult.Succeeded result = fallibleRunTest(List.of("text.to-number"), input);
 
         assertThat(result.context().values().get("result")).isEqualTo(RailixValue.string(input));
-        assertThat(result.steps()).contains(new RunResult.StepExecution("text.to-number", "invalid"));
     }
 
     private RailixValue fallibleResult(final List<String> primitives, final String input) {
