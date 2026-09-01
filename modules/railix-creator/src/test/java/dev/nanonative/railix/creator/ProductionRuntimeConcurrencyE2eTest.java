@@ -92,17 +92,6 @@ final class ProductionRuntimeConcurrencyE2eTest {
     }
 
     @Test
-    void concurrentProductionCallsRetainNoStepTrace() throws Exception {
-        final ProcessResult result = probe.run("trace");
-        System.out.println(result.output());
-
-        assertThat(result.exitCode()).as(result.output()).isZero();
-        assertThat(result.output()).startsWith("TRACE|");
-        assertThat(metric(result.output(), "calls")).isEqualTo(CALLS);
-        assertThat(metric(result.output(), "traced")).isZero();
-    }
-
-    @Test
     void sixtyFourProductionCallsEnterARealStepConcurrently() throws Exception {
         final ProcessResult result = probe.run("overlap");
         System.out.println(result.output());
@@ -224,7 +213,6 @@ final class ProductionRuntimeConcurrencyE2eTest {
                         switch (scenario) {
                             case "context" -> context(observed);
                             case "effect" -> effect(directory, observed);
-                            case "trace" -> trace(observed);
                             default -> throw new IllegalArgumentException(
                                     "Unknown production concurrency scenario: " + scenario
                             );
@@ -298,13 +286,6 @@ final class ProductionRuntimeConcurrencyE2eTest {
                             System.out.print("EFFECT|calls=" + CALLS + "|files=" + files.count()
                                     + "|exact=" + exact);
                         }
-                    }
-
-                    private static void trace(final List<Observed> observed) {
-                        final long traced = observed.stream()
-                                .filter(item -> !item.succeeded().steps().isEmpty())
-                                .count();
-                        System.out.print("TRACE|calls=" + CALLS + "|traced=" + traced);
                     }
 
                     private static void overlap(

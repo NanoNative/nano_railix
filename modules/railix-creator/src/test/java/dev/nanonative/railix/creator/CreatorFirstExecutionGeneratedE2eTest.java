@@ -77,7 +77,6 @@ final class CreatorFirstExecutionGeneratedE2eTest {
 
         assertThat(response.status()).isEqualTo(200);
         assertThat(path(body, "status")).isEqualTo(RailixValue.string("succeeded"));
-        assertThat(stepPairs(body)).containsExactly("lowercase:ok");
         assertThat(path(context, "payload", "name")).isEqualTo(RailixValue.string("hello railix"));
     }
 
@@ -107,11 +106,6 @@ final class CreatorFirstExecutionGeneratedE2eTest {
                 0,
                 "succeeded|output-null=true|status-zero=true"
         ));
-    }
-
-    @Test
-    void productionSourceExecutionDoesNotExposeStepHistory() throws Exception {
-        assertProductionProbe("source-trace-free", "true");
     }
 
     @Test
@@ -183,10 +177,6 @@ final class CreatorFirstExecutionGeneratedE2eTest {
 
         assertThat(path(body, "status")).isEqualTo(RailixValue.string("succeeded"));
         assertThat(path(body, "context", "result")).isEqualTo(RailixValue.nullValue());
-        assertThat(stepPairs(body)).containsExactly(
-                "normalise-name:next",
-                "return-name:next"
-        );
     }
 
     @Test
@@ -243,7 +233,6 @@ final class CreatorFirstExecutionGeneratedE2eTest {
 
         assertThat(((RailixValue.NumberValue) path(body, "context", "payload", "value")).value())
                 .isEqualByComparingTo(new BigDecimal("12.50"));
-        assertThat(stepPairs(body)).contains("convert:next");
     }
 
     @Test
@@ -255,11 +244,6 @@ final class CreatorFirstExecutionGeneratedE2eTest {
         assertThat(path(body, "context", "payload", "value"))
                 .isEqualTo(RailixValue.string("not-a-number"));
         assertThat(path(body, "context", "result")).isEqualTo(RailixValue.string("not-a-number"));
-        assertThat(stepPairs(body)).containsExactly(
-                "text.to-number:invalid",
-                "convert:next",
-                "number-result:next"
-        );
     }
 
     @Test
@@ -300,16 +284,6 @@ final class CreatorFirstExecutionGeneratedE2eTest {
     @Test
     void refinedNestedOutputRejectsCanonicalJsonBeyondItsDeclaredBytes() throws Exception {
         assertFailure(run("bytes-output", value("fault")), "STEP_OUTPUT_INVALID");
-    }
-
-    @Test
-    void rejectedRefinedOutputIsNotCapturedAsAPreviewStage() throws Exception {
-        assertDevelopmentProbe(
-                "surrogate-preview",
-                "failed:STEP_OUTPUT_INVALID|message=Nested Step returned an incompatible value: "
-                        + "Value contains an unpaired Unicode surrogate."
-                        + "|step=test.probe.canonical-output|path=nodes[2].inputs.steps[0]|stages=1|stage=failed"
-        );
     }
 
     @Test
@@ -359,110 +333,39 @@ final class CreatorFirstExecutionGeneratedE2eTest {
     }
 
     @Test
-    void observationCapturesJavaNullNestedResultAsAFailedStage() throws Exception {
-        assertThat(observedFailure("null-result")).isEqualTo(
-                new ObservedFailure(500, "failed", "STEP_RESULT_REQUIRED", 1, "failed")
-        );
+    void traceReportsJavaNullNestedResultFailure() throws Exception {
+        assertTraceFailure("null-result", "STEP_RESULT_REQUIRED");
     }
 
     @Test
-    void observationCapturesUndeclaredNestedOutcomeAsAFailedStage() throws Exception {
-        assertThat(observedFailure("undeclared-outcome")).isEqualTo(
-                new ObservedFailure(500, "failed", "STEP_OUTCOME_INVALID", 1, "failed")
-        );
+    void traceReportsUndeclaredNestedOutcomeFailure() throws Exception {
+        assertTraceFailure("undeclared-outcome", "STEP_OUTCOME_INVALID");
     }
 
     @Test
-    void observationCapturesMissingNestedOutputAsAFailedStage() throws Exception {
-        assertThat(observedFailure("missing-output")).isEqualTo(
-                new ObservedFailure(500, "failed", "STEP_OUTPUT_INVALID", 1, "failed")
-        );
+    void traceReportsMissingNestedOutputFailure() throws Exception {
+        assertTraceFailure("missing-output", "STEP_OUTPUT_INVALID");
     }
 
     @Test
-    void observationCapturesIncompatibleNestedOutputAsAFailedStage() throws Exception {
-        assertThat(observedFailure("number-output")).isEqualTo(
-                new ObservedFailure(500, "failed", "STEP_OUTPUT_INVALID", 1, "failed")
-        );
+    void traceReportsIncompatibleNestedOutputFailure() throws Exception {
+        assertTraceFailure("number-output", "STEP_OUTPUT_INVALID");
     }
 
     @Test
-    void observationCapturesNestedImplementationExceptionAsAFailedStage() throws Exception {
-        assertThat(observedFailure("implementation-exception")).isEqualTo(
-                new ObservedFailure(500, "failed", "STEP_IMPLEMENTATION_FAULT", 1, "failed")
-        );
+    void traceReportsNestedImplementationFailure() throws Exception {
+        assertTraceFailure("implementation-exception", "STEP_IMPLEMENTATION_FAULT");
     }
 
     @Test
-    void previewCapturesResolvedGenericInputs() throws Exception {
-        final RailixValue.ObjectValue preview = preview("context", "normalise-name", named("Hello RAILIX"));
+    void traceReportsUnknownTriggerRejection() throws Exception {
+        final DevelopmentApplication.Response response = application.traceResponse("missing", named("Hello"));
+        final RailixValue.ObjectValue body = body(response);
 
-        assertThat(path(preview, "inputs", "field")).isEqualTo(RailixValue.string("Hello RAILIX"));
-        assertThat(path(preview, "inputs", "value")).isEqualTo(RailixValue.string("Hello RAILIX"));
-    }
-
-    @Test
-    void previewCapturesContextBeforeTheRequestedStepRuns() throws Exception {
-        final RailixValue.ObjectValue preview = preview("context", "normalise-name", named("Hello RAILIX"));
-
-        assertThat(path(preview, "input_context", "payload", "name"))
-                .isEqualTo(RailixValue.string("Hello RAILIX"));
-    }
-
-    @Test
-    void previewCapturesEachNestedStepStage() throws Exception {
-        final RailixValue.ObjectValue preview = preview("context", "normalise-name", named("Hello RAILIX"));
-        final RailixValue.ArrayValue stages = (RailixValue.ArrayValue) path(preview, "stages");
-
-        assertThat(stages.values()).containsExactly(RailixValue.object(java.util.Map.of(
-                "input", RailixValue.string("steps"),
-                "invocation", RailixValue.string("nodes[6].inputs.steps[0]"),
-                "use", RailixValue.string("text.lowercase"),
-                "status", RailixValue.string("succeeded"),
-                "value", RailixValue.string("hello railix")
-        )));
-    }
-
-    @Test
-    void previewObservesTheRequestedStepAndCompletesTheRealFlow() throws Exception {
-        final RailixValue.ObjectValue body = body(application.preview(
-                "context", "normalise-name", named("Hello RAILIX")
-        ));
-
-        assertThat(path(body, "context", "result")).isEqualTo(RailixValue.string("hello railix"));
-        assertThat(stepPairs(body)).containsExactly(
-                "text.lowercase:ok",
-                "normalise-name:next",
-                "return-name:next"
-        );
-    }
-
-    @Test
-    void previewExecutesTheRequiredPrefixForALaterStep() throws Exception {
-        assertThat(path(preview("context", "return-name", named("Hello RAILIX")), "inputs", "value"))
-                .isEqualTo(RailixValue.string("hello railix"));
-    }
-
-    @Test
-    void unknownPreviewStepReturnsAnExplicitRejection() throws Exception {
-        assertDiagnostic(application.preview("context", "missing", named("Hello")), "PREVIEW_STEP_UNKNOWN");
-    }
-
-    @Test
-    void unknownPreviewStepIsReportedBeforeReservedRuntimeContext() throws Exception {
-        assertDiagnostic(application.preview("context", "missing", "{\"runtime\":{}}"), "PREVIEW_STEP_UNKNOWN");
-    }
-
-    @Test
-    void blankPreviewStepReturnsAnExplicitRejection() throws Exception {
-        assertDevelopmentProbe("blank-preview", "rejected:PREVIEW_STEP_REQUIRED");
-    }
-
-    @Test
-    void previewAfterAFalliblePrimitiveReceivesTheUnchangedValue() throws Exception {
-        final RailixValue.ObjectValue preview = preview("fallible", "number-result", value("invalid"));
-
-        assertThat(path(preview, "inputs", "value")).isEqualTo(RailixValue.string("invalid"));
+        assertThat(response.status()).isEqualTo(422);
+        assertThat(path(body, "status")).isEqualTo(RailixValue.string("rejected"));
+        assertThat(path(body, "diagnostics", 0, "code"))
+                .isEqualTo(RailixValue.string("RUN_TRIGGER_UNKNOWN"));
     }
 
     @Test
@@ -525,23 +428,6 @@ final class CreatorFirstExecutionGeneratedE2eTest {
                 .isEqualTo(new CreatorFirstExecutionArtifacts.ProcessResult(0, expected));
     }
 
-    private ObservedFailure observedFailure(final String trigger) throws Exception {
-        final DevelopmentApplication.Response response = application.preview(
-                trigger,
-                trigger + "-step",
-                value("fault")
-        );
-        final RailixValue.ObjectValue body = body(response);
-        final RailixValue.ArrayValue stages = (RailixValue.ArrayValue) path(body, "preview", "stages");
-        return new ObservedFailure(
-                response.status(),
-                ((RailixValue.StringValue) path(body, "status")).value(),
-                ((RailixValue.StringValue) path(body, "failure", "code")).value(),
-                stages.values().size(),
-                ((RailixValue.StringValue) path(stages.values().getFirst(), "status")).value()
-        );
-    }
-
     private void assertDiagnostic(final DevelopmentApplication.Response response, final String code) {
         assertThat(response.status()).isEqualTo(422);
         assertThat(path(body(response), "diagnostics", 0, "code")).isEqualTo(RailixValue.string(code));
@@ -552,14 +438,15 @@ final class CreatorFirstExecutionGeneratedE2eTest {
         assertThat(path(body(response), "failure", "code")).isEqualTo(RailixValue.string(code));
     }
 
-    private RailixValue.ObjectValue preview(
-            final String trigger,
-            final String step,
-            final String context
-    ) throws Exception {
-        final RailixValue.ObjectValue body = body(application.preview(trigger, step, context));
-        assertThat(path(body, "status")).isEqualTo(RailixValue.string("succeeded"));
-        return (RailixValue.ObjectValue) path(body, "preview");
+    private void assertTraceFailure(final String trigger, final String code) throws Exception {
+        final List<RailixValue.ObjectValue> trace = application.trace(trigger, value("fault"));
+        final RailixValue.ObjectValue terminal = trace.getLast();
+
+        assertThat(path(terminal, "type")).isEqualTo(RailixValue.string("result"));
+        assertThat(path(terminal, "status")).isEqualTo(RailixValue.string("failed"));
+        assertThat(path(terminal, "failure", "code")).isEqualTo(RailixValue.string(code));
+        assertThat(trace.stream().filter(event -> RailixValue.string("step_result")
+                .equals(event.values().get("type"))).count()).isGreaterThanOrEqualTo(1);
     }
 
     private static RailixValue.ObjectValue successful(final DevelopmentApplication.Response response) {
@@ -573,14 +460,6 @@ final class CreatorFirstExecutionGeneratedE2eTest {
         final RailixJson.Result parsed = RailixJson.parse(response.body());
         assertThat(parsed).isInstanceOf(RailixJson.Parsed.class);
         return (RailixValue.ObjectValue) ((RailixJson.Parsed) parsed).value();
-    }
-
-    private static List<String> stepPairs(final RailixValue.ObjectValue body) {
-        return ((RailixValue.ArrayValue) path(body, "steps")).values().stream()
-                .map(RailixValue.ObjectValue.class::cast)
-                .map(step -> ((RailixValue.StringValue) step.values().get("id")).value()
-                        + ":" + ((RailixValue.StringValue) step.values().get("outcome")).value())
-                .toList();
     }
 
     private static RailixValue path(final RailixValue root, final Object... elements) {
@@ -604,14 +483,5 @@ final class CreatorFirstExecutionGeneratedE2eTest {
 
     private static String json(final String value) {
         return RailixJson.write(RailixValue.string(value));
-    }
-
-    private record ObservedFailure(
-            int responseStatus,
-            String resultStatus,
-            String failureCode,
-            int stageCount,
-            String stageStatus
-    ) {
     }
 }

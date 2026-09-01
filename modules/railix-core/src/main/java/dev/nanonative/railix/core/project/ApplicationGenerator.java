@@ -2,6 +2,8 @@ package dev.nanonative.railix.core.project;
 
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepDefinition;
+import dev.nanonative.railix.core.value.RailixData;
+import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 
 import java.util.ArrayList;
@@ -14,11 +16,13 @@ final class ApplicationGenerator {
     static final String APPLICATION_CLASS = "dev.nanonative.railix.core.project.RailixApplication";
     static final String DEVELOPMENT_LAUNCHER_CLASS =
             "dev.nanonative.railix.core.project.RailixDevelopmentApplication";
+    private static final String DEVELOPMENT_EXAMPLES_RESOURCE = "META-INF/railix/examples.json";
     private static final int PLAN_PARTITION_SIZE = 16;
     private static final int ROUTE_PARTITION_SIZE = 128;
     private static final int MAX_APPLICATION_NODES = 16_384;
     private static final int MAX_APPLICATION_TRIGGERS = 512;
     private static final int MAX_PLAN_SOURCE_CHARACTERS = 32_768;
+    private static final int MAX_DEVELOPMENT_EXAMPLES_BYTES = RailixData.DEFAULT_MAX_SOURCE_BYTES * 4;
 
     private ApplicationGenerator() {
     }
@@ -30,7 +34,7 @@ final class ApplicationGenerator {
         final List<ApplicationPlan.NodePlan> nodes = plan.nodes();
         final List<ApplicationPlan.TriggerPlan> triggers = plan.triggers();
         if (triggers.size() > MAX_APPLICATION_TRIGGERS) {
-            return new Result("", "", "", List.of(Diagnostic.atPath(
+            return new Result("", "", "", Map.of(), List.of(Diagnostic.atPath(
                     "PROJECT_APPLICATION_TRIGGER_LIMIT",
                     "Generated applications support at most " + MAX_APPLICATION_TRIGGERS + " Triggers.",
                     "nodes"
@@ -43,10 +47,10 @@ final class ApplicationGenerator {
             collect(node.inputs(), catalog, implementations, diagnostics);
         }
         if (!diagnostics.isEmpty()) {
-            return new Result("", "", "", diagnostics, List.of());
+            return new Result("", "", "", Map.of(), diagnostics, List.of());
         }
         if (nodes.size() > MAX_APPLICATION_NODES) {
-            return new Result("", "", "", List.of(Diagnostic.atPath(
+            return new Result("", "", "", Map.of(), List.of(Diagnostic.atPath(
                     "PROJECT_APPLICATION_NODE_LIMIT",
                     "Generated applications support at most " + MAX_APPLICATION_NODES + " nodes.",
                     "nodes"
@@ -61,7 +65,7 @@ final class ApplicationGenerator {
             }
             compiledNodes[index] = compiledNode(index, node, handlerIndexes);
             if (compiledNodes[index].length() > MAX_PLAN_SOURCE_CHARACTERS) {
-                return new Result("", "", "", List.of(Diagnostic.atPath(
+                return new Result("", "", "", Map.of(), List.of(Diagnostic.atPath(
                         "PROJECT_APPLICATION_STEP_LIMIT",
                         "One compiled Step exceeds the " + MAX_PLAN_SOURCE_CHARACTERS
                                 + "-character generated-code limit.",
@@ -69,15 +73,42 @@ final class ApplicationGenerator {
                 )), List.of());
             }
         }
+        final String developmentExamples = developmentExamples(plan);
+        if (developmentExamples == null) {
+            return new Result("", "", "", Map.of(), List.of(Diagnostic.atPath(
+                    "PROJECT_EXAMPLES_RESOURCE_TOO_LARGE",
+                    "Compiled development Examples exceed 4194304 bytes.",
+                    "nodes"
+            )), List.of());
+        }
         return new Result(
                 source(plan.projectId(), nodes, triggers, implementations, handlerIndexes,
                         compiledNodes, Variant.PRODUCTION),
                 source(plan.projectId(), nodes, triggers, implementations, handlerIndexes,
                         compiledNodes, Variant.DEVELOPMENT),
                 developmentLauncherSource(),
+                Map.of(DEVELOPMENT_EXAMPLES_RESOURCE, developmentExamples),
                 List.of(),
                 implementations.values().stream().distinct().toList()
         );
+    }
+
+    private static String developmentExamples(final ApplicationPlan plan) {
+        final List<RailixValue> examples = plan.examples().stream().<RailixValue>map(example ->
+                RailixValue.object(Map.of(
+                        "context", example.context(),
+                        "id", RailixValue.string(example.id()),
+                        "index", RailixValue.number(example.index()),
+                        "name", RailixValue.string(example.name()),
+                        "node", RailixValue.number(example.triggerNode()),
+                        "trigger", RailixValue.string(example.trigger())
+                ))
+        ).toList();
+        return RailixJson.write(RailixValue.object(Map.of(
+                "examples", RailixValue.array(examples),
+                "format", RailixValue.number(1),
+                "node_count", RailixValue.number(plan.nodes().size())
+        )), MAX_DEVELOPMENT_EXAMPLES_BYTES).orElse(null);
     }
 
     private static void collect(
@@ -151,6 +182,94 @@ final class ApplicationGenerator {
         }
     }
 
+    private static void appendDevelopmentCalls(final StringBuilder source, final int handlers) {
+        appendCallTable(source, "CALLS", "calls", handlers, false);
+        appendCallTable(source, "TRACE_CALLS", "traceCalls", handlers, true);
+        for (int handler = 0; handler < handlers; handler++) {
+            source.append("    private static StepResult traceHandler_").append(handler)
+                    .append("(final StepInput input) throws InterruptedException {\n")
+                    .append("        return DevelopmentRuntime.Trace.invoke(input, HANDLER_")
+                    .append(handler).append(");\n")
+                    .append("    }\n\n");
+        }
+    }
+
+    private static void appendDevelopmentExecution(final StringBuilder source) {
+        source.append("""
+                    private static final class TraceExecution extends WorkflowRuntime.Execution {
+                        private String owner;
+
+                        private TraceExecution(
+                                final List<WorkflowRuntime.ResultPlan> results,
+                                final RailixValue.ObjectValue context,
+                                final RailixValue.ObjectValue runtime
+                        ) {
+                            super(results, context, runtime);
+                        }
+
+                        @Override
+                        int call(
+                                final WorkflowRuntime.StepPlan plan,
+                                final WorkflowRuntime.StepCall implementation,
+                                final Map<String, RailixValue> received,
+                                final WorkflowRuntime.InputResolver resolver
+                        ) {
+                            final String previous = owner;
+                            owner = plan.id();
+                            try {
+                                return super.call(plan, implementation, received, resolver);
+                            } finally {
+                                owner = previous;
+                            }
+                        }
+
+                        @Override
+                        StepResult nested(
+                                final WorkflowRuntime.NestedStep step,
+                                final StepInput input
+                        ) throws InterruptedException {
+                            final int inputs = step.path().indexOf(".inputs.");
+                            final String invocation = owner
+                                    + (inputs < 0 ? ".nested" : step.path().substring(inputs));
+                            return DevelopmentRuntime.Trace.invoke(
+                                    invocation, step.step().use(), input, step.handler()
+                            );
+                        }
+                    }
+
+                """);
+    }
+
+    private static void appendCallTable(
+            final StringBuilder source,
+            final String field,
+            final String method,
+            final int handlers,
+            final boolean trace
+    ) {
+        source.append("    private static final WorkflowRuntime.StepCall[] ").append(field)
+                .append(" = ").append(method).append("();\n\n")
+                .append("    private static WorkflowRuntime.StepCall[] ").append(method).append("() {\n")
+                .append("        final WorkflowRuntime.StepCall[] calls = new WorkflowRuntime.StepCall[")
+                .append(handlers).append("];\n");
+        for (int start = 0; start < handlers; start += PLAN_PARTITION_SIZE) {
+            source.append("        ").append(method).append('_').append(start / PLAN_PARTITION_SIZE)
+                    .append("(calls);\n");
+        }
+        source.append("        return calls;\n    }\n\n");
+        for (int start = 0; start < handlers; start += PLAN_PARTITION_SIZE) {
+            source.append("    private static void ").append(method).append('_')
+                    .append(start / PLAN_PARTITION_SIZE)
+                    .append("(final WorkflowRuntime.StepCall[] calls) {\n");
+            for (int handler = start; handler < Math.min(handlers, start + PLAN_PARTITION_SIZE); handler++) {
+                source.append("        calls[").append(handler).append("] = ")
+                        .append(trace ? "RailixApplication::traceHandler_" : "HANDLER_")
+                        .append(handler).append(trace ? ";\n" : "::run;\n");
+            }
+            source.append("    }\n\n");
+        }
+    }
+
     private static String source(
             final String projectId,
             final List<ApplicationPlan.NodePlan> nodes,
@@ -160,6 +279,7 @@ final class ApplicationGenerator {
             final String[] compiledNodes,
             final Variant variant
     ) {
+        final Map<Integer, Integer> metricIndexes = metricIndexes(nodes);
         final StringBuilder source = new StringBuilder(Math.max(16_384, nodes.size() * 512));
         source.append("""
                 package dev.nanonative.railix.core.project;
@@ -193,6 +313,16 @@ final class ApplicationGenerator {
                 .append(indent(Integer.toString(ROUTE_PARTITION_SIZE), 3)).append(";\n")
                 .append("    private static final String PROJECT_ID =\n")
                 .append(indent(quote(projectId), 3)).append(";\n");
+        if (variant == Variant.DEVELOPMENT) {
+            source.append("    private static final DevelopmentRuntime.Metrics METRICS = ")
+                    .append("new DevelopmentRuntime.Metrics(PROJECT_ID, ")
+                    .append(array(triggers.stream()
+                            .map(trigger -> quote(nodes.get(trigger.node()).id())).toList()))
+                    .append(", ")
+                    .append(array(metricIndexes.keySet().stream()
+                            .map(index -> quote(nodes.get(index).id())).toList()))
+                    .append(");\n");
+        }
         int handlerIndex = 0;
         for (final StepCatalog.Implementation implementation : implementations.values()) {
             source.append("    private static final ").append(implementation.className())
@@ -209,15 +339,16 @@ final class ApplicationGenerator {
                     .append(stringMap(node.step().source().orElseThrow().responses())).append(";\n");
         }
         source.append("    private static final RailixApplication APPLICATION = new RailixApplication();\n\n");
-        handlerIndex = 0;
-        for (final String ignored : implementations.keySet()) {
-            source.append("    private static final WorkflowRuntime.StepCall CALL_").append(handlerIndex)
-                    .append(" = RailixApplication::handler_").append(handlerIndex).append(";\n");
-            source.append("    private static StepResult handler_").append(handlerIndex)
-                    .append("(final StepInput input) throws InterruptedException {\n")
-                    .append("        return HANDLER_").append(handlerIndex).append(".run(input);\n")
-                    .append("    }\n\n");
-            handlerIndex++;
+        if (variant == Variant.PRODUCTION) {
+            handlerIndex = 0;
+            for (final String ignored : implementations.keySet()) {
+                source.append("    private static final WorkflowRuntime.StepCall CALL_")
+                        .append(handlerIndex).append(" = HANDLER_").append(handlerIndex).append("::run;\n");
+                handlerIndex++;
+            }
+        } else {
+            appendDevelopmentCalls(source, implementations.size());
+            appendDevelopmentExecution(source);
         }
         appendPlans(source, nodes, compiledNodes);
         source.append("    private RailixApplication() {\n    }\n\n")
@@ -232,15 +363,15 @@ final class ApplicationGenerator {
                 .append("    @Override\n")
                 .append("    public String projectId() {\n        return PROJECT_ID;\n    }\n\n");
         if (variant == Variant.DEVELOPMENT) {
+            source.append("    @Override\n")
+                    .append("    public DevelopmentRuntime.Metrics metrics() {\n")
+                    .append("        return METRICS;\n    }\n\n");
             appendDevelopmentRun(source, nodes, triggers);
-            appendObservation(source, nodes, triggers);
+            appendTrace(source, nodes, triggers);
         }
-        appendSources(source, nodes, triggers, handlerIndexes, variant);
+        appendSources(source, nodes, triggers, handlerIndexes, metricIndexes, variant);
         appendExecutors(source, nodes, triggers, handlerIndexes, variant);
-        appendDispatch(source, nodes, handlerIndexes, variant);
-        if (variant == Variant.DEVELOPMENT) {
-            appendObservationCapture(source);
-        }
+        appendDispatch(source, nodes, handlerIndexes, metricIndexes, variant);
         source.append("    static int runCli(final String[] arguments) {\n")
                 .append("        final List<RailixValue> values = new ArrayList<>(arguments.length);\n")
                 .append("        for (final String argument : arguments) {\n")
@@ -339,10 +470,10 @@ final class ApplicationGenerator {
                 .append("            final RailixValue.ObjectValue context, final boolean test) {\n")
                 .append("        if (triggerId == null || triggerId.isBlank()) {\n")
                 .append("            return WorkflowRuntime.rejectedResult(\"RUN_TRIGGER_REQUIRED\", ")
-                .append("\"Trigger id must be a non-blank string.\", \"trigger\", List.of());\n        }\n")
+                .append("\"Trigger id must be a non-blank string.\", \"trigger\");\n        }\n")
                 .append("        if (context == null) {\n")
                 .append("            return WorkflowRuntime.rejectedResult(\"RUN_INPUT_REQUIRED\", ")
-                .append("\"Workflow context must be supplied.\", \"input\", List.of());\n        }\n")
+                .append("\"Workflow context must be supplied.\", \"input\");\n        }\n")
                 .append("        return switch (triggerId) {\n");
         for (final ApplicationPlan.TriggerPlan trigger : triggers) {
             source.append("            case ").append(quote(nodes.get(trigger.node()).id()))
@@ -350,101 +481,56 @@ final class ApplicationGenerator {
         }
         source.append("            default -> WorkflowRuntime.rejectedResult(\"RUN_TRIGGER_UNKNOWN\",\n")
                 .append("                    \"Trigger is not part of this project: \" + triggerId + \".\",\n")
-                .append("                    \"trigger\", List.of());\n")
+                .append("                    \"trigger\");\n")
                 .append("        };\n    }\n\n");
     }
 
-    private static void appendObservation(
+    private static void appendTrace(
             final StringBuilder source,
             final List<ApplicationPlan.NodePlan> nodes,
             final List<ApplicationPlan.TriggerPlan> triggers
     ) {
         source.append("    @Override\n")
-                .append("    public DevelopmentRuntime.Observation observe(final String triggerId, final String stepId,\n")
-                .append("            final RailixValue.ObjectValue context, final boolean test) {\n")
-                .append("        if (stepId == null || stepId.isBlank()) {\n")
-                .append("            return observationError(WorkflowRuntime.rejectedResult(\"PREVIEW_STEP_REQUIRED\", ")
-                .append("\"Step id must be a non-blank string.\", \"step\", List.of()), \"\");\n        }\n")
+                .append("    public RunResult trace(final String triggerId,\n")
+                .append("            final RailixValue.ObjectValue context, final boolean test,\n")
+                .append("            final DevelopmentRuntime.TraceSink sink) {\n")
                 .append("        if (triggerId == null || triggerId.isBlank()) {\n")
-                .append("            return observationError(WorkflowRuntime.rejectedResult(\"RUN_TRIGGER_REQUIRED\", ")
-                .append("\"Trigger id must be a non-blank string.\", \"trigger\", List.of()), stepId);\n        }\n")
+                .append("            return WorkflowRuntime.rejectedResult(\"RUN_TRIGGER_REQUIRED\", ")
+                .append("\"Trigger id must be a non-blank string.\", \"trigger\");\n        }\n")
                 .append("        if (context == null) {\n")
-                .append("            return observationError(WorkflowRuntime.rejectedResult(\"RUN_INPUT_REQUIRED\", ")
-                .append("\"Workflow context must be supplied.\", \"input\", List.of()), stepId);\n        }\n")
+                .append("            return WorkflowRuntime.rejectedResult(\"RUN_INPUT_REQUIRED\", ")
+                .append("\"Workflow context must be supplied.\", \"input\");\n        }\n")
+                .append("        if (sink == null) {\n")
+                .append("            return WorkflowRuntime.rejectedResult(\"TRACE_SINK_REQUIRED\", ")
+                .append("\"Trace sink must be supplied.\", \"sink\");\n        }\n")
                 .append("        return switch (triggerId) {\n");
         for (final ApplicationPlan.TriggerPlan trigger : triggers) {
             source.append("            case ").append(quote(nodes.get(trigger.node()).id()))
-                    .append(" -> observe_").append(trigger.node()).append("(stepId, context, test);\n");
+                    .append(" -> trace_").append(trigger.node()).append("(context, test, sink);\n");
         }
-        source.append("            default -> observationError(WorkflowRuntime.rejectedResult(\"RUN_TRIGGER_UNKNOWN\",\n")
+        source.append("            default -> WorkflowRuntime.rejectedResult(\"RUN_TRIGGER_UNKNOWN\",\n")
                 .append("                    \"Trigger is not part of this project: \" + triggerId + \".\",\n")
-                .append("                    \"trigger\", List.of()), stepId);\n")
+                .append("                    \"trigger\");\n")
                 .append("        };\n    }\n\n");
 
-        for (final ApplicationPlan.TriggerPlan trigger : triggers) {
-            source.append("    private static DevelopmentRuntime.Observation observe_").append(trigger.node())
-                    .append("(final String stepId, final RailixValue.ObjectValue context, final boolean test) {\n")
-                    .append("        final int selected = select_").append(trigger.node()).append("(stepId);\n")
-                    .append("        if (selected == END) {\n")
-                    .append("            return observationError(WorkflowRuntime.rejectedResult(\"PREVIEW_STEP_UNKNOWN\",\n")
-                    .append("                    \"Step is not part of the selected Trigger branch: \" + stepId + \".\",\n")
-                    .append("                    \"step\", List.of()), stepId);\n        }\n")
+        for (int flow = 0; flow < triggers.size(); flow++) {
+            final ApplicationPlan.TriggerPlan trigger = triggers.get(flow);
+            source.append("    private static RunResult trace_").append(trigger.node())
+                    .append("(final RailixValue.ObjectValue context, final boolean test,\n")
+                    .append("            final DevelopmentRuntime.TraceSink sink) {\n")
                     .append("        if (context.values().containsKey(\"runtime\")) {\n")
-                    .append("            return observationError(WorkflowRuntime.rejectedResult(\"RUN_RUNTIME_RESERVED\",\n")
+                    .append("            return WorkflowRuntime.rejectedResult(\"RUN_RUNTIME_RESERVED\",\n")
                     .append("                    \"context.runtime is supplied by Railix.\", ")
-                    .append("\"context.runtime\", List.of()), stepId);\n        }\n")
-                    .append("        final WorkflowRuntime.Execution execution = WorkflowRuntime.execution(")
-                    .append(quote(nodes.get(trigger.node()).id())).append(", ")
-                    .append(resultsReference(trigger)).append(", context, test, true);\n")
-                    .append("        final ObservationCapture capture = new ObservationCapture(stepId);\n")
-                    .append("        final RunResult result = execute_").append(trigger.node())
-                    .append("(execution, ").append(trigger.start()).append(", selected, capture);\n")
-                    .append("        if (result instanceof RunResult.Succeeded && !capture.reached()) {\n")
-                    .append("            return capture.observation(WorkflowRuntime.rejectedResult(\n")
-                    .append("                    \"PREVIEW_STEP_UNREACHED\",\n")
-                    .append("                    \"Step was not reached by this flow execution: \" + stepId + \".\",\n")
-                    .append("                    \"step\", execution.history()));\n        }\n")
-                    .append("        return capture.observation(result);\n")
+                    .append("\"context.runtime\");\n        }\n")
+                    .append("        final WorkflowRuntime.Execution execution = new TraceExecution(")
+                    .append(resultsReference(trigger)).append(", context, ")
+                    .append(runtime(nodes.get(trigger.node()).id(), Variant.DEVELOPMENT, "test"))
+                    .append(");\n")
+                    .append("        return DevelopmentRuntime.Trace.start(execution.context(), sink,\n")
+                    .append("                () -> traceExecute_").append(trigger.node())
+                    .append("(execution, ").append(trigger.start()).append(", TRACE_CALLS));\n")
                     .append("    }\n\n");
         }
-    }
-
-    private static void appendObservationCapture(final StringBuilder source) {
-        source.append("    private static DevelopmentRuntime.Observation observationError(\n")
-                .append("            final RunResult result, final String step) {\n")
-                .append("        return new DevelopmentRuntime.Observation(result, step,\n")
-                .append("                RailixValue.object(Map.of()), Map.of(), List.of(), Map.of());\n")
-                .append("    }\n\n")
-                .append("    private static final class ObservationCapture implements WorkflowRuntime.Capture {\n")
-                .append("        private final String step;\n")
-                .append("        private RailixValue.ObjectValue inputContext = RailixValue.object(Map.of());\n")
-                .append("        private Map<String, RailixValue> inputs = Map.of();\n")
-                .append("        private final List<DevelopmentRuntime.Stage> stages = new ArrayList<>();\n")
-                .append("        private final Map<String, Integer> selectedCandidates = new LinkedHashMap<>();\n")
-                .append("        private boolean reached;\n\n")
-                .append("        private ObservationCapture(final String step) {\n")
-                .append("            this.step = step;\n        }\n\n")
-                .append("        @Override\n")
-                .append("        public void inputContext(final RailixValue.ObjectValue value) {\n")
-                .append("            inputContext = value;\n            reached = true;\n        }\n\n")
-                .append("        @Override\n")
-                .append("        public void inputs(final Map<String, RailixValue> values) {\n")
-                .append("            inputs = values;\n")
-                .append("        }\n\n")
-                .append("        @Override\n")
-                .append("        public void stage(final String input, final String invocation, final String use,\n")
-                .append("                final String status, final List<RailixValue> values) {\n")
-                .append("            stages.add(new DevelopmentRuntime.Stage(input, invocation, use, status, values));\n")
-                .append("        }\n\n")
-                .append("        @Override\n")
-                .append("        public void selectedCandidate(final String path, final int index) {\n")
-                .append("            selectedCandidates.put(path, index);\n        }\n\n")
-                .append("        private boolean reached() {\n            return reached;\n        }\n\n")
-                .append("        private DevelopmentRuntime.Observation observation(final RunResult result) {\n")
-                .append("            return new DevelopmentRuntime.Observation(\n")
-                .append("                    result, step, inputContext, inputs, stages, selectedCandidates\n")
-                .append("            );\n        }\n")
-                .append("    }\n\n");
     }
 
     private static void appendSources(
@@ -452,6 +538,7 @@ final class ApplicationGenerator {
             final List<ApplicationPlan.NodePlan> nodes,
             final List<ApplicationPlan.TriggerPlan> triggers,
             final Map<String, Integer> handlers,
+            final Map<Integer, Integer> metricIndexes,
             final Variant variant
     ) {
         source.append("    @Override\n")
@@ -460,56 +547,98 @@ final class ApplicationGenerator {
                 .append("        if (source == null || source.isBlank()) {\n")
                 .append("            return new WorkflowRuntime.SourceResult(WorkflowRuntime.rejectedResult(\n")
                 .append("                    \"RUN_SOURCE_REQUIRED\", \"Trigger source must be a non-blank string.\",\n")
-                .append("                    \"source\", List.of()), Map.of());\n        }\n")
+                .append("                    \"source\"), Map.of());\n        }\n")
                 .append("        if (values == null) {\n")
                 .append("            return new WorkflowRuntime.SourceResult(WorkflowRuntime.rejectedResult(\n")
                 .append("                    \"RUN_SOURCE_VALUES_REQUIRED\", \"Trigger source values must be supplied.\",\n")
-                .append("                    \"values\", List.of()), Map.of());\n        }\n")
+                .append("                    \"values\"), Map.of());\n        }\n")
                 .append("        return switch (source) {\n");
         for (final ApplicationPlan.TriggerPlan trigger : triggers) {
             final ApplicationPlan.NodePlan node = nodes.get(trigger.node());
             source.append("            case ").append(quote(node.step().source().orElseThrow().name()))
-                    .append(" -> source_").append(trigger.node()).append("(values);\n");
+                    .append(" -> ")
+                    .append(variant == Variant.DEVELOPMENT ? "measuredSource_" : "source_")
+                    .append(trigger.node()).append("(values);\n");
         }
         source.append("            default -> new WorkflowRuntime.SourceResult(WorkflowRuntime.rejectedResult(\n")
                 .append("                    \"RUN_SOURCE_UNKNOWN\", \"Project has no Trigger for source: \" + source + \".\",\n")
-                .append("                    \"source\", List.of()), Map.of());\n")
+                .append("                    \"source\"), Map.of());\n")
                 .append("        };\n    }\n\n");
 
-        for (final ApplicationPlan.TriggerPlan trigger : triggers) {
+        for (int flow = 0; flow < triggers.size(); flow++) {
+            final ApplicationPlan.TriggerPlan trigger = triggers.get(flow);
             final ApplicationPlan.NodePlan node = nodes.get(trigger.node());
             final int handler = handlers.get(node.step().id());
             source.append("    private static WorkflowRuntime.SourceResult source_").append(trigger.node())
                     .append("(final Map<String, RailixValue> values) {\n")
                     .append("        final var invalid = WorkflowRuntime.validateSource(")
                     .append(planReference(trigger.node())).append(", values, ")
-                    .append(quote(node.path())).append(", List.of());\n")
+                    .append(quote(node.path())).append(");\n")
                     .append("        if (invalid.isPresent()) {\n")
                     .append("            return new WorkflowRuntime.SourceResult(invalid.orElseThrow(), Map.of());\n")
                     .append("        }\n")
                     .append("        final WorkflowRuntime.Execution execution = WorkflowRuntime.execution(")
-                    .append(quote(node.id())).append(", ").append(resultsReference(trigger)).append(",\n")
-                    .append("                RailixValue.object(Map.of()), false, false);\n")
-                    .append("        final int outcome = execution.call(")
-                    .append(planReference(trigger.node())).append(", CALL_")
-                    .append(handler).append(", values, ").append(inputsReference(trigger.node())).append(");\n")
+                    .append(resultsReference(trigger)).append(", RailixValue.object(Map.of()),\n")
+                    .append("                ").append(runtime(node.id(), variant, "false")).append(");\n");
+            if (variant == Variant.DEVELOPMENT && metricIndexes.containsKey(trigger.node())) {
+                final int metricIndex = metricIndexes.get(trigger.node());
+                source.append("        final long stepMetric = METRICS.startStep(")
+                        .append(metricIndex).append(");\n")
+                        .append("        int outcome = Integer.MIN_VALUE;\n")
+                        .append("        RunResult stepResult = null;\n")
+                        .append("        try {\n")
+                        .append("            outcome = execution.call(")
+                        .append(planReference(trigger.node())).append(", ")
+                        .append(call(handler, variant, false)).append(", values, ")
+                        .append(inputsReference(trigger.node()))
+                        .append(");\n")
+                        .append("            if (outcome < 0) {\n")
+                        .append("                stepResult = execution.finish();\n")
+                        .append("            }\n")
+                        .append("        } finally {\n")
+                        .append("            METRICS.finishStep(").append(metricIndex)
+                        .append(", stepMetric, outcome, stepResult);\n")
+                        .append("        }\n");
+            } else {
+                source.append("        final int outcome = execution.call(")
+                        .append(planReference(trigger.node())).append(", ")
+                        .append(call(handler, variant, false)).append(", values, ")
+                        .append(inputsReference(trigger.node())).append(");\n");
+            }
+            source
                     .append("        if (outcome < 0) {\n")
-                    .append("            return new WorkflowRuntime.SourceResult(execution.finish(), Map.of());\n        }\n")
+                    .append(variant == Variant.DEVELOPMENT && metricIndexes.containsKey(trigger.node())
+                            ? "            return new WorkflowRuntime.SourceResult(stepResult, Map.of());\n        }\n"
+                            : "            return new WorkflowRuntime.SourceResult(execution.finish(), Map.of());\n        }\n")
                     .append("        final int destination = ").append(destination(node)).append(";\n")
                     .append("        if (destination == UNROUTED) {\n")
                     .append("            return new WorkflowRuntime.SourceResult(WorkflowRuntime.failedResult(\n")
                     .append("                    \"STEP_OUTCOME_UNROUTED\", \"Trigger returned an outcome without a connection: \"\n")
                     .append("                            + ").append(outcome(node)).append(" + \".\", ")
-                    .append(quote(node.id())).append(", execution.history()), Map.of());\n        }\n")
+                    .append(quote(node.id())).append("), Map.of());\n        }\n")
                     .append("        final RunResult result = execute_").append(trigger.node())
                     .append(variant == Variant.PRODUCTION
                             ? "(execution, destination);\n"
-                            : "(execution, destination, END, null);\n")
+                            : "(execution, destination, CALLS, true);\n")
                     .append("        return result instanceof RunResult.Succeeded\n")
                     .append("                ? new WorkflowRuntime.SourceResult(result, execution.responses(")
                     .append(responseSlotsReference(trigger)).append("))\n")
                     .append("                : new WorkflowRuntime.SourceResult(result, Map.of());\n")
                     .append("    }\n\n");
+            if (variant == Variant.DEVELOPMENT) {
+                source.append("    private static WorkflowRuntime.SourceResult measuredSource_")
+                        .append(trigger.node()).append("(final Map<String, RailixValue> values) {\n")
+                        .append("        final long metric = METRICS.startFlow(").append(flow).append(");\n")
+                        .append("        WorkflowRuntime.SourceResult result = null;\n")
+                        .append("        try {\n")
+                        .append("            result = source_").append(trigger.node()).append("(values);\n")
+                        .append("            return result;\n")
+                        .append("        } finally {\n")
+                        .append("            METRICS.finishFlow(").append(flow).append(", metric,\n")
+                        .append("                    result == null ? null : result.result());\n")
+                        .append("        }\n")
+                        .append("    }\n\n");
+            }
         }
     }
 
@@ -520,7 +649,8 @@ final class ApplicationGenerator {
             final Map<String, Integer> handlers,
             final Variant variant
     ) {
-        for (final ApplicationPlan.TriggerPlan trigger : triggers) {
+        for (int flow = 0; flow < triggers.size(); flow++) {
+            final ApplicationPlan.TriggerPlan trigger = triggers.get(flow);
             final ApplicationPlan.NodePlan triggerNode = nodes.get(trigger.node());
             if (variant == Variant.DEVELOPMENT) {
                 source.append("    private static RunResult run_").append(trigger.node())
@@ -528,55 +658,92 @@ final class ApplicationGenerator {
                         .append("        if (context.values().containsKey(\"runtime\")) {\n")
                         .append("            return WorkflowRuntime.rejectedResult(\"RUN_RUNTIME_RESERVED\",\n")
                         .append("                    \"context.runtime is supplied by Railix.\", ")
-                        .append("\"context.runtime\", List.of());\n        }\n")
-                        .append("        final WorkflowRuntime.Execution execution = WorkflowRuntime.execution(")
-                        .append(quote(triggerNode.id())).append(", ").append(resultsReference(trigger))
-                        .append(", context, test, test);\n")
-                        .append("        return execute_").append(trigger.node())
-                        .append("(execution, ").append(trigger.start()).append(", END, null);\n")
-                        .append("    }\n\n")
-                        .append("    private static RunResult execute_").append(trigger.node())
-                        .append("(final WorkflowRuntime.Execution execution, int current,\n")
-                        .append("            final int observed, final ObservationCapture capture) {\n");
-            } else {
-                source.append("    private static RunResult execute_").append(trigger.node())
-                        .append("(final WorkflowRuntime.Execution execution, int current) {\n");
+                        .append("\"context.runtime\");\n        }\n")
+                        .append("        if (test) {\n")
+                        .append("            final WorkflowRuntime.Execution execution = WorkflowRuntime.execution(")
+                        .append(resultsReference(trigger)).append(", context, ")
+                        .append(runtime(triggerNode.id(), Variant.DEVELOPMENT, "true")).append(");\n")
+                        .append("            return execute_").append(trigger.node())
+                        .append("(execution, ").append(trigger.start()).append(", CALLS, false);\n")
+                        .append("        }\n")
+                        .append("        final long metric = METRICS.startFlow(").append(flow).append(");\n")
+                        .append("        RunResult result = null;\n")
+                        .append("        try {\n")
+                        .append("            final WorkflowRuntime.Execution execution = WorkflowRuntime.execution(")
+                        .append(resultsReference(trigger)).append(", context, ")
+                        .append(runtime(triggerNode.id(), Variant.DEVELOPMENT, "false")).append(");\n")
+                        .append("            result = execute_").append(trigger.node())
+                        .append("(execution, ").append(trigger.start()).append(", CALLS, true);\n")
+                        .append("            return result;\n")
+                        .append("        } finally {\n")
+                        .append("            METRICS.finishFlow(").append(flow).append(", metric, result);\n")
+                        .append("        }\n")
+                        .append("    }\n\n");
             }
-            source.append("        while (current != END) {\n")
-                    .append("            final int outcome = dispatch_").append(trigger.node());
+            appendExecutor(source, trigger.node(), false, variant);
             if (variant == Variant.DEVELOPMENT) {
-                source.append("(execution, current, current == observed, capture);\n");
-            } else {
-                source.append("(execution, current);\n");
+                appendExecutor(source, trigger.node(), true, variant);
             }
-            source.append("            if (outcome < 0) {\n")
-                    .append("                return execution.finish();\n            }\n");
-            if (variant == Variant.DEVELOPMENT) {
-                source.append("            final String outcomeName = outcome_").append(trigger.node())
-                        .append("(current, outcome);\n")
-                        .append("            execution.record(step_").append(trigger.node())
-                        .append("(current), outcomeName);\n");
-            }
-            source.append("            final int destination = destination_").append(trigger.node())
-                    .append("(current, outcome);\n")
-                    .append("            if (destination == UNROUTED) {\n");
-            if (variant == Variant.PRODUCTION) {
-                source.append("                final String outcomeName = outcome_").append(trigger.node())
-                        .append("(current, outcome);\n");
-            }
-            source.append("                return WorkflowRuntime.failedResult(\"STEP_OUTCOME_UNROUTED\",\n")
-                    .append("                        \"Step returned an outcome without a connection: \" + outcomeName + \".\",\n")
-                    .append("                        step_").append(trigger.node())
-                    .append("(current), execution.history());\n            }\n")
-                    .append("            current = destination;\n        }\n")
-                    .append("        return execution.finish();\n    }\n\n");
         }
+    }
+
+    private static void appendExecutor(
+            final StringBuilder source,
+            final int trigger,
+            final boolean trace,
+            final Variant variant
+    ) {
+        source.append("    private static RunResult ")
+                .append(trace ? "traceExecute_" : "execute_").append(trigger)
+                .append("(final WorkflowRuntime.Execution execution, int current")
+                .append(variant == Variant.DEVELOPMENT ? ", final WorkflowRuntime.StepCall[] calls" : "")
+                .append(variant == Variant.DEVELOPMENT && !trace ? ", final boolean measure" : "")
+                .append(") {\n")
+                .append("        while (current != END) {\n");
+        if (trace) {
+            source.append("            DevelopmentRuntime.Trace.before(current, step_").append(trigger)
+                    .append("(current), use_").append(trigger)
+                    .append("(current), execution.context());\n");
+        }
+        source.append("            final int outcome = dispatch_").append(trigger)
+                .append(variant == Variant.PRODUCTION
+                        ? "(execution, current);\n"
+                        : trace
+                                ? "(execution, current, calls, false);\n"
+                                : "(execution, current, calls, measure);\n")
+                .append("            if (outcome < 0) {\n")
+                .append("                final RunResult result = execution.finish();\n");
+        if (trace) {
+            source.append("                DevelopmentRuntime.Trace.after(step_").append(trigger)
+                    .append("(current), result, execution.context());\n");
+        }
+        source.append("                return result;\n            }\n");
+        if (trace) {
+            source.append("            final String outcomeName = outcome_").append(trigger)
+                    .append("(current, outcome);\n")
+                    .append("            DevelopmentRuntime.Trace.after(step_").append(trigger)
+                    .append("(current), outcomeName, execution.context());\n");
+        }
+        source.append("            final int destination = destination_").append(trigger)
+                .append("(current, outcome);\n")
+                .append("            if (destination == UNROUTED) {\n");
+        if (!trace) {
+            source.append("                final String outcomeName = outcome_").append(trigger)
+                    .append("(current, outcome);\n");
+        }
+        source.append("                return WorkflowRuntime.failedResult(\"STEP_OUTCOME_UNROUTED\",\n")
+                .append("                        \"Step returned an outcome without a connection: \" + outcomeName + \".\",\n")
+                .append("                        step_").append(trigger).append("(current));\n")
+                .append("            }\n")
+                .append("            current = destination;\n        }\n")
+                .append("        return execution.finish();\n    }\n\n");
     }
 
     private static void appendDispatch(
             final StringBuilder source,
             final List<ApplicationPlan.NodePlan> nodes,
             final Map<String, Integer> handlers,
+            final Map<Integer, Integer> metricIndexes,
             final Variant variant
     ) {
         final Map<Integer, List<Integer>> owned = new LinkedHashMap<>();
@@ -593,30 +760,28 @@ final class ApplicationGenerator {
                 .append("            final WorkflowRuntime.Execution execution, final int current) {\n")
                 .append("        return execution.abort(WorkflowRuntime.failedResult(\n")
                 .append("                \"RUN_PLAN_MISSING\", \"Compiled Step plan is missing.\",\n")
-                .append("                Integer.toString(current), execution.history()));\n")
+                .append("                Integer.toString(current)));\n")
                 .append("    }\n\n");
         for (final Map.Entry<Integer, List<Integer>> entry : owned.entrySet()) {
             final int trigger = entry.getKey();
             final Map<Integer, List<Integer>> partitions = partitions(entry.getValue());
             source.append("    private static int dispatch_").append(trigger)
-                    .append("(final WorkflowRuntime.Execution execution, final int current");
-            if (variant == Variant.DEVELOPMENT) {
-                source.append(", final boolean observe, final WorkflowRuntime.Capture capture");
-            }
-            source.append(") {\n")
+                    .append("(final WorkflowRuntime.Execution execution, final int current")
+                    .append(variant == Variant.DEVELOPMENT
+                            ? ", final WorkflowRuntime.StepCall[] calls, final boolean measure"
+                            : "")
+                    .append(") {\n")
                     .append("        return switch (current / NODE_PARTITION_SIZE) {\n");
             for (final int partition : partitions.keySet()) {
                 source.append("            case ").append(partition).append(" -> Routes_")
                         .append(trigger).append('_').append(partition)
-                        .append(".dispatch(execution, current");
-                if (variant == Variant.DEVELOPMENT) {
-                    source.append(", observe, capture");
-                }
-                source.append(");\n");
+                        .append(variant == Variant.DEVELOPMENT
+                                ? ".dispatch(execution, current, calls, measure);\n"
+                                : ".dispatch(execution, current);\n");
             }
             source.append("            default -> missingPlan(execution, current);\n")
                     .append("        };\n    }\n\n");
-            appendRouting(source, trigger, partitions, nodes, handlers, variant);
+            appendRouting(source, trigger, partitions, nodes, handlers, metricIndexes, variant);
         }
     }
 
@@ -626,26 +791,17 @@ final class ApplicationGenerator {
             final Map<Integer, List<Integer>> partitions,
             final List<ApplicationPlan.NodePlan> nodes,
             final Map<String, Integer> handlers,
+            final Map<Integer, Integer> metricIndexes,
             final Variant variant
     ) {
-        if (variant == Variant.DEVELOPMENT) {
-            source.append("    private static int select_").append(trigger).append("(final String stepId) {\n");
-            if (partitions.isEmpty()) {
-                source.append("        return END;\n");
-            } else {
-                source.append("        int selected;\n");
-                for (final int partition : partitions.keySet()) {
-                    source.append("        selected = Routes_").append(trigger).append('_').append(partition)
-                            .append(".select(stepId);\n")
-                            .append("        if (selected != END) {\n            return selected;\n        }\n");
-                }
-                source.append("        return END;\n");
-            }
-            source.append("    }\n\n");
-        }
         appendRouteSelector(
                 source, trigger, partitions, "String", "step", "current", "Integer.toString(current)", false
         );
+        if (variant == Variant.DEVELOPMENT) {
+            appendRouteSelector(
+                    source, trigger, partitions, "String", "use", "current", "\"\"", false
+            );
+        }
         appendRouteSelector(
                 source, trigger, partitions, "String", "outcome", "current, outcome", "\"unknown\"", true
         );
@@ -656,42 +812,47 @@ final class ApplicationGenerator {
         for (final Map.Entry<Integer, List<Integer>> partition : partitions.entrySet()) {
             final String owner = "Routes_" + trigger + "_" + partition.getKey();
             source.append("    private static final class ").append(owner).append(" {\n");
-            if (variant == Variant.DEVELOPMENT) {
-                source.append("        private static int select(final String stepId) {\n")
-                        .append("            return switch (stepId) {\n");
-                for (final int index : partition.getValue()) {
-                    source.append("                case ").append(quote(nodes.get(index).id()))
-                            .append(" -> ").append(index).append(";\n");
-                }
-                source.append("                default -> END;\n            };\n        }\n\n");
-            }
             source.append("        private static int dispatch(\n")
-                    .append("                final WorkflowRuntime.Execution execution, final int current");
-            if (variant == Variant.DEVELOPMENT) {
-                source.append(",\n                final boolean observe, final WorkflowRuntime.Capture capture");
-            }
-            source.append(") {\n")
+                    .append("                final WorkflowRuntime.Execution execution, final int current")
+                    .append(variant == Variant.DEVELOPMENT
+                            ? ", final WorkflowRuntime.StepCall[] calls, final boolean measure"
+                            : "")
+                    .append(") {\n")
                     .append("            return switch (current) {\n");
             for (final int index : partition.getValue()) {
                 final ApplicationPlan.NodePlan node = nodes.get(index);
                 source.append("                case ").append(index).append(" -> ");
-                if (variant == Variant.DEVELOPMENT) {
+                if (variant == Variant.DEVELOPMENT && metricIndexes.containsKey(index)) {
+                    final int metricIndex = metricIndexes.get(index);
                     source.append("{\n")
-                            .append("                    if (observe) {\n")
-                            .append("                        yield execution.observe(")
-                            .append(planReference(index)).append(", CALL_")
-                            .append(handlers.get(node.step().id())).append(", Map.of(), ")
-                            .append(inputsReference(index)).append(", capture);\n")
+                            .append("                    if (!measure) {\n")
+                            .append("                        yield execution.call(")
+                            .append(planReference(index)).append(", ")
+                            .append(call(handlers.get(node.step().id()), variant, true)).append(", Map.of(), ")
+                            .append(inputsReference(index)).append(");\n")
                             .append("                    }\n")
-                            .append("                    yield execution.call(");
+                            .append("                    final long metric = METRICS.startStep(")
+                            .append(metricIndex).append(");\n")
+                            .append("                    int outcome = Integer.MIN_VALUE;\n")
+                            .append("                    RunResult stepResult = null;\n")
+                            .append("                    try {\n")
+                            .append("                        outcome = execution.call(")
+                            .append(planReference(index)).append(", ")
+                            .append(call(handlers.get(node.step().id()), variant, true)).append(", Map.of(), ")
+                            .append(inputsReference(index)).append(");\n")
+                            .append("                        if (outcome < 0) {\n")
+                            .append("                            stepResult = execution.finish();\n")
+                            .append("                        }\n")
+                            .append("                        yield outcome;\n")
+                            .append("                    } finally {\n")
+                            .append("                        METRICS.finishStep(").append(metricIndex)
+                            .append(", metric, outcome, stepResult);\n")
+                            .append("                    }\n")
+                            .append("                }\n");
                 } else {
-                    source.append("execution.call(");
-                }
-                source.append(planReference(index)).append(", CALL_")
-                        .append(handlers.get(node.step().id())).append(", Map.of(), ")
-                        .append(inputsReference(index)).append(");\n");
-                if (variant == Variant.DEVELOPMENT) {
-                    source.append("                }\n");
+                    source.append("execution.call(").append(planReference(index)).append(", ")
+                            .append(call(handlers.get(node.step().id()), variant, true)).append(", Map.of(), ")
+                            .append(inputsReference(index)).append(");\n");
                 }
             }
             source.append("                default -> missingPlan(execution, current);\n")
@@ -703,8 +864,18 @@ final class ApplicationGenerator {
                         .append(quote(nodes.get(index).id())).append(";\n");
             }
             source.append("                default -> Integer.toString(current);\n")
-                    .append("            };\n        }\n\n")
-                    .append("        private static String outcome(final int current, final int outcome) {\n")
+                    .append("            };\n        }\n\n");
+            if (variant == Variant.DEVELOPMENT) {
+                source.append("        private static String use(final int current) {\n")
+                        .append("            return switch (current) {\n");
+                for (final int index : partition.getValue()) {
+                    source.append("                case ").append(index).append(" -> ")
+                            .append(quote(nodes.get(index).step().id())).append(";\n");
+                }
+                source.append("                default -> \"\";\n")
+                        .append("            };\n        }\n\n");
+            }
+            source.append("        private static String outcome(final int current, final int outcome) {\n")
                     .append("            return switch (current) {\n");
             for (final int index : partition.getValue()) {
                 source.append("                case ").append(index).append(" -> ")
@@ -754,6 +925,16 @@ final class ApplicationGenerator {
         return partitions;
     }
 
+    private static Map<Integer, Integer> metricIndexes(final List<ApplicationPlan.NodePlan> nodes) {
+        final Map<Integer, Integer> indexes = new LinkedHashMap<>();
+        for (int node = 0; node < nodes.size(); node++) {
+            if (nodes.get(node).step().kind() != StepDefinition.Kind.APP && nodes.get(node).metrics()) {
+                indexes.put(node, indexes.size());
+            }
+        }
+        return indexes;
+    }
+
     private static Map<String, Integer> handlerIndexes(
             final Map<String, StepCatalog.Implementation> implementations
     ) {
@@ -780,7 +961,10 @@ final class ApplicationGenerator {
         private final StringBuilder methods = new StringBuilder();
         private int sequence;
 
-        private NodeCompiler(final int node, final Map<String, Integer> handlers) {
+        private NodeCompiler(
+                final int node,
+                final Map<String, Integer> handlers
+        ) {
             this.node = node;
             this.handlers = handlers;
         }
@@ -855,8 +1039,7 @@ final class ApplicationGenerator {
                         .append(references(choice.valueSources())).append(", execution);\n");
                 case ApplicationPlan.CandidatesBinding candidates -> statements
                         .append("    inputs.candidates(").append(quote(name)).append(", ")
-                        .append(candidates(candidates.candidates())).append(", ")
-                        .append(quote(candidates.path())).append(", execution);\n");
+                        .append(candidates(candidates.candidates())).append(", execution);\n");
                 case ApplicationPlan.MatcherGroupsBinding groups -> {
                     final List<String> runtimeGroups = new ArrayList<>();
                     for (final List<ApplicationPlan.CandidatePlan> group : groups.groups()) {
@@ -909,7 +1092,7 @@ final class ApplicationGenerator {
                 nested.add(field(
                         "WorkflowRuntime.NestedStep",
                         "new WorkflowRuntime.NestedStep(" + plan + ", " + resolver + ", " + quote(step.path())
-                                + ", CALL_" + handlers.get(step.step().id()) + ")"
+                                + ", HANDLER_" + handlers.get(step.step().id()) + ")"
                 ));
             }
             return field(
@@ -986,6 +1169,17 @@ final class ApplicationGenerator {
         return "RESULTS_" + trigger.node();
     }
 
+    private static String runtime(
+            final String trigger,
+            final Variant variant,
+            final String test
+    ) {
+        final String triggerValue = "\"trigger\", RailixValue.string(" + quote(trigger) + ")";
+        return "RailixValue.object(Map.of(" + (variant == Variant.PRODUCTION
+                ? triggerValue
+                : "\"test\", RailixValue.bool(" + test + "), " + triggerValue) + "))";
+    }
+
     private static String responseSlotsReference(final ApplicationPlan.TriggerPlan trigger) {
         return "RESPONSE_SLOTS_" + trigger.node();
     }
@@ -996,6 +1190,13 @@ final class ApplicationGenerator {
 
     private static String inputsReference(final int node) {
         return "Plans_" + node / PLAN_PARTITION_SIZE + ".INPUTS_" + node;
+    }
+
+    private static String call(final int handler, final Variant variant, final boolean routed) {
+        if (variant == Variant.PRODUCTION) {
+            return "CALL_" + handler;
+        }
+        return (routed ? "calls" : "CALLS") + "[" + handler + "]";
     }
 
     private static String outcome(final ApplicationPlan.NodePlan node) {
@@ -1051,6 +1252,10 @@ final class ApplicationGenerator {
         return list(values.stream().map(ApplicationGenerator::quote).toList());
     }
 
+    private static String array(final List<String> values) {
+        return "new String[]{" + String.join(", ", values) + "}";
+    }
+
     private static String stringMap(final Map<String, String> values) {
         return map(values.entrySet().stream()
                 .map(entry -> entry(quote(entry.getKey()), quote(entry.getValue())))
@@ -1101,6 +1306,7 @@ final class ApplicationGenerator {
             String productionApplicationSource,
             String developmentApplicationSource,
             String developmentLauncherSource,
+            Map<String, String> developmentResources,
             List<Diagnostic> diagnostics,
             List<StepCatalog.Implementation> dependencies
     ) {

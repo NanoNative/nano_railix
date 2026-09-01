@@ -274,16 +274,11 @@ final class RailixPackageIT {
     }
 
     @Test
-    void packagedExecutableRunsProjectContext() throws Exception {
+    void packagedExecutableObservesApplicationOwnedExamples() throws Exception {
         final Path project = directory.resolve("project.json");
         Files.writeString(project, CreatorProjects.lowercaseCli(), StandardCharsets.UTF_8);
         try (PackagedCreator creator = PackagedCreator.start(EXECUTABLE, project)) {
-            final HttpResponse<String> response = request(
-                    creator.uri(),
-                    "POST",
-                    "/api/run/command",
-                    "{\"payload\":{\"arguments\":[\"Hello RAILIX\"]}}"
-            );
+            final HttpResponse<String> response = awaitExampleView(creator.uri(), "command:0");
 
             assertThat(response.statusCode()).isEqualTo(200);
             assertThat(response.body()).contains(
@@ -334,17 +329,12 @@ final class RailixPackageIT {
                     "{}"
             );
             final String after = request(creator.uri(), "GET", "/api/application", "").body();
-            final HttpResponse<String> run = request(
-                    creator.uri(),
-                    "POST",
-                    "/api/run/command",
-                    "{\"payload\":{\"arguments\":[\"Still RAILIX\"]}}"
-            );
+            final HttpResponse<String> example = awaitExampleView(creator.uri(), "command:0");
 
             assertThat(rejected.statusCode()).isEqualTo(422);
             assertThat(after).isEqualTo(before);
-            assertThat(run.statusCode()).isEqualTo(200);
-            assertThat(run.body()).contains("\"result\":\"still railix\"");
+            assertThat(example.statusCode()).isEqualTo(200);
+            assertThat(example.body()).contains("\"result\":\"hello railix\"");
         }
     }
 
@@ -421,18 +411,13 @@ final class RailixPackageIT {
     }
 
     @Test
-    void packagedExecutableBuildsAndRunsLockedSqlStepBundleWithoutPathJava() throws Exception {
+    void packagedExecutableBuildsAndObservesLockedSqlStepBundleWithoutPathJava() throws Exception {
         final Path project = directory.resolve("project.json");
         installSqlBundle(directory);
         Files.writeString(project, sqlProject(), StandardCharsets.UTF_8);
 
         try (PackagedCreator creator = PackagedCreator.start(EXECUTABLE, project, isolatedEnvironment(directory))) {
-            final HttpResponse<String> response = request(
-                    creator.uri(),
-                    "POST",
-                    "/api/run/command",
-                    "{\"payload\":{\"arguments\":[]}}"
-            );
+            final HttpResponse<String> response = awaitExampleView(creator.uri(), "command:0");
 
             assertThat(response.statusCode()).isEqualTo(200);
             assertThat(response.body()).contains("\"result\":12", "\"exit_code\":0");
@@ -856,6 +841,21 @@ final class RailixPackageIT {
         }
     }
 
+    private static HttpResponse<String> awaitExampleView(final URI baseUri, final String id) throws Exception {
+        final long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        RailixValue.ObjectValue examples;
+        do {
+            final HttpResponse<String> response = request(baseUri, "GET", "/api/examples", "");
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            examples = object(response.body());
+            if (number(examples, "completed") == 1) {
+                return request(baseUri, "GET", "/api/examples/" + id + "/view", "");
+            }
+            Thread.sleep(20);
+        } while (System.nanoTime() < deadline);
+        throw new AssertionError("Packaged application Example did not complete: " + examples);
+    }
+
     private static boolean awaitExit(final long pid) {
         for (int attempt = 0; attempt < 50; attempt++) {
             if (ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)) {
@@ -1159,9 +1159,13 @@ final class RailixPackageIT {
                     process.descendants()
             ).distinct().toList();
             stop();
-            owned.stream()
+            final List<ProcessHandle> alive = owned.stream()
                     .filter(ProcessHandle::isAlive)
-                    .forEach(ProcessHandle::destroyForcibly);
+                    .toList();
+            alive.forEach(ProcessHandle::destroyForcibly);
+            for (final ProcessHandle handle : alive) {
+                assertThat(handle.onExit().get(5, TimeUnit.SECONDS).isAlive()).isFalse();
+            }
         }
 
         private static void readiness(

@@ -3,6 +3,7 @@ package dev.nanonative.railix.creator;
 import dev.nanonative.railix.core.project.CompileResult;
 import dev.nanonative.railix.core.project.WorkflowRuntime;
 import dev.nanonative.railix.core.step.StepCatalog;
+import dev.nanonative.railix.development.ArtifactLease;
 import dev.nanonative.railix.development.DevelopmentRuntime;
 import dev.nanonative.railix.stdlib.StandardLibrary;
 
@@ -21,7 +22,9 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -56,8 +59,7 @@ final class ApplicationBuilder {
             "dev/nanonative/railix/core/step/StepResult",
             "dev/nanonative/railix/core/value/"
     );
-    private static final String DEVELOPMENT_PREFIX =
-            "dev/nanonative/railix/development/DevelopmentRuntime";
+    private static final String DEVELOPMENT_PREFIX = "dev/nanonative/railix/development/";
     private static final String PLATFORM_CLASS_PREFIX = "dev/nanonative/railix/";
     private static final byte[] MANIFEST_HEADER = "Manifest-Version: 1.0\r\nMain-Class: "
             .getBytes(StandardCharsets.UTF_8);
@@ -65,29 +67,30 @@ final class ApplicationBuilder {
     private ApplicationBuilder() {
     }
 
-    static Artifact build(
+    static DevelopmentBuild build(
             final Path projectFile,
             final CompileResult.Compiled compiled
     ) throws IOException {
-        return build(projectFile, compiled, true);
+        return (DevelopmentBuild) build(projectFile, compiled, true);
     }
 
     static Artifact buildProduction(
             final Path projectFile,
             final CompileResult.Compiled compiled
     ) throws IOException {
-        return build(projectFile, compiled, false);
+        return (Artifact) build(projectFile, compiled, false);
     }
 
-    private static Artifact build(
+    private static Published build(
             final Path projectFile,
             final CompileResult.Compiled compiled,
             final boolean development
     ) throws IOException {
-        if (projectFile == null || compiled == null) {
-            throw new IllegalArgumentException("Application build inputs cannot be Java null.");
-        }
-        final RuntimeFiles runtime = runtime(compiled.applicationDependencies(), development);
+        final RuntimeFiles runtime = runtime(
+                compiled.applicationDependencies(),
+                development,
+                compiled.developmentResources().keySet()
+        );
         final String applicationSource = development
                 ? compiled.developmentApplicationSource()
                 : compiled.productionApplicationSource();
@@ -99,22 +102,34 @@ final class ApplicationBuilder {
                 .resolve(".railix").resolve("build");
         final Path destination = root.resolve(key);
         Files.createDirectories(root);
-        cleanStaging(root);
-
         final Path staging = root.resolve(".building-" + ProcessHandle.current().pid()
                 + "-" + UUID.randomUUID() + "-" + key);
-        Files.createDirectory(staging);
+        final ArtifactLease stagingLease;
         try {
+            synchronized (ApplicationBuilder.class) {
+                try (FileChannel channel = FileChannel.open(
+                        root.resolveSibling("staging.lock"),
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.WRITE
+                ); FileLock ignored = channel.lock()) {
+                    cleanStaging(root);
+                    Files.createDirectory(staging);
+                    stagingLease = ArtifactLease.acquire(staging);
+                }
+            }
+        } catch (final IOException | RuntimeException | Error failure) {
+            cleanup(staging, failure);
+            throw failure;
+        }
+        try (stagingLease) {
             final Path source = staging.resolve("src/dev/nanonative/railix/core/project/RailixApplication.java");
             final Path developmentSource = staging.resolve(
                     "src/dev/nanonative/railix/core/project/RailixDevelopmentApplication.java"
             );
             final Path classes = staging.resolve("classes");
-            final Path content = staging.resolve("content");
             final Path jar = staging.resolve("application.jar");
             Files.createDirectories(source.getParent());
             Files.createDirectories(classes);
-            Files.createDirectories(content);
             Files.writeString(
                     source,
                     applicationSource,
@@ -140,14 +155,24 @@ final class ApplicationBuilder {
                     classes,
                     runtime.locations()
             );
-            materialize(runtime.entries(), content);
             final Map<String, RuntimeEntry> generated = inventoryDirectory(classes, name -> name.endsWith(".class"));
-            materialize(generated, content);
-            if (!Files.isRegularFile(content.resolve(GENERATED_CLASS))) {
+            if (!generated.containsKey(GENERATED_CLASS)) {
                 throw new IOException("Generated application class is missing after Java compilation.");
             }
-            final Map<String, RuntimeEntry> expected = inventoryDirectory(content, name -> true);
-            jar(jar, mainClass, content);
+            final Map<String, RuntimeEntry> expected = new TreeMap<>(runtime.entries());
+            addEntries(expected, generated, false);
+            if (development) {
+                for (final Map.Entry<String, String> resource : compiled.developmentResources().entrySet()) {
+                    final byte[] bytes = resource.getValue().getBytes(StandardCharsets.UTF_8);
+                    putEntry(expected, new MemoryRuntimeEntry(
+                            resource.getKey(),
+                            bytes.length,
+                            digest(bytes),
+                            bytes
+                    ), false);
+                }
+            }
+            jar(jar, mainClass, expected);
             if (!matches(jar, mainClass, expected)) {
                 throw new IOException("Generated application JAR does not match its expected content inventory.");
             }
@@ -156,7 +181,12 @@ final class ApplicationBuilder {
                         root.resolveSibling("build.lock"),
                         StandardOpenOption.CREATE,
                         StandardOpenOption.WRITE
-                ); FileLock ignored = channel.lock()) {
+                ); FileLock ignored = channel.lock();
+                     FileChannel stagingChannel = FileChannel.open(
+                             root.resolveSibling("staging.lock"),
+                             StandardOpenOption.CREATE,
+                             StandardOpenOption.WRITE
+                     ); FileLock ignoredStaging = stagingChannel.lock()) {
                     if (Files.exists(destination)) {
                         boolean reusable = false;
                         try {
@@ -165,11 +195,19 @@ final class ApplicationBuilder {
                             reusable = false;
                         }
                         if (reusable) {
+                            deleteTree(destination.resolve("content"));
+                            stagingLease.close();
                             deleteTree(staging);
-                            return artifact(destination, true);
+                            return published(artifact(destination, true), development);
+                        }
+                        if (development && activeApplication(destination)) {
+                            throw new IOException(
+                                    "Development application artifact is in use and cannot be replaced."
+                            );
                         }
                         deleteTree(destination);
                     }
+                    stagingLease.close();
                     try {
                         Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE);
                     } catch (final AtomicMoveNotSupportedException exception) {
@@ -178,9 +216,9 @@ final class ApplicationBuilder {
                                 exception
                         );
                     }
+                    return published(artifact(destination, false), development);
                 }
             }
-            return artifact(destination, false);
         } catch (final IOException | RuntimeException | Error failure) {
             cleanup(staging, failure);
             throw failure;
@@ -188,15 +226,102 @@ final class ApplicationBuilder {
     }
 
     static String key(final CompileResult.Compiled compiled) throws IOException {
-        if (compiled == null) {
-            throw new IllegalArgumentException("Compiled application cannot be Java null.");
+        return buildKey(compiled, runtime(
+                compiled.applicationDependencies(),
+                true,
+                compiled.developmentResources().keySet()
+        ).entries(), true);
+    }
+
+    static DevelopmentBuild reserve(final Artifact artifact) throws IOException {
+        final Path root = artifact.directory().getParent();
+        synchronized (ApplicationBuilder.class) {
+            try (FileChannel channel = FileChannel.open(
+                    root.resolveSibling("build.lock"),
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE
+            ); FileLock ignored = channel.lock()) {
+                if (!Files.isRegularFile(artifact.jar())) {
+                    throw new IOException("Development application artifact no longer exists.");
+                }
+                return new DevelopmentBuild(artifact);
+            }
         }
-        return buildKey(compiled, runtime(compiled.applicationDependencies(), true).entries(), true);
     }
 
     static void delete(final Artifact artifact) throws IOException {
-        if (artifact != null) {
-            deleteTree(artifact.directory());
+        if (artifact == null) {
+            return;
+        }
+        final Path root = artifact.directory().getParent();
+        synchronized (ApplicationBuilder.class) {
+            try (FileChannel channel = FileChannel.open(
+                    root.resolveSibling("build.lock"),
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE
+            ); FileLock ignored = channel.lock()) {
+                if (!activeApplication(artifact.directory())) {
+                    deleteTree(artifact.directory());
+                }
+            }
+        }
+    }
+
+    static void prune(final Artifact retained) throws IOException {
+        final Path root = retained.directory().getParent();
+        synchronized (ApplicationBuilder.class) {
+            try (FileChannel channel = FileChannel.open(
+                    root.resolveSibling("build.lock"),
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE
+            ); FileLock ignored = channel.lock(); var entries = Files.list(root)) {
+                for (final Path entry : entries
+                        .filter(ApplicationBuilder::artifactDirectory)
+                        .filter(ApplicationBuilder::developmentArtifact)
+                        .filter(path -> !path.equals(retained.directory()))
+                        .toList()) {
+                    if (!activeApplication(entry)) {
+                        deleteTree(entry);
+                    }
+                }
+            }
+        }
+    }
+
+    static void cleanRuntime(final Artifact artifact) throws IOException {
+        final Path build = artifact.directory().getParent();
+        synchronized (ApplicationBuilder.class) {
+            try (FileChannel channel = FileChannel.open(
+                    build.resolveSibling("build.lock"),
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE
+            ); FileLock ignored = channel.lock()) {
+                cleanRuntimeLocked(artifact);
+            }
+        }
+    }
+
+    private static void cleanRuntimeLocked(final Artifact artifact) throws IOException {
+        final Path root = artifact.directory().resolve(".railix-runtime");
+        if (!Files.isDirectory(root)) {
+            return;
+        }
+        if (ArtifactLease.active(root)) {
+            return;
+        }
+        try (var entries = Files.list(root)) {
+            for (final Path entry : entries.filter(Files::isDirectory).toList()) {
+                if (!ArtifactLease.active(entry)) {
+                    deleteTree(entry);
+                }
+            }
+        } catch (final NoSuchFileException removedConcurrently) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(root);
+        } catch (final DirectoryNotEmptyException ignoredSiblingProcess) {
+            // Another generated application owns a sibling process directory.
         }
     }
 
@@ -211,6 +336,10 @@ final class ApplicationBuilder {
                 Files.getLastModifiedTime(jar).toInstant().toEpochMilli(),
                 reused
         );
+    }
+
+    private static Published published(final Artifact artifact, final boolean development) throws IOException {
+        return development ? new DevelopmentBuild(artifact) : artifact;
     }
 
     private static Path source(final Path directory) {
@@ -332,7 +461,8 @@ final class ApplicationBuilder {
 
     private static RuntimeFiles runtime(
             final List<StepCatalog.Implementation> dependencies,
-            final boolean development
+            final boolean development,
+            final Set<String> reservedResources
     ) throws IOException {
         final Set<String> stdlib = new LinkedHashSet<>();
         for (final StepCatalog.Implementation dependency : dependencies) {
@@ -374,7 +504,7 @@ final class ApplicationBuilder {
         }
         for (final Path path : locations) {
             if (artifacts.values().stream().anyMatch(artifact -> artifact.path().equals(path))) {
-                addDependencyJar(entries, path);
+                addDependencyJar(entries, path, reservedResources);
                 continue;
             }
             if (Files.isDirectory(path)) {
@@ -388,7 +518,7 @@ final class ApplicationBuilder {
         require(entries, "dev/nanonative/railix/core/project/RuntimeApplication.class");
         require(entries, "dev/nanonative/railix/core/project/WorkflowRuntime.class");
         if (development) {
-            require(entries, DEVELOPMENT_PREFIX + ".class");
+            require(entries, DEVELOPMENT_PREFIX + "DevelopmentRuntime.class");
         }
         for (final StepCatalog.Implementation dependency : dependencies) {
             require(entries, dependency.classEntry());
@@ -476,7 +606,8 @@ final class ApplicationBuilder {
 
     private static void addDependencyJar(
             final Map<String, RuntimeEntry> entries,
-            final Path source
+            final Path source,
+            final Set<String> reservedResources
     ) throws IOException {
         try (JarFile jar = new JarFile(source.toFile(), true)) {
             final var jarEntries = jar.entries();
@@ -486,7 +617,7 @@ final class ApplicationBuilder {
                     continue;
                 }
                 final String name = entry.getName();
-                dependencyEntry(name);
+                dependencyEntry(name, reservedResources);
                 if (entry.getSize() < 0 || entry.getSize() > StepCatalog.MAX_ARTIFACT_ENTRY_BYTES) {
                     throw new IOException("DEPENDENCY_ARTIFACT_ENTRY_SIZE_LIMIT: Dependency entry exceeds "
                             + StepCatalog.MAX_ARTIFACT_ENTRY_BYTES + " uncompressed bytes: " + name + ".");
@@ -516,26 +647,24 @@ final class ApplicationBuilder {
     private static void verifyClosure(final java.util.Collection<StepCatalog.Artifact> artifacts) throws IOException {
         int entries = 0;
         long bytes = 0;
-        try {
-            for (final StepCatalog.Artifact artifact : artifacts) {
-                entries = Math.addExact(entries, artifact.entryCount());
-                bytes = Math.addExact(bytes, artifact.uncompressedBytes());
-                if (entries > StepCatalog.MAX_CLOSURE_ENTRIES) {
-                    throw new IOException("DEPENDENCY_CLOSURE_ENTRY_LIMIT: Reachable dependency closure contains more "
-                            + "than " + StepCatalog.MAX_CLOSURE_ENTRIES + " files.");
-                }
-                if (bytes > StepCatalog.MAX_CLOSURE_UNCOMPRESSED_BYTES) {
-                    throw new IOException("DEPENDENCY_CLOSURE_UNCOMPRESSED_SIZE_LIMIT: Reachable dependency closure "
-                            + "exceeds " + StepCatalog.MAX_CLOSURE_UNCOMPRESSED_BYTES + " uncompressed bytes.");
-                }
+        for (final StepCatalog.Artifact artifact : artifacts) {
+            if (artifact.entryCount() > StepCatalog.MAX_CLOSURE_ENTRIES - entries) {
+                throw new IOException("DEPENDENCY_CLOSURE_ENTRY_LIMIT: Reachable dependency closure contains more "
+                        + "than " + StepCatalog.MAX_CLOSURE_ENTRIES + " files.");
             }
-        } catch (final ArithmeticException exception) {
-            throw new IOException("DEPENDENCY_CLOSURE_UNCOMPRESSED_SIZE_LIMIT: Reachable dependency closure size "
-                    + "overflows.", exception);
+            if (artifact.uncompressedBytes() > StepCatalog.MAX_CLOSURE_UNCOMPRESSED_BYTES - bytes) {
+                throw new IOException("DEPENDENCY_CLOSURE_UNCOMPRESSED_SIZE_LIMIT: Reachable dependency closure "
+                        + "exceeds " + StepCatalog.MAX_CLOSURE_UNCOMPRESSED_BYTES + " uncompressed bytes.");
+            }
+            entries += artifact.entryCount();
+            bytes += artifact.uncompressedBytes();
         }
     }
 
-    private static void dependencyEntry(final String name) throws IOException {
+    private static void dependencyEntry(
+            final String name,
+            final Set<String> reservedResources
+    ) throws IOException {
         if (name.isBlank() || name.startsWith("/") || name.contains("\\") || name.indexOf('\0') >= 0
                 || java.util.Arrays.stream(name.split("/", -1)).anyMatch(part -> part.isEmpty()
                 || ".".equals(part) || "..".equals(part))) {
@@ -545,6 +674,10 @@ final class ApplicationBuilder {
         if (name.endsWith(".class") && name.startsWith(PLATFORM_CLASS_PREFIX)) {
             throw new IOException("DEPENDENCY_PLATFORM_CLASS_FORBIDDEN: Dependency JAR cannot provide Railix "
                     + "platform class: " + name + ".");
+        }
+        if (reservedResources.contains(name)) {
+            throw new IOException("DEPENDENCY_RESERVED_RESOURCE_FORBIDDEN: Dependency JAR cannot provide generated "
+                    + "application resource: " + name + ".");
         }
         final String upper = name.toUpperCase(java.util.Locale.ROOT);
         if (name.endsWith("module-info.class")
@@ -634,6 +767,10 @@ final class ApplicationBuilder {
         if (development) {
             update(digest, compiled.developmentLauncherClass());
             update(digest, compiled.developmentLauncherSource());
+            compiled.developmentResources().forEach((name, value) -> {
+                update(digest, name);
+                update(digest, value);
+            });
         }
         runtime.forEach((name, entry) -> {
             update(digest, name);
@@ -646,16 +783,13 @@ final class ApplicationBuilder {
     private static void jar(
             final Path target,
             final String mainClass,
-            final Path content
+            final Map<String, RuntimeEntry> content
     ) throws IOException {
         try (OutputStream file = Files.newOutputStream(target, StandardOpenOption.CREATE_NEW);
              JarOutputStream jar = new JarOutputStream(file)) {
             write(jar, JarFile.MANIFEST_NAME, manifest(mainClass));
-            try (var files = Files.walk(content)) {
-                for (final Path entry : files.filter(Files::isRegularFile).sorted().toList()) {
-                    final String name = content.relativize(entry).toString().replace(File.separatorChar, '/');
-                    write(jar, name, entry);
-                }
+            for (final RuntimeEntry entry : content.values()) {
+                write(jar, entry);
             }
         }
     }
@@ -686,42 +820,13 @@ final class ApplicationBuilder {
 
     private static void write(
             final JarOutputStream jar,
-            final String name,
-            final Path source
+            final RuntimeEntry source
     ) throws IOException {
-        final JarEntry entry = new JarEntry(name);
+        final JarEntry entry = new JarEntry(source.name());
         entry.setTime(0L);
         jar.putNextEntry(entry);
-        try (InputStream input = Files.newInputStream(source)) {
-            input.transferTo(jar);
-        }
+        source.writeTo(jar);
         jar.closeEntry();
-    }
-
-    private static void materialize(
-            final Map<String, RuntimeEntry> entries,
-            final Path content
-    ) throws IOException {
-        for (final RuntimeEntry entry : entries.values()) {
-            final Path target = content.resolve(entry.name()).normalize();
-            if (!target.startsWith(content)) {
-                throw new IOException("DEPENDENCY_LOCAL_ENTRY_UNSAFE: Entry escapes build staging: "
-                        + entry.name() + ".");
-            }
-            if (Files.exists(target)) {
-                if (Files.size(target) == entry.size() && digest(target).equals(entry.digest())) {
-                    continue;
-                }
-                throw new IOException("DEPENDENCY_ENTRY_CONFLICT: Staged entry has different bytes: "
-                        + entry.name() + ".");
-            }
-            Files.createDirectories(target.getParent());
-            entry.copyTo(target);
-            if (Files.size(target) != entry.size() || !digest(target).equals(entry.digest())) {
-                throw new IOException("DEPENDENCY_ARTIFACT_DIGEST_MISMATCH: Entry changed while building: "
-                        + entry.name() + ".");
-            }
-        }
     }
 
     private static boolean cached(
@@ -872,27 +977,46 @@ final class ApplicationBuilder {
         try (var entries = Files.list(root)) {
             for (final Path entry : entries
                     .filter(path -> path.getFileName().toString().startsWith(".building-"))
-                    .filter(path -> !activeStaging(path))
                     .toList()) {
-                deleteTree(entry);
+                if (!ArtifactLease.active(entry)) {
+                    deleteTree(entry);
+                }
             }
         }
     }
 
-    private static boolean activeStaging(final Path directory) {
+    private static boolean artifactDirectory(final Path directory) {
         final String name = directory.getFileName().toString();
-        final int start = ".building-".length();
-        final int end = name.indexOf('-', start);
-        if (end < 0) {
+        return Files.isDirectory(directory)
+                && name.length() == "sha256-".length() + 64
+                && name.startsWith("sha256-")
+                && name.substring("sha256-".length()).chars().allMatch(character ->
+                (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')
+        );
+    }
+
+    private static boolean developmentArtifact(final Path directory) {
+        return Files.isRegularFile(directory.resolve(
+                "src/dev/nanonative/railix/core/project/RailixDevelopmentApplication.java"
+        ));
+    }
+
+    private static boolean activeApplication(final Path directory) throws IOException {
+        final Path runtime = directory.resolve(".railix-runtime");
+        if (!Files.isDirectory(runtime)) {
             return false;
         }
-        try {
-            return ProcessHandle.of(Long.parseLong(name.substring(start, end)))
-                    .map(ProcessHandle::isAlive)
-                    .orElse(false);
-        } catch (final NumberFormatException ignored) {
-            return false;
+        if (ArtifactLease.active(runtime)) {
+            return true;
         }
+        try (var processes = Files.list(runtime)) {
+            for (final Path process : processes.filter(Files::isDirectory).toList()) {
+                if (ArtifactLease.active(process)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static void deleteTree(final Path directory) throws IOException {
@@ -947,7 +1071,7 @@ final class ApplicationBuilder {
 
         String digest();
 
-        void copyTo(Path target) throws IOException;
+        void writeTo(OutputStream target) throws IOException;
 
         byte[] readBounded(int limit) throws IOException;
     }
@@ -959,9 +1083,9 @@ final class ApplicationBuilder {
             Path source
     ) implements RuntimeEntry {
         @Override
-        public void copyTo(final Path target) throws IOException {
+        public void writeTo(final OutputStream target) throws IOException {
             try (InputStream input = Files.newInputStream(source)) {
-                Files.copy(input, target);
+                input.transferTo(target);
             }
         }
 
@@ -981,7 +1105,7 @@ final class ApplicationBuilder {
             String sourceEntry
     ) implements RuntimeEntry {
         @Override
-        public void copyTo(final Path target) throws IOException {
+        public void writeTo(final OutputStream target) throws IOException {
             try (JarFile jar = new JarFile(source.toFile(), true)) {
                 final JarEntry entry = jar.getJarEntry(sourceEntry);
                 if (entry == null || entry.isDirectory()) {
@@ -989,7 +1113,7 @@ final class ApplicationBuilder {
                             + sourceEntry + ".");
                 }
                 try (InputStream input = jar.getInputStream(entry)) {
-                    Files.copy(input, target);
+                    input.transferTo(target);
                 }
             }
         }
@@ -1020,8 +1144,8 @@ final class ApplicationBuilder {
         }
 
         @Override
-        public void copyTo(final Path target) throws IOException {
-            Files.write(target, bytes, StandardOpenOption.CREATE_NEW);
+        public void writeTo(final OutputStream target) throws IOException {
+            target.write(bytes);
         }
 
         @Override
@@ -1036,6 +1160,9 @@ final class ApplicationBuilder {
     private record Fingerprint(long size, String digest) {
     }
 
+    private sealed interface Published permits Artifact, DevelopmentBuild {
+    }
+
     record Artifact(
             Path directory,
             Path source,
@@ -1044,12 +1171,36 @@ final class ApplicationBuilder {
             String fingerprint,
             long builtAt,
             boolean reused
-    ) {
+    ) implements Published {
         Artifact {
             directory = directory.toAbsolutePath().normalize();
             source = source.toAbsolutePath().normalize();
             classes = classes.toAbsolutePath().normalize();
             jar = jar.toAbsolutePath().normalize();
+        }
+    }
+
+    static final class DevelopmentBuild implements Published, AutoCloseable {
+        private final Artifact artifact;
+        private final ArtifactLease publication;
+
+        private DevelopmentBuild(final Artifact artifact) throws IOException {
+            this.artifact = artifact;
+            cleanRuntimeLocked(artifact);
+            publication = ArtifactLease.acquire(artifact.directory().resolve(".railix-runtime"));
+        }
+
+        Artifact artifact() {
+            return artifact;
+        }
+
+        Path jar() {
+            return artifact.jar();
+        }
+
+        @Override
+        public void close() throws IOException {
+            publication.close();
         }
     }
 }

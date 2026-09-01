@@ -50,6 +50,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class CreatorServer implements AutoCloseable {
     static final int MAX_CONCURRENT_REQUESTS = 64;
     static final int MAX_CONCURRENT_FORWARDS = 32;
+    static final int MAX_CONCURRENT_EXAMPLE_RESPONSES = 4;
     private static final String WEB_ROOT = "/dev/nanonative/railix/creator/web/";
     private static final int MAX_PROJECT_BYTES = RailixData.DEFAULT_MAX_SOURCE_BYTES;
     private static final Duration BODY_READ_TIMEOUT = Duration.ofSeconds(5);
@@ -82,7 +83,7 @@ public final class CreatorServer implements AutoCloseable {
     private final AtomicBoolean open = new AtomicBoolean(true);
     private final Semaphore requests = new Semaphore(MAX_CONCURRENT_REQUESTS);
     private final Semaphore forwarding = new Semaphore(MAX_CONCURRENT_FORWARDS);
-    private final Semaphore responses = new Semaphore(MAX_CONCURRENT_FORWARDS);
+    private final Semaphore exampleResponses = new Semaphore(MAX_CONCURRENT_EXAMPLE_RESPONSES);
     private final String creatorToken;
     private DevelopmentApplication application;
     private DevelopmentApplication retirement;
@@ -100,6 +101,7 @@ public final class CreatorServer implements AutoCloseable {
     private List<Diagnostic> creatorDiagnostics;
     private long nextGeneration;
     private long projectRevision;
+    private boolean deploymentPending;
 
     private CreatorServer(
             final HttpServer server,
@@ -200,6 +202,7 @@ public final class CreatorServer implements AutoCloseable {
                 persist(creatorFile, creatorResult.source());
             }
             application = DevelopmentApplication.start(1, absoluteProject, compiled);
+            application.activate();
             executor = Executors.newVirtualThreadPerTaskExecutor();
             bodyDeadlines = Executors.newSingleThreadScheduledExecutor(
                     Thread.ofPlatform().daemon().name("railix-creator-body-deadline-", 0).factory()
@@ -255,10 +258,25 @@ public final class CreatorServer implements AutoCloseable {
                 }
             }
             if (application != null) {
-                try {
-                    application.close();
-                } catch (final RuntimeException cleanup) {
-                    exception.addSuppressed(cleanup);
+                boolean stopped = false;
+                RuntimeException closeFailure = null;
+                for (int attempt = 0; attempt < 2 && !stopped; attempt++) {
+                    try {
+                        application.close();
+                        stopped = true;
+                    } catch (final RuntimeException cleanup) {
+                        closeFailure = closeFailure == null ? cleanup : merge(closeFailure, cleanup);
+                    }
+                }
+                if (!stopped && closeFailure != null) {
+                    exception.addSuppressed(closeFailure);
+                }
+                if (stopped && !application.artifact().reused()) {
+                    try {
+                        ApplicationBuilder.delete(application.artifact());
+                    } catch (final IOException cleanup) {
+                        exception.addSuppressed(cleanup);
+                    }
                 }
             }
             try {
@@ -311,8 +329,8 @@ public final class CreatorServer implements AutoCloseable {
             if (!serverClosed) {
                 boolean responsesDrained = false;
                 try {
-                    responsesDrained = responses.tryAcquire(
-                            MAX_CONCURRENT_FORWARDS,
+                    responsesDrained = exampleResponses.tryAcquire(
+                            MAX_CONCURRENT_EXAMPLE_RESPONSES,
                             RESPONSE_DRAIN_TIMEOUT.toNanos(),
                             TimeUnit.NANOSECONDS
                     );
@@ -326,7 +344,7 @@ public final class CreatorServer implements AutoCloseable {
                     failure = merge(failure, exception);
                 } finally {
                     if (responsesDrained) {
-                        responses.release(MAX_CONCURRENT_FORWARDS);
+                        exampleResponses.release(MAX_CONCURRENT_EXAMPLE_RESPONSES);
                     }
                 }
             }
@@ -403,7 +421,9 @@ public final class CreatorServer implements AutoCloseable {
         if (failure == null) {
             return next;
         }
-        failure.addSuppressed(next);
+        if (failure != next) {
+            failure.addSuppressed(next);
+        }
         return failure;
     }
 
@@ -474,17 +494,29 @@ public final class CreatorServer implements AutoCloseable {
         if ("/api/application".equals(path)) {
             return getOnly(exchange, json(200, application()));
         }
+        if ("/api/metrics".equals(path)) {
+            return metrics(exchange, "");
+        }
+        if (path.startsWith("/api/metrics/nodes/")) {
+            final String node = path.substring("/api/metrics/nodes/".length());
+            return node.isBlank()
+                    ? json(404, RailixValue.object(Map.of("status", RailixValue.string("not-found"))))
+                    : metrics(exchange, node);
+        }
+        if ("/api/examples".equals(path) || path.startsWith("/api/examples/")) {
+            final String rawPath = exchange.getRequestURI().getRawPath();
+            return examples(exchange, rawPath.length() == "/api/examples".length()
+                    ? ""
+                    : rawPath.substring("/api/examples/".length()));
+        }
         if ("/api/catalog".equals(path)) {
             return getOnly(exchange, json(200, catalog()));
         }
         if ("/api/icons".equals(path)) {
             return getOnly(exchange, json(200, icons.listing()));
         }
-        if (path.startsWith("/api/run/")) {
-            return execute(exchange, path.substring("/api/run/".length()), false);
-        }
-        if (path.startsWith("/api/preview/")) {
-            return execute(exchange, path.substring("/api/preview/".length()), true);
+        if (path.startsWith("/api/")) {
+            return json(404, RailixValue.object(Map.of("status", RailixValue.string("not-found"))));
         }
         return resource(exchange, path);
     }
@@ -566,31 +598,47 @@ public final class CreatorServer implements AutoCloseable {
         final String applicationKey = ApplicationBuilder.key(compiled);
         synchronized (buildLock) {
             final String cleanupPhase = cleanupRetirement();
-            final long generation;
-            synchronized (applicationLock) {
-                if (!open.get() || revision != projectRevision) {
-                    return supersededLocked();
-                }
-                if (!cleanupPhase.isEmpty()) {
-                    return cleanupPendingLocked();
-                }
-                if (application.artifact().directory().getFileName().toString().equals(applicationKey)
-                        && application.running()) {
-                    try {
-                        persist(projectFile, compiled.source());
-                    } catch (final IOException exception) {
-                        return json(500, RailixValue.object(Map.of(
-                                "status", RailixValue.string("failed"),
-                                "message", RailixValue.string("Project could not be persisted."),
-                                "application", applicationSnapshotLocked()
-                        )));
+            long generation = -1;
+            boolean reused = false;
+            boolean pending = false;
+            try {
+                synchronized (applicationLock) {
+                    if (!open.get() || revision != projectRevision) {
+                        return supersededLocked();
                     }
-                    source = compiled.source();
-                    return json(200, projectPayloadLocked());
+                    if (!cleanupPhase.isEmpty()) {
+                        return cleanupPendingLocked();
+                    }
+                    deploymentPending = true;
+                    pending = true;
+                    if (application.artifact().directory().getFileName().toString().equals(applicationKey)
+                            && application.running()) {
+                        try {
+                            persist(projectFile, compiled.source());
+                        } catch (final IOException exception) {
+                            return json(500, RailixValue.object(Map.of(
+                                    "status", RailixValue.string("failed"),
+                                    "message", RailixValue.string("Project could not be persisted."),
+                                    "application", applicationSnapshotLocked()
+                            )));
+                        }
+                        source = compiled.source();
+                        reused = true;
+                    } else {
+                        generation = nextGeneration++;
+                    }
                 }
-                generation = nextGeneration++;
+                if (reused) {
+                    return json(200, projectPayload());
+                }
+                return buildAndAccept(compiled, revision, generation);
+            } finally {
+                if (pending) {
+                    synchronized (applicationLock) {
+                        deploymentPending = false;
+                    }
+                }
             }
-            return buildAndAccept(compiled, revision, generation);
         }
     }
 
@@ -621,6 +669,7 @@ public final class CreatorServer implements AutoCloseable {
         }
         boolean superseded;
         IOException persistenceFailure = null;
+        IOException activationFailure = null;
         synchronized (applicationLock) {
             superseded = !open.get() || revision != projectRevision;
             if (!superseded) {
@@ -631,13 +680,23 @@ public final class CreatorServer implements AutoCloseable {
                 }
             }
             if (!superseded && persistenceFailure == null) {
-                final DevelopmentApplication previous = application;
-                retirement = previous;
-                retirementDeletesArtifact = !previous.artifact().directory()
-                        .equals(candidate.artifact().directory());
-                retirementPhase = "";
-                application = candidate;
                 source = compiled.source();
+                try {
+                    candidate.activate();
+                } catch (final IOException exception) {
+                    activationFailure = exception;
+                }
+                if (activationFailure == null && !candidate.running()) {
+                    activationFailure = new IOException("Generated application stopped during activation.");
+                }
+                if (activationFailure == null) {
+                    final DevelopmentApplication previous = application;
+                    retirement = previous;
+                    retirementDeletesArtifact = !previous.artifact().directory()
+                            .equals(candidate.artifact().directory());
+                    retirementPhase = "";
+                    application = candidate;
+                }
             }
         }
         if (superseded) {
@@ -653,6 +712,14 @@ public final class CreatorServer implements AutoCloseable {
             return json(500, RailixValue.object(Map.of(
                     "status", RailixValue.string("failed"),
                     "message", RailixValue.string("Project could not be persisted."),
+                "application", application()
+            )));
+        }
+        if (activationFailure != null) {
+            discard(candidate);
+            return json(503, RailixValue.object(Map.of(
+                    "status", RailixValue.string("failed"),
+                    "message", RailixValue.string("Generated application could not be activated."),
                     "application", application()
             )));
         }
@@ -683,7 +750,7 @@ public final class CreatorServer implements AutoCloseable {
         try {
             pending.close();
         } catch (final RuntimeException failure) {
-            return markRetirement(pending, "termination");
+            return markRetirement(pending, "application-cleanup");
         }
         if (deleteArtifact) {
             try {
@@ -728,18 +795,9 @@ public final class CreatorServer implements AutoCloseable {
         )));
     }
 
-    private Response execute(
-            final HttpExchange exchange,
-            final String suffix,
-            final boolean preview
-    ) throws IOException {
-        final String[] target = preview ? suffix.split("/", -1) : new String[]{suffix};
-        if (!"POST".equals(exchange.getRequestMethod())) {
+    private Response metrics(final HttpExchange exchange, final String node) throws IOException {
+        if (!"GET".equals(exchange.getRequestMethod())) {
             return methodNotAllowed();
-        }
-        final int targetSize = preview ? 2 : 1;
-        if (target.length != targetSize || Arrays.stream(target).anyMatch(String::isBlank)) {
-            return json(404, RailixValue.object(Map.of("status", RailixValue.string("not-found"))));
         }
         if (!open.get()) {
             return unavailable("closed");
@@ -748,38 +806,81 @@ public final class CreatorServer implements AutoCloseable {
             return unavailable("saturated");
         }
         try {
-            if (!open.get()) {
-                return unavailable("closed");
+            final DevelopmentApplication deployed;
+            synchronized (applicationLock) {
+                deployed = application;
             }
-            final BodyRead body = body(exchange, RailixData.DEFAULT_MAX_SOURCE_BYTES);
-            if (!body.diagnostics().isEmpty()) {
-                return bodyResponse(body);
-            }
-            if (!open.get() || !responses.tryAcquire()) {
-                return unavailable("closed");
-            }
-            try {
-                if (!open.get()) {
-                    return unavailable("closed");
+            final DevelopmentApplication.Response response = node.isEmpty()
+                    ? deployed.metrics()
+                    : deployed.metrics(node);
+            synchronized (applicationLock) {
+                if (application != deployed) {
+                    return unavailable("application");
                 }
-                final DevelopmentApplication deployed;
-                synchronized (applicationLock) {
-                    deployed = application;
-                }
-                final DevelopmentApplication.Response response = preview
-                        ? deployed.preview(target[0], target[1], body.value(), true)
-                        : deployed.run(target[0], body.value(), true);
-                send(exchange, new Response(
-                        response.status(),
-                        "application/json; charset=utf-8",
-                        response.body().getBytes(StandardCharsets.UTF_8)
-                ));
-                return Response.committedResponse();
-            } finally {
-                responses.release();
             }
+            return new Response(
+                    response.status(),
+                    "application/json; charset=utf-8",
+                    response.body().getBytes(StandardCharsets.UTF_8)
+            );
         } finally {
             forwarding.release();
+        }
+    }
+
+    private Response examples(final HttpExchange exchange, final String path) throws IOException {
+        if (!"GET".equals(exchange.getRequestMethod())) {
+            return methodNotAllowed();
+        }
+        if (!open.get()) {
+            return unavailable("closed");
+        }
+        if (!forwarding.tryAcquire()) {
+            return unavailable("saturated");
+        }
+        if (!exampleResponses.tryAcquire()) {
+            forwarding.release();
+            return unavailable("saturated");
+        }
+        try {
+            final DevelopmentApplication.ObservationResponse response;
+            try {
+                final DevelopmentApplication deployed;
+                synchronized (applicationLock) {
+                    if (deploymentPending) {
+                        return unavailable("application");
+                    }
+                    deployed = application;
+                }
+                try {
+                    response = deployed.examples(path);
+                } catch (final IOException failure) {
+                    synchronized (applicationLock) {
+                        if (application != deployed || deploymentPending) {
+                            return unavailable("application");
+                        }
+                    }
+                    throw failure;
+                }
+                if (response == null) {
+                    return unavailable("application");
+                }
+                synchronized (applicationLock) {
+                    if (application != deployed || deploymentPending) {
+                        return unavailable("application");
+                    }
+                }
+            } finally {
+                forwarding.release();
+            }
+            exchange.getResponseHeaders().set("Content-Type", response.contentType());
+            exchange.getResponseHeaders().set("Cache-Control", "no-store");
+            exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+            exchange.sendResponseHeaders(response.status(), response.body().length);
+            exchange.getResponseBody().write(response.body());
+            return Response.committedResponse();
+        } finally {
+            exampleResponses.release();
         }
     }
 
@@ -848,11 +949,10 @@ public final class CreatorServer implements AutoCloseable {
 
     private RailixValue.ObjectValue applicationSnapshotLocked() {
         final RailixValue.ObjectValue snapshot = application.snapshot();
-        if (retirement == null || retirementPhase.isEmpty()) {
-            return snapshot;
-        }
         final Map<String, RailixValue> values = new LinkedHashMap<>(snapshot.values());
-        values.put("retirement", retirementValueLocked());
+        if (retirement != null && !retirementPhase.isEmpty()) {
+            values.put("retirement", retirementValueLocked());
+        }
         return RailixValue.object(values);
     }
 
@@ -995,9 +1095,7 @@ public final class CreatorServer implements AutoCloseable {
     private boolean isMutation(final HttpExchange exchange, final String path) {
         return "POST".equals(exchange.getRequestMethod())
                 && ("/api/project".equals(path)
-                || "/api/creator".equals(path)
-                || path.startsWith("/api/run/")
-                || path.startsWith("/api/preview/"));
+                || "/api/creator".equals(path));
     }
 
     private MutationAccess mutationAccess(final HttpExchange exchange) {

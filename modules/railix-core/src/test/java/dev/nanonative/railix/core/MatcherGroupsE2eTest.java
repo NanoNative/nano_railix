@@ -1,6 +1,7 @@
 package dev.nanonative.railix.core;
 
 import dev.nanonative.railix.core.project.CompileResult;
+import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.project.ProjectCompiler;
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepDefinition;
@@ -211,6 +212,27 @@ final class MatcherGroupsE2eTest {
     }
 
     @Test
+    void unknownMatcherTransformIsRejectedAtItsExactStepPath() {
+        assertRejected(
+                "[[{\"option\":\"current\",\"inputs\":{},\"when\":{\"transforms\":["
+                        + "{\"use\":\"value.unknown\",\"inputs\":{}}],\"all\":[["
+                        + "{\"use\":\"value.equals\",\"inputs\":{\"expected\":true}}]]}}]]",
+                "PROJECT_NESTED_STEP_UNKNOWN",
+                "nodes[2].inputs.matches[0][0].when.transforms[0].use"
+        );
+    }
+
+    @Test
+    void unknownMatcherPredicateIsRejectedAtItsExactStepPath() {
+        assertRejected(
+                "[[{\"option\":\"current\",\"inputs\":{},\"when\":{\"transforms\":[],\"all\":[["
+                        + "{\"use\":\"value.unknown\",\"inputs\":{}}]]}}]]",
+                "PROJECT_NESTED_STEP_UNKNOWN",
+                "nodes[2].inputs.matches[0][0].when.all[0][0].use"
+        );
+    }
+
+    @Test
     void matcherFinalPredicateMustReturnBoolean() {
         assertRejected(
                 "[[{\"option\":\"literal\",\"inputs\":{\"literal\":\"value\"},\"when\":{"
@@ -265,6 +287,20 @@ final class MatcherGroupsE2eTest {
     }
 
     @Test
+    void incompatibleSecondMatcherTransformNamesThePreviousStepAsItsSource() {
+        final Diagnostic diagnostic = assertRejected(
+                "[[{\"option\":\"literal\",\"inputs\":{\"literal\":\"text\"},\"when\":{"
+                        + "\"transforms\":[{\"use\":\"text.length\",\"inputs\":{}},"
+                        + "{\"use\":\"boolean.not\",\"inputs\":{}}],\"all\":[["
+                        + "{\"use\":\"value.equals\",\"inputs\":{\"expected\":true}}]]}}]]",
+                "PROJECT_NESTED_INPUT_INCOMPATIBLE",
+                "nodes[2].inputs.matches[0][0].when.transforms[1].use"
+        );
+
+        assertThat(diagnostic.message()).contains("from the previous Step");
+    }
+
+    @Test
     void incompatibleAdditionalMatcherPredicateIsRejectedBeforeExecution() {
         assertRejected(
                 "[[{\"option\":\"literal\",\"inputs\":{\"literal\":\"text\"},\"when\":{"
@@ -276,14 +312,15 @@ final class MatcherGroupsE2eTest {
         );
     }
 
-    private static void assertRejected(final String groups, final String code, final String path) {
+    private static Diagnostic assertRejected(final String groups, final String code, final String path) {
         final CompileResult result = ProjectCompiler.compileApplication(project(groups), catalog());
 
         assertThat(result).isInstanceOf(CompileResult.Rejected.class);
-        assertThat(((CompileResult.Rejected) result).diagnostics()).singleElement().satisfies(diagnostic -> {
-            assertThat(diagnostic.code()).isEqualTo(code);
-            assertThat(diagnostic.path()).isEqualTo(path);
-        });
+        assertThat(((CompileResult.Rejected) result).diagnostics()).hasSize(1);
+        final Diagnostic diagnostic = ((CompileResult.Rejected) result).diagnostics().getFirst();
+        assertThat(diagnostic.code()).isEqualTo(code);
+        assertThat(diagnostic.path()).isEqualTo(path);
+        return diagnostic;
     }
 
     private static CompileResult.Compiled compiled(final String groups) {

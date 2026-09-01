@@ -24,6 +24,8 @@
         <maven.jar.version>3.5.0</maven.jar.version>
         <maven.resources.version>3.4.0</maven.resources.version>
         <maven.surefire.version>3.5.4</maven.surefire.version>
+        <railix.test.forks>2</railix.test.forks>
+        <railix.test.fork.timeout.seconds>5400</railix.test.fork.timeout.seconds>
         <jacoco.version>0.8.15</jacoco.version>
         <maven.shade.version>3.6.1</maven.shade.version>
         <playwright.version>1.61.0</playwright.version>

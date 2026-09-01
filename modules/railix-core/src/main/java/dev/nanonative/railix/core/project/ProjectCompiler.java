@@ -19,11 +19,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-/** Sole parser and compiler for one Creator project. */
+/** Sole parser and compiler for one functional Railix project. */
 public final class ProjectCompiler {
+    private static final int MAX_ARRAY_GAP = 1_024;
     private static final Set<String> PROJECT_FIELDS = Set.of("format", "id", "nodes", "links");
     private static final Set<String> NODE_FIELDS = Set.of(
-            "id", "use", "inputs", "receives", "returns", "examples"
+            "id", "use", "inputs", "receives", "returns", "examples", "metrics"
     );
     private static final Set<String> EXAMPLE_FIELDS = Set.of("name", "payload", "context");
     private static final Set<String> LINK_FIELDS = Set.of("from", "to");
@@ -131,6 +132,7 @@ public final class ProjectCompiler {
                 .map(node -> plan(node, index.destinations()[node.index()], owners[node.index()]))
                 .toList();
         final List<ApplicationPlan.TriggerPlan> triggers = new ArrayList<>();
+        final List<ApplicationPlan.ExamplePlan> examples = new ArrayList<>();
         for (final Node trigger : nodeRead.nodes()) {
             if (trigger.definition().kind() != StepDefinition.Kind.TRIGGER) {
                 continue;
@@ -140,10 +142,11 @@ public final class ProjectCompiler {
                     index.destination(trigger.index(), trigger.definition().primaryOutcome())
             );
             triggers.add(triggerPlan);
+            examples.addAll(trigger.examples());
         }
 
         final ApplicationGenerator.Result application = ApplicationGenerator.generate(
-                new ApplicationPlan(id.value(), plans, triggers),
+                new ApplicationPlan(id.value(), plans, triggers, examples),
                 catalog
         );
         if (!application.diagnostics().isEmpty()) {
@@ -156,6 +159,7 @@ public final class ProjectCompiler {
                 application.developmentApplicationSource(),
                 ApplicationGenerator.DEVELOPMENT_LAUNCHER_CLASS,
                 application.developmentLauncherSource(),
+                application.developmentResources(),
                 application.dependencies()
         );
     }
@@ -261,6 +265,26 @@ public final class ProjectCompiler {
                         path + ".use"
                 );
             }
+            final RailixValue metricsValue = object.values().get("metrics");
+            if (definition.kind() == StepDefinition.Kind.APP && metricsValue != null) {
+                return NodeRead.rejected(
+                        "PROJECT_APP_METRICS_UNSUPPORTED",
+                        "App is structural and has no executable metrics.",
+                        path + ".metrics"
+                );
+            }
+            final boolean metrics;
+            if (metricsValue == null) {
+                metrics = definition.kind() != StepDefinition.Kind.APP;
+            } else if (metricsValue instanceof RailixValue.BooleanValue enabled) {
+                metrics = enabled.value();
+            } else {
+                return NodeRead.rejected(
+                        "PROJECT_NODE_METRICS_BOOLEAN_REQUIRED",
+                        "Node metrics must be true or false.",
+                        path + ".metrics"
+                );
+            }
             final int instanceCount = instances.getOrDefault(definition.id(), 0);
             if (instanceCount >= definition.maximumInstances()) {
                 return NodeRead.rejected(
@@ -310,9 +334,16 @@ public final class ProjectCompiler {
             if (!returns.diagnostics().isEmpty()) {
                 return new NodeRead(List.of(), returns.diagnostics());
             }
-            final List<Diagnostic> exampleDiagnostics = examples(object, definition, path);
-            if (!exampleDiagnostics.isEmpty()) {
-                return new NodeRead(List.of(), exampleDiagnostics);
+            final ExamplesRead examples = examples(
+                    object,
+                    definition,
+                    compiled.bindings(),
+                    id.value(),
+                    index,
+                    path
+            );
+            if (!examples.diagnostics().isEmpty()) {
+                return new NodeRead(List.of(), examples.diagnostics());
             }
             final Optional<Diagnostic> authoredCollision = authoredOutcomeCollision(
                     definition,
@@ -363,6 +394,8 @@ public final class ProjectCompiler {
                     receives.paths(),
                     returns.paths(),
                     outcomes,
+                    metrics,
+                    examples.examples(),
                     index
             ));
             instances.put(definition.id(), instanceCount + 1);
@@ -1130,34 +1163,54 @@ public final class ProjectCompiler {
         return new NestedRead(plans, List.of());
     }
 
-    private static List<Diagnostic> examples(
+    private static ExamplesRead examples(
             final RailixValue.ObjectValue node,
             final StepDefinition definition,
+            final Map<String, ApplicationPlan.Binding> inputs,
+            final String trigger,
+            final int triggerNode,
             final String nodePath
     ) {
         final RailixValue value = node.values().get("examples");
         if (definition.kind() != StepDefinition.Kind.TRIGGER) {
             return value == null
-                    ? List.of()
-                    : List.of(Diagnostic.atPath(
+                    ? new ExamplesRead(List.of(), List.of())
+                    : ExamplesRead.rejected(Diagnostic.atPath(
                             "PROJECT_NODE_EXAMPLES_UNSUPPORTED",
                             "Only Trigger Steps may declare examples.",
                             nodePath + ".examples"
                     ));
         }
         if (!(value instanceof RailixValue.ArrayValue array) || array.values().isEmpty()) {
-            return List.of(Diagnostic.atPath(
+            return ExamplesRead.rejected(Diagnostic.atPath(
                     "PROJECT_TRIGGER_EXAMPLE_REQUIRED",
                     "Trigger Step must define at least one payload example.",
                     nodePath + ".examples"
             ));
         }
+        final ApplicationPlan.Path targetPath;
+        final String target = definition.exampleTarget().orElse(null);
+        if (target == null) {
+            targetPath = new ApplicationPlan.Path(List.of(
+                    new ApplicationPlan.Field("context"),
+                    new ApplicationPlan.Field("payload")
+            ));
+        } else if (inputs.get(target) instanceof ApplicationPlan.PathBinding binding) {
+            targetPath = binding.path();
+        } else {
+            return ExamplesRead.rejected(Diagnostic.atPath(
+                    "PROJECT_TRIGGER_EXAMPLE_TARGET_REQUIRED",
+                    "Trigger example target must resolve to one writable context path.",
+                    nodePath + ".inputs." + target
+            ));
+        }
         final Set<String> names = new LinkedHashSet<>();
+        final List<ApplicationPlan.ExamplePlan> examples = new ArrayList<>(array.values().size());
         for (int index = 0; index < array.values().size(); index++) {
             final String path = nodePath + ".examples[" + index + "]";
             final RailixValue item = array.values().get(index);
             if (!(item instanceof RailixValue.ObjectValue object)) {
-                return List.of(Diagnostic.atPath(
+                return ExamplesRead.rejected(Diagnostic.atPath(
                         "PROJECT_TRIGGER_EXAMPLE_OBJECT_REQUIRED",
                         "Trigger example must be an object.",
                         path
@@ -1171,7 +1224,7 @@ public final class ProjectCompiler {
                     path
             );
             if (unknown.isPresent()) {
-                return List.of(unknown.get());
+                return ExamplesRead.rejected(unknown.get());
             }
             final TextRead name = text(
                     object,
@@ -1181,17 +1234,17 @@ public final class ProjectCompiler {
                     path + ".name"
             );
             if (!name.diagnostics().isEmpty()) {
-                return name.diagnostics();
+                return new ExamplesRead(List.of(), name.diagnostics());
             }
             if (!names.add(name.value())) {
-                return List.of(Diagnostic.atPath(
+                return ExamplesRead.rejected(Diagnostic.atPath(
                         "PROJECT_TRIGGER_EXAMPLE_NAME_DUPLICATE",
                         "Trigger example name is already declared: " + name.value() + ".",
                         path + ".name"
                 ));
             }
             if (!object.values().containsKey("payload")) {
-                return List.of(Diagnostic.atPath(
+                return ExamplesRead.rejected(Diagnostic.atPath(
                         "PROJECT_TRIGGER_EXAMPLE_PAYLOAD_REQUIRED",
                         "Trigger example payload is required.",
                         path + ".payload"
@@ -1199,7 +1252,7 @@ public final class ProjectCompiler {
             }
             final RailixValue contextValue = object.values().get("context");
             if (contextValue != null && !(contextValue instanceof RailixValue.ObjectValue)) {
-                return List.of(Diagnostic.atPath(
+                return ExamplesRead.rejected(Diagnostic.atPath(
                         "PROJECT_TRIGGER_EXAMPLE_CONTEXT_OBJECT_REQUIRED",
                         "Trigger example context must be an object when supplied.",
                         path + ".context"
@@ -1207,14 +1260,116 @@ public final class ProjectCompiler {
             }
             if (contextValue instanceof RailixValue.ObjectValue context
                     && context.values().containsKey("runtime")) {
-                return List.of(Diagnostic.atPath(
+                return ExamplesRead.rejected(Diagnostic.atPath(
                         "PROJECT_TRIGGER_EXAMPLE_RUNTIME_RESERVED",
                         "context.runtime is supplied by Railix.",
                         path + ".context.runtime"
                 ));
             }
+            final RailixValue.ObjectValue context = contextValue instanceof RailixValue.ObjectValue authored
+                    ? authored
+                    : RailixValue.object(Map.of());
+            final ExampleWrite written = writeExample(
+                    context,
+                    targetPath.elements(),
+                    1,
+                    object.values().get("payload"),
+                    path + ".context"
+            );
+            if (written.diagnostic() != null) {
+                return ExamplesRead.rejected(written.diagnostic());
+            }
+            final RailixValue.ObjectValue compiledContext = (RailixValue.ObjectValue) written.value();
+            if (RailixJson.write(compiledContext, RailixData.DEFAULT_MAX_SOURCE_BYTES).isEmpty()) {
+                return ExamplesRead.rejected(Diagnostic.atPath(
+                        "PROJECT_TRIGGER_EXAMPLE_CONTEXT_TOO_LARGE",
+                        "Materialized Trigger example context exceeds 1048576 bytes.",
+                        path
+                ));
+            }
+            examples.add(new ApplicationPlan.ExamplePlan(
+                    trigger + ":" + index,
+                    trigger,
+                    name.value(),
+                    index,
+                    compiledContext,
+                    triggerNode
+            ));
         }
-        return List.of();
+        return new ExamplesRead(examples, List.of());
+    }
+
+    private static ExampleWrite writeExample(
+            final RailixValue owner,
+            final List<ApplicationPlan.PathElement> path,
+            final int offset,
+            final RailixValue replacement,
+            final String diagnosticPath
+    ) {
+        if (offset == path.size()) {
+            return new ExampleWrite(replacement, null);
+        }
+        final ApplicationPlan.PathElement segment = path.get(offset);
+        if (segment instanceof ApplicationPlan.Field field) {
+            if (!(owner instanceof RailixValue.ObjectValue object)) {
+                return ExampleWrite.rejected(
+                        "PROJECT_TRIGGER_EXAMPLE_TARGET_CONFLICT",
+                        "Trigger example context conflicts with its configured target path.",
+                        diagnosticPath
+                );
+            }
+            final Map<String, RailixValue> values = new LinkedHashMap<>(object.values());
+            final RailixValue child = values.getOrDefault(field.name(), exampleContainer(path, offset + 1));
+            final ExampleWrite written = writeExample(child, path, offset + 1, replacement, diagnosticPath);
+            if (written.diagnostic() != null) {
+                return written;
+            }
+            values.put(field.name(), written.value());
+            return new ExampleWrite(RailixValue.object(values), null);
+        }
+        if (!(owner instanceof RailixValue.ArrayValue array)) {
+            return ExampleWrite.rejected(
+                    "PROJECT_TRIGGER_EXAMPLE_TARGET_CONFLICT",
+                    "Trigger example context conflicts with its configured target path.",
+                    diagnosticPath
+            );
+        }
+        final int index = ((ApplicationPlan.Index) segment).value();
+        if ((long) index - array.values().size() > MAX_ARRAY_GAP) {
+            return ExampleWrite.rejected(
+                    "PROJECT_TRIGGER_EXAMPLE_TARGET_SPARSE",
+                    "Trigger example target may create at most " + MAX_ARRAY_GAP + " missing array items.",
+                    diagnosticPath
+            );
+        }
+        final List<RailixValue> values = new ArrayList<>(array.values());
+        final boolean missing = index >= values.size();
+        while (values.size() <= index) {
+            values.add(RailixValue.nullValue());
+        }
+        final ExampleWrite written = writeExample(
+                missing && offset + 1 < path.size()
+                        ? exampleContainer(path, offset + 1)
+                        : values.get(index),
+                path,
+                offset + 1,
+                replacement,
+                diagnosticPath
+        );
+        if (written.diagnostic() != null) {
+            return written;
+        }
+        values.set(index, written.value());
+        return new ExampleWrite(RailixValue.array(values), null);
+    }
+
+    private static RailixValue exampleContainer(
+            final List<ApplicationPlan.PathElement> path,
+            final int offset
+    ) {
+        return offset < path.size() && path.get(offset) instanceof ApplicationPlan.Index
+                ? RailixValue.array(List.of())
+                : RailixValue.object(Map.of());
     }
 
     private static LinkRead links(final RailixValue.ArrayValue values, final List<Node> nodes) {
@@ -1499,6 +1654,7 @@ public final class ProjectCompiler {
                 node.returns(),
                 destinations,
                 node.outcomes(),
+                node.metrics(),
                 owner,
                 "nodes[" + node.index() + "]"
         );
@@ -1773,6 +1929,8 @@ public final class ProjectCompiler {
             Map<String, ApplicationPlan.Path> receives,
             Map<String, ApplicationPlan.Path> returns,
             List<String> outcomes,
+            boolean metrics,
+            List<ApplicationPlan.ExamplePlan> examples,
             int index
     ) {
         Node {
@@ -1780,6 +1938,7 @@ public final class ProjectCompiler {
             receives = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(receives));
             returns = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(returns));
             outcomes = List.copyOf(outcomes);
+            examples = List.copyOf(examples);
         }
     }
 
@@ -1816,6 +1975,26 @@ public final class ProjectCompiler {
     private record NodeRead(List<Node> nodes, List<Diagnostic> diagnostics) {
         static NodeRead rejected(final String code, final String message, final String path) {
             return new NodeRead(List.of(), List.of(Diagnostic.atPath(code, message, path)));
+        }
+    }
+
+    private record ExamplesRead(
+            List<ApplicationPlan.ExamplePlan> examples,
+            List<Diagnostic> diagnostics
+    ) {
+        ExamplesRead {
+            examples = List.copyOf(examples);
+            diagnostics = List.copyOf(diagnostics);
+        }
+
+        static ExamplesRead rejected(final Diagnostic diagnostic) {
+            return new ExamplesRead(List.of(), List.of(diagnostic));
+        }
+    }
+
+    private record ExampleWrite(RailixValue value, Diagnostic diagnostic) {
+        static ExampleWrite rejected(final String code, final String message, final String path) {
+            return new ExampleWrite(RailixValue.nullValue(), Diagnostic.atPath(code, message, path));
         }
     }
 

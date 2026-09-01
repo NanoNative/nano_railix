@@ -184,7 +184,6 @@ final class CreatorFirstExecutionArtifacts {
                         final RuntimeApplication application = RailixApplication.runtime();
                         System.out.print(switch (arguments[0]) {
                             case "source-response-slots" -> sourceSlots(application);
-                            case "source-trace-free" -> Boolean.toString(sourceTraceFree(application));
                             case "parity-success" -> parity(
                                     application, List.of(RailixValue.string("Hello RAILIX"))
                             );
@@ -217,18 +216,6 @@ final class CreatorFirstExecutionArtifacts {
                         return result(source.result())
                                 + "|output-null=" + (source.responses().get("output") instanceof RailixValue.NullValue)
                                 + "|status-zero=" + RailixValue.number(0).equals(source.responses().get("status"));
-                    }
-
-                    private static boolean sourceTraceFree(final RuntimeApplication application) {
-                        final RunResult result = application.runSource(
-                                "application.arguments", Map.of("arguments", RailixValue.array(List.of()))
-                        ).result();
-                        return switch (result) {
-                            case RunResult.Succeeded succeeded -> succeeded.steps().isEmpty();
-                            case RunResult.Rejected rejected -> rejected.steps().isEmpty();
-                            case RunResult.Failed failed -> failed.steps().isEmpty();
-                            case RunResult.Cancelled cancelled -> cancelled.steps().isEmpty();
-                        };
                     }
 
                     private static String parity(
@@ -287,16 +274,12 @@ final class CreatorFirstExecutionArtifacts {
                             case "canonical-output-detail" -> failure(application.run(
                                     "canonical-output", context(RailixValue.string("fault")), false
                             ));
-                            case "surrogate-preview" -> surrogateObservation(application);
                             case "unrefined-input" -> unchanged(application, "unrefined-input", mixedNonCanonical());
                             case "unrefined-output" -> unchanged(
                                     application,
                                     "unrefined-output",
                                     RailixValue.array(List.of(RailixValue.string(String.valueOf((char) 0xD800))))
                             );
-                            case "blank-preview" -> result(application.observe(
-                                    "context", " ", context(RailixValue.string("Hello")), false
-                            ).result());
                             case "missing-run-trigger" -> result(application.run(
                                     null, context(RailixValue.string("Hello")), false
                             ));
@@ -306,20 +289,6 @@ final class CreatorFirstExecutionArtifacts {
                                     "Unknown development probe scenario: " + arguments[0] + "."
                             );
                         });
-                    }
-
-                    private static String surrogateObservation(final DevelopmentRuntime.Application application) {
-                        final DevelopmentRuntime.Observation observation = application.observe(
-                                "canonical-output",
-                                "canonical-output-step",
-                                context(RailixValue.string("surrogate")),
-                                false
-                        );
-                        return failure(observation.result())
-                                + "|stages=" + observation.stages().size()
-                                + "|stage=" + (observation.stages().isEmpty()
-                                        ? "none"
-                                        : observation.stages().getFirst().status());
                     }
 
                     private static String unchanged(

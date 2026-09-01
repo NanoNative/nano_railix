@@ -12,6 +12,8 @@ import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,17 +44,26 @@ final class GeneratedApplicationParityE2eTest {
     }
 
     @Test
-    void successfulProductionAndDevelopmentExecutionsReturnTheSameContext() throws Exception {
+    void successfulVariantsReturnTheSameBusinessContextAndVariantSpecificRuntime() throws Exception {
         final CreatorFirstExecutionArtifacts.ProcessResult productionResult = production.run("parity-success");
         final RailixValue.ObjectValue developmentBody = body(development.run(
                 "command", "{\"payload\":{\"arguments\":[\"Hello RAILIX\"]}}"
         ));
+        final String prefix = "succeeded|";
 
         assertThat(productionResult.exitCode()).isZero();
-        assertThat(productionResult.output()).isEqualTo(
-                "succeeded|" + RailixJson.write(developmentBody.values().get("context"))
-        );
-        assertThat(((RailixValue.ArrayValue) developmentBody.values().get("steps")).values()).isEmpty();
+        assertThat(productionResult.output()).startsWith(prefix);
+        final RailixValue.ObjectValue productionContext = object(productionResult.output().substring(prefix.length()));
+        final RailixValue.ObjectValue developmentContext = (RailixValue.ObjectValue)
+                developmentBody.values().get("context");
+        assertThat(withoutRuntime(productionContext)).isEqualTo(withoutRuntime(developmentContext));
+        assertThat(productionContext.values().get("runtime")).isEqualTo(RailixValue.object(Map.of(
+                "trigger", RailixValue.string("command")
+        )));
+        assertThat(developmentContext.values().get("runtime")).isEqualTo(RailixValue.object(Map.of(
+                "test", RailixValue.bool(false),
+                "trigger", RailixValue.string("command")
+        )));
     }
 
     @Test
@@ -66,7 +77,6 @@ final class GeneratedApplicationParityE2eTest {
                 0,
                 rejection(developmentBody)
         ));
-        assertThat(((RailixValue.ArrayValue) developmentBody.values().get("steps")).values()).isEmpty();
     }
 
     @Test
@@ -80,7 +90,6 @@ final class GeneratedApplicationParityE2eTest {
                 0,
                 rejection(developmentBody)
         ));
-        assertThat(((RailixValue.ArrayValue) developmentBody.values().get("steps")).values()).isEmpty();
     }
 
     private static String rejection(final RailixValue.ObjectValue body) {
@@ -90,9 +99,19 @@ final class GeneratedApplicationParityE2eTest {
     }
 
     private static RailixValue.ObjectValue body(final DevelopmentApplication.Response response) {
-        final RailixJson.Result parsed = RailixJson.parse(response.body());
+        return object(response.body());
+    }
+
+    private static RailixValue.ObjectValue object(final String source) {
+        final RailixJson.Result parsed = RailixJson.parse(source);
         assertThat(parsed).isInstanceOf(RailixJson.Parsed.class);
         return (RailixValue.ObjectValue) ((RailixJson.Parsed) parsed).value();
+    }
+
+    private static RailixValue.ObjectValue withoutRuntime(final RailixValue.ObjectValue context) {
+        final Map<String, RailixValue> values = new LinkedHashMap<>(context.values());
+        values.remove("runtime");
+        return RailixValue.object(values);
     }
 
     private static String text(final RailixValue.ObjectValue value, final String field) {

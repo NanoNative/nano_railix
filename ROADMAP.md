@@ -1,6 +1,6 @@
 # Railix II Roadmap
 
-Updated: 2026-08-28
+Updated: 2026-09-01
 
 ## Product Goal
 
@@ -61,18 +61,23 @@ spreading them across unconnected application, CI/CD, observability, and orchest
 ## Progress
 
 - Accepted roadmap items: **2/8 (25%)**
-- Checkpoint-weighted Railix integration: **42%; 58% left**
+- Checkpoint-weighted Railix integration: **42% published baseline; checkpoint 6.1 is accepted
+  locally and will be folded into the next published baseline**
 - Railix production certification: **0%**; the full product is not certified by one core gate
-- Current item: **5. Flow Control, Groups, And Flat Compilation**
-- Current item progress: **5/7 checkpoints complete (71%); 29% left**
-- Active delivery checkpoint: **Switch Control Slice, 100% integrated; 0% left**
-- Publication vehicle: **PR #1 merged at `e98aec7`**
+- Current item: **6. Live Runtime, Operations, Bounded Work, And Permissions**
+- Current item progress: **1/6 checkpoints accepted (17%); 5/6 checkpoints (83%) left**
+- Active delivery checkpoint: **6.1 Production Observability Foundation, 7/7 acceptance gates
+  closed (100%); 0% left**
+- Publication vehicle: **checkpoint 6.1 publication is pending through its dedicated pull request;
+  baseline PR #1 merged at `e98aec7`**
 - Next roadmap feature: **5.6 Merge/fan-in control slice, 0% integrated; 100% left**
 - Core/base certification checkpoint: **Complete, 6/6 gates (100%; 0% left)**
 - Feature roadmap: **resumed after the 2026-08-13 core/base clean gate passed**
 - Retained incomplete item: **3. Primitive Contract And Standard Library, 4/6 complete
   (67%); 33% left**
-- Latest accepted control slice: **generic authored-outcome Switch, 2026-08-28**
+- Retained incomplete item: **5. Flow Control, Groups, And Flat Compilation, 5/7 complete
+  (71%); 29% left**
+- Latest locally accepted checkpoint: **6.1 Production Observability Foundation, 2026-09-01**
 
 Completion percentages count accepted checkpoints, not lines written. A roadmap item reaches 100%
 only after its public acceptance gate, coverage report, complexity audit, stability checks,
@@ -87,7 +92,8 @@ documentation, and screenshot are complete.
 - explicit Step registration without reflection or runtime scanning;
 - one flat functional project model and one runtime execution path;
 - deterministic diagnostics and canonical JSON writing;
-- Creator-owned rolling development application with real HTTP/browser E2E proof;
+- Creator-owned rolling child-process lifecycle whose generated development application owns
+  Example execution, traces, metrics, and management endpoints;
 - no third-party runtime dependency.
 
 Anything that cannot serve the accepted Creator-first graph is removed rather than wrapped.
@@ -285,8 +291,9 @@ Current evidence:
 - Step definitions retain one immutable class-literal-derived implementation address. Locked
   third-party implementations must be owned by their root bundle and compile failures return stable
   diagnostics without exposing `javac` output.
-- Production requests allocate no Step trace; explicit development test and preview requests alone
-  capture steps, resolved inputs, candidate selections, and nested stages.
+- Production requests allocate no Step trace; application-owned Example traces and explicit
+  development trace requests alone capture Steps, resolved inputs, candidate selections, and
+  nested stages.
 - Generated constants are initialized once in bounded 16-node partitions; routing methods remain
   bounded at 128 nodes. Each admitted item owns one shallow mutable
   context root, lazily thaws only written containers, freezes only at observation/response
@@ -296,11 +303,11 @@ Current evidence:
   represents rejection, failure, or cancellation. No success-path routing object, exception,
   future, or scheduler remains between a Step and its authored integer destination.
 - A real 129-Step production flow executes 322,500 verified Steps with zero traces. The clean
-  advisory reports 86,704 allocated bytes and 39,090 median nanoseconds per call: 672 bytes and
-  303 nanoseconds per Step, with 2,680 retained bytes. A one-million-call soak stays inside a
-  64 MiB heap with 128,960 retained bytes. The single-Step boundary and escaped result each report
-  3,544 allocated bytes per call; median single-call latency is 640 nanoseconds, and the array-read
-  calibration reports 103,301 bytes per call. Allocation and latency are advisory and never fail
+  advisory reports 86,552 allocated bytes and 34,543 median nanoseconds per call: 670 bytes and
+  267 nanoseconds per Step, with 2,632 retained bytes. A one-million-call soak stays inside a
+  64 MiB heap with 127,512 retained bytes. The single-Step boundary and escaped result each report
+  3,392 allocated bytes per call; median single-call latency is 622 nanoseconds, and the array-read
+  calibration reports 103,097 bytes per call. Allocation and latency are advisory and never fail
   the build; constrained-heap, retained-growth, trace, execution, and correctness assertions remain
   acceptance gates.
 - The maximum 16,384-node generated monolith executes all 16,381 ordinary Steps exactly once in
@@ -325,27 +332,25 @@ Current evidence:
   generated artifacts, child JVMs, HTTP, CLI, or browser boundaries. Five unique HTTP cases were
   consolidated into the canonical generated-child suite; one duplicate 33-case integration suite,
   two obsolete handler files, and 26 unreferenced nested test handlers were removed.
-- Clean `./mvnw clean verify` passes **2,127/2,127 tests** with no failure, error, or skip: core 774,
-  standard library 72, Creator Surefire 940, desktop browser 297, package and soak 43, and mobile
-  browser 1. The complete local gate takes 9:41; the two real desktop suites pass 127 and 170 cases
-  in 303.8 and 355.3 seconds and remain a measured contribution-speed target, not a reason to
+- Clean `./mvnw clean verify` passes **2,439/2,439 tests** with no failure, error, or skip: core 815,
+  standard library 72, Creator Surefire 1,187, desktop browser 322, package and soak 42, and mobile
+  browser 1. The complete local gate takes 48:34; the two real desktop suites pass 128 and 194 cases
+  in 2,259 and 2,353 seconds and remain a measured contribution-speed target, not a reason to
   replace public-boundary proof with mocks.
-- Clean aggregate JaCoCo is **95.1203% lines (7,076/7,439)** and **90.3429% branches
-  (3,583/3,966)**. Core is 97.3526%/92.8015%, standard library 100%/97.2222%, and Creator
-  89.9791%/84.0069% (line/branch). The visible non-failing 95%/90% target is met without changing
-  the build into a coverage gate.
+- Clean aggregate JaCoCo is **95.0777% lines (9,117/9,589)** and **90.4042% branches
+  (4,607/5,096)**. The visible non-failing 95%/90% target is met without changing the build into a
+  coverage gate.
 - The generated development dispatch avoids the JDK 25 conditional-method-reference compiler
   crash through one explicit observation branch. A source-shape regression guards that contract,
   and clean desktop/mobile Failsafe reports contain no compiler exception, NPE, `LambdaToMethod`,
   or conditional-tree crash.
-- Current production inventory is three modules, 33 Java files, 15,733 Java lines, and 21,926 total
-  module source lines with no third-party Maven runtime dependency. The Switch slice adds no
-  production file, module, or dependency and extends 12 existing production files. The executable
-  Creator JAR is 512,448 bytes. Its universal
-  application image includes every stable build-JDK module so Creator can compile and run arbitrary
-  locked Step bundles without ambient Java; unsupported incubator modules are excluded, and
-  per-project minimal images remain Item 8. Packaging rejects empty output paths and JDKs without
-  `java.base.jmod` before cleanup or linking begins.
+- Current production inventory is three modules, 35 Java files, 19,729 Java lines, and 26,567
+  Java/JavaScript/CSS lines with no third-party Maven runtime dependency. Checkpoint 6.1 adds one
+  cohesive Example-suite owner and no module or dependency. The executable Creator JAR is 602,390
+  bytes and its host application image is 139 MiB. The image includes every stable build-JDK module
+  so Creator can compile and run arbitrary locked Step bundles without ambient Java; unsupported
+  incubator modules are excluded, and per-project minimal images remain Item 8. Packaging rejects
+  empty output paths and JDKs without `java.base.jmod` before cleanup or linking begins.
 - Clean concurrency proof completes 2,000 isolated calls and 2,000 external effects exactly once,
   with all 64 workers overlapping and no production traces. Post-gate inspection found no owned
   Railix application or browser process.
@@ -380,7 +385,7 @@ No Item 5 screenshot is current because the item is not 100%.
 
 ## 6. Live Runtime, Operations, Bounded Work, And Permissions
 
-Status: **Planned**
+Status: **In progress; 1/6 checkpoints accepted (17%)**
 
 Goal: make development observable and production behavior bounded.
 
@@ -413,6 +418,64 @@ Scope:
 The synchronous generated route remains a separate zero-scheduler fast path. Suspension is not
 accepted as a callback-only API because an abandoned callback would retain its complete event
 context without a lifecycle owner.
+
+Checkpoints:
+
+1. **Accepted (7/7 gates closed; 100%, 0% left): Production observability foundation.**
+   Development applications
+   expose build-selected trace and metric surfaces that are physically absent from production
+   artifacts. The generated development application reads its compiled Example manifest and owns
+   automatic chunked execution, bounded trace storage, projections, and metrics. Each Example makes
+   one ordinary Flow pass with `context.runtime.test=true`; Creator only builds, starts, stops,
+   restarts, and reads authenticated management data. The application streams inputs, nested stages,
+   compact context changes, terminal results, and deterministic trace errors without replaying a
+   Step or capturing production traffic. It retains at most 64 MiB per Example and 256 MiB per suite
+   and serves two-reader bounded, ready-to-display summary and selected-Step JSON projections. The
+   all-Example projection for one Step has one owner from frozen snapshot through response transport;
+   concurrent reads allocate no second case snapshot. It rejects total source replay above 64 MiB
+   before parsing. Timed-out workers receive five seconds for cooperative exit; a worker that still
+   retains execution terminates its generated development process rather than leaking indefinitely.
+   Bounded request-body reads complete before run or trace admission.
+   Compact suite status and one-case status avoid transferring the full inventory during polling. Metrics use
+   fixed-cardinality atomic arrays: execution/error/cancellation counts are exact, Flow timing is
+   exact, graph-Step timing samples one in 1,024 executions, and reads stream JSON, Prometheus, or
+   Influx output. Example executions never increment operational metrics.
+2. **Planned:** lifecycle-complete suspending Steps with bounded admission, deadline, cancellation,
+   shutdown, and retained-context proof while preserving the synchronous fast path.
+3. **Planned:** independently includable development capabilities, named environments, deterministic
+   configuration precedence, and build-time physical omission per capability.
+4. **Planned:** authenticated local/remote read-only attachment plus platform identity, roles,
+   authorization, and encrypted environment-secret delivery.
+5. **Planned:** bounded queues, backpressure, diagnostics, live errors, rate limits, metric
+   cardinality, and explicit overflow behavior.
+6. **Planned:** declared filesystem/network/process/environment permissions, resource measurement,
+   and enforceable execution policy.
+
+Checkpoint 6.1 acceptance gates:
+
+1. **Closed:** compile project Examples once into the development application; no Creator-owned
+   Example scheduler, execution, trace storage, or result fallback remains.
+2. **Closed:** expose application-owned authenticated Example inventory, trace projection, and
+   metrics APIs through bounded reads; Creator has read-only proxies and no execution endpoint.
+3. **Closed:** production generation and packaging physically exclude Example manifests,
+   development runtime classes, traces, metrics, and management endpoints.
+4. **Closed:** clean verification reruns every converted Creator, generated-application, browser,
+   package, lifecycle, and soak E2E after the ownership change: 2,439/2,439 tests pass with no
+   failure, error, or skip.
+5. **Closed:** selected-node metrics use fixed open-addressed indexes and exports distinguish exact
+   primitive counter, lookup, and total bytes without changing the production fast path. Committed
+   generated-application E2Es prove bounded streaming for 4,096 Step series; the direct fixed-store
+   contract proves exact accounting for 16,384 series, which is also the current compiler node
+   limit. Compiler scaling beyond 16,384 nodes remains unaccepted.
+6. **Closed:** clean `./mvnw clean verify` passes in 48:34 with advisory aggregate coverage of
+   95.0777% lines and 90.4042% branches. The one-million-call 64 MiB soak retains 127,512 bytes;
+   process inspection finds no owned Railix, Playwright, or project Maven process after shutdown.
+7. **Closed:** the [accepted production-observability screenshot](screenshots/roadmap-item-6-1-production-observability.png)
+   shows the real Maven-built Creator, selected Example path, application-owned result, and
+   connected Step/Flow metrics.
+
+Protocol-specific Trigger test clients and Example assertions remain later checkpoints; current
+Examples begin at the generic Trigger output after protocol conversion.
 
 ## 7. Decentralised Execution, State, Sharding, And Replication
 

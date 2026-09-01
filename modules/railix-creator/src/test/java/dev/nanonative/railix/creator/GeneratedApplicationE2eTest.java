@@ -7,6 +7,7 @@ import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueShape;
+import dev.nanonative.railix.development.ArtifactLease;
 import dev.nanonative.railix.stdlib.StandardLibrary;
 import dev.nanonative.railix.stdlib.StandardStepHandlers;
 import org.junit.jupiter.api.Test;
@@ -63,6 +64,13 @@ final class GeneratedApplicationE2eTest {
     }
 
     @Test
+    void applicationArtifactDoesNotPublishAnExpandedRuntimeCopy() throws Exception {
+        final ApplicationBuilder.Artifact artifact = productionArtifact();
+
+        assertThat(artifact.directory().resolve("content")).doesNotExist();
+    }
+
+    @Test
     void compilerRejectsAnApplicationBeyondTheTriggerLimit() {
         final TriggerScale scale = triggerScale(513);
 
@@ -89,7 +97,12 @@ final class GeneratedApplicationE2eTest {
         final CompileResult result = ProjectCompiler.compileApplication(scale.source(), scale.catalog());
         assertThat(result).isInstanceOf(CompileResult.Compiled.class);
 
-        assertThat(ApplicationBuilder.build(project, (CompileResult.Compiled) result).jar()).isRegularFile();
+        try (ApplicationBuilder.DevelopmentBuild build = ApplicationBuilder.build(
+                project,
+                (CompileResult.Compiled) result
+        )) {
+            assertThat(build.jar()).isRegularFile();
+        }
     }
 
     @Test
@@ -124,8 +137,8 @@ final class GeneratedApplicationE2eTest {
             assertThat(source).contains(
                     "new dev.nanonative.railix.stdlib.StandardStepHandlers.Cli()",
                     "new dev.nanonative.railix.stdlib.PrimitiveStepHandlers.Lowercase()",
-                    "HANDLER_0.run(input)",
-                    "HANDLER_1.run(input)",
+                    "DevelopmentRuntime.Trace.invoke(input, HANDLER_0)",
+                    "DevelopmentRuntime.Trace.invoke(input, HANDLER_1)",
                     "switch (current)"
             ).doesNotContain(
                     "CompiledProject",
@@ -138,6 +151,72 @@ final class GeneratedApplicationE2eTest {
                     "PrimitiveSteps.",
                     "railix.field-manipulation"
             );
+        }
+    }
+
+    @Test
+    void generatedApplicationContinuesWhenNestedTraceObservationStops() throws Exception {
+        final String projectSource = CreatorProjects.nestedLowercase();
+        final Path project = project(directory.resolve("nested-trace-backpressure"), projectSource);
+        final CompileResult result = ProjectCompiler.compileApplication(projectSource, StandardLibrary.catalog());
+        assertThat(result).isInstanceOf(CompileResult.Compiled.class);
+        try (ApplicationBuilder.DevelopmentBuild build = ApplicationBuilder.build(
+                project,
+                (CompileResult.Compiled) result
+        )) {
+            final ApplicationBuilder.Artifact artifact = build.artifact();
+        final Path probeSource = directory.resolve(
+                "probe/dev/nanonative/railix/core/project/TraceBackpressureProbe.java"
+        );
+        final Path probeClasses = directory.resolve("probe-classes");
+        Files.createDirectories(probeSource.getParent());
+        Files.createDirectories(probeClasses);
+        Files.writeString(probeSource, """
+                package dev.nanonative.railix.core.project;
+
+                import dev.nanonative.railix.core.runtime.RunResult;
+                import dev.nanonative.railix.core.value.RailixJson;
+                import dev.nanonative.railix.core.value.RailixValue;
+
+                public final class TraceBackpressureProbe {
+                    public static void main(final String[] arguments) {
+                        final RailixValue.ObjectValue context = RailixValue.object(java.util.Map.of(
+                                "payload", RailixValue.object(java.util.Map.of(
+                                        "arguments", RailixValue.array(java.util.List.of()),
+                                        "text", RailixValue.string("Hello RAILIX")
+                                ))
+                        ));
+                        final RunResult result = RailixApplication.runtime().trace(
+                                "command",
+                                context,
+                                true,
+                                event -> !(event.values().get("type")
+                                        instanceof RailixValue.StringValue type)
+                                        || !type.value().equals("step_start")
+                                        || !(event.values().get("invocation")
+                                        instanceof RailixValue.StringValue invocation)
+                                        || !invocation.value().equals("lowercase-text.inputs.steps[0]")
+                        );
+                        if (!(result instanceof RunResult.Succeeded succeeded)) {
+                            throw new AssertionError("Generated flow did not succeed: " + result);
+                        }
+                        System.out.print(RailixJson.write(succeeded.context().values().get("result")));
+                    }
+                }
+                """, StandardCharsets.UTF_8);
+
+            tool(
+                    "javac",
+                    "-classpath", artifact.jar().toString(),
+                    "-d", probeClasses.toString(),
+                    probeSource.toString()
+            );
+
+            assertThat(tool(
+                    "java",
+                    "-classpath", probeClasses + java.io.File.pathSeparator + artifact.jar(),
+                    "dev.nanonative.railix.core.project.TraceBackpressureProbe"
+            )).isEqualTo("\"hello railix\"");
         }
     }
 
@@ -166,25 +245,170 @@ final class GeneratedApplicationE2eTest {
     }
 
     @Test
-    void productionJarOmitsTheDevelopmentCapability() throws Exception {
+    void productionJarContainsNoDevelopmentOrTraceSurface() throws Exception {
         final ApplicationBuilder.Artifact artifact = productionArtifact();
+        final String[] forbiddenSymbols = {
+                "dev/nanonative/railix/development/",
+                "dev.nanonative.railix.development",
+                "RailixDevelopmentApplication",
+                "DevelopmentRuntime",
+                "DevelopmentRuntime$Metrics",
+                "ExampleSuite",
+                "/v1/metrics",
+                "startFlow",
+                "startStep",
+                "finishFlow",
+                "finishStep",
+                "TraceExecution",
+                "TraceSink",
+                "traceExecute_",
+                "trace_",
+                "use_",
+                "/v1/run/",
+                "/v1/trace/",
+                "/v1/preview/",
+                "ObservationCapture",
+                "WorkflowRuntime$Capture",
+                "RunResult$StepExecution"
+        };
 
         try (JarFile jar = new JarFile(artifact.jar().toFile())) {
-            assertThat(jar.stream().map(java.util.jar.JarEntry::getName)).noneMatch(name ->
+            final var entries = jar.stream().toList();
+            assertThat(entries).extracting(java.util.jar.JarEntry::getName).noneMatch(name ->
                     name.startsWith("dev/nanonative/railix/development/")
                             || name.endsWith("RailixDevelopmentApplication.class")
+                            || name.endsWith("ExampleSuite.class")
+                            || name.contains("ExampleSuite$")
+                            || name.contains("TraceExecution")
+                            || name.endsWith("WorkflowRuntime$Capture.class")
+                            || name.endsWith("RunResult$StepExecution.class")
             );
+            for (final var entry : entries) {
+                if (entry.isDirectory()) {
+                    continue;
+                }
+                try (var input = jar.getInputStream(entry)) {
+                    assertThat(new String(input.readAllBytes(), StandardCharsets.ISO_8859_1))
+                            .as("production JAR entry %s", entry.getName())
+                            .doesNotContain(forbiddenSymbols);
+                }
+            }
+        }
+
+        assertThat(Files.readString(artifact.source(), StandardCharsets.UTF_8))
+                .doesNotContain(forbiddenSymbols)
+                .doesNotContain("trace(", "trace_", "use_");
+
+        assertThat(tool(
+                "javap",
+                "-classpath", artifact.jar().toString(),
+                "-c", "-p", "-v", "dev.nanonative.railix.core.project.RailixApplication"
+        )).doesNotContain(forbiddenSymbols)
+                .doesNotContain("trace(", "trace_", "use_");
+
+        assertThat(tool(
+                "javap",
+                "-classpath", artifact.jar().toString(),
+                "-p", "dev.nanonative.railix.core.project.WorkflowRuntime$StepCall"
+        )).contains("dev.nanonative.railix.core.step.StepResult run("
+                        + "dev.nanonative.railix.core.step.StepInput) throws java.lang.InterruptedException;")
+                .doesNotContain("java.lang.String");
+    }
+
+    @Test
+    void productionArtifactOmitsAuthoredExampleNamesAndPayloads() throws Exception {
+        final String exampleName = "authored-example-name-sentinel-7d2f";
+        final String examplePayload = "authored-example-payload-sentinel-4c91";
+        final String source = authoredExample(exampleName, examplePayload);
+        final Path project = project(directory.resolve("production-example-omission"), source);
+        final ApplicationBuilder.Artifact artifact = productionArtifact(project, source);
+
+        assertThat(Files.readString(artifact.source(), StandardCharsets.UTF_8))
+                .doesNotContain(exampleName, examplePayload);
+        try (JarFile jar = new JarFile(artifact.jar().toFile())) {
+            for (final var entry : jar.stream().filter(item -> !item.isDirectory()).toList()) {
+                try (var input = jar.getInputStream(entry)) {
+                    assertThat(new String(input.readAllBytes(), StandardCharsets.ISO_8859_1))
+                            .as("production JAR entry %s", entry.getName())
+                            .doesNotContain(exampleName, examplePayload);
+                }
+            }
+            assertThat(jar.getJarEntry("META-INF/railix/examples.json")).isNull();
         }
     }
 
     @Test
-    void productionJarOmitsTheGeneratedObservationCollector() throws Exception {
-        final ApplicationBuilder.Artifact artifact = productionArtifact();
+    void developmentArtifactEmbedsTheCompiledExampleManifest() throws Exception {
+        final String exampleName = "development-example-name-sentinel-7d2f";
+        final String examplePayload = "development-example-payload-sentinel-4c91";
+        final String source = authoredExample(exampleName, examplePayload);
+        final Path project = project(directory.resolve("development-example-manifest"), source);
+        final CompileResult result = ProjectCompiler.compileApplication(source, StandardLibrary.catalog());
+        assertThat(result).isInstanceOf(CompileResult.Compiled.class);
+        try (ApplicationBuilder.DevelopmentBuild build = ApplicationBuilder.build(
+                project,
+                (CompileResult.Compiled) result
+        )) {
+            final ApplicationBuilder.Artifact artifact = build.artifact();
 
-        try (JarFile jar = new JarFile(artifact.jar().toFile())) {
-            assertThat(jar.stream().map(java.util.jar.JarEntry::getName))
-                    .noneMatch(name -> name.contains("ObservationCapture"));
+            try (JarFile jar = new JarFile(artifact.jar().toFile())) {
+                final var entry = jar.getJarEntry("META-INF/railix/examples.json");
+                assertThat(entry).isNotNull();
+                try (var input = jar.getInputStream(entry)) {
+                    assertThat(new String(input.readAllBytes(), StandardCharsets.UTF_8))
+                            .contains(exampleName, examplePayload);
+                }
+            }
         }
+    }
+
+    @Test
+    void exampleChangesDoNotChangeProductionSourceOrJarBytes() throws Exception {
+        final String firstSource = CreatorProjects.lowercaseCli();
+        final String secondSource = firstSource.replace("Hello RAILIX", "Different Example");
+        final CompileResult firstResult = ProjectCompiler.compileApplication(
+                firstSource,
+                StandardLibrary.catalog()
+        );
+        final CompileResult secondResult = ProjectCompiler.compileApplication(
+                secondSource,
+                StandardLibrary.catalog()
+        );
+        assertThat(firstResult).isInstanceOf(CompileResult.Compiled.class);
+        assertThat(secondResult).isInstanceOf(CompileResult.Compiled.class);
+        final CompileResult.Compiled first = (CompileResult.Compiled) firstResult;
+        final CompileResult.Compiled second = (CompileResult.Compiled) secondResult;
+        final Path firstProject = project(directory.resolve("production-example-first"), firstSource);
+        final Path secondProject = project(directory.resolve("production-example-second"), secondSource);
+
+        assertThat(second.productionApplicationSource()).isEqualTo(first.productionApplicationSource());
+        assertThat(second.developmentResources()).isNotEqualTo(first.developmentResources());
+        assertThat(digest(ApplicationBuilder.buildProduction(firstProject, first).jar()))
+                .isEqualTo(digest(ApplicationBuilder.buildProduction(secondProject, second).jar()));
+        try (ApplicationBuilder.DevelopmentBuild firstBuild = ApplicationBuilder.build(firstProject, first);
+             ApplicationBuilder.DevelopmentBuild secondBuild = ApplicationBuilder.build(secondProject, second)) {
+            assertThat(digest(firstBuild.jar())).isNotEqualTo(digest(secondBuild.jar()));
+        }
+    }
+
+    @Test
+    void productionExecutionCarriesNoDevelopmentModeState() throws Exception {
+        final Path jar = productionArtifact().jar();
+
+        assertThat(tool(
+                "javap",
+                "-classpath", jar.toString(),
+                "-p", "dev.nanonative.railix.core.project.WorkflowRuntime$Execution"
+        )).doesNotContain("boolean test", "DevelopmentRuntime", "Metrics", "Trace");
+    }
+
+    @Test
+    void productionExecutionOmitsTheDevelopmentTestFlagFromRuntimeContext() throws Exception {
+        final String source = runtimeContextProject();
+        final Path project = project(directory.resolve("production-runtime-context"), source);
+
+        assertThat(runJar(productionArtifact(project, source).jar()))
+                .isEqualTo(new ProcessResult(0, "{\"trigger\":\"command\"}"));
     }
 
     @Test
@@ -208,20 +432,6 @@ final class GeneratedApplicationE2eTest {
     }
 
     @Test
-    void productionSourceOmitsDevelopmentExecutionAndObservationCode() throws Exception {
-        final String source = Files.readString(productionArtifact().source(), StandardCharsets.UTF_8);
-
-        assertThat(source).doesNotContain(
-                "DevelopmentRuntime",
-                "WorkflowRuntime.Capture",
-                "public RunResult run(",
-                " preview(",
-                " observe(",
-                "railix.development"
-        );
-    }
-
-    @Test
     void productionApplicationPublicApiContainsOnlyProductionIngress() throws Exception {
         final Path jar = productionArtifact().jar();
         final String api = tool(
@@ -238,38 +448,6 @@ final class GeneratedApplicationE2eTest {
                                 + "runSource(java.lang.String, java.util.Map<java.lang.String, "
                                 + "dev.nanonative.railix.core.value.RailixValue>);"
                 );
-    }
-
-    @Test
-    void productionApplicationBytecodeNeverCallsTheObservationPath() throws Exception {
-        final Path jar = productionArtifact().jar();
-
-        assertThat(tool(
-                "javap",
-                "-classpath", jar.toString(),
-                "-c", "-p", "dev.nanonative.railix.core.project.RailixApplication"
-        )).doesNotContain(
-                "WorkflowRuntime$Execution.observe",
-                "DevelopmentRuntime",
-                "ObservationCapture"
-        );
-    }
-
-    @Test
-    void productionApplicationConstantPoolOmitsDevelopmentSymbols() throws Exception {
-        final Path jar = productionArtifact().jar();
-
-        assertThat(tool(
-                "javap",
-                "-classpath", jar.toString(),
-                "-v", "dev.nanonative.railix.core.project.RailixApplication"
-        )).doesNotContain(
-                "DevelopmentRuntime",
-                "ObservationCapture",
-                "/v1/run/",
-                "/v1/preview/",
-                "railix.development"
-        );
     }
 
     @Test
@@ -324,7 +502,7 @@ final class GeneratedApplicationE2eTest {
         final Path project = project(directory.resolve("switch-" + scenario), switchProject(cases));
 
         try (CreatorServer creator = start(project)) {
-            assertThat(runResult(creator.baseUri(), "go")).isEqualTo(RailixValue.string(expected));
+            assertThat(exampleResult(creator.baseUri(), "command:0")).isEqualTo(RailixValue.string(expected));
         }
     }
 
@@ -333,7 +511,7 @@ final class GeneratedApplicationE2eTest {
         final Path project = project(directory.resolve("switch-node-local"), nodeLocalSwitchProject());
 
         try (CreatorServer creator = start(project)) {
-            assertThat(runResult(creator.baseUri(), "go")).isEqualTo(RailixValue.string("both"));
+            assertThat(exampleResult(creator.baseUri(), "command:0")).isEqualTo(RailixValue.string("both"));
         }
     }
 
@@ -406,20 +584,35 @@ final class GeneratedApplicationE2eTest {
         final Path project = project(directory.resolve("workspace"), linearProject(256));
 
         try (CreatorServer creator = start(project)) {
+            final long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            RailixValue.ObjectValue examples;
+            do {
+                examples = CreatorServerE2eSupport.examples(creator.baseUri());
+                if (number(examples, "completed") == 1) {
+                    break;
+                }
+                Thread.sleep(20);
+            } while (System.nanoTime() < deadline);
+            assertThat(number(examples, "completed")).isEqualTo(1);
+
             final HttpResponse<String> response = request(
                     creator.baseUri(),
-                    "POST",
-                    "/api/run/command",
-                    "{\"payload\":{}}"
+                    "GET",
+                    "/api/examples/command:0/view",
+                    ""
             );
-            final RailixJson.Parsed parsed = (RailixJson.Parsed) RailixJson.parse(response.body());
-            final RailixValue.ObjectValue body = (RailixValue.ObjectValue) parsed.value();
-            final List<RailixValue> steps = ((RailixValue.ArrayValue) body.values().get("steps")).values();
+            final RailixJson.Result parsed = RailixJson.parse(response.body());
+            assertThat(parsed).isInstanceOf(RailixJson.Parsed.class);
+            final RailixValue.ObjectValue view = (RailixValue.ObjectValue) ((RailixJson.Parsed) parsed).value();
+            final RailixValue.ArrayValue nodes = (RailixValue.ArrayValue) view.values().get("nodes");
+            final List<Integer> steps = nodes.values().stream()
+                    .map(RailixValue.NumberValue.class::cast)
+                    .map(value -> value.value().intValueExact())
+                    .toList();
 
             assertThat(response.statusCode()).isEqualTo(200);
-            assertThat(steps.stream().map(GeneratedApplicationE2eTest::stepId))
-                    .containsExactlyElementsOf(java.util.stream.IntStream.range(0, 256)
-                            .mapToObj(index -> "step-" + index)
+            assertThat(steps).containsExactlyElementsOf(java.util.stream.IntStream.range(2, 258)
+                            .boxed()
                             .toList());
         }
     }
@@ -464,18 +657,14 @@ final class GeneratedApplicationE2eTest {
 
     @Test
     void existingArraySizeIsSubtractedFromTheSparseGap() throws Exception {
-        final String projectSource = sparseArrayWrite(1_025);
+        final String projectSource = sparseArrayWrite(1_025).replace(
+                "\"name\":\"sparse\",\"payload\":[\"bounded\"]",
+                "\"name\":\"sparse\",\"payload\":[\"bounded\"],\"context\":{\"payload\":{\"items\":[null]}}"
+        );
         final Path project = project(directory.resolve("existing-array"), projectSource);
 
         try (CreatorServer creator = start(project)) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/run/command",
-                    "{\"payload\":{\"arguments\":[\"bounded\"],\"items\":[null]}}"
-            );
-
-            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(number(awaitExamples(creator.baseUri(), 1), "succeeded")).isEqualTo(1);
         }
     }
 
@@ -588,7 +777,8 @@ final class GeneratedApplicationE2eTest {
             final Path rebuilt = path(application(creator.baseUri()), "build_path");
             assertThat(rebuilt).isEqualTo(jar);
             assertThat(digest(rebuilt)).isEqualTo(expectedDigest);
-            assertThat(runResult(creator.baseUri(), "INTEGRITY")).isEqualTo(RailixValue.string("integrity"));
+            assertThat(exampleResult(creator.baseUri(), "command:0"))
+                    .isEqualTo(RailixValue.string("hello railix"));
         }
     }
 
@@ -637,6 +827,253 @@ final class GeneratedApplicationE2eTest {
     }
 
     @Test
+    void reopeningAChangedProjectRemovesThePreviousSessionArtifact() throws Exception {
+        final Path project = project(directory.resolve("workspace"));
+        final Path previous;
+        try (CreatorServer creator = start(project)) {
+            previous = path(application(creator.baseUri()), "build_path").getParent();
+        }
+        Files.writeString(
+                project,
+                CreatorProjects.lowercaseCli().replace("text.lowercase", "text.uppercase"),
+                StandardCharsets.UTF_8
+        );
+
+        try (CreatorServer reopened = start(project)) {
+            assertThat(path(application(reopened.baseUri()), "build_path").getParent())
+                    .isNotEqualTo(previous)
+                    .isDirectory();
+            assertThat(previous).doesNotExist();
+        }
+    }
+
+    @Test
+    void developmentPruningNeverDeletesAProductionArtifact() throws Exception {
+        final Path workspace = directory.resolve("production-artifact");
+        final String source = CreatorProjects.lowercaseCli();
+        final Path project = project(workspace, source);
+        final ApplicationBuilder.Artifact production = productionArtifact(project, source);
+
+        try (CreatorServer ignored = start(project)) {
+            assertThat(production.jar()).isRegularFile();
+        }
+    }
+
+    @Test
+    void developmentPublicationLeaseProtectsAnArtifactBeforeItsProcessStarts() throws Exception {
+        final Path workspace = directory.resolve("publication-lease");
+        final String lowercase = CreatorProjects.lowercaseCli();
+        final Path project = project(workspace, lowercase);
+        final CompileResult result = ProjectCompiler.compileApplication(lowercase, StandardLibrary.catalog());
+        assertThat(result).isInstanceOf(CompileResult.Compiled.class);
+        final Path reserved;
+
+        try (ApplicationBuilder.DevelopmentBuild publication = ApplicationBuilder.build(
+                project,
+                (CompileResult.Compiled) result
+        )) {
+            reserved = publication.artifact().directory();
+            Files.writeString(
+                    project,
+                    lowercase.replace("text.lowercase", "text.uppercase"),
+                    StandardCharsets.UTF_8
+            );
+            try (CreatorServer ignored = start(project)) {
+                assertThat(reserved).isDirectory();
+            }
+        }
+
+        try (CreatorServer ignored = start(project)) {
+            assertThat(reserved).doesNotExist();
+        }
+    }
+
+    @Test
+    void developmentPublicationLeasePreventsRuntimeCleanupDuringProcessHandoff() throws Exception {
+        final Path workspace = directory.resolve("runtime-publication-lease");
+        final String source = CreatorProjects.lowercaseCli();
+        final Path project = project(workspace, source);
+        final CompileResult result = ProjectCompiler.compileApplication(source, StandardLibrary.catalog());
+        assertThat(result).isInstanceOf(CompileResult.Compiled.class);
+        final Path pendingRuntime;
+        final ApplicationBuilder.Artifact artifact;
+
+        try (ApplicationBuilder.DevelopmentBuild publication = ApplicationBuilder.build(
+                project,
+                (CompileResult.Compiled) result
+        )) {
+            artifact = publication.artifact();
+            pendingRuntime = artifact.directory().resolve(".railix-runtime/pending");
+            Files.createDirectories(pendingRuntime);
+
+            ApplicationBuilder.cleanRuntime(artifact);
+
+            assertThat(pendingRuntime).isDirectory();
+        }
+
+        ApplicationBuilder.cleanRuntime(artifact);
+        assertThat(pendingRuntime).doesNotExist();
+    }
+
+    @Test
+    void creatorStartupRemovesRuntimeDataLeftByAStoppedApplication() throws Exception {
+        final Path workspace = directory.resolve("stale-runtime-startup");
+        final String source = CreatorProjects.lowercaseCli();
+        final Path project = project(workspace, source);
+        final CompileResult result = ProjectCompiler.compileApplication(source, StandardLibrary.catalog());
+        assertThat(result).isInstanceOf(CompileResult.Compiled.class);
+        final Path staleRuntime;
+
+        try (ApplicationBuilder.DevelopmentBuild publication = ApplicationBuilder.build(
+                project,
+                (CompileResult.Compiled) result
+        )) {
+            staleRuntime = publication.artifact().directory().resolve(".railix-runtime/stale");
+        }
+        Files.createDirectories(staleRuntime);
+        Files.writeString(staleRuntime.resolve("trace.ndjson"), "stale", StandardCharsets.UTF_8);
+
+        try (CreatorServer ignored = start(project)) {
+            assertThat(staleRuntime).doesNotExist();
+        }
+    }
+
+    @Test
+    void runtimeCleanupRemovesAnUnlockedRootLeaseFile() throws Exception {
+        final Path workspace = directory.resolve("stale-root-lease");
+        final String source = CreatorProjects.lowercaseCli();
+        final Path project = project(workspace, source);
+        final CompileResult result = ProjectCompiler.compileApplication(source, StandardLibrary.catalog());
+        assertThat(result).isInstanceOf(CompileResult.Compiled.class);
+        final ApplicationBuilder.Artifact artifact;
+
+        try (ApplicationBuilder.DevelopmentBuild publication = ApplicationBuilder.build(
+                project,
+                (CompileResult.Compiled) result
+        )) {
+            artifact = publication.artifact();
+        }
+        final Path staleLease = artifact.directory().resolve(".railix-runtime/.lease-stale.lock");
+        Files.createDirectories(staleLease.getParent());
+        Files.writeString(staleLease, "", StandardCharsets.UTF_8);
+
+        ApplicationBuilder.cleanRuntime(artifact);
+
+        assertThat(staleLease).doesNotExist();
+    }
+
+    @Test
+    void liveUnrelatedPidCannotPreserveAStaleDevelopmentArtifact() throws Exception {
+        final Path workspace = directory.resolve("stale-pid");
+        final String lowercase = CreatorProjects.lowercaseCli();
+        final Path project = project(workspace, lowercase);
+        final CompileResult result = ProjectCompiler.compileApplication(lowercase, StandardLibrary.catalog());
+        assertThat(result).isInstanceOf(CompileResult.Compiled.class);
+        final ApplicationBuilder.Artifact stale;
+        try (ApplicationBuilder.DevelopmentBuild publication = ApplicationBuilder.build(
+                project,
+                (CompileResult.Compiled) result
+        )) {
+            stale = publication.artifact();
+        }
+        Files.createDirectories(stale.directory().resolve(".railix-runtime")
+                .resolve(Long.toString(ProcessHandle.current().pid())));
+        Files.writeString(
+                project,
+                lowercase.replace("text.lowercase", "text.uppercase"),
+                StandardCharsets.UTF_8
+        );
+
+        try (CreatorServer ignored = start(project)) {
+            assertThat(stale.directory()).doesNotExist();
+        }
+    }
+
+    @Test
+    void liveUnrelatedPidCannotPreserveAStaleBuildStagingDirectory() throws Exception {
+        final Path workspace = directory.resolve("stale-staging-pid");
+        final Path project = project(workspace);
+        final Path stale = workspace.resolve(".railix/build/.building-"
+                + ProcessHandle.current().pid() + "-stale");
+        Files.createDirectories(stale);
+        Files.writeString(stale.resolve("partial"), "stale", StandardCharsets.UTF_8);
+
+        try (CreatorServer ignored = start(project)) {
+            assertThat(stale).doesNotExist();
+        }
+    }
+
+    @Test
+    void activeBuildStagingLeasePreventsConcurrentCleanup() throws Exception {
+        final Path workspace = directory.resolve("active-staging-lease");
+        final Path project = project(workspace);
+        final Path staging = workspace.resolve(".railix/build/.building-active");
+
+        try (ArtifactLease ignoredLease = ArtifactLease.acquire(staging);
+             CreatorServer ignoredCreator = start(project)) {
+            assertThat(staging).isDirectory();
+        }
+
+        try (CreatorServer ignored = start(project)) {
+            assertThat(staging).doesNotExist();
+        }
+    }
+
+    @Test
+    void startingCreatorPreservesAnAlreadyRunningDevelopmentArtifact() throws Exception {
+        final Path workspace = directory.resolve("running-build-root");
+        final Path project = project(workspace);
+        final DevelopmentRuntimeGeneratedProcess.Build running = developmentBuild(
+                project,
+                CreatorProjects.lowercaseCli()
+        );
+
+        try (var child = DevelopmentRuntimeGeneratedProcess.launch(running).token("running-artifact")) {
+            child.awaitReady();
+            final Path runningArtifact = running.artifact().directory();
+            final String uppercase = CreatorProjects.lowercaseCli().replace("text.lowercase", "text.uppercase");
+            Files.writeString(project, uppercase, StandardCharsets.UTF_8);
+
+            try (CreatorServer creator = start(project)) {
+                final Path creatorArtifact = path(application(creator.baseUri()), "build_path").getParent();
+
+                assertThat(creatorArtifact).isNotEqualTo(runningArtifact).isDirectory();
+                assertThat(runningArtifact).isDirectory();
+                assertThat(child.process().isAlive()).isTrue();
+            }
+        }
+    }
+
+    @Test
+    void rollingCreatorPreservesAnArtifactUsedByAnotherRunningDevelopmentApplication() throws Exception {
+        final Path workspace = directory.resolve("shared-running-artifact");
+        final Path project = project(workspace);
+        final DevelopmentRuntimeGeneratedProcess.Build running = developmentBuild(
+                project,
+                CreatorProjects.lowercaseCli()
+        );
+
+        try (var child = DevelopmentRuntimeGeneratedProcess.launch(running).token("shared-artifact")) {
+            child.awaitReady();
+            try (CreatorServer creator = start(project)) {
+                assertThat(path(application(creator.baseUri()), "build_path").getParent())
+                        .isEqualTo(running.artifact().directory());
+
+                final HttpResponse<String> response = request(
+                        creator.baseUri(),
+                        "POST",
+                        "/api/project",
+                        CreatorProjects.lowercaseCli().replace("text.lowercase", "text.uppercase")
+                );
+
+                assertThat(response.statusCode()).isEqualTo(200);
+                assertThat(running.artifact().directory()).isDirectory();
+                assertThat(child.process().isAlive()).isTrue();
+            }
+        }
+    }
+
+    @Test
     void functionalEditPublishesNewJarAndPidThenRemovesPreviousArtifact() throws Exception {
         final Path project = project(directory.resolve("workspace"));
 
@@ -652,26 +1089,31 @@ final class GeneratedApplicationE2eTest {
             assertThat(number(after, "pid")).isNotEqualTo(number(before, "pid"));
             assertThat(path(after, "build_path")).isNotEqualTo(previousJar).isRegularFile();
             assertThat(previousJar).doesNotExist();
-            assertThat(runResult(creator.baseUri(), "Hello Railix"))
+            assertThat(exampleResult(creator.baseUri(), "command:0"))
                     .isEqualTo(RailixValue.string("HELLO RAILIX"));
         }
     }
 
     @Test
-    void exampleOnlyEditPersistsWithoutRestartingTheApplication() throws Exception {
+    void exampleOnlyEditPublishesANewDevelopmentArtifactAndApplication() throws Exception {
         final Path project = project(directory.resolve("workspace"));
 
         try (CreatorServer creator = start(project)) {
             final RailixValue.ObjectValue before = application(creator.baseUri());
+            final Path previousJar = path(before, "build_path");
             final String edited = CreatorProjects.lowercaseCli().replace("Hello RAILIX", "Different Example");
 
             final HttpResponse<String> response = request(creator.baseUri(), "POST", "/api/project", edited);
             final RailixValue.ObjectValue after = application(creator.baseUri());
 
             assertThat(response.statusCode()).isEqualTo(200);
-            assertThat(number(after, "pid")).isEqualTo(number(before, "pid"));
-            assertThat(path(after, "build_path")).isEqualTo(path(before, "build_path"));
+            assertThat(number(after, "pid")).isNotEqualTo(number(before, "pid"));
+            assertThat(string(after, "fingerprint")).isNotEqualTo(string(before, "fingerprint"));
+            assertThat(path(after, "build_path")).isNotEqualTo(previousJar).isRegularFile();
+            assertThat(previousJar).doesNotExist();
             assertThat(Files.readString(project, StandardCharsets.UTF_8)).contains("Different Example");
+            assertThat(exampleResult(creator.baseUri(), "command:0"))
+                    .isEqualTo(RailixValue.string("different example"));
         }
     }
 
@@ -693,8 +1135,8 @@ final class GeneratedApplicationE2eTest {
             assertThat(response.statusCode()).isEqualTo(422);
             assertThat(number(after, "pid")).isEqualTo(number(before, "pid"));
             assertThat(path(after, "build_path")).isEqualTo(path(before, "build_path")).isRegularFile();
-            assertThat(runResult(creator.baseUri(), "Still Works"))
-                    .isEqualTo(RailixValue.string("still works"));
+            assertThat(exampleResult(creator.baseUri(), "command:0"))
+                    .isEqualTo(RailixValue.string("hello railix"));
         }
     }
 
@@ -719,6 +1161,10 @@ final class GeneratedApplicationE2eTest {
             assertThat(response.statusCode()).isEqualTo(200);
             assertThat(number(after, "pid")).isNotEqualTo(number(before, "pid"));
             assertThat(path(after, "build_path")).isEqualTo(path(before, "build_path"));
+            assertThat(string(after, "state")).isEqualTo("running");
+            assertThat(ProcessHandle.of(number(after, "pid")).orElseThrow().isAlive()).isTrue();
+            assertThat(exampleResult(creator.baseUri(), "command:0"))
+                    .isEqualTo(RailixValue.string("hello railix"));
         }
     }
 
@@ -940,6 +1386,45 @@ final class GeneratedApplicationE2eTest {
                 """;
     }
 
+    private static String authoredExample(final String name, final String payload) {
+        return """
+                {"format":1,"id":"production-example-omission","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
+                    "name":%s,"payload":[%s]
+                  }]}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"end"}
+                ]}
+                """.formatted(
+                RailixJson.write(RailixValue.string(name)),
+                RailixJson.write(RailixValue.string(payload))
+        );
+    }
+
+    private static String runtimeContextProject() {
+        return """
+                {"format":1,"id":"production-runtime-context","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
+                    "name":"runtime","payload":[]
+                  }]},
+                  {"id":"return-runtime","use":"railix.field-manipulation","inputs":{
+                    "field":["context","result"],
+                    "value":[{"option":"field","inputs":{
+                      "source":["context","runtime"]
+                    }}],
+                    "steps":[]
+                  }}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"return-runtime"},
+                  {"from":"return-runtime.next","to":"end"}
+                ]}
+                """;
+    }
+
     private static String ordinalChain(final int steps) {
         final StringBuilder nodes = new StringBuilder("""
                 {"format":1,"id":"maximum-ordinal-cli","nodes":[
@@ -1111,6 +1596,19 @@ final class GeneratedApplicationE2eTest {
         return productionArtifact(project, source);
     }
 
+    private static DevelopmentRuntimeGeneratedProcess.Build developmentBuild(
+            final Path project,
+            final String source
+    ) throws IOException {
+        final CompileResult result = ProjectCompiler.compileApplication(source, StandardLibrary.catalog());
+        if (!(result instanceof CompileResult.Compiled compiled)) {
+            throw new IOException("Development application did not compile: " + result);
+        }
+        try (ApplicationBuilder.DevelopmentBuild build = ApplicationBuilder.build(project, compiled)) {
+            return new DevelopmentRuntimeGeneratedProcess.Build(project, compiled, build.artifact());
+        }
+    }
+
     private static ApplicationBuilder.Artifact productionArtifact(
             final Path project,
             final String source
@@ -1128,18 +1626,31 @@ final class GeneratedApplicationE2eTest {
         return ApplicationBuilder.buildProduction(project, (CompileResult.Compiled) result);
     }
 
-    private static RailixValue runResult(final URI baseUri, final String argument) throws Exception {
-        final HttpResponse<String> response = request(
-                baseUri,
-                "POST",
-                "/api/run/command",
-                "{\"payload\":{\"arguments\":[" + RailixJson.write(RailixValue.string(argument)) + "]}}"
-        );
+    private static RailixValue exampleResult(final URI baseUri, final String id) throws Exception {
+        awaitExamples(baseUri, 1);
+        final HttpResponse<String> response = request(baseUri, "GET", "/api/examples/" + id + "/view", "");
         assertThat(response.statusCode()).isEqualTo(200);
         final RailixJson.Result parsed = RailixJson.parse(response.body());
-        assertThat(parsed).isInstanceOf(RailixJson.Parsed.class);
-        return ((RailixValue.ObjectValue) ((RailixValue.ObjectValue) ((RailixJson.Parsed) parsed).value())
-                .values().get("context")).values().get("result");
+        if (!(parsed instanceof RailixJson.Parsed(RailixValue.ObjectValue view))
+                || !(view.values().get("result") instanceof RailixValue.ObjectValue result)
+                || !(result.values().get("context") instanceof RailixValue.ObjectValue context)
+                || !context.values().containsKey("result")) {
+            throw new AssertionError("Completed Example has no result projection: " + response.body());
+        }
+        return context.values().get("result");
+    }
+
+    private static RailixValue.ObjectValue awaitExamples(final URI baseUri, final long completed) throws Exception {
+        final long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+        RailixValue.ObjectValue examples;
+        do {
+            examples = CreatorServerE2eSupport.examples(baseUri);
+            if (number(examples, "completed") == completed) {
+                return examples;
+            }
+            Thread.sleep(20);
+        } while (System.nanoTime() < deadline);
+        throw new AssertionError("Examples did not complete: " + examples);
     }
 
     private static RailixValue.ObjectValue application(final URI baseUri) throws Exception {
@@ -1228,10 +1739,6 @@ final class GeneratedApplicationE2eTest {
 
     private static long number(final RailixValue.ObjectValue value, final String name) {
         return ((RailixValue.NumberValue) value.values().get(name)).value().longValueExact();
-    }
-
-    private static String stepId(final RailixValue value) {
-        return ((RailixValue.StringValue) ((RailixValue.ObjectValue) value).values().get("id")).value();
     }
 
     private record Build(Path source, Path jar) {

@@ -357,6 +357,21 @@ body[data-build="unavailable"] .build-dot {
   content: "";
 }
 
+.node.example-reached {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgb(23 113 81 / 12%), var(--shadow);
+}
+
+.node.example-uncovered {
+  border-style: dashed;
+  box-shadow: none;
+  opacity: .56;
+}
+
+.node.selected {
+  opacity: 1;
+}
+
 .app-node {
   width: 270px;
   border-top: 4px solid var(--ink);
@@ -938,6 +953,24 @@ textarea {
 
 .check-line input {
   width: auto;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--focus);
+}
+
+.metric-setting .check-line {
+  justify-content: space-between;
+  margin: 0;
+}
+
+.metric-setting input {
+  width: 18px;
+  height: 18px;
+}
+
+.runtime-metrics .section-heading {
+  margin-bottom: 4px;
 }
 
 .nested-step {

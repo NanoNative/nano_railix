@@ -47,41 +47,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @Timeout(90)
 final class CreatorForwardingLifecycleE2eTest {
-    private static final int FORWARD_LIMIT = CreatorServer.MAX_CONCURRENT_FORWARDS;
-    private static final String CONTEXT = "{\"payload\":{\"arguments\":[\"Hello RAILIX\"]}}";
-
     @TempDir
     Path directory;
-
-    @Test
-    void thirtyThirdConcurrentForwardIsRejectedWithoutReadingItsBody() throws Exception {
-        try (CreatorServer creator = start("concurrency-limit");
-             SaturatedRequests requests = SaturatedRequests.open(creator.baseUri(), FORWARD_LIMIT + 1)) {
-            assertThat(requests.awaitRejection())
-                    .contains(" 503 ", "{\"reason\":\"saturated\",\"status\":\"unavailable\"}");
-
-            assertThat(requests.release()).filteredOn(response -> response.contains(" 503 ")).hasSize(1);
-        }
-    }
-
-    @Test
-    void forwardingRecoversAfterAnActualSaturationRejection() throws Exception {
-        try (CreatorServer creator = start("saturation-recovery");
-             SaturatedRequests requests = SaturatedRequests.open(creator.baseUri(), FORWARD_LIMIT + 1)) {
-            assertThat(requests.awaitRejection()).contains(" 503 ");
-            requests.release();
-
-            try (HttpClient client = HttpClient.newHttpClient()) {
-                assertThat(request(client, creator.baseUri(), CONTEXT))
-                        .extracting(HttpResponse::statusCode, HttpResponse::body)
-                        .containsExactly(200, "{\"context\":{\"exit_code\":0,"
-                                + "\"payload\":{\"arguments\":[\"Hello RAILIX\"]},"
-                                + "\"result\":\"hello railix\",\"runtime\":{\"test\":true,"
-                                + "\"trigger\":\"command\"}},\"status\":\"succeeded\",\"steps\":["
-                                + "{\"id\":\"lowercase-text\",\"outcome\":\"ok\"}]}");
-            }
-        }
-    }
 
     @Test
     void sixtyFifthConcurrentRequestIsRejectedBeforeItsBodyIsRead() throws Exception {
@@ -122,61 +89,6 @@ final class CreatorForwardingLifecycleE2eTest {
         }
     }
 
-    @Test
-    void forwardingPermitsAreReleasedAfterSuccessfulCompletion() throws Exception {
-        try (CreatorServer creator = start("completion-release")) {
-            assertWave(creator.baseUri(), CONTEXT, 200);
-            assertWave(creator.baseUri(), CONTEXT, 200);
-        }
-    }
-
-    @Test
-    void forwardingPermitsAreReleasedAfterApplicationRejection() throws Exception {
-        try (CreatorServer creator = start("rejection-release")) {
-            assertWave(creator.baseUri(), "{", 422);
-            assertWave(creator.baseUri(), "{", 422);
-        }
-    }
-
-    @Test
-    void forwardingPermitsAreReleasedAfterChildProcessFailure() throws Exception {
-        try (CreatorServer creator = start("process-failure-release");
-             SaturatedRequests requests = SaturatedRequests.open(creator.baseUri(), FORWARD_LIMIT)) {
-            stop(pid(creator.baseUri()));
-
-            assertThat(requests.complete()).allSatisfy(response ->
-                    assertThat(response).contains(" 503 ", "{\"status\":\"unavailable\"}")
-            );
-            try (HttpClient client = HttpClient.newHttpClient()) {
-                assertThat(request(client, creator.baseUri(), CONTEXT))
-                        .extracting(HttpResponse::statusCode, HttpResponse::body)
-                        .containsExactly(503, "{\"status\":\"unavailable\"}");
-            }
-        }
-    }
-
-    @Test
-    void closeDuringActiveForwardingSynchronouslyStopsTheChildAndReleasesThePort() throws Exception {
-        final CreatorServer creator = start("active-close");
-        final URI uri = creator.baseUri();
-        final long pid = pid(uri);
-        try (SaturatedRequests requests = SaturatedRequests.open(uri, FORWARD_LIMIT + 1)) {
-            assertThat(requests.awaitRejection()).contains(" 503 ");
-
-            final Thread closer = Thread.ofPlatform().start(creator::close);
-            closer.join(Duration.ofSeconds(15));
-
-            assertThat(closer.isAlive()).isFalse();
-            assertThat(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)).isFalse();
-            try (ServerSocket replacement = new ServerSocket()) {
-                replacement.setReuseAddress(true);
-                replacement.bind(new InetSocketAddress("127.0.0.1", uri.getPort()));
-                assertThat(replacement.isBound()).isTrue();
-            }
-        } finally {
-            creator.close();
-        }
-    }
 
     @Test
     void concurrentRepeatedCloseWaitsForProcessShutdownAndPreservesInterruption() throws Exception {
@@ -217,62 +129,82 @@ final class CreatorForwardingLifecycleE2eTest {
     }
 
     @Test
-    void closedDevelopmentApplicationRejectsForwardDeterministically() throws Exception {
+    void unexpectedDevelopmentApplicationExitReleasesItsRuntimeDirectory() throws Exception {
+        final DevelopmentApplication application = application("application-unexpected-exit", 3).activate();
+        final long pid = number(application.snapshot(), "pid");
+        final Path runtime = application.artifact().directory()
+                .resolve(".railix-runtime")
+                .resolve(Long.toString(pid));
+        try {
+            assertThat(runtime).isDirectory();
+
+            ProcessHandle.of(pid).orElseThrow().destroyForcibly();
+
+            assertThat(awaitExit(pid)).isTrue();
+            assertThat(awaitMissing(runtime)).isTrue();
+        } finally {
+            application.close();
+        }
+    }
+
+    @Test
+    void closedDevelopmentApplicationRejectsObservationDeterministically() throws Exception {
         final DevelopmentApplication application = application("application-closed", 3);
         application.close();
 
-        assertThat(application.run("command", CONTEXT.getBytes(StandardCharsets.UTF_8), true))
+        assertThat(application.metrics())
                 .extracting(DevelopmentApplication.Response::status, DevelopmentApplication.Response::body)
                 .containsExactly(503, "{\"status\":\"unavailable\"}");
     }
 
     @Test
-    void interruptedDevelopmentApplicationRequestReturnsCancelledAndPreservesInterruption() throws Exception {
-        final Path workspace = directory.resolve("application-interrupted-request");
-        final Path marker = workspace.resolve("slow.started");
-        Files.createDirectories(workspace);
-        final StepCatalog catalog = GeneratedApplicationFixture.installedCatalog(
-                workspace,
-                List.of(slowStep(750)),
-                SlowStepHandler.class
-        );
-        final String source = slowProject("application-interrupted-request", marker, 750);
-        final CompileResult result = ProjectCompiler.compileApplication(source, catalog);
-        assertThat(result).isInstanceOf(CompileResult.Compiled.class);
-        final Path project = workspace.resolve("railix.project.json");
-        Files.writeString(project, source, StandardCharsets.UTF_8);
-
-        final DevelopmentApplication application = DevelopmentApplication.start(
-                4,
-                project,
-                (CompileResult.Compiled) result
-        );
-        final CompletableFuture<InterruptedRun> completed = new CompletableFuture<>();
-        final Thread caller = Thread.ofPlatform().start(() -> {
-            try {
-                final DevelopmentApplication.Response response = application.run(
-                        "command",
-                        ("{\"payload\":{\"marker\":\"" + json(marker.toString()) + "\"}}")
-                                .getBytes(StandardCharsets.UTF_8),
-                        true
-                );
-                completed.complete(new InterruptedRun(response, Thread.currentThread().isInterrupted()));
-            } catch (final Throwable failure) {
-                completed.completeExceptionally(failure);
-            }
-        });
+    void interruptedDevelopmentApplicationObservationReturnsCancelledAndPreservesInterruption() throws Exception {
+        final DevelopmentApplication application = application("application-interrupted-request", 4);
         try {
-            await(marker);
-            caller.interrupt();
+            Thread.currentThread().interrupt();
+            final DevelopmentApplication.Response response = application.metrics();
 
-            final InterruptedRun interrupted = completed.get(5, TimeUnit.SECONDS);
-            assertThat(interrupted.response())
+            assertThat(response)
                     .extracting(DevelopmentApplication.Response::status, DevelopmentApplication.Response::body)
                     .containsExactly(409, "{\"status\":\"cancelled\"}");
-            assertThat(interrupted.interrupted()).isTrue();
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
         } finally {
-            caller.interrupt();
-            caller.join(Duration.ofSeconds(5));
+            Thread.interrupted();
+            application.close();
+        }
+    }
+
+    @Test
+    void interruptedDevelopmentApplicationExampleObservationFailsAndPreservesInterruption() throws Exception {
+        final DevelopmentApplication application = application("application-interrupted-example-request", 5);
+        try {
+            Thread.currentThread().interrupt();
+
+            assertThatThrownBy(() -> application.examples(""))
+                    .isInstanceOf(IOException.class)
+                    .hasMessage("Application Example observation was interrupted.");
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+            application.close();
+        }
+    }
+
+    @Test
+    void interruptedDevelopmentApplicationExampleObservationReleasesOwnershipBeforeShutdown() throws Exception {
+        final DevelopmentApplication application = application("application-interrupted-example-release", 6);
+        try {
+            Thread.currentThread().interrupt();
+            assertThatThrownBy(() -> application.examples(""))
+                    .isInstanceOf(IOException.class);
+            Thread.interrupted();
+
+            final long started = System.nanoTime();
+            application.close();
+            assertThat(Duration.ofNanos(System.nanoTime() - started))
+                    .isLessThan(Duration.ofSeconds(10));
+        } finally {
+            Thread.interrupted();
             application.close();
         }
     }
@@ -287,10 +219,6 @@ final class CreatorForwardingLifecycleE2eTest {
         );
         List<Long> pids = List.of();
         try {
-            assertThat(application.run(
-                    "command",
-                    "{\"payload\":{\"marker\":\"" + json(marker.toString()) + "\"}}"
-            ).status()).isEqualTo(200);
             pids = awaitPids(marker, 2);
 
             application.close();
@@ -312,10 +240,6 @@ final class CreatorForwardingLifecycleE2eTest {
         );
         List<Long> pids = List.of();
         try {
-            assertThat(application.run(
-                    "command",
-                    "{\"payload\":{\"marker\":\"" + json(marker.toString()) + "\"}}"
-            ).status()).isEqualTo(200);
             pids = awaitPids(marker, 1);
 
             application.close();
@@ -334,7 +258,7 @@ final class CreatorForwardingLifecycleE2eTest {
     }
 
     @Test
-    void developmentApplicationCloseLetsAnActiveStepFinishBeforeStoppingTheChild() throws Exception {
+    void developmentApplicationCloseCancelsAnActiveExampleAndStopsTheChild() throws Exception {
         final Path marker = directory.resolve("graceful-close.started");
         final StepDefinition slow = slowStep(750);
         final GeneratedApplicationFixture application = GeneratedApplicationFixture.start(
@@ -343,25 +267,19 @@ final class CreatorForwardingLifecycleE2eTest {
                 List.of(slow),
                 SlowStepHandler.class
         );
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            final Future<DevelopmentApplication.Response> response = executor.submit(() ->
-                    application.run("command", "{\"payload\":{\"marker\":\""
-                            + json(marker.toString()) + "\"}}")
-            );
+        try {
             await(marker);
 
             application.close();
 
-            assertThat(response.get(5, TimeUnit.SECONDS))
-                    .extracting(DevelopmentApplication.Response::status)
-                    .isEqualTo(200);
+            assertThat(marker).exists();
         } finally {
             application.close();
         }
     }
 
     @Test
-    void creatorCloseLetsAnActiveStepFinishBeforeStoppingTheChild() throws Exception {
+    void creatorCloseCancelsAnActiveExampleBeforeStoppingTheChild() throws Exception {
         final Path workspace = directory.resolve("creator-graceful-close");
         final Path project = workspace.resolve("railix.project.json");
         final Path marker = workspace.resolve("slow.started");
@@ -374,24 +292,20 @@ final class CreatorForwardingLifecycleE2eTest {
                 StandardCharsets.UTF_8
         );
         final CreatorServer creator = CreatorServer.start(0, project, workspace.resolve("railix-home"));
-        try (HttpClient client = HttpClient.newHttpClient();
-             ExecutorService requests = Executors.newVirtualThreadPerTaskExecutor()) {
-            final Future<HttpResponse<String>> response = requests.submit(() ->
-                    request(client, creator.baseUri(), "{\"payload\":{\"marker\":\""
-                            + json(marker.toString()) + "\"}}")
-            );
+        final long childPid = pid(creator.baseUri());
+        try {
             await(marker);
 
             creator.close();
 
-            assertThat(response.get(5, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+            assertThat(awaitExit(childPid)).isTrue();
         } finally {
             creator.close();
         }
     }
 
     @Test
-    void rollingReplacementForciblyStopsADrainedOutChildAndCommitsTheCandidate() throws Exception {
+    void rollingReplacementCancelsActiveExamplesAndCommitsTheCandidate() throws Exception {
         final Path workspace = directory.resolve("drain-timeout-roll");
         final Path project = workspace.resolve("railix.project.json");
         final Path marker = workspace.resolve("slow.started");
@@ -408,14 +322,8 @@ final class CreatorForwardingLifecycleE2eTest {
         );
 
         try (CreatorServer creator = CreatorServer.start(0, project, workspace.resolve("railix-home"));
-             HttpClient client = HttpClient.newHttpClient();
              ExecutorService requests = Executors.newVirtualThreadPerTaskExecutor()) {
             final long previousPid = pid(creator.baseUri());
-            final Future<HttpResponse<String>> active = requests.submit(() -> request(
-                    client,
-                    creator.baseUri(),
-                    "{\"payload\":{\"marker\":\"" + json(marker.toString()) + "\"}}"
-            ));
             await(marker);
 
             final String replacement = CreatorProjects.lowercaseCli();
@@ -423,8 +331,6 @@ final class CreatorForwardingLifecycleE2eTest {
                     postProject(creator.baseUri(), replacement)
             );
 
-            assertThatThrownBy(() -> active.get(11, TimeUnit.SECONDS))
-                    .isInstanceOf(java.util.concurrent.TimeoutException.class);
             final HttpResponse<String> response = rolling.get(20, TimeUnit.SECONDS);
 
             assertThat(response.statusCode()).isEqualTo(200);
@@ -432,7 +338,6 @@ final class CreatorForwardingLifecycleE2eTest {
             assertThat(awaitExit(previousPid)).isTrue();
             assertThat(Files.readString(project)).contains("\"id\":\"atomic-byte-forge\"");
             assertThat(response.body()).doesNotContain("retirement");
-            assertThat(active.get(5, TimeUnit.SECONDS).statusCode()).isEqualTo(500);
         }
     }
 
@@ -454,14 +359,8 @@ final class CreatorForwardingLifecycleE2eTest {
         );
 
         try (CreatorServer creator = CreatorServer.start(0, project, workspace.resolve("railix-home"));
-             HttpClient client = HttpClient.newHttpClient();
              ExecutorService requests = Executors.newVirtualThreadPerTaskExecutor()) {
             final long previousPid = pid(creator.baseUri());
-            final Future<HttpResponse<String>> active = requests.submit(() -> request(
-                    client,
-                    creator.baseUri(),
-                    "{\"payload\":{\"marker\":\"" + json(marker.toString()) + "\"}}"
-            ));
             await(marker);
             final Future<HttpResponse<String>> rolling = requests.submit(() ->
                     postProject(creator.baseUri(), CreatorProjects.lowercaseCli())
@@ -469,7 +368,6 @@ final class CreatorForwardingLifecycleE2eTest {
 
             awaitPidChange(creator.baseUri(), previousPid);
             assertThat(application(creator.baseUri()).values()).doesNotContainKey("retirement");
-            assertThat(active.get(6, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
             assertThat(rolling.get(6, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
         }
     }
@@ -484,7 +382,8 @@ final class CreatorForwardingLifecycleE2eTest {
             final RailixValue.ObjectValue before = application(creator.baseUri());
             final long previousPid = number(before, "pid");
             final Path previousArtifact = Path.of(text(before, "build_path")).getParent();
-            final Set<PosixFilePermission> permissions = makeReadOnly(previousArtifact);
+            final Path cleanupBoundary = previousArtifact.resolve("classes");
+            final Set<PosixFilePermission> permissions = makeReadOnly(cleanupBoundary);
             try {
                 final String replacement = CreatorProjects.empty("cleanup-warning-after");
                 final HttpResponse<String> response = postProject(creator.baseUri(), replacement);
@@ -499,7 +398,7 @@ final class CreatorForwardingLifecycleE2eTest {
                 assertThat(Files.readString(project)).contains("cleanup-warning-after");
                 assertThat(previousArtifact).exists();
             } finally {
-                restore(previousArtifact, permissions);
+                restore(cleanupBoundary, permissions);
             }
         }
     }
@@ -512,7 +411,8 @@ final class CreatorForwardingLifecycleE2eTest {
 
         try (CreatorServer creator = CreatorServer.start(0, project, directory.resolve("railix-home"))) {
             final Path previousArtifact = Path.of(text(application(creator.baseUri()), "build_path")).getParent();
-            final Set<PosixFilePermission> permissions = makeReadOnly(previousArtifact);
+            final Path cleanupBoundary = previousArtifact.resolve("classes");
+            final Set<PosixFilePermission> permissions = makeReadOnly(cleanupBoundary);
             try {
                 assertThat(postProject(creator.baseUri(), CreatorProjects.empty("cleanup-block-active")).statusCode())
                         .isEqualTo(200);
@@ -534,7 +434,7 @@ final class CreatorForwardingLifecycleE2eTest {
                 assertThat(Files.readString(project)).isEqualTo(persisted);
                 assertThat(artifacts(project)).isEqualTo(artifacts);
             } finally {
-                restore(previousArtifact, permissions);
+                restore(cleanupBoundary, permissions);
             }
         }
     }
@@ -547,13 +447,14 @@ final class CreatorForwardingLifecycleE2eTest {
 
         try (CreatorServer creator = CreatorServer.start(0, project, directory.resolve("railix-home"))) {
             final Path retiredArtifact = Path.of(text(application(creator.baseUri()), "build_path")).getParent();
-            final Set<PosixFilePermission> permissions = makeReadOnly(retiredArtifact);
+            final Path cleanupBoundary = retiredArtifact.resolve("classes");
+            final Set<PosixFilePermission> permissions = makeReadOnly(cleanupBoundary);
             assertThat(postProject(creator.baseUri(), CreatorProjects.empty("cleanup-recovery-active")).statusCode())
                     .isEqualTo(200);
             final RailixValue.ObjectValue active = application(creator.baseUri());
             final long activePid = number(active, "pid");
             final Path activeArtifact = Path.of(text(active, "build_path")).getParent();
-            restore(retiredArtifact, permissions);
+            restore(cleanupBoundary, permissions);
 
             final HttpResponse<String> recovered = postProject(
                     creator.baseUri(),
@@ -579,7 +480,8 @@ final class CreatorForwardingLifecycleE2eTest {
         final CreatorServer creator = CreatorServer.start(0, project, directory.resolve("railix-home"));
         final URI uri = creator.baseUri();
         final Path retiredArtifact = Path.of(text(application(uri), "build_path")).getParent();
-        final Set<PosixFilePermission> permissions = makeReadOnly(retiredArtifact);
+        final Path cleanupBoundary = retiredArtifact.resolve("classes");
+        final Set<PosixFilePermission> permissions = makeReadOnly(cleanupBoundary);
         assertThat(postProject(uri, CreatorProjects.empty("close-cleanup-active")).statusCode()).isEqualTo(200);
         final long activePid = pid(uri);
 
@@ -589,7 +491,7 @@ final class CreatorForwardingLifecycleE2eTest {
         assertThat(retiredArtifact).exists();
         assertThat(ProcessHandle.of(activePid).map(ProcessHandle::isAlive).orElse(false)).isFalse();
 
-        restore(retiredArtifact, permissions);
+        restore(cleanupBoundary, permissions);
         creator.close();
 
         assertThat(retiredArtifact).doesNotExist();
@@ -655,7 +557,9 @@ final class CreatorForwardingLifecycleE2eTest {
         return """
                 {"format":1,"id":"%s","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
-                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
+                  {"id":"command","use":"railix.trigger.cli","inputs":{
+                    "target":["context","payload"]
+                  },"examples":[{
                     "name":"slow","payload":{"marker":"%s"}
                   }]},
                   {"id":"slow","use":"test.slow","inputs":{"delay_millis":%d}}
@@ -681,7 +585,9 @@ final class CreatorForwardingLifecycleE2eTest {
         final String project = """
                 {"format":1,"id":"%s","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
-                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
+                  {"id":"command","use":"railix.trigger.cli","inputs":{
+                    "target":["context","payload"]
+                  },"examples":[{
                     "name":"process-tree","payload":{"marker":"%s"}
                   }]},
                   {"id":"process-tree","use":"test.process-tree","inputs":{
@@ -791,40 +697,6 @@ final class CreatorForwardingLifecycleE2eTest {
         return reference.get() == null;
     }
 
-    private static void assertWave(final URI uri, final String body, final int expectedStatus) throws Exception {
-        try (HttpClient client = HttpClient.newHttpClient();
-             ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            final CountDownLatch start = new CountDownLatch(1);
-            final List<Future<HttpResponse<String>>> responses = new ArrayList<>();
-            for (int request = 0; request < FORWARD_LIMIT; request++) {
-                responses.add(executor.submit(() -> {
-                    start.await();
-                    return request(client, uri, body);
-                }));
-            }
-            start.countDown();
-            for (final Future<HttpResponse<String>> response : responses) {
-                assertThat(response.get(20, TimeUnit.SECONDS).statusCode()).isEqualTo(expectedStatus);
-            }
-        }
-    }
-
-    private static HttpResponse<String> request(
-            final HttpClient client,
-            final URI uri,
-            final String body
-    ) throws IOException, InterruptedException {
-        return client.send(
-                HttpRequest.newBuilder(uri.resolve("/api/run/command"))
-                        .timeout(Duration.ofSeconds(40))
-                        .header("Content-Type", "application/json")
-                        .header("X-Railix-Creator-Token", token(uri))
-                        .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-                        .build(),
-                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
-        );
-    }
-
     private static long pid(final URI uri) throws Exception {
         return number(application(uri), "pid");
     }
@@ -863,6 +735,14 @@ final class CreatorForwardingLifecycleE2eTest {
         return ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false) == false;
     }
 
+    private static boolean awaitMissing(final Path path) throws InterruptedException {
+        final long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (Files.exists(path) && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        return Files.notExists(path);
+    }
+
     private static List<Long> awaitPids(final Path marker, final int count) throws Exception {
         final long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
         List<String> values = List.of();
@@ -881,7 +761,17 @@ final class CreatorForwardingLifecycleE2eTest {
     }
 
     private static void stopIfAlive(final long pid) {
-        ProcessHandle.of(pid).filter(ProcessHandle::isAlive).ifPresent(ProcessHandle::destroyForcibly);
+        final var process = ProcessHandle.of(pid);
+        if (process.isEmpty() || !process.orElseThrow().isAlive()) {
+            return;
+        }
+        process.orElseThrow().destroyForcibly();
+        try {
+            assertThat(awaitExit(pid)).isTrue();
+        } catch (final InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("Test process cleanup was interrupted: " + pid, exception);
+        }
     }
 
     private static void awaitPidChange(final URI uri, final long previousPid) throws Exception {
@@ -943,10 +833,6 @@ final class CreatorForwardingLifecycleE2eTest {
             this.sockets = sockets;
             this.readers = readers;
             this.responses = responses;
-        }
-
-        static SaturatedRequests open(final URI uri, final int count) throws IOException {
-            return open(uri, count, "/api/run/command");
         }
 
         static SaturatedRequests openProject(final URI uri, final int count) throws IOException {
@@ -1086,9 +972,6 @@ final class CreatorForwardingLifecycleE2eTest {
     }
 
     private record CloseResult(boolean interrupted, boolean processAlive) {
-    }
-
-    private record InterruptedRun(DevelopmentApplication.Response response, boolean interrupted) {
     }
 
     private static String token(final URI uri) {

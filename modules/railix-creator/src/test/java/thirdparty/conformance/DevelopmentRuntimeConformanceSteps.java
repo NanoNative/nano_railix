@@ -33,6 +33,19 @@ public final class DevelopmentRuntimeConformanceSteps {
         }
     }
 
+    /** Writes the executing generated application's process identifier through a declared path. */
+    public static final class ProcessId implements StepHandler {
+        /** Creates one stateless handler. */
+        public ProcessId() {
+        }
+
+        @Override
+        public StepResult run(final StepInput input) {
+            return StepResult.outcome(input.primaryOutcome())
+                    .write("target", RailixValue.number(ProcessHandle.current().pid()));
+        }
+    }
+
     /** Executes the declared nested program and writes its final value through the declared path. */
     public static final class Operation implements StepHandler {
         /** Creates one stateless handler. */
@@ -54,6 +67,18 @@ public final class DevelopmentRuntimeConformanceSteps {
         @Override
         public StepResult run(final StepInput input) {
             throw new IllegalStateException("private conformance detail");
+        }
+    }
+
+    /** Escapes the ordinary Step exception contract to prove process-boundary example finalization. */
+    public static final class Fatal implements StepHandler {
+        /** Creates one stateless handler. */
+        public Fatal() {
+        }
+
+        @Override
+        public StepResult run(final StepInput input) {
+            throw new AssertionError("fatal conformance detail");
         }
     }
 
@@ -104,6 +129,19 @@ public final class DevelopmentRuntimeConformanceSteps {
         }
     }
 
+    /** Writes enough data to exceed one development trace event while remaining valid workflow state. */
+    public static final class OversizedTrace implements StepHandler {
+        /** Creates one stateless handler. */
+        public OversizedTrace() {
+        }
+
+        @Override
+        public StepResult run(final StepInput input) {
+            return StepResult.outcome(input.primaryOutcome())
+                    .write("target", RailixValue.string("x".repeat(3 * 1_024 * 1_024)));
+        }
+    }
+
     /** Signals entry over loopback and then waits until runtime shutdown interrupts the invocation. */
     public static final class Block implements StepHandler {
         /** Creates one stateless handler. */
@@ -114,6 +152,49 @@ public final class DevelopmentRuntimeConformanceSteps {
         public StepResult run(final StepInput input) throws InterruptedException {
             signal(port(input, "entered_port"));
             new CountDownLatch(1).await();
+            return StepResult.outcome(input.primaryOutcome());
+        }
+    }
+
+    /** Completes normally after interruption so cancellation acknowledgement cannot be optimistic. */
+    public static final class IgnoreInterrupt implements StepHandler {
+        /** Creates one stateless handler. */
+        public IgnoreInterrupt() {
+        }
+
+        @Override
+        public StepResult run(final StepInput input) {
+            signal(port(input, "entered_port"));
+            try {
+                new CountDownLatch(1).await();
+            } catch (final InterruptedException ignored) {
+                // The contract permits third-party code to consume interruption; Railix must report what happened.
+            }
+            return StepResult.outcome(input.primaryOutcome());
+        }
+    }
+
+    /** Keeps working briefly after interruption to prove bounded cancellation acknowledgement. */
+    public static final class DelayedIgnoreInterrupt implements StepHandler {
+        /** Creates one stateless handler. */
+        public DelayedIgnoreInterrupt() {
+        }
+
+        @Override
+        public StepResult run(final StepInput input) {
+            signal(port(input, "entered_port"));
+            try {
+                new CountDownLatch(1).await();
+            } catch (final InterruptedException ignored) {
+                input.optionalValue("cancelled_port").ifPresent(value ->
+                        signal(port(value, "cancelled_port"))
+                );
+                try {
+                    Thread.sleep(2_500);
+                } catch (final InterruptedException repeated) {
+                    Thread.interrupted();
+                }
+            }
             return StepResult.outcome(input.primaryOutcome());
         }
     }
@@ -148,6 +229,28 @@ public final class DevelopmentRuntimeConformanceSteps {
         }
     }
 
+    /** Starts one persistent child so the forked-process harness must reclaim the complete tree. */
+    public static final class ProcessTreeMain {
+        private ProcessTreeMain() {
+        }
+
+        /** Prints the child PID and waits until the owning harness closes this process. */
+        public static void main(final String[] arguments) throws Exception {
+            final Process child = new ProcessBuilder(
+                    Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                    "-cp",
+                    System.getProperty("java.class.path"),
+                    ProcessTreeStepHandler.class.getName(),
+                    "sleep"
+            ).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+            System.out.println(child.pid());
+            System.out.flush();
+            new CountDownLatch(1).await();
+        }
+    }
+
     /** Emits one unterminated output burst for forked process-drain verification. */
     public static final class NoisyMain {
         private NoisyMain() {
@@ -160,7 +263,11 @@ public final class DevelopmentRuntimeConformanceSteps {
     }
 
     private static int port(final StepInput input, final String name) {
-        return switch (input.value(name)) {
+        return port(input.value(name), name);
+    }
+
+    private static int port(final RailixValue value, final String name) {
+        return switch (value) {
             case RailixValue.NumberValue number -> number.value().intValueExact();
             default -> throw new IllegalArgumentException("Signal port must be a number: " + name);
         };
