@@ -595,7 +595,9 @@ final class RailixPackageIT {
     void packagedExecutableRejectsAMissingCommand() throws Exception {
         assertThat(runExecutable(Map.of())).isEqualTo(new ProcessResult(
                 2,
-                "Usage: railix creator [project-file] [port]\n       railix run [arguments...]"
+                "Usage: railix creator [project-file] [port]\n"
+                        + "       railix run [arguments...]\n"
+                        + "       railix serve [port]"
         ));
     }
 

@@ -20,8 +20,12 @@ import java.util.List;
 /** Starts Railix Creator. Generated project applications are independent executable JARs. */
 public final class RailixMain {
     private static final int DEFAULT_PORT = 0;
+    private static final int DEFAULT_HTTP_PORT = 8080;
     private static final String CREATOR_USAGE = "Usage: railix creator [project-file] [port]";
-    private static final String USAGE = CREATOR_USAGE + "\n       railix run [arguments...]";
+    private static final String SERVE_USAGE = "Usage: railix serve [port]";
+    private static final String USAGE = CREATOR_USAGE + "\n"
+            + "       railix run [arguments...]\n"
+            + "       railix serve [port]";
 
     private RailixMain() {
     }
@@ -40,31 +44,14 @@ public final class RailixMain {
         return switch (arguments[0]) {
             case "creator" -> creator(arguments);
             case "run" -> runApplication(arguments);
+            case "serve" -> serveApplication(arguments);
             default -> reject("Unknown Railix command: " + arguments[0] + ".");
         };
     }
 
     private static int runApplication(final String[] arguments) {
-        final Path project = Path.of("railix.project.json");
         try {
-            final String source = readApplicationProject(project);
-            final Path absoluteProject = project.toAbsolutePath().normalize();
-            final Path dependencyLock = absoluteProject.resolveSibling("railix.dependencies.lock.json");
-            final StepCatalog catalog = Files.exists(dependencyLock)
-                    ? StandardLibrary.catalog().install(
-                            dependencyLock,
-                            Path.of(System.getProperty("user.home"), ".railix", "artifacts")
-                    )
-                    : StandardLibrary.catalog();
-            final CompileResult result = ProjectCompiler.compileApplication(source, catalog);
-            if (result instanceof CompileResult.Rejected rejected) {
-                final Diagnostic diagnostic = rejected.diagnostics().getFirst();
-                return reject(diagnostic.code() + " " + diagnostic.path() + " " + diagnostic.message());
-            }
-            final Path jar = ApplicationBuilder.buildProduction(
-                    absoluteProject,
-                    (CompileResult.Compiled) result
-            ).jar();
+            final Path jar = applicationJar();
             final List<String> command = new ArrayList<>();
             command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
             command.add("-jar");
@@ -74,6 +61,50 @@ public final class RailixMain {
         } catch (final IOException exception) {
             return reject(exception.getMessage());
         }
+    }
+
+    private static int serveApplication(final String[] arguments) {
+        if (arguments.length > 2) {
+            return reject(SERVE_USAGE);
+        }
+        try {
+            final Path jar = applicationJar();
+            final int port = arguments.length > 1 ? Integer.parseInt(arguments[1]) : DEFAULT_HTTP_PORT;
+            final List<String> command = new ArrayList<>();
+            command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
+            command.add("-jar");
+            command.add(jar.toString());
+            command.add("--railix-http");
+            command.add("127.0.0.1");
+            command.add(Integer.toString(port));
+            return waitFor(new ProcessBuilder(command).inheritIO().start());
+        } catch (final NumberFormatException exception) {
+            return reject("HTTP port must be a number.");
+        } catch (final IOException exception) {
+            return reject(exception.getMessage());
+        }
+    }
+
+    private static Path applicationJar() throws IOException {
+        final Path project = Path.of("railix.project.json");
+        final String source = readApplicationProject(project);
+        final Path absoluteProject = project.toAbsolutePath().normalize();
+        final Path dependencyLock = absoluteProject.resolveSibling("railix.dependencies.lock.json");
+        final StepCatalog catalog = Files.exists(dependencyLock)
+                ? StandardLibrary.catalog().install(
+                        dependencyLock,
+                        Path.of(System.getProperty("user.home"), ".railix", "artifacts")
+                )
+                : StandardLibrary.catalog();
+        final CompileResult result = ProjectCompiler.compileApplication(source, catalog);
+        if (result instanceof CompileResult.Rejected rejected) {
+            final Diagnostic diagnostic = rejected.diagnostics().getFirst();
+            throw new IOException(diagnostic.code() + " " + diagnostic.path() + " " + diagnostic.message());
+        }
+        return ApplicationBuilder.buildProduction(
+                absoluteProject,
+                (CompileResult.Compiled) result
+        ).jar();
     }
 
     private static String readApplicationProject(final Path project) throws IOException {

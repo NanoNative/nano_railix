@@ -433,7 +433,7 @@ final class StepDependencyLockE2eTest {
             final List<StepCatalog.Artifact> artifacts,
             final String contractDigest
     ) {
-        return new StepCatalog.Implementation(className, classEntry, ownership, artifacts, contractDigest);
+        return new StepCatalog.Implementation(className, classEntry, ownership, artifacts, contractDigest, List.of());
     }
 
     private static String sha256(final byte[] bytes) {

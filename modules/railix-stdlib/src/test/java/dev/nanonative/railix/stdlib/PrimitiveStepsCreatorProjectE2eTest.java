@@ -70,6 +70,41 @@ class PrimitiveStepsCreatorProjectE2eTest {
     }
 
     @Test
+    void httpTriggerDeclaresRequestAndResponseBoundary() {
+        final StepDefinition definition = StandardLibrary.catalog()
+                .find("railix.trigger.http")
+                .orElseThrow();
+
+        assertThat(definition.kind()).isEqualTo(StepDefinition.Kind.TRIGGER);
+        assertThat(definition.source()).contains(new StepDefinition.Source(
+                "application.http",
+                Map.of("body", "body", "headers", "headers", "status", "status")
+        ));
+        assertThat(definition.receives()).extracting(StepDefinition.Port::name)
+                .containsExactly("request");
+        assertThat(definition.inputs()).extracting(StepDefinition.Field::name)
+                .containsExactly("target");
+        assertThat(definition.results()).extracting(StepDefinition.Result::name)
+                .containsExactly("body", "headers", "status");
+    }
+
+    @Test
+    void httpClientDeclaresGenericRequestInputsAndOneResponseOutput() {
+        final StepDefinition definition = StandardLibrary.catalog()
+                .find("railix.http.client")
+                .orElseThrow();
+
+        assertThat(definition.kind()).isEqualTo(StepDefinition.Kind.STEP);
+        assertThat(definition.receives()).extracting(StepDefinition.Port::name)
+                .containsExactly("body");
+        assertThat(definition.inputs()).extracting(StepDefinition.Field::name)
+                .containsExactly("url", "method", "headers");
+        assertThat(definition.returns()).extracting(StepDefinition.Port::name)
+                .containsExactly("response");
+        assertThat(definition.outcomes()).containsExactly("next");
+    }
+
+    @Test
     void filterDeclaresAnOrdinaryStepWithGenericConditions() {
         final StepDefinition definition = StandardLibrary.catalog()
                 .find("railix.filter")

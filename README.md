@@ -47,6 +47,7 @@ fallback graph, Node runtime, or Homebrew package.
 See [ROADMAP.md](ROADMAP.md) for exact progress and unsupported scope. [ADR
 0020](adr/0020-creator-first-application-graph.md) owns the active graph, metadata, and workflow
 context contract.
+[ADR 0022](adr/0022-http-ingress-and-step-owned-jdk-modules.md) owns the initial HTTP ingress/client boundary.
 
 ## Build And Start
 
@@ -168,6 +169,42 @@ without merging their values. Run a built CLI project as a one-shot application 
 The CLI Trigger writes the ordered arguments to its declared target path, by default
 `context.payload.arguments`. A non-null result is printed as canonical JSON; the numeric exit code
 controls process status.
+
+Serve a built HTTP project as a loopback application with:
+
+```sh
+(cd examples/auth-http-app && "$RAILIX" serve 8080)
+```
+
+`railix serve [port]` builds the project and starts the generated application JAR with Railix's  internal `--railix-http` launcher flag.
+
+```json
+{
+  "method": "POST",
+  "path": "/login",
+  "query": "",
+  "headers": {
+    "content-type": [
+      "application/json"
+    ]
+  },
+  "body": {
+    "email": "alice@example.com",
+    "password": "xxxxxx"
+  }
+}
+```
+
+Flow responses come from ordinary context values mapped through the Trigger response slots:
+`body`, `headers` and `status`. JSON request bodies are parsed when the `Content-Type` is JSON;
+non-JSON UTF-8 bodies are exposed as strings; empty bodies are JSON `null`. Invalid JSON, invalid
+UTF-8 and bodies over the current one-megabyte limit are rejected before workflow execution.
+
+The HTTP Client is an ordinary Step. It takes authored `url`, `method` and `headers`, receives an
+optional dynamic `body`, and returns a `response` object containing `status`, `headers` and `body`.
+The proxy example in [`examples/auth-proxy-http-app`](examples/auth-proxy-http-app) forwards the
+incoming request body to [`examples/auth-http-app`](examples/auth-http-app), demonstrating one
+Railix app calling another over HTTP.
 
 ## Creator Metadata
 
@@ -344,8 +381,8 @@ the reusable Step template remain roadmap Item 4.
 
 - `railix-core`: canonical values, Step contracts, project validation, Java application generation,
   generated-application runtime contracts, and stateless workflow execution.
-- `railix-stdlib`: App, CLI Trigger, Field Manipulation, Filter, Choice, Switch, and built-in total
-  or explicitly fallible unary Steps.
+- `railix-stdlib`: App, CLI Trigger, HTTP Trigger, HTTP Client, Field Manipulation, Filter, Choice,
+  Switch, and built-in total or explicitly fallible unary Steps.
 - `railix-creator`: Creator HTTP/UI, optional development-only run and preview HTTP capability,
   rolling child JVM, launcher, and executable shaded JAR.
 

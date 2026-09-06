@@ -736,10 +736,17 @@ public final class StepDefinition {
         }
     }
 
-    record ImplementationAddress(String sourceName, String classEntry) {
+    record ImplementationAddress(String sourceName, String classEntry, List<String> jdkModules) {
         ImplementationAddress {
             sourceName = implementationName(sourceName);
             classEntry = implementationEntry(classEntry);
+            if (jdkModules == null) {
+                throw new IllegalArgumentException("Step implementation JDK modules cannot be Java null.");
+            }
+            jdkModules = List.copyOf(jdkModules.stream()
+                    .map(StepDefinition::jdkModule)
+                    .toList());
+            distinct(jdkModules, "Step implementation JDK modules");
             final String binaryName = classEntry.substring(0, classEntry.length() - ".class".length())
                     .replace('/', '.');
             if (!sourceName.equals(binaryName) && !sourceName.equals(binaryName.replace('$', '.'))) {
@@ -1370,8 +1377,25 @@ public final class StepDefinition {
          * @return immutable executable Step definition
          */
         public StepDefinition run(final Class<? extends StepHandler> implementation) {
+            return run(implementation, new String[0]);
+        }
+
+        /**
+         * Completes an executable definition and declares JDK modules required at compilation time.
+         *
+         * @param implementation stateless or thread-safe executable behavior owned by a named Java class
+         * @param jdkModules Java SE/JDK modules required by the implementation
+         * @return immutable executable Step definition
+         */
+        public StepDefinition run(
+                final Class<? extends StepHandler> implementation,
+                final String... jdkModules
+        ) {
             if (implementation == null) {
                 throw new IllegalArgumentException("Step implementation cannot be Java null.");
+            }
+            if (jdkModules == null) {
+                throw new IllegalArgumentException("Step implementation JDK modules cannot be Java null.");
             }
             final String canonicalName = implementation.getCanonicalName();
             if (canonicalName == null) {
@@ -1383,7 +1407,8 @@ public final class StepDefinition {
                     this,
                     new ImplementationAddress(
                             canonicalName,
-                            implementation.getName().replace('.', '/') + ".class"
+                            implementation.getName().replace('.', '/') + ".class",
+                            jdkModules(jdkModules)
                     )
             );
         }
@@ -1392,9 +1417,33 @@ public final class StepDefinition {
         StepDefinition implementedBy(final String className, final String classEntry) {
             return new StepDefinition(
                     this,
-                    new ImplementationAddress(className, classEntry)
+                    new ImplementationAddress(className, classEntry, List.of())
             );
         }
+    }
+
+    private static List<String> jdkModules(final String... modules) {
+        final List<String> result = new ArrayList<>();
+        for (final String module : modules) {
+            result.add(jdkModule(module));
+        }
+        return result;
+    }
+
+    private static String jdkModule(final String module) {
+        final String value = requiredText(module, "Step implementation JDK module");
+        final String[] parts = value.split("\\.", -1);
+        for (final String part : parts) {
+            if (part.isEmpty() || !Character.isJavaIdentifierStart(part.charAt(0))) {
+                throw new IllegalArgumentException("Step implementation JDK module must be a Java module name.");
+            }
+            for (int index = 1; index < part.length(); index++) {
+                if (!Character.isJavaIdentifierPart(part.charAt(index))) {
+                    throw new IllegalArgumentException("Step implementation JDK module must be a Java module name.");
+                }
+            }
+        }
+        return value;
     }
 
     private static String implementationName(final String className) {
