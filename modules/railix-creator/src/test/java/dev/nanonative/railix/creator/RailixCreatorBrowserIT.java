@@ -2952,14 +2952,16 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
-    void installedSingletonTriggerCannotBeAddedTwice() {
+    void installedSingletonTriggerOptionCannotBeAddedTwice() {
         addTrigger();
         waitForText("#build-state", "Built");
         selectWorldNode("app");
         page.evaluate("() => state.world.fit()");
         awaitScene();
 
-        assertThat(page.locator("#add-trigger").count()).isZero();
+        page.locator("#add-trigger").click();
+        page.locator("#step-search").fill("cli");
+        assertThat(page.locator("[data-add-step='railix.trigger.cli']").count()).isZero();
         assertThat(page.locator(".trigger-node").count()).isEqualTo(1);
     }
 

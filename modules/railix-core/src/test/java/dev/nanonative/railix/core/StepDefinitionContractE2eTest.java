@@ -11,6 +11,7 @@ import dev.nanonative.railix.core.step.StepDefinition.PathInput;
 import dev.nanonative.railix.core.step.StepDefinition.Result;
 import dev.nanonative.railix.core.step.StepDefinition.Source;
 import dev.nanonative.railix.core.step.StepDefinition.StepsInput;
+import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -50,6 +51,16 @@ final class StepDefinitionContractE2eTest {
         final StepDefinition definition = StepDefinition.named("example.named", "1").run(NextHandler.class);
 
         assertThat(definition.executable()).isTrue();
+    }
+
+    @Test
+    void implementationJdkModulesReachTheStepCatalog() {
+        final StepCatalog catalog = StepCatalog.of(StepDefinition.named("example.http", "1")
+                .run(NextHandler.class, "java.net.http", "jdk.httpserver"));
+
+        assertThat(catalog.implementation("example.http"))
+                .hasValueSatisfying(implementation -> assertThat(implementation.jdkModules())
+                        .containsExactly("java.net.http", "jdk.httpserver"));
     }
 
     @Test

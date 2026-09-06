@@ -1,0 +1,294 @@
+{
+  "format": 1,
+  "id": "auth-http-app",
+  "links": [
+    {
+      "from": "app.start",
+      "to": "request"
+    },
+    {
+      "from": "request.next",
+      "to": "route"
+    },
+    {
+      "from": "route.login",
+      "to": "credentials"
+    },
+    {
+      "from": "route.otherwise",
+      "to": "not-found-body"
+    },
+    {
+      "from": "credentials.match",
+      "to": "login-body"
+    },
+    {
+      "from": "credentials.otherwise",
+      "to": "unauthorized-body"
+    },
+    {
+      "from": "login-body.next",
+      "to": "end"
+    },
+    {
+      "from": "unauthorized-body.next",
+      "to": "unauthorized-status"
+    },
+    {
+      "from": "unauthorized-status.next",
+      "to": "end"
+    },
+    {
+      "from": "not-found-body.next",
+      "to": "not-found-status"
+    },
+    {
+      "from": "not-found-status.next",
+      "to": "end"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "app",
+      "inputs": {},
+      "use": "railix.app"
+    },
+    {
+      "examples": [
+        {
+          "name": "login",
+          "payload": {
+            "method": "POST",
+            "path": "/login",
+            "query": "",
+            "headers": {
+              "content-type": [
+                "application/json"
+              ]
+            },
+            "body": {
+              "email": "alice@example.com",
+              "password": "demo-password"
+            }
+          }
+        },
+        {
+          "name": "missing-body",
+          "payload": {
+            "method": "POST",
+            "path": "/login",
+            "query": "",
+            "headers": {},
+            "body": null
+          }
+        }
+      ],
+      "id": "request",
+      "inputs": {
+        "target": [
+          "context",
+          "payload",
+          "request"
+        ]
+      },
+      "use": "railix.trigger.http"
+    },
+    {
+      "id": "route",
+      "inputs": {
+        "cases": [
+          {
+            "outcome": "login",
+            "option": "field",
+            "inputs": {
+              "field": [
+                "context",
+                "payload",
+                "request",
+                "path"
+              ]
+            },
+            "when": {
+              "transforms": [],
+              "all": [
+                [
+                  {
+                    "use": "value.equals",
+                    "inputs": {
+                      "expected": "/login"
+                    }
+                  }
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "use": "railix.switch"
+    },
+    {
+      "id": "credentials",
+      "inputs": {
+        "conditions": [
+          [
+            {
+              "option": "field",
+              "inputs": {
+                "field": [
+                  "context",
+                  "payload",
+                  "request",
+                  "body",
+                  "email"
+                ]
+              },
+              "when": {
+                "transforms": [],
+                "all": [
+                  [
+                    {
+                      "use": "value.equals",
+                      "inputs": {
+                        "expected": "alice@example.com"
+                      }
+                    }
+                  ]
+                ]
+              }
+            },
+            {
+              "option": "field",
+              "inputs": {
+                "field": [
+                  "context",
+                  "payload",
+                  "request",
+                  "body",
+                  "password"
+                ]
+              },
+              "when": {
+                "transforms": [],
+                "all": [
+                  [
+                    {
+                      "use": "value.equals",
+                      "inputs": {
+                        "expected": "demo-password"
+                      }
+                    }
+                  ]
+                ]
+              }
+            }
+          ]
+        ]
+      },
+      "use": "railix.choice"
+    },
+    {
+      "id": "login-body",
+      "inputs": {
+        "field": [
+          "context",
+          "body"
+        ],
+        "steps": [],
+        "value": [
+          {
+            "option": "literal",
+            "inputs": {
+              "literal": {
+                "authenticated": true,
+                "token": "railix-demo-token",
+                "user": "alice@example.com"
+              }
+            }
+          }
+        ]
+      },
+      "use": "railix.field-manipulation"
+    },
+    {
+      "id": "unauthorized-body",
+      "inputs": {
+        "field": [
+          "context",
+          "body"
+        ],
+        "steps": [],
+        "value": [
+          {
+            "option": "literal",
+            "inputs": {
+              "literal": {
+                "authenticated": false,
+                "error": "unauthorized"
+              }
+            }
+          }
+        ]
+      },
+      "use": "railix.field-manipulation"
+    },
+    {
+      "id": "unauthorized-status",
+      "inputs": {
+        "field": [
+          "context",
+          "status"
+        ],
+        "steps": [],
+        "value": [
+          {
+            "option": "literal",
+            "inputs": {
+              "literal": 401
+            }
+          }
+        ]
+      },
+      "use": "railix.field-manipulation"
+    },
+    {
+      "id": "not-found-body",
+      "inputs": {
+        "field": [
+          "context",
+          "body"
+        ],
+        "steps": [],
+        "value": [
+          {
+            "option": "literal",
+            "inputs": {
+              "literal": {
+                "error": "not_found"
+              }
+            }
+          }
+        ]
+      },
+      "use": "railix.field-manipulation"
+    },
+    {
+      "id": "not-found-status",
+      "inputs": {
+        "field": [
+          "context",
+          "status"
+        ],
+        "steps": [],
+        "value": [
+          {
+            "option": "literal",
+            "inputs": {
+              "literal": 404
+            }
+          }
+        ]
+      },
+      "use": "railix.field-manipulation"
+    }
+  ]
+}
