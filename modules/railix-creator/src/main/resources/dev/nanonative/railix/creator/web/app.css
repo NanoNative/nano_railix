@@ -647,6 +647,10 @@ body[data-build="unavailable"] .build-indicator { color: #ff9d8d; }
   padding: 7px 4px;
   font-size: 11px;
   font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* One lighting/material vocabulary for fixed HUD controls, independent of world size. */
@@ -1426,7 +1430,8 @@ body[data-reduced-motion=true] *, body[data-reduced-motion=true] *::before, body
 .catalog-option {
   display: grid;
   width: 100%;
-  grid-template-columns: 76px 1fr;
+  grid-template-columns: minmax(76px, max-content) minmax(0, 1fr);
+  column-gap: 12px;
   border: 1px solid var(--line);
   border-radius: 3px;
   background: var(--panel);
@@ -1441,12 +1446,18 @@ body[data-reduced-motion=true] *, body[data-reduced-motion=true] *::before, body
 
 .catalog-option strong {
   grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .catalog-option small {
   grid-column: 2;
   color: var(--muted);
   font-family: var(--mono);
+  min-width: 0;
+  overflow-wrap: break-word;
 }
 
 .compact-option {
