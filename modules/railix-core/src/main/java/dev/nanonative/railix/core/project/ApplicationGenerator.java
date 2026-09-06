@@ -226,9 +226,16 @@ final class ApplicationGenerator {
                         ? "RuntimeApplication"
                         : "DevelopmentRuntime.Application")
                 .append(" runtime() {\n        return APPLICATION;\n    }\n\n")
-                .append("    public static void main(final String[] arguments) {\n")
-                .append("        final int status = runCli(arguments);\n")
-                .append("        if (status != 0) {\n            System.exit(status);\n        }\n    }\n\n")
+                .append("    public static void main(final String[] arguments) {\n");
+        final boolean httpTrigger = hasHttpTrigger(nodes, triggers);
+        if (httpTrigger) {
+            source.append("        final int status = arguments.length > 0 && \"--railix-http\".equals(arguments[0])\n")
+                    .append("                ? runHttp(arguments)\n")
+                    .append("                : runCli(arguments);\n");
+        } else {
+            source.append("        final int status = runCli(arguments);\n");
+        }
+        source.append("        if (status != 0) {\n            System.exit(status);\n        }\n    }\n\n")
                 .append("    @Override\n")
                 .append("    public String projectId() {\n        return PROJECT_ID;\n    }\n\n");
         if (variant == Variant.DEVELOPMENT) {
@@ -240,6 +247,23 @@ final class ApplicationGenerator {
         appendDispatch(source, nodes, handlerIndexes, variant);
         if (variant == Variant.DEVELOPMENT) {
             appendObservationCapture(source);
+        }
+        if (httpTrigger) {
+            source.append("    static int runHttp(final String[] arguments) {\n");
+            source.append("        if (arguments.length > 3) {\n")
+                    .append("            System.err.println(\"Usage: application --railix-http [host] [port]\");\n")
+                    .append("            return 2;\n        }\n")
+                    .append("        final String host = arguments.length > 1 ? arguments[1] : \"127.0.0.1\";\n")
+                    .append("        try {\n")
+                    .append("            final int port = arguments.length > 2 ? Integer.parseInt(arguments[2]) : 8080;\n")
+                    .append("            return dev.nanonative.railix.stdlib.HttpStepHandlers.Trigger.serve(\n")
+                    .append("                    APPLICATION, host, port\n")
+                    .append("            );\n")
+                    .append("        } catch (final NumberFormatException exception) {\n")
+                    .append("            System.err.println(\"HTTP port must be a number.\");\n")
+                    .append("            return 2;\n")
+                    .append("        }\n");
+            source.append("    }\n\n");
         }
         source.append("    static int runCli(final String[] arguments) {\n")
                 .append("        final List<RailixValue> values = new ArrayList<>(arguments.length);\n")
@@ -284,6 +308,15 @@ final class ApplicationGenerator {
                 .append("        return Map.entry(key, value);\n    }\n")
                 .append("}\n");
         return source.toString();
+    }
+
+    private static boolean hasHttpTrigger(
+            final List<ApplicationPlan.NodePlan> nodes,
+            final List<ApplicationPlan.TriggerPlan> triggers
+    ) {
+        return triggers.stream()
+                .map(trigger -> nodes.get(trigger.node()).step().source().orElseThrow().name())
+                .anyMatch("application.http"::equals);
     }
 
     private static String developmentLauncherSource() {

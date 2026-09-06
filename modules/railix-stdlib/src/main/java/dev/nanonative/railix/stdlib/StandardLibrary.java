@@ -24,6 +24,8 @@ public final class StandardLibrary {
         final List<StepDefinition> definitions = new ArrayList<>(List.of(
                 app(),
                 cli(),
+                http(),
+                httpClient(),
                 fieldManipulation(),
                 filter(),
                 choice(),
@@ -62,6 +64,46 @@ public final class StandardLibrary {
                 .response("output", "result")
                 .response("status", "exit_code")
                 .run(StandardStepHandlers.Cli.class);
+    }
+
+    private static StepDefinition http() {
+        return StepDefinition.named("railix.trigger.http", "1")
+                .kind(StepDefinition.Kind.TRIGGER)
+                .displayName("HTTP")
+                .maximumInstances(1)
+                .source("application.http")
+                .receive("request", ValueShape.OBJECT)
+                .input("target", Input.path(WRITE)
+                        .defaultPath("context", "payload", "request"))
+                .exampleTarget("target")
+                .example("get-root", RailixValue.object(java.util.Map.of(
+                        "method", RailixValue.string("GET"),
+                        "path", RailixValue.string("/"),
+                        "query", RailixValue.string(""),
+                        "headers", RailixValue.object(java.util.Map.of()),
+                        "body", RailixValue.nullValue()
+                )))
+                .result("body", ValueShape.ANY, RailixValue.nullValue())
+                .result("headers", ValueShape.OBJECT, RailixValue.object(java.util.Map.of()))
+                .result("status", ValueShape.NUMBER, RailixValue.number(200))
+                .response("body", "body")
+                .response("headers", "headers")
+                .response("status", "status")
+                .run(HttpStepHandlers.Trigger.class, "jdk.httpserver");
+    }
+
+    private static StepDefinition httpClient() {
+        return StepDefinition.named("railix.http.client", "1")
+                .displayName("HTTP Client")
+                .searchTerms("fetch", "request", "api")
+                .receive("body", ValueShape.ANY)
+                .input("url", Input.json(ValueShape.STRING))
+                .input("method", Input.json(ValueShape.STRING)
+                        .defaultValue(RailixValue.string("GET")))
+                .input("headers", Input.json(ValueShape.OBJECT)
+                        .defaultValue(RailixValue.object(java.util.Map.of())))
+                .returns("response", ValueShape.OBJECT)
+                .run(HttpStepHandlers.Client.class, "java.net.http");
     }
 
     private static StepDefinition fieldManipulation() {

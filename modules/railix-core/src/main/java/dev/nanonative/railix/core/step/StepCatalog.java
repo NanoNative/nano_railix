@@ -78,7 +78,8 @@ public final class StepCatalog {
                             address.classEntry(),
                             Ownership.PLATFORM,
                             List.of(),
-                            "sha256:" + digest(StepContractJson.write(definition).getBytes(StandardCharsets.UTF_8))
+                            "sha256:" + digest(StepContractJson.write(definition).getBytes(StandardCharsets.UTF_8)),
+                            address.jdkModules()
                     )
             ));
         }
@@ -200,7 +201,8 @@ public final class StepCatalog {
                         implementationEntry,
                         Ownership.BUNDLE,
                         closure,
-                        contract
+                        contract,
+                        List.of()
                 ));
             }
             if (!manifest.keySet().equals(lockedSteps)) {
@@ -651,14 +653,23 @@ public final class StepCatalog {
             String classEntry,
             Ownership ownership,
             List<Artifact> artifacts,
-            String contractDigest
+            String contractDigest,
+            List<String> jdkModules
     ) {
         public Implementation {
             if (className == null || className.isBlank() || classEntry == null || classEntry.isBlank() || ownership == null
-                    || artifacts == null || contractDigest == null || contractDigest.isBlank()) {
+                    || artifacts == null || contractDigest == null || contractDigest.isBlank() || jdkModules == null) {
                 throw new IllegalArgumentException("Step implementation ownership must be complete.");
             }
             artifacts = List.copyOf(artifacts);
+            final Set<String> uniqueModules = new LinkedHashSet<>();
+            for (final String module : jdkModules) {
+                if (module == null || module.isBlank()) {
+                    throw new IllegalArgumentException("Step implementation ownership must be complete.");
+                }
+               uniqueModules.add(module);
+            }
+            jdkModules = List.copyOf(uniqueModules);
             if (ownership == Ownership.PLATFORM && !artifacts.isEmpty()
                     || ownership == Ownership.BUNDLE && artifacts.isEmpty()) {
                 throw new IllegalArgumentException("Step implementation artifacts must match its ownership.");

@@ -235,16 +235,23 @@ final class ApplicationBuilder {
                 java.util.Locale.ROOT,
                 StandardCharsets.UTF_8
         )) {
-            final List<String> options = List.of(
+            final List<String> options = new ArrayList<>(List.of(
                     "-proc:none",
                     "-encoding", "UTF-8",
                     "-g:none",
-                    "--release", Integer.toString(Runtime.version().feature()),
+                    "--release", Integer.toString(Runtime.version().feature())
+            ));
+            final String modules = jdkModules(implementations);
+            if (!modules.isEmpty()) {
+                options.add("--add-modules");
+                options.add(modules);
+            }
+            options.addAll(List.of(
                     "-classpath", dependencies.stream()
                             .map(Path::toString)
                             .collect(java.util.stream.Collectors.joining(File.pathSeparator)),
                     "-d", classes.toString()
-            );
+            ));
             final boolean success = Boolean.TRUE.equals(compiler.getTask(
                     null,
                     files,
@@ -287,6 +294,14 @@ final class ApplicationBuilder {
         return invalidIndex < implementations.size()
                 ? GeneratedCompilationException.invalidImplementation(implementations.get(invalidIndex).className())
                 : GeneratedCompilationException.generatedSource();
+    }
+
+    private static String jdkModules(final List<StepCatalog.Implementation> implementations) {
+        final Set<String> modules = new java.util.TreeSet<>();
+        for (final StepCatalog.Implementation implementation : implementations) {
+            modules.addAll(implementation.jdkModules());
+        }
+        return String.join(",", modules);
     }
 
     private static int handlerIndex(

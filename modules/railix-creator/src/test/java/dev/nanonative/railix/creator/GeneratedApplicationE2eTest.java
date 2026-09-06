@@ -17,7 +17,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -297,6 +299,69 @@ final class GeneratedApplicationE2eTest {
         final ProcessResult result = runJar(artifact.jar(), "PRODUCTION");
 
         assertThat(result).isEqualTo(new ProcessResult(0, "\"production\""));
+    }
+
+    @Test
+    void productionJarKeepsHttpFlagAsCliArgumentWhenThereIsNoHttpTrigger() throws Exception {
+        final ApplicationBuilder.Artifact artifact = productionArtifact();
+
+        final ProcessResult result = runJar(artifact.jar(), "--railix-http");
+
+        assertThat(result).isEqualTo(new ProcessResult(0, "\"--railix-http\""));
+    }
+
+    @Test
+    void productionJarServesTheCompiledHttpFlow() throws Exception {
+        final String source = httpEchoProject();
+        final Path project = project(directory.resolve("http-echo"), source);
+        final ApplicationBuilder.Artifact artifact = productionArtifact(project, source);
+
+        try (HttpProcess server = startHttpJar(artifact.jar())) {
+            final HttpResponse<String> response = HttpClient.newHttpClient().send(
+                    HttpRequest.newBuilder(server.uri().resolve("/echo?source=test"))
+                            .timeout(Duration.ofSeconds(20))
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString("{\"message\":\"Hello HTTP\"}"))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).isEqualTo("{\"message\":\"Hello HTTP\"}");
+            assertThat(response.headers().allValues("x-railix-test"))
+                    .containsExactly("first", "second");
+
+            final HttpResponse<String> invalidJson = HttpClient.newHttpClient().send(
+                    HttpRequest.newBuilder(server.uri().resolve("/echo"))
+                            .timeout(Duration.ofSeconds(20))
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString("{"))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+            assertThat(invalidJson.statusCode()).isEqualTo(400);
+            assertThat(invalidJson.body()).contains("HTTP_JSON_INVALID");
+
+            final HttpResponse<String> oversized = HttpClient.newHttpClient().send(
+                    HttpRequest.newBuilder(server.uri().resolve("/echo"))
+                            .timeout(Duration.ofSeconds(20))
+                            .POST(HttpRequest.BodyPublishers.ofString("x".repeat(1024 * 1024 + 1)))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+            assertThat(oversized.statusCode()).isEqualTo(413);
+            assertThat(oversized.body()).contains("HTTP_BODY_TOO_LARGE");
+
+            final HttpResponse<String> invalidUtf8 = HttpClient.newHttpClient().send(
+                    HttpRequest.newBuilder(server.uri().resolve("/echo"))
+                            .timeout(Duration.ofSeconds(20))
+                            .POST(HttpRequest.BodyPublishers.ofByteArray(new byte[] {(byte) 0xc3, 0x28}))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+            assertThat(invalidUtf8.statusCode()).isEqualTo(400);
+            assertThat(invalidUtf8.body()).contains("HTTP_BODY_UTF8_INVALID");
+        }
     }
 
     @ParameterizedTest(name = "production JAR routes Switch case: {0}")
@@ -1029,6 +1094,34 @@ final class GeneratedApplicationE2eTest {
                 """.formatted(RailixJson.write(RailixValue.string(value)));
     }
 
+    private static String httpEchoProject() {
+        return """
+                {"format":1,"id":"http-echo","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"request","use":"railix.trigger.http","inputs":{},"examples":[{
+                    "name":"post-json","payload":{
+                      "method":"POST","path":"/echo","query":"","headers":{},"body":{"message":"Hello HTTP"}
+                    }
+                  }]},
+	                  {"id":"headers","use":"railix.field-manipulation","inputs":{
+	                    "field":["context","headers"],
+	                    "value":[{"option":"literal","inputs":{"literal":{"X-Railix-Test":["first","second"]}}}],
+	                    "steps":[]
+	                  }},
+	                  {"id":"echo","use":"railix.field-manipulation","inputs":{
+	                    "field":["context","body"],
+	                    "value":[{"option":"field","inputs":{"source":["context","payload","request","body"]}}],
+	                    "steps":[]
+	                  }}
+	                ],"links":[
+	                  {"from":"app.start","to":"request"},
+	                  {"from":"request.next","to":"headers"},
+	                  {"from":"headers.next","to":"echo"},
+	                  {"from":"echo.next","to":"end"}
+	                ]}
+                """;
+    }
+
     private static Stream<Arguments> javaStringEscapes() {
         return Stream.of(
                 Arguments.of("backslash", "\\"),
@@ -1191,6 +1284,35 @@ final class GeneratedApplicationE2eTest {
         }
     }
 
+    private static HttpProcess startHttpJar(final Path jar) throws Exception {
+        final List<String> command = new java.util.ArrayList<>();
+        command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
+        command.add("-jar");
+        command.add(jar.toString());
+        command.add("--railix-http");
+        command.add("127.0.0.1");
+        command.add("0");
+        final Process process = RailixPackageIT.instrumentJava(new ProcessBuilder(command))
+                .redirectErrorStream(true)
+                .start();
+        process.getOutputStream().close();
+        final BufferedReader reader = new BufferedReader(new InputStreamReader(
+                process.getInputStream(),
+                StandardCharsets.UTF_8
+        ));
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            final String line = executor.submit(reader::readLine).get(20, TimeUnit.SECONDS);
+            if (line == null || !line.startsWith("Railix HTTP ")) {
+                process.destroyForcibly();
+                throw new IOException("Generated HTTP application did not report readiness: " + line);
+            }
+            return new HttpProcess(process, URI.create(line.substring("Railix HTTP ".length())));
+        } catch (final Exception failure) {
+            process.destroyForcibly();
+            throw failure;
+        }
+    }
+
     private static String tool(final String name, final String... arguments) throws Exception {
         final List<String> command = new java.util.ArrayList<>();
         command.add(Path.of(System.getProperty("java.home"), "bin", name).toString());
@@ -1238,6 +1360,13 @@ final class GeneratedApplicationE2eTest {
     }
 
     private record ProcessResult(int exitCode, String output) {
+    }
+
+    private record HttpProcess(Process process, URI uri) implements AutoCloseable {
+        @Override
+        public void close() {
+            process.destroyForcibly();
+        }
     }
 
     private record TriggerScale(String source, StepCatalog catalog) {
