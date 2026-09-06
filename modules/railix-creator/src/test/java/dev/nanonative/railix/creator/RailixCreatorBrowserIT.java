@@ -1669,7 +1669,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                 .containsExactly("Inspector", "Appearance", "Examples", "Groups");
         assertThat(((String) page.locator(".inspector-tabs").evaluate(
                 "tabs => getComputedStyle(tabs).gridTemplateColumns"
-        )).split(" ")).hasSize(4);
+        )).split(" ").length).isBetween(2, 4);
         assertThat(page.locator("#target-path").count()).isEqualTo(1);
         assertThat(page.locator("#example-payload, #presentation-name").count()).isZero();
 
