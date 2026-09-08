@@ -383,28 +383,37 @@ final class CreatorEditsE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
-    void boundedPatchCannotAssembleAnOversizedProject() throws Exception {
-        try (CreatorServer creator = startProject(branchGroupProject())) {
-            final Map<String, RailixValue> before = persisted(creator.baseUri());
-            final String template = """
-                    {"revision":0,"changes":{"nodes":{"matched":{
-                      "id":"matched","use":"railix.field-manipulation","inputs":{
-                        "field":["context","result"],"value":[{"option":"literal","inputs":{"literal":"%s"}}]}}}}}
-                    """;
-            final String body = template.formatted("x".repeat(
-                    RailixData.DEFAULT_MAX_SOURCE_BYTES - template.formatted("").length() - 128));
-            assertThat(body.getBytes(StandardCharsets.UTF_8).length).isLessThan(RailixData.DEFAULT_MAX_SOURCE_BYTES);
+    void boundedPatchCanGrowAProjectBeyondTheHttpRequestSize() throws Exception {
+        final String source = threeStepProject().replace("\"context\":{\"payload\":{}}",
+                "\"context\":{\"payload\":{},\"large\":\"" + "x".repeat(700_000) + "\"}");
+        try (CreatorServer creator = startProject(source)) {
+            final Map<String, RailixValue> nodes = new LinkedHashMap<>();
+            final Map<String, RailixValue> links = new LinkedHashMap<>();
+            String previous = "three";
+            for (int index = 0; index < 32; index++) {
+                final String id = "added-" + index;
+                nodes.put(id, object("""
+                        {"id":"%s","use":"railix.field-manipulation","inputs":{
+                          "field":["context","result"],
+                          "value":[{"option":"literal","inputs":{"literal":"%s"}}]}}
+                        """.formatted(id, "y".repeat(12_000))));
+                links.put(previous + ".next", RailixValue.array(List.of(link(previous + ".next", id))));
+                previous = id;
+            }
+            links.put(previous + ".next", RailixValue.array(List.of(link(previous + ".next", "end"))));
+            final String changes = RailixJson.write(RailixValue.object(Map.of(
+                    "nodes", RailixValue.object(nodes), "links", RailixValue.object(links))));
+            assertThat(changes.length() + 100).isLessThan(RailixData.DEFAULT_MAX_SOURCE_BYTES);
 
-            final HttpResponse<String> response = request(creator.baseUri(), "PATCH", "/api/project", body);
+            final HttpResponse<String> response = edit(creator.baseUri(), "/api/project", 0, changes);
 
-            assertThat(response.statusCode()).isEqualTo(422);
-            assertThat(response.body()).contains("CREATOR_EDIT_INVALID", "Edited document exceeds the project source-size limit.");
-            assertThat(persisted(creator.baseUri())).isEqualTo(before);
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            assertThat(Files.size(directory.resolve("project.json"))).isGreaterThan(RailixData.DEFAULT_MAX_SOURCE_BYTES);
         }
     }
 
     @Test
-    void boundedPatchCannotAssembleOversizedMetadata() throws Exception {
+    void boundedPatchCanGrowMetadataBeyondTheHttpRequestSize() throws Exception {
         try (CreatorServer creator = start(directory.resolve("project.json"))) {
             final String initial = RailixJson.write(RailixValue.object(Map.of(
                     "format", RailixValue.number(2), "steps", RailixValue.object(Map.of()),
@@ -413,7 +422,6 @@ final class CreatorEditsE2eTest extends CreatorServerE2eSupport {
             assertThat(initial.getBytes(StandardCharsets.UTF_8).length).isLessThan(RailixData.DEFAULT_MAX_SOURCE_BYTES);
             final HttpResponse<String> imported = request(creator.baseUri(), "POST", "/api/creator", initial);
             assertThat(imported.statusCode()).as(imported.body()).isEqualTo(200);
-            final Map<String, RailixValue> before = persisted(creator.baseUri());
             final long revision = number(object(imported.body()), "creator_revision");
             final String changes = RailixJson.write(RailixValue.object(Map.of(
                     "groups", RailixValue.object(groups(6_000, 1_000))
@@ -422,9 +430,8 @@ final class CreatorEditsE2eTest extends CreatorServerE2eSupport {
 
             final HttpResponse<String> response = edit(creator.baseUri(), "/api/creator", revision, changes);
 
-            assertThat(response.statusCode()).isEqualTo(422);
-            assertThat(response.body()).contains("CREATOR_EDIT_INVALID", "Edited document exceeds the project source-size limit.");
-            assertThat(persisted(creator.baseUri())).isEqualTo(before);
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            assertThat(Files.size(directory.resolve("railix.creator.json"))).isGreaterThan(RailixData.DEFAULT_MAX_SOURCE_BYTES);
         }
     }
 

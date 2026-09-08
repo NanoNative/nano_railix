@@ -53,8 +53,8 @@ final class GeneratedApplicationVariantsE2eTest {
     void traceExecutionRecordsNormalFlowMetrics() {
         final String source = compiled().developmentApplicationSource();
         final String trace = source.substring(
-                source.indexOf("private static RunResult trace_1"),
-                source.indexOf("private static WorkflowRuntime.SourceResult source_1")
+                source.indexOf("static RunResult trace_1"),
+                source.indexOf("static WorkflowRuntime.SourceResult source_1")
         );
 
         assertThat(trace).contains("METRICS.startFlow(0)", "METRICS.finishFlow(0, metric, result)");
@@ -91,7 +91,7 @@ final class GeneratedApplicationVariantsE2eTest {
                 .contains(
                         "final int outcome = execution.call(",
                         "private static int dispatch_",
-                        "private static int dispatch("
+                        "static int dispatch("
                 )
                 .doesNotContain(
                         "WorkflowRuntime.CallResult",
@@ -102,7 +102,7 @@ final class GeneratedApplicationVariantsE2eTest {
                 .contains(
                         "final int outcome = dispatch_",
                         "private static int dispatch_",
-                        "private static int dispatch("
+                        "static int dispatch("
                 )
                 .doesNotContain(
                         "WorkflowRuntime.CallResult",
@@ -157,13 +157,13 @@ final class GeneratedApplicationVariantsE2eTest {
 
         assertThat(source)
                 .contains(
-                        "private static final WorkflowRuntime.StepCall[] CALLS = calls();",
-                        "private static final WorkflowRuntime.StepCall[] TRACE_CALLS = traceCalls();",
+                        "static final WorkflowRuntime.StepCall[] CALLS = new WorkflowRuntime.StepCall[]{",
+                        "static final WorkflowRuntime.StepCall[] TRACE_CALLS = new WorkflowRuntime.StepCall[]{",
                         "(execution, 2, CALLS);",
                         "(execution, 2, TRACE_CALLS));"
                 )
-                .containsPattern("calls\\[\\d+] = HANDLER_\\d+::run;")
-                .containsPattern("calls\\[\\d+] = RailixApplication::traceHandler_\\d+;");
+                .containsPattern("Handlers_\\d+\\.HANDLER_\\d+::run")
+                .containsPattern("Handlers_\\d+::trace_\\d+");
     }
 
     @Test
@@ -185,17 +185,17 @@ final class GeneratedApplicationVariantsE2eTest {
         final String development = compiled.developmentApplicationSource();
         final String production = compiled.productionApplicationSource();
         final String developmentPlans = development.substring(
-                development.indexOf("private static final class Plans_0"),
-                development.indexOf("private RailixApplication()")
+                development.indexOf("final class Plans_0"),
+                development.indexOf("final class Routes_")
         );
         final String productionPlans = production.substring(
-                production.indexOf("private static final class Plans_0"),
-                production.indexOf("private RailixApplication()")
+                production.indexOf("final class Plans_0"),
+                production.indexOf("final class Routes_")
         );
 
         assertThat(development)
                 .contains(
-                        "private static final class TraceExecution extends WorkflowRuntime.Execution",
+                        "static final class TraceExecution extends WorkflowRuntime.Execution",
                         "new TraceExecution(",
                         "DevelopmentRuntime.Trace.invoke("
                 );

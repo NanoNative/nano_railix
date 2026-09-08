@@ -297,6 +297,8 @@ final class ApplicationBuilder {
                     StandardOpenOption.WRITE
             ); FileLock ignored = channel.lock()) {
                 cleanRuntimeLocked(artifact);
+            } catch (final NoSuchFileException removedWorkspace) {
+                // The workspace may disappear before the child process's exit callback runs.
             }
         }
     }
@@ -407,7 +409,7 @@ final class ApplicationBuilder {
                 continue;
             }
             final StepCatalog.Implementation implementation = implementations.get(index);
-            final String declaration = "private static final " + implementation.className()
+            final String declaration = "static final " + implementation.className()
                     + " HANDLER_" + index + " = new " + implementation.className() + "();";
             if (lines.stream().map(String::strip).anyMatch(declaration::equals)) {
                 invalidIndex = index;

@@ -16,6 +16,7 @@ import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
@@ -71,27 +72,14 @@ final class GeneratedApplicationE2eTest {
     }
 
     @Test
-    void compilerRejectsAnApplicationBeyondTheTriggerLimit() {
+    void productionApplicationBuildsBeyondTheFormerTriggerLimit() throws Exception {
         final TriggerScale scale = triggerScale(513);
-
-        assertThat(ProjectCompiler.compileApplication(scale.source(), scale.catalog()))
-                .isInstanceOfSatisfying(CompileResult.Rejected.class, rejected ->
-                        assertThat(rejected.diagnostics()).singleElement().satisfies(diagnostic ->
-                                assertThat(diagnostic).extracting(
-                                        dev.nanonative.railix.core.project.Diagnostic::code,
-                                        dev.nanonative.railix.core.project.Diagnostic::message,
-                                        dev.nanonative.railix.core.project.Diagnostic::path
-                                ).containsExactly(
-                                        "PROJECT_APPLICATION_TRIGGER_LIMIT",
-                                        "Generated applications support at most 512 Triggers.",
-                                        "nodes"
-                                )
-                        )
-                );
+        final Path project = project(directory.resolve("many-triggers"), scale.source());
+        assertThat(productionArtifact(project, scale.source(), scale.catalog()).jar()).isRegularFile();
     }
 
     @Test
-    void developmentApplicationBuildsAtTheTriggerLimit() throws Exception {
+    void developmentApplicationBuildsAtTheFormerTriggerBoundary() throws Exception {
         final TriggerScale scale = triggerScale(512);
         final Path project = project(directory.resolve("development-trigger-limit"), scale.source());
         final CompileResult result = ProjectCompiler.compileApplication(scale.source(), scale.catalog());
@@ -106,7 +94,7 @@ final class GeneratedApplicationE2eTest {
     }
 
     @Test
-    void productionApplicationBuildsAtTheTriggerLimit() throws Exception {
+    void productionApplicationBuildsAtTheFormerTriggerBoundary() throws Exception {
         final TriggerScale scale = triggerScale(512);
         final Path project = project(directory.resolve("production-trigger-limit"), scale.source());
         final CompileResult result = ProjectCompiler.compileApplication(scale.source(), scale.catalog());
@@ -542,41 +530,56 @@ final class GeneratedApplicationE2eTest {
     }
 
     @Test
-    void generatedJarExecutesEveryMaximumFlowNodeExactlyOnceInAuthoredOrder() throws Exception {
-        final String projectSource = ordinalChain(16_381);
-        final Path project = project(directory.resolve("maximum-application"), projectSource);
+    void developmentApplicationExecutesBeyondTheFormerNodeLimit() throws Exception {
+        final String projectSource = ordinalChain(16_385);
+        final Path project = project(directory.resolve("large-development-application"), projectSource);
         final StepCatalog catalog = GeneratedApplicationFixture.installedCatalog(
                 project.getParent(),
                 List.of(sequenceDefinition()),
                 ProductionRuntimeSequenceStep.class
         );
 
-        final Path jar = productionArtifact(project, projectSource, catalog).jar();
-        final ProcessResult result = runJar(jar, "0");
-
-        assertThat(result).isEqualTo(new ProcessResult(0, "16381"));
+        final CompileResult compiled = ProjectCompiler.compileApplication(projectSource, catalog);
+        assertThat(compiled).isInstanceOf(CompileResult.Compiled.class);
+        try (ApplicationBuilder.DevelopmentBuild build = ApplicationBuilder.build(project, (CompileResult.Compiled) compiled)) {
+            assertThat(tool("java", "-classpath", build.jar().toString(),
+                    "dev.nanonative.railix.core.project.RailixApplication", "0")).isEqualTo("16385");
+        }
     }
 
     @Test
-    void applicationAboveThe16384NodeLimitIsRejectedBeforeBuild() {
-        final CompileResult result = ProjectCompiler.compileApplication(
-                lowercaseChain(16_383),
-                StandardLibrary.catalog()
+    void generatedJarExecutesBeyondTheFormerNodeLimit() throws Exception {
+        final String source = ordinalChain(16_385);
+        final Path project = project(directory.resolve("large-application"), source);
+        final StepCatalog catalog = GeneratedApplicationFixture.installedCatalog(
+                project.getParent(), List.of(sequenceDefinition()), ProductionRuntimeSequenceStep.class
         );
 
-        assertThat(result).isInstanceOfSatisfying(CompileResult.Rejected.class, rejected ->
-                assertThat(rejected.diagnostics()).singleElement().satisfies(diagnostic ->
-                        assertThat(diagnostic).extracting(
-                                dev.nanonative.railix.core.project.Diagnostic::code,
-                                dev.nanonative.railix.core.project.Diagnostic::message,
-                                dev.nanonative.railix.core.project.Diagnostic::path
-                        ).containsExactly(
-                                "PROJECT_APPLICATION_NODE_LIMIT",
-                                "Generated applications support at most 16384 nodes.",
-                                "nodes"
-                        )
-                )
-        );
+        final Path jar = productionArtifact(project, source, catalog).jar();
+
+        assertThat(runJar(jar, "0")).isEqualTo(new ProcessResult(0, "16385"));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"14,0,128", "14,1,''", "15,0,128", "15,1,''", "256,0,128", "256,1,''"})
+    void wideStepOutcomesCannotOverflowASharedRoutingMethod(
+            final int outcomes, final String input, final String expected
+    ) throws Exception {
+        final StringBuilder source = new StringBuilder(ordinalChain(128));
+        source.setLength(source.length() - 2);
+        for (int step = 0; step < 128; step++) {
+            for (int branch = 0; branch < outcomes; branch++) {
+                source.append(",{\"from\":\"sequence-").append(step).append(".branch-")
+                        .append(branch).append("\",\"to\":\"end\"}");
+            }
+        }
+        source.append("]}");
+        final Path project = project(directory.resolve("wide-routing"), source.toString());
+        final StepCatalog catalog = GeneratedApplicationFixture.installedCatalog(
+                project.getParent(), List.of(sequenceDefinition(outcomes)), ProductionRuntimeSequenceStep.class);
+
+        assertThat(runJar(productionArtifact(project, source.toString(), catalog).jar(), input))
+                .isEqualTo(new ProcessResult(0, expected));
     }
 
     @Test
@@ -1466,14 +1469,19 @@ final class GeneratedApplicationE2eTest {
     }
 
     private static StepDefinition sequenceDefinition() {
-        return StepDefinition.named("production.sequence", "1")
+        return sequenceDefinition(0);
+    }
+
+    private static StepDefinition sequenceDefinition(final int extraOutcomes) {
+        final StepDefinition.Builder definition = StepDefinition.named("production.sequence", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.NUMBER)
                 .returns("value", ValueShape.NUMBER)
                 .input("expected", StepDefinition.Input.json(ValueShape.NUMBER)
-                        .defaultValue(RailixValue.number(0)))
-                .outcome("invalid")
-                .run(ProductionRuntimeSequenceStep.class);
+                        .defaultValue(RailixValue.number(0)));
+        for (int index = 0; index < extraOutcomes; index++) definition.outcome("branch-" + index);
+        // Invalid input exercises the last outcome across extracted selector boundaries.
+        return definition.outcome("invalid").run(ProductionRuntimeSequenceStep.class);
     }
 
     private static String sparseArrayWrite(final int index) {

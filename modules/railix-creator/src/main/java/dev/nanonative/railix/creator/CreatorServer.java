@@ -52,7 +52,7 @@ public final class CreatorServer implements AutoCloseable {
     static final int MAX_CONCURRENT_FORWARDS = 32;
     static final int MAX_CONCURRENT_EXAMPLE_RESPONSES = 4;
     private static final String WEB_ROOT = "/dev/nanonative/railix/creator/web/";
-    private static final int MAX_PROJECT_BYTES = RailixData.DEFAULT_MAX_SOURCE_BYTES;
+    private static final int MAX_REQUEST_BYTES = RailixData.DEFAULT_MAX_SOURCE_BYTES;
     private static final int MAX_SCENE_BYTES = 2 * RailixData.DEFAULT_MAX_SOURCE_BYTES;
     private static final Duration BODY_READ_TIMEOUT = Duration.ofSeconds(5);
     private static final Duration RESPONSE_DRAIN_TIMEOUT = Duration.ofSeconds(1);
@@ -718,7 +718,7 @@ public final class CreatorServer implements AutoCloseable {
             }
             revision = ++projectRevision;
         }
-        final BodyRead body = body(exchange, MAX_PROJECT_BYTES);
+        final BodyRead body = body(exchange, MAX_REQUEST_BYTES);
         if (!body.diagnostics().isEmpty()) {
             return bodyResponse(body);
         }
@@ -746,7 +746,7 @@ public final class CreatorServer implements AutoCloseable {
         if (!"POST".equals(exchange.getRequestMethod())) {
             return methodNotAllowed();
         }
-        final BodyRead body = body(exchange, MAX_PROJECT_BYTES);
+        final BodyRead body = body(exchange, MAX_REQUEST_BYTES);
         if (!body.diagnostics().isEmpty()) {
             return bodyResponse(body);
         }
@@ -764,7 +764,7 @@ public final class CreatorServer implements AutoCloseable {
     }
 
     private Response edit(final HttpExchange exchange, final boolean project) throws IOException {
-        final BodyRead body = body(exchange, MAX_PROJECT_BYTES);
+        final BodyRead body = body(exchange, MAX_REQUEST_BYTES);
         if (!body.diagnostics().isEmpty()) {
             return bodyResponse(body);
         }
@@ -812,11 +812,7 @@ public final class CreatorServer implements AutoCloseable {
                     edits = RailixValue.object(fields);
                 } else edits = project ? editorLocked().changes(changes) : changes;
                 final var updated = CreatorEditor.apply(document, edits, project);
-                final var bounded = RailixJson.write(updated, MAX_PROJECT_BYTES);
-                if (bounded.isEmpty()) {
-                    throw new IllegalArgumentException("Edited document exceeds the project source-size limit.");
-                }
-                edited = bounded.orElseThrow();
+                edited = RailixJson.write(updated);
                 if (!project) {
                     return saveCreator(edited, false);
                 }
@@ -1490,12 +1486,8 @@ public final class CreatorServer implements AutoCloseable {
     }
 
     private static String readProject(final Path project) throws IOException {
-        if (Files.size(project) > MAX_PROJECT_BYTES) {
-            throw new IOException("Creator project exceeds the 1048576-byte limit.");
-        }
-        final byte[] source = Files.readAllBytes(project);
         try {
-            return utf8(source);
+            return Files.readString(project, StandardCharsets.UTF_8);
         } catch (final CharacterCodingException exception) {
             throw new IOException("Creator project is not valid UTF-8.", exception);
         }

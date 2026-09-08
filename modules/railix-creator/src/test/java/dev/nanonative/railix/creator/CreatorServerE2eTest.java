@@ -1954,13 +1954,13 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
-    void oversizedExistingProjectCannotStartCreator() throws Exception {
+    void existingProjectIsNotLimitedByTheHttpRequestSize() throws Exception {
         final Path project = directory.resolve("project.json");
-        Files.writeString(project, "x".repeat(1_048_577), StandardCharsets.UTF_8);
+        Files.writeString(project, " ".repeat(1_048_577) + threeStepProject(), StandardCharsets.UTF_8);
 
-        assertThatThrownBy(() -> start(project))
-                .isInstanceOf(IOException.class)
-                .hasMessage("Creator project exceeds the 1048576-byte limit.");
+        try (CreatorServer creator = start(project)) {
+            assertThat(request(creator.baseUri(), "GET", "/api/project", "").statusCode()).isEqualTo(200);
+        }
     }
 
     @Test

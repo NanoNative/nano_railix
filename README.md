@@ -270,10 +270,10 @@ The compiler validates and canonicalizes this flat graph. Link order owns execut
 key order does not. Creator-generated graph IDs are opaque UUID-backed values created once and
 never encode visual order. The mandatory Application keeps the reserved node ID `app`.
 
-The current generated-code boundary accepts at most 16,384 total nodes and 512 Trigger nodes in one
-application. Production and development artifacts are built at the exact Trigger boundary in E2E;
-larger Trigger sets are rejected by the compiler before source allocation instead of failing later
-inside `javac`.
+The compiler splits plans, routing, Trigger entrypoints, handlers and development tables into
+bounded Java methods and classes inside one JAR. There is no fixed total-node or Trigger-count
+ceiling. E2Es execute 16,385 ordinary Steps in production and development builds and build 513
+Triggers. Small tables stay inline; wide outcome tables are extracted automatically.
 
 Every invocation owns one mutable workflow context. `payload`, `header`, `metadata`, `result`, and
 `exit_code` are ordinary keys. Projects may add any JSON-compatible key. Only `context.runtime` is
@@ -342,8 +342,11 @@ the canvas more space; the Inspector button reopens it without losing the curren
 Step and Group Appearance share rectangle, ellipse, triangle, and diamond shapes, width/height
 proportions, and rectangle corner rounding. A ratio of 1 produces a square or circle. These settings
 are metadata only and never change the compiled application or layout positions.
-The current compiler supports at most 16,384 nodes and 512 Triggers, subject to the 1 MiB source
-limit. Bounded rendering is not a claim that million-Step applications are supported. See
+Local project files and assembled edits are not limited by the 1 MiB HTTP request budget.
+Compilation still materializes the complete project and generated sources. Individual lowered
+Step plans retain a 32,768-character bound, and the development Example manifest retains a 4 MiB
+bound. Full metric snapshots are still ingested before viewport aggregation. Removing the old
+node ceiling is not a claim that million-Step applications are supported. See
 [checkpoint 5.3](ROADMAP.md#5-flow-control-groups-and-flat-compilation) for verification evidence.
 Camera position, zoom level, automatic regions, and group bounds are never persisted.
 Legacy format-1 metadata is validated and

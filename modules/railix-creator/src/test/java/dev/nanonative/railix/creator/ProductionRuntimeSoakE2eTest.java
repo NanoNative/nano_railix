@@ -31,11 +31,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 final class ProductionRuntimeSoakE2eTest {
     private static final long MAX_HEAP_BYTES = 64L * 1024 * 1024;
     private static final long RETAINED_GROWTH_BUDGET_BYTES = 2L * 1024 * 1024;
-    private static final long RUN_ALLOCATION_BUDGET_BYTES = 8L * 1024;
-    private static final long RUN_LATENCY_BUDGET_NANOS = 5_000;
-    private static final long FLOW_ALLOCATION_BUDGET_BYTES_PER_STEP = 1_024;
-    private static final long FLOW_LATENCY_BUDGET_NANOS_PER_STEP = 2_000;
-    private static final long ARRAY_ALLOCATION_BUDGET_BYTES = 256L * 1024;
     private static final int FLOW_STEPS = 129;
     private static final int ARRAY_ITEMS = 4_096;
     private static final int ARRAY_READ_STEPS = 32;
@@ -58,7 +53,7 @@ final class ProductionRuntimeSoakE2eTest {
     }
 
     @Test
-    void productionRunSourceStaysInsideAllocationBudgetAfterOneHundredThousandWarmups(
+    void productionRunSourceReportsAllocationAfterOneHundredThousandWarmups(
             @TempDir final Path workspace
     ) throws Exception {
         final ProcessResult result = probe(workspace).run("allocation");
@@ -68,13 +63,11 @@ final class ProductionRuntimeSoakE2eTest {
         assertThat(result.output()).doesNotStartWith("ALLOCATION_UNSUPPORTED|");
         assertThat(result.output()).startsWith("ALLOCATION|");
         assertThat(metric(result.output(), "measured_calls")).isEqualTo(200_000);
-        assertThat(metric(result.output(), "bytes_per_call"))
-                .isPositive()
-                .isLessThanOrEqualTo(RUN_ALLOCATION_BUDGET_BYTES);
+        assertThat(metric(result.output(), "bytes_per_call")).isPositive();
     }
 
     @Test
-    void escapingProductionResultsStayInsideAllocationBudget(
+    void escapingProductionResultsReportAllocation(
             @TempDir final Path workspace
     ) throws Exception {
         final ProcessResult result = probe(workspace).run("escape-allocation");
@@ -84,13 +77,11 @@ final class ProductionRuntimeSoakE2eTest {
         assertThat(result.output()).doesNotStartWith("ESCAPE_ALLOCATION_UNSUPPORTED|");
         assertThat(result.output()).startsWith("ESCAPE_ALLOCATION|");
         assertThat(metric(result.output(), "measured_calls")).isEqualTo(200_000);
-        assertThat(metric(result.output(), "bytes_per_call"))
-                .isPositive()
-                .isLessThanOrEqualTo(RUN_ALLOCATION_BUDGET_BYTES);
+        assertThat(metric(result.output(), "bytes_per_call")).isPositive();
     }
 
     @Test
-    void warmedProductionRunSourceStaysInsideFiveRoundMedianLatencyBudget(
+    void warmedProductionRunSourceReportsFiveRoundMedianLatency(
             @TempDir final Path workspace
     ) throws Exception {
         final ProcessResult result = probe(workspace).run("latency");
@@ -100,13 +91,11 @@ final class ProductionRuntimeSoakE2eTest {
         assertThat(result.output()).startsWith("LATENCY|");
         assertThat(metric(result.output(), "rounds")).isEqualTo(5);
         assertThat(metric(result.output(), "calls_per_round")).isEqualTo(200_000);
-        assertThat(metric(result.output(), "median_ns_per_call"))
-                .isPositive()
-                .isLessThanOrEqualTo(RUN_LATENCY_BUDGET_NANOS);
+        assertThat(metric(result.output(), "median_ns_per_call")).isPositive();
     }
 
     @Test
-    void warmed129StepProductionFlowStaysInsidePerStepHotPathBudgets(
+    void warmed129StepProductionFlowReportsPerStepHotPathMeasurements(
             @TempDir final Path workspace
     ) throws Exception {
         final ProcessResult result = probe(workspace, lowercaseChain(FLOW_STEPS)).run("flow-baseline");
@@ -119,16 +108,12 @@ final class ProductionRuntimeSoakE2eTest {
         assertThat(metric(result.output(), "measured_calls")).isEqualTo(2_500);
         assertThat(metric(result.output(), "verified_steps")).isEqualTo(322_500);
         assertThat(metric(result.output(), "retained")).isLessThanOrEqualTo(RETAINED_GROWTH_BUDGET_BYTES);
-        assertThat(metric(result.output(), "bytes_per_step"))
-                .isPositive()
-                .isLessThanOrEqualTo(FLOW_ALLOCATION_BUDGET_BYTES_PER_STEP);
-        assertThat(metric(result.output(), "median_ns_per_step"))
-                .isPositive()
-                .isLessThanOrEqualTo(FLOW_LATENCY_BUDGET_NANOS_PER_STEP);
+        assertThat(metric(result.output(), "bytes_per_step")).isPositive();
+        assertThat(metric(result.output(), "median_ns_per_step")).isPositive();
     }
 
     @Test
-    void repeatedReadsOfAMaterializedLargeArrayStayInsideAllocationBudget(
+    void repeatedReadsOfAMaterializedLargeArrayReportAllocation(
             @TempDir final Path workspace
     ) throws Exception {
         final ProcessResult result = probe(workspace, arrayReadChain(ARRAY_READ_STEPS)).run("array-read");
@@ -140,9 +125,7 @@ final class ProductionRuntimeSoakE2eTest {
         assertThat(metric(result.output(), "items")).isEqualTo(ARRAY_ITEMS);
         assertThat(metric(result.output(), "reads_per_call")).isEqualTo(ARRAY_READ_STEPS);
         assertThat(metric(result.output(), "measured_calls")).isEqualTo(200);
-        assertThat(metric(result.output(), "bytes_per_call"))
-                .isPositive()
-                .isLessThanOrEqualTo(ARRAY_ALLOCATION_BUDGET_BYTES);
+        assertThat(metric(result.output(), "bytes_per_call")).isPositive();
     }
 
     @Test

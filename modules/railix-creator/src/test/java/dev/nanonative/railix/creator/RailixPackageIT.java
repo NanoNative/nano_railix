@@ -488,16 +488,17 @@ final class RailixPackageIT {
     }
 
     @Test
-    void packagedExecutableRejectsAnOversizedProjectBeforeParsing() throws Exception {
+    void packagedExecutableRunsAProjectLargerThanAnHttpEdit() throws Exception {
         Files.writeString(
                 directory.resolve("railix.project.json"),
-                " ".repeat(RailixData.DEFAULT_MAX_SOURCE_BYTES + 1),
+                " ".repeat(RailixData.DEFAULT_MAX_SOURCE_BYTES + 1)
+                        + cliProject(new Assignment("result", "\"large project\"")),
                 StandardCharsets.UTF_8
         );
 
         assertThat(runExecutable(Map.of(), "run")).isEqualTo(new ProcessResult(
-                2,
-                "Project exceeds the 1048576-byte limit."
+                0,
+                "\"large project\""
         ));
     }
 

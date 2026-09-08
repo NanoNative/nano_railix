@@ -31,6 +31,7 @@ import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -114,6 +115,22 @@ final class CreatorForwardingLifecycleE2eTest {
             });
 
             assertClosed(closer.get(15, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void developmentApplicationClosesAfterItsWorkspaceWasRemoved() throws Exception {
+        try (DevelopmentApplication application = application("removed-workspace", 1)) {
+            final long pid = number(application.snapshot(), "pid");
+            try (var files = Files.walk(directory.resolve("removed-workspace"))) {
+                for (final Path file : files.sorted(Comparator.reverseOrder()).toList()) {
+                    Files.delete(file);
+                }
+            }
+
+            application.close();
+
+            assertThat(result(pid)).isEqualTo(new CloseResult(false, false));
         }
     }
 

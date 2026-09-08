@@ -277,7 +277,8 @@ including unloaded Steps. The editor saves changed entries through revision-chec
 keyed by source port with all of that port's targets retained. Removing an entry uses JSON null.
 An edit contains `revision` and `changes`; successful responses contain revision, workspace and
 application facts, not the documents. The original compiler and metadata validators still own
-acceptance, and assembled documents retain the source-size limit. Explicit whole-document import
+acceptance. Individual HTTP requests retain their size budget; trusted local files and assembled
+documents do not inherit that transport limit. Explicit whole-document import
 uses POST; it is not a fallback for failed edits. Stale edits fail without overwriting accepted work.
 Queued edits are compared with separately acknowledged functional and presentation snapshots, so
 an older save cannot swallow a newer reversal or discard a rejected draft. There is no edit log or

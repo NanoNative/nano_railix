@@ -365,27 +365,15 @@ final class CreatorScene {
                 : RailixValue.object(Map.of());
         final Map<String, RailixValue.ObjectValue> steps = hasMetrics ? metricSeries(metrics, "steps") : Map.of();
         final Map<String, RailixValue.ObjectValue> flows = hasMetrics ? metricSeries(metrics, "flows") : Map.of();
-        final int[][] counts = new int[3][leaves.size() + 1];
-        final BigInteger[][] totals = new BigInteger[hasMetrics ? COUNTERS.size() : 0][leaves.size() + 1];
-        for (final BigInteger[] total : totals) {
-            total[0] = BigInteger.ZERO;
-        }
-        for (int index = 0; index < leaves.size(); index++) {
-            final Part part = leaves.get(index);
-            final boolean executable = part.node >= 0 && !"app".equals(part.kind);
-            counts[0][index + 1] = counts[0][index] + (executable && !part.metrics ? 1 : 0);
-            counts[1][index + 1] = counts[1][index] + (executable && covered.get(part.node) ? 1 : 0);
-            counts[2][index + 1] = counts[2][index] + (executable && selected.get(part.node) ? 1 : 0);
-            final RailixValue.ObjectValue series = hasMetrics && executable && part.metrics ? steps.get(part.id) : null;
-            if (hasMetrics && executable && part.metrics && series == null) {
-                throw new IOException("Application metrics omit an enabled Step.");
-            }
-            if (hasMetrics && "trigger".equals(part.kind) && !flows.containsKey(part.id)) {
-                throw new IOException("Application metrics omit a flow.");
-            }
-            for (int counter = 0; counter < totals.length; counter++) {
-                totals[counter][index + 1] = totals[counter][index].add(series == null ? BigInteger.ZERO
-                        : ((RailixValue.NumberValue) series.values().get(COUNTERS.get(counter))).value().toBigInteger());
+        if (hasMetrics) {
+            for (final Part part : leaves) {
+                final boolean executable = part.node >= 0 && !"app".equals(part.kind);
+                if (executable && part.metrics && !steps.containsKey(part.id)) {
+                    throw new IOException("Application metrics omit an enabled Step.");
+                }
+                if ("trigger".equals(part.kind) && !flows.containsKey(part.id)) {
+                    throw new IOException("Application metrics omit a flow.");
+                }
             }
         }
         final Map<String, Map<String, RailixValue>> connections = new HashMap<>();
@@ -409,7 +397,8 @@ final class CreatorScene {
                             entry.remove("executions");
                         } else if (first || entry.containsKey("executions")) {
                             // One-parent graph: each original destination counts this connection's ingress, not region work.
-                            final BigDecimal ingress = new BigDecimal(totals[0][edge.to.first + 1].subtract(totals[0][edge.to.first]));
+                            final BigDecimal ingress = ((RailixValue.NumberValue) steps.get(edge.to.id)
+                                    .values().get("executions")).value();
                             final BigDecimal previous = entry.get("executions") instanceof RailixValue.NumberValue count
                                     ? count.value() : BigDecimal.ZERO;
                             entry.put("executions", RailixValue.number(previous.add(ingress)));
@@ -419,15 +408,33 @@ final class CreatorScene {
         final List<RailixValue> nodes = new ArrayList<>();
         for (final RailixValue value : array(visible, "nodes")) {
             final Part part = identities.get(text(object(value), "id"));
+            final int[] counts = new int[3];
+            final BigInteger[] totals = new BigInteger[hasMetrics ? COUNTERS.size() : 0];
+            java.util.Arrays.fill(totals, BigInteger.ZERO);
+            // Visible regions form a disjoint frontier; no project-sized prefix tables are needed.
+            for (int index = part.first; index <= part.last; index++) {
+                final Part leaf = leaves.get(index);
+                if (leaf.node < 0 || "app".equals(leaf.kind)) continue;
+                if (!leaf.metrics) counts[0]++;
+                if (covered.get(leaf.node)) counts[1]++;
+                if (selected.get(leaf.node)) counts[2]++;
+                if (hasMetrics && leaf.metrics) {
+                    final RailixValue.ObjectValue series = steps.get(leaf.id);
+                    for (int counter = 0; counter < totals.length; counter++) {
+                        totals[counter] = totals[counter].add(((RailixValue.NumberValue)
+                                series.values().get(COUNTERS.get(counter))).value().toBigInteger());
+                    }
+                }
+            }
             final Map<String, RailixValue> entry = new LinkedHashMap<>();
             entry.put("id", RailixValue.string(part.id));
             entry.put("count", RailixValue.number(part.count));
-            entry.put("disabled_count", RailixValue.number(counts[0][part.last + 1] - counts[0][part.first]));
+            entry.put("disabled_count", RailixValue.number(counts[0]));
             if (hasCoverage) {
-                entry.put("covered_count", RailixValue.number(counts[1][part.last + 1] - counts[1][part.first]));
+                entry.put("covered_count", RailixValue.number(counts[1]));
             }
             if (hasSelection) {
-                entry.put("selected_count", RailixValue.number(counts[2][part.last + 1] - counts[2][part.first]));
+                entry.put("selected_count", RailixValue.number(counts[2]));
             }
             if (hasMetrics) {
                 final RailixValue.ObjectValue series = switch (part.kind) {
@@ -438,7 +445,7 @@ final class CreatorScene {
                 for (int counter = 0; counter < COUNTERS.size(); counter++) {
                     final String name = COUNTERS.get(counter);
                     entry.put(name, series.values().isEmpty()
-                            ? RailixValue.number(new BigDecimal(totals[counter][part.last + 1].subtract(totals[counter][part.first])))
+                            ? RailixValue.number(new BigDecimal(totals[counter]))
                             : series.values().get(name));
                 }
             }

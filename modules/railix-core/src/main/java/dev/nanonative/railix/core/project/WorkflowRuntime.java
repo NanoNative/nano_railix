@@ -335,7 +335,7 @@ public final class WorkflowRuntime {
     }
 
     static final class Inputs {
-        private final Map<String, RailixValue> values;
+        private Map<String, RailixValue> values;
         private Map<String, String> options = Map.of();
         private Map<String, StepInput.Program> programs = Map.of();
         private Map<String, StepInput> selected = Map.of();
@@ -345,13 +345,13 @@ public final class WorkflowRuntime {
         private RunResult failure;
 
         private Inputs(final Map<String, RailixValue> received, final String primaryOutcome) {
-            values = new LinkedHashMap<>(received);
+            values = received.isEmpty() ? Map.of() : new LinkedHashMap<>(received);
             this.primaryOutcome = primaryOutcome;
         }
 
         void value(final String name, final RailixValue value) {
             if (failure == null && value != null) {
-                values.put(name, value);
+                values = put(values, name, value);
             }
         }
 
@@ -367,7 +367,7 @@ public final class WorkflowRuntime {
             if (binding.readable()) {
                 final RailixValue value = execution.resolve(binding.path());
                 if (value != null) {
-                    values.put(name, value);
+                    values = put(values, name, value);
                 }
             }
         }
@@ -395,7 +395,7 @@ public final class WorkflowRuntime {
                     ? children.values.get(valueSources.getFirst().input())
                     : values.get(valueSources.getFirst().input());
             if (selectedValue != null) {
-                values.put(name, selectedValue);
+                values = put(values, name, selectedValue);
             }
         }
 
@@ -421,7 +421,7 @@ public final class WorkflowRuntime {
                 }
                 if (evaluation.matched()) {
                     merge(evaluation.children());
-                    values.put(name, evaluation.value());
+                    values = put(values, name, evaluation.value());
                     options = put(options, name, candidate.option());
                     selected = put(selected, name, evaluation.children().input(
                             candidate.outcome().isEmpty() ? primaryOutcome : candidate.outcome()
@@ -463,7 +463,7 @@ public final class WorkflowRuntime {
                 matched = true;
                 break;
             }
-            values.put(name, RailixValue.bool(matched));
+            values = put(values, name, RailixValue.bool(matched));
         }
 
         void program(

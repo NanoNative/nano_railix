@@ -72,16 +72,19 @@ spreading them across unconnected application, CI/CD, observability, and orchest
 - Current delivery: **5.3 Inspector and diagram follow-up; 4/4 acceptance gates complete
   (100%); 0% left, locally accepted 2026-09-07.** The earlier six-gate checkpoint remains verified separately.
 - Work resumed on **2026-09-07**, with the requested weekly-usage stop threshold changed to
-  **10% remaining**. Full clean verification and native-app visual review are complete.
-- Next delivery after this follow-up: **5.6 Merge/fan-in contract and implementation, then
-  Split and bounded Loop**
+  **10% remaining**. Full clean verification and native-app visual review are complete for that
+  September 7 checkpoint, not a new certification of the scaling work below.
+- Current technical delivery: **Compiler and observation scaling; 3/3 scoped gates verified
+  (100%; 0% left), locally accepted 2026-09-08. No renderer replacement is included.**
+- Next scaling work: streamed project/source processing and scoped observation ingestion before
+  a renderer-library decision. Feature work remains **5.6 Merge/fan-in, then Split and bounded Loop**.
 - Core/base certification checkpoint: **Complete, 6/6 gates (100%; 0% left)**
 - Feature roadmap: **resumed after the 2026-08-13 core/base clean gate passed**
 - Retained incomplete item: **3. Primitive Contract And Standard Library, 4/6 complete
   (67%); 33% left**
 - Retained incomplete item: **6. Live Runtime, Operations, Bounded Work, And Permissions,
   1/6 complete (17%); 83% left**
-- Latest local acceptance: **5.3 Inspector and diagram follow-up (2026-09-07)**
+- Latest local acceptance: **Compiler and observation scaling (2026-09-08)**
 
 Completion percentages count accepted checkpoints, not lines written. A roadmap item reaches 100%
 only after its public acceptance gate, coverage report, complexity audit, stability checks,
@@ -417,8 +420,9 @@ Checkpoints:
    [6,003-node overview](screenshots/semantic-zoom-overview.png), and
    [real Step detail](screenshots/semantic-zoom-detail.png) are captured from the working Creator.
 
-   Compiler ceilings remain 16,384 nodes, 512 Triggers and 1 MiB source. No million-Step readiness
-   claim follows from a bounded renderer. Rendering budgets are 2,048 glyphs, 4,096 rail segments,
+   The September 8 scaling work below removes the earlier total-node, Trigger-count and local
+   source-size ceilings. No million-Step readiness claim follows from a bounded renderer.
+   Rendering budgets are 2,048 glyphs, 4,096 rail segments,
    256 labels and 2 MiB per response. Latency and retained-memory measurements are advisory, never
    build byte or timing gates.
 4. **Partial (2026-08-28, 3/6 control Steps accepted):** Filter, Choice, and Switch are accepted.
@@ -443,7 +447,52 @@ Checkpoints:
 7. **Planned:** per-Trigger and per-Step test input, fixtures, assertions, reports,
    stop-before-side-effect behavior, and proof that every terminal path satisfies Trigger results.
 
-Current evidence:
+### Compiler And Observation Scaling
+
+Status: **Locally accepted (2026-09-08); 3/3 scoped gates verified (100%; 0% left).**
+This technical checkpoint does not change the feature roadmap's 2/8 accepted items or item 5's
+4/7 accepted checkpoints.
+
+1. **Done:** automatic class/method partitioning replaces the 16,384-node and 512-Trigger ceilings.
+   Production and development JARs execute 16,385 ordinal Steps exactly once and in order. A
+   513-Trigger build passes; six 128-Step flow cases with 16, 17 and 258 outcomes per Step prove
+   the first and last outcomes through inline and extracted routing. The Step contract, dependency
+   set and one-JAR runtime boundary are unchanged.
+2. **Done:** empty runtime inputs allocate their value map only when populated. The controlled
+   Java 25 interpreter probe measured 320 to 256 bytes per no-input call; this is not a throughput
+   claim or a build gate. Compiler metric indexes use primitive arrays only for development;
+   assembly avoids a second project-sized output buffer. Viewport aggregation no longer allocates
+   per-project counter prefix tables. Local files and incremental edits can exceed 1 MiB, while
+   HTTP request, UTF-8, graph and runtime input validation remain enforced.
+3. **Done:** final package, generated-JAR, observation, concurrency and memory verification.
+   Review corrected constructor diagnostic mapping after extraction and a wide-routing bytecode
+   overflow. A real child-process regression also reproduced shutdown failure after workspace
+   deletion; cleanup now accepts an already-removed workspace without hiding other I/O failures.
+   Timing and allocation measurements are advisory; execution, isolation and retention checks
+   remain assertions.
+
+The production-code delta is 48 net lines across six existing files, with no new maintained
+production types, modules, dependencies or Step-definition options. Generated helper classes are
+an internal compilation detail, not separately deployed services. Small tables remain inline.
+
+Verification: the Maven app image was rebuilt after review. The complete non-browser acceptance
+command `./mvnw -pl modules/railix-creator -am test '-Dtest=*,!*BrowserIT' -Drailix.test.forks=2`
+passed **2,379 tests, zero failures/errors/skips, in 11:02**: 835 core, 72 standard-library and 1,472
+Creator/runtime/package cases. This includes 35 packaged-launcher and seven production-soak cases.
+The separate controlled probe
+`env JDK_JAVA_OPTIONS=-Xint ./mvnw -pl modules/railix-core -Dtest=WorkflowRuntimeInputsTest -Djacoco.skip=true -Drailix.test.forks=1 test`
+passed all 20 cases and measured 256 bytes per no-input call. Process inspection found no remaining
+test/browser workers. Expected permission-denial tests still report cleanup failures and prove
+successful retry. Browser suites and full coverage certification were not rerun for this batch.
+
+Remaining before million-Step acceptance: streamed functional JSON and generated compilation
+units; incremental structural indexing; chunked Example manifests and trace access; scoped or
+incremental metric ingestion; and hierarchical route aggregation instead of traversal cutoffs.
+The current 32,768-character per-Step lowering and 4 MiB Example-manifest bounds remain explicit.
+Hardware-limited project capacity is the target, not a claim established by the 16,385-Step proof.
+PixiJS or another renderer is not part of this delivery.
+
+### Current Evidence
 
 - The generated production application contains direct static Step calls, lowered input resolvers,
   constants, and integer routes. It contains no `StepDefinition`, binding hierarchy, alternate
@@ -465,17 +514,16 @@ Current evidence:
 - Generated synchronous calls return primitive outcome indexes; one stored terminal `RunResult`
   represents rejection, failure, or cancellation. No success-path routing object, exception,
   future, or scheduler remains between a Step and its authored integer destination.
-- A real 129-Step production flow executes 322,500 verified Steps with zero traces. The clean
-  advisory reports 86,664 allocated bytes and 35,017 median nanoseconds per call: 671 bytes and
-  271 nanoseconds per Step, with 1,616 retained bytes. A one-million-call soak stays inside a
-  64 MiB heap with 127,352 retained bytes. The single-Step boundary and escaped result each report
-  3,392 allocated bytes per call; median single-call latency is 691 nanoseconds, and the array-read
-  calibration reports 103,086 bytes per call. Allocation and latency are advisory and never fail
+- A real 129-Step production flow executes 322,500 verified Steps with zero traces. The September 8
+  advisory reports 86,552 allocated bytes and 36,996 median nanoseconds per call: 670 bytes and
+  286 nanoseconds per Step, with 1,616 retained bytes. A one-million-call soak stays inside a
+  64 MiB heap with 137,624 retained bytes. The single-Step boundary and escaped result each report
+  3,392 allocated bytes per call; median single-call latency is 700 nanoseconds, and the array-read
+  calibration reports 103,017 bytes per call. Allocation and latency are advisory and never fail
   the build; constrained-heap, retained-growth, trace, execution, and correctness assertions remain
   acceptance gates.
-- The maximum 16,384-node generated monolith executes all 16,381 ordinary Steps exactly once in
-  authored order. Generated applications currently admit at most 512 Triggers; exact-boundary
-  production and development builds pass, while Trigger 513 is rejected before source allocation.
+- The earlier 16,384-node and 512-Trigger acceptance boundaries are superseded by the scaling
+  checkpoint above; neither count is a compiler ceiling now.
   A depth-seven exhaustive branch tree resolves all 128 leaves uniquely, while 2,000 concurrent
   contexts remain isolated and 2,000 external effects occur exactly once.
 - Cross-process application publication uses one project-local OS file lock outside the artifact
@@ -637,8 +685,8 @@ Checkpoint 6.1 acceptance gates:
 5. **Closed:** selected-node metrics use fixed open-addressed indexes and exports distinguish exact
    primitive counter, lookup, and total bytes without changing the production fast path. Committed
    generated-application E2Es prove bounded streaming for 4,096 Step series; the direct fixed-store
-   contract proves exact accounting for 16,384 series, which is also the current compiler node
-   limit. Compiler scaling beyond 16,384 nodes remains unaccepted.
+   contract proves exact accounting for 16,384 series. The September 8 compiler scaling checkpoint
+   above extends the former node ceiling; this does not certify million-series observation.
 6. **Closed:** clean `./mvnw clean verify` passes in 47:49 with advisory aggregate coverage of
    95.0335% lines and 90.2590% branches. The one-million-call 64 MiB soak retains 127,512 bytes;
    process inspection finds no owned Railix, Playwright, or project Maven process after shutdown.
