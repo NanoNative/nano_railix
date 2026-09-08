@@ -38,7 +38,7 @@ final class DevelopmentApplication implements AutoCloseable {
     private static final int ACCEPT_POLL_MILLIS = 250;
     private static final int FRAME_READ_MILLIS = 1_000;
     private static final int RESPONSE_LIMIT = RailixData.DEFAULT_MAX_SOURCE_BYTES;
-    private static final int EXAMPLE_RESPONSE_LIMIT = RESPONSE_LIMIT * 16;
+    private static final int OBSERVATION_RESPONSE_LIMIT = RESPONSE_LIMIT * 16;
     private static final Duration READY_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(12);
@@ -164,39 +164,23 @@ final class DevelopmentApplication implements AutoCloseable {
         return request(getMessage("/v1/metrics/nodes/" + URLEncoder.encode(node, StandardCharsets.UTF_8)));
     }
 
-    ObservationResponse examples(final String path) throws IOException {
-        return observation(path.isEmpty() ? "/v1/examples" : "/v1/examples/" + path);
+    ObservationResponse metricSnapshot() throws IOException {
+        return observation("/v1/metrics", "Metric");
     }
 
-    private ObservationResponse observation(final String path) throws IOException {
+    ObservationResponse examples(final String path) throws IOException {
+        return observation(path.isEmpty() ? "/v1/examples" : "/v1/examples/" + path, "Example");
+    }
+
+    private ObservationResponse observation(final String path, final String subject) throws IOException {
         if (!acquire()) {
             return null;
         }
         try {
-            final HttpResponse<InputStream> response = client.send(
-                    getMessage(path),
-                    HttpResponse.BodyHandlers.ofInputStream()
-            );
-            try (var body = response.body()) {
-                final byte[] bytes = body.readNBytes(EXAMPLE_RESPONSE_LIMIT + 1);
-                if (bytes.length > EXAMPLE_RESPONSE_LIMIT) {
-                    return new ObservationResponse(
-                            502,
-                            "application/json; charset=utf-8",
-                            ("{\"message\":\"Application Example response exceeded 16777216 bytes.\","
-                                    + "\"status\":\"invalid\"}").getBytes(StandardCharsets.UTF_8)
-                    );
-                }
-                return new ObservationResponse(
-                        response.statusCode(),
-                        response.headers().firstValue("Content-Type")
-                                .orElse("application/json; charset=utf-8"),
-                        bytes
-                );
-            }
+            return readResponse(getMessage(path), OBSERVATION_RESPONSE_LIMIT, "Application " + subject);
         } catch (final InterruptedException exception) {
             Thread.currentThread().interrupt();
-            throw new IOException("Application Example observation was interrupted.", exception);
+            throw new IOException("Application " + subject + " observation was interrupted.", exception);
         } finally {
             release();
         }
@@ -207,22 +191,11 @@ final class DevelopmentApplication implements AutoCloseable {
             return new Response(503, "{\"status\":\"unavailable\"}");
         }
         try {
-            try {
-                final HttpResponse<java.io.InputStream> response = client.send(
-                        request,
-                        HttpResponse.BodyHandlers.ofInputStream()
-                );
-                try (var body = response.body()) {
-                    final byte[] bytes = body.readNBytes(RESPONSE_LIMIT + 1);
-                    if (bytes.length > RESPONSE_LIMIT) {
-                        return new Response(502, "{\"status\":\"invalid\",\"message\":\"Application response exceeded 1048576 bytes.\"}");
-                    }
-                    return new Response(response.statusCode(), new String(bytes, StandardCharsets.UTF_8));
-                }
-            } catch (final InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                return new Response(409, "{\"status\":\"cancelled\"}");
-            }
+            final ObservationResponse response = readResponse(request, RESPONSE_LIMIT, "Application");
+            return new Response(response.status(), new String(response.body(), StandardCharsets.UTF_8));
+        } catch (final InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return new Response(409, "{\"status\":\"cancelled\"}");
         } finally {
             release();
         }
@@ -234,6 +207,31 @@ final class DevelopmentApplication implements AutoCloseable {
                 .timeout(REQUEST_TIMEOUT)
                 .GET()
                 .build();
+    }
+
+    private ObservationResponse readResponse(final HttpRequest request, final int limit, final String subject)
+            throws InterruptedException {
+        if (Thread.interrupted()) {
+            throw new InterruptedException();
+        }
+        final CompletableFuture<HttpResponse<byte[]>> pending = client.sendAsync(
+                request, HttpResponse.BodyHandlers.limiting(HttpResponse.BodyHandlers.ofByteArray(), limit));
+        try {
+            // HttpRequest.timeout ends after headers; this deadline also covers the bounded body.
+            final HttpResponse<byte[]> response = pending.get(REQUEST_TIMEOUT.toNanos(), TimeUnit.NANOSECONDS);
+            return new ObservationResponse(response.statusCode(),
+                    response.headers().firstValue("Content-Type").orElse("application/json; charset=utf-8"),
+                    response.body());
+        } catch (final ExecutionException | TimeoutException failure) {
+            final String reason = failure instanceof TimeoutException
+                    ? "timed out after " + REQUEST_TIMEOUT.toMillis() + " ms."
+                    : "was incomplete or exceeded " + limit + " bytes.";
+            return new ObservationResponse(502, "application/json; charset=utf-8",
+                    ("{\"message\":\"" + subject + " response " + reason + "\","
+                            + "\"status\":\"invalid\"}").getBytes(StandardCharsets.UTF_8));
+        } finally {
+            pending.cancel(true);
+        }
     }
 
     private boolean acquire() {

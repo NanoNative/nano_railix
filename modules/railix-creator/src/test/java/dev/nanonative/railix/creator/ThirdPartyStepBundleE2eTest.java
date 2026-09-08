@@ -27,6 +27,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -46,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -224,6 +228,369 @@ final class ThirdPartyStepBundleE2eTest {
             assertThat(buildsAfter).isEqualTo(buildsBefore);
             assertThat(exampleView(client, creator).body())
                     .contains("\"result\":\"helper-value-resource\"");
+        }
+    }
+
+    @Test
+    void sceneObservationsRejectAnUnactivatedSourceButKeepTheAcceptedApplicationObservable() throws Exception {
+        final Bundle working = bundle(
+                "observationworking", "external.observationworking", "helper-", "-resource", Map.of(), Map.of());
+        final Bundle failing = interferingBundle("observationactivation", "activation-token");
+        final Workspace workspace = workspace(List.of(working, failing));
+        final Path project = project(directory, working.definition().id());
+
+        try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome())) {
+            final RailixValue.ObjectValue before = CreatorServerE2eSupport.application(creator.baseUri());
+            final String persisted = Files.readString(project, StandardCharsets.UTF_8);
+            final HttpResponse<String> initialScene = CreatorServerE2eSupport.request(
+                    creator.baseUri(), "GET", "/api/scene", "");
+            assertThat(initialScene.statusCode()).isEqualTo(200);
+            final String acceptedRevision = CreatorServerE2eSupport.string(
+                    CreatorServerE2eSupport.object(initialScene.body()), "revision");
+            assertThat(CreatorServerE2eSupport.awaitExampleView(creator.baseUri(), "command:0").statusCode())
+                    .isEqualTo(200);
+
+            final HttpResponse<String> rejected = CreatorServerE2eSupport.request(
+                    creator.baseUri(), "POST", "/api/project", projectSource("external.notinstalled"));
+            assertThat(rejected.statusCode()).isEqualTo(422);
+            for (final String selection : List.of("", "&example=command%3A0")) {
+                final HttpResponse<String> accepted = CreatorServerE2eSupport.request(creator.baseUri(), "GET",
+                        "/api/scene/observations?revision=" + acceptedRevision + selection, "");
+                assertThat(accepted.statusCode()).as(selection + ": " + accepted.body()).isEqualTo(200);
+                assertThat(CreatorServerE2eSupport.number(
+                        CreatorServerE2eSupport.object(accepted.body()), "application_pid"))
+                        .isEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+            }
+
+            final HttpResponse<String> failed = CreatorServerE2eSupport.request(
+                    creator.baseUri(), "POST", "/api/project", projectSource(failing.definition().id()));
+            assertThat(failed.statusCode()).isEqualTo(503);
+            assertThat(failed.body()).contains("Generated application could not be activated.");
+            assertThat(Files.readString(project, StandardCharsets.UTF_8)).isNotEqualTo(persisted);
+            assertThat(CreatorServerE2eSupport.number(
+                    CreatorServerE2eSupport.application(creator.baseUri()), "pid"))
+                    .isEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+            final HttpResponse<String> unactivatedScene = CreatorServerE2eSupport.request(
+                    creator.baseUri(), "GET", "/api/scene", "");
+            assertThat(unactivatedScene.statusCode()).isEqualTo(200);
+            final String unactivatedRevision = CreatorServerE2eSupport.string(
+                    CreatorServerE2eSupport.object(unactivatedScene.body()), "revision");
+            assertThat(unactivatedRevision).isNotEqualTo(acceptedRevision);
+            for (final String selection : List.of("", "&example=command%3A0")) {
+                final HttpResponse<String> unavailable = CreatorServerE2eSupport.request(creator.baseUri(), "GET",
+                        "/api/scene/observations?revision=" + unactivatedRevision + selection, "");
+                assertThat(unavailable.statusCode()).as(selection + ": " + unavailable.body()).isEqualTo(503);
+                assertThat(CreatorServerE2eSupport.object(unavailable.body())).isEqualTo(RailixValue.object(Map.of(
+                        "status", RailixValue.string("unavailable"), "reason", RailixValue.string("application"))));
+            }
+
+            final HttpResponse<String> recovered = CreatorServerE2eSupport.request(
+                    creator.baseUri(), "POST", "/api/project", persisted);
+            assertThat(recovered.statusCode()).isEqualTo(200);
+            assertThat(CreatorServerE2eSupport.number(
+                    CreatorServerE2eSupport.application(creator.baseUri()), "pid"))
+                    .isEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+            for (final String selection : List.of("", "&example=command%3A0")) {
+                final HttpResponse<String> accepted = CreatorServerE2eSupport.request(creator.baseUri(), "GET",
+                        "/api/scene/observations?revision=" + acceptedRevision + selection, "");
+                assertThat(accepted.statusCode()).as(selection + ": " + accepted.body()).isEqualTo(200);
+                assertThat(CreatorServerE2eSupport.number(
+                        CreatorServerE2eSupport.object(accepted.body()), "application_revision")).isEqualTo(3);
+            }
+        }
+    }
+
+    @Test
+    void stalledObservationBodiesTimeOutAndReleaseBothScenePermits() throws Exception {
+        try (ServerSocket upstream = new ServerSocket(0, 8, InetAddress.getLoopbackAddress())) {
+            final Bundle bundle = interferingBundle("observationdeadline", "http:" + upstream.getLocalPort());
+            final Workspace workspace = workspace(List.of(bundle));
+            final Path project = project(directory, bundle.definition().id());
+            try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
+                 HttpClient client = HttpClient.newHttpClient()) {
+                final long pid = CreatorServerE2eSupport.number(CreatorServerE2eSupport.application(creator.baseUri()), "pid");
+                final String revision = CreatorServerE2eSupport.string(CreatorServerE2eSupport.object(
+                        CreatorServerE2eSupport.request(creator.baseUri(), "GET", "/api/scene", "").body()), "revision");
+                final String path = "/api/scene/observations?revision=" + revision;
+                final var first = observationRequest(client, creator, path);
+                final var second = observationRequest(client, creator, path);
+                try (Socket firstBody = observationConnection(upstream);
+                     Socket secondBody = observationConnection(upstream)) {
+                    for (final Socket socket : List.of(firstBody, secondBody)) {
+                        socket.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                                + "Content-Length: 2\r\nConnection: close\r\n\r\n{").getBytes(StandardCharsets.US_ASCII));
+                        socket.getOutputStream().flush();
+                    }
+                    final HttpResponse<String> saturated = CreatorServerE2eSupport.request(creator.baseUri(), "GET",
+                            "/api/scene/observations?revision=" + revision, "");
+                    assertThat(saturated.statusCode()).as(saturated.body()).isEqualTo(503);
+                    assertThat(saturated.body()).contains("\"reason\":\"saturated\"");
+                    for (final var pending : List.of(first, second)) {
+                        final HttpResponse<byte[]> response = pending.get(40, TimeUnit.SECONDS);
+                        assertThat(response.statusCode()).as(new String(response.body(), StandardCharsets.UTF_8)).isEqualTo(502);
+                        assertThat(response.body()).hasSizeLessThan(1024);
+                    }
+                    assertThat(firstBody.getInputStream().read()).as("first upstream body was cancelled").isEqualTo(-1);
+                    assertThat(secondBody.getInputStream().read()).as("second upstream body was cancelled").isEqualTo(-1);
+                } finally {
+                    first.cancel(true);
+                    second.cancel(true);
+                }
+
+                final var recoveredFirst = observationRequest(client, creator, path);
+                final var recoveredSecond = observationRequest(client, creator, path);
+                try (Socket firstBody = observationConnection(upstream);
+                     Socket secondBody = observationConnection(upstream)) {
+                    final String counters = "{\"executions\":0,\"errors\":0,\"cancelled\":0,"
+                            + "\"duration_samples\":0,\"duration_nanos_total\":0}";
+                    final String metrics = "{\"application_pid\":" + pid + ",\"application\":{\"metrics\":" + counters
+                            + "},\"flows\":[{\"id\":\"command\",\"metrics\":" + counters
+                            + "}],\"steps\":[{\"id\":\"command\",\"metrics\":" + counters
+                            + "},{\"id\":\"external\",\"metrics\":" + counters + "}]}";
+                    for (final Socket socket : List.of(firstBody, secondBody)) {
+                        socket.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                                + metrics.length() + "\r\nConnection: close\r\n\r\n" + metrics)
+                                .getBytes(StandardCharsets.US_ASCII));
+                        socket.getOutputStream().flush();
+                    }
+                    for (int index = 0; index < 2; index++) {
+                        try (Socket coverage = observationConnection(upstream)) {
+                            observationReply(coverage, 503, "{\"status\":\"unavailable\"}");
+                        }
+                    }
+                    for (final var pending : List.of(recoveredFirst, recoveredSecond)) {
+                        final HttpResponse<byte[]> response = pending.get(5, TimeUnit.SECONDS);
+                        assertThat(response.statusCode()).as(new String(response.body(), StandardCharsets.UTF_8)).isEqualTo(200);
+                    }
+                    assertThat(CreatorServerE2eSupport.number(
+                            CreatorServerE2eSupport.application(creator.baseUri()), "pid")).isEqualTo(pid);
+                } finally {
+                    recoveredFirst.cancel(true);
+                    recoveredSecond.cancel(true);
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "200,200,200", "200,202,503", "200,503,200", "202,200,200",
+            "503,200,503", "503,503,503", "200,202,200", "200,200,503"
+    })
+    void sceneObservationCapabilitiesRemainIndependent(
+            final int metricsStatus, final int exampleStatus, final int coverageStatus
+    ) throws Exception {
+        try (ServerSocket upstream = new ServerSocket(0, 8, InetAddress.getLoopbackAddress())) {
+            final Bundle bundle = interferingBundle("observationavailability", "http:" + upstream.getLocalPort());
+            final Workspace workspace = workspace(List.of(bundle));
+            final Path project = project(directory, bundle.definition().id());
+            Files.writeString(project, Files.readString(project).replace(
+                    "\"id\":\"external\",", "\"id\":\"external\",\"metrics\":false,"));
+            try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
+                 HttpClient client = HttpClient.newHttpClient()) {
+                final long pid = CreatorServerE2eSupport.number(CreatorServerE2eSupport.application(creator.baseUri()), "pid");
+                final String revision = CreatorServerE2eSupport.string(CreatorServerE2eSupport.object(
+                        CreatorServerE2eSupport.request(creator.baseUri(), "GET", "/api/scene", "").body()), "revision");
+                final var pending = observationRequest(client, creator,
+                        "/api/scene/observations?revision=" + revision + "&scale=100&example=command%3A0");
+                final List<String> reads = List.of("metrics", "example", "coverage");
+                final List<Integer> statuses = List.of(metricsStatus, exampleStatus, coverageStatus);
+                for (int index = 0; index < reads.size(); index++) {
+                    try (Socket socket = observationConnection(upstream)) {
+                        final int status = statuses.get(index);
+                        observationReply(socket, status, status == 200
+                                ? sceneObservationDocument(reads.get(index), pid) : "{\"status\":\"pending\"}");
+                    }
+                }
+                final HttpResponse<byte[]> response = pending.get(5, TimeUnit.SECONDS);
+                final String body = new String(response.body(), StandardCharsets.UTF_8);
+                assertThat(response.statusCode()).as(body).isEqualTo(200);
+                final RailixValue.ObjectValue observed = CreatorServerE2eSupport.object(body);
+                assertThat(observed.values()).doesNotContainKeys("mode", "unvisited");
+                assertThat(observed.values().containsKey("coverage_revision")).isEqualTo(coverageStatus == 200);
+                assertThat(observed.values().containsKey("example")).isEqualTo(exampleStatus == 200);
+                for (final RailixValue value : ((RailixValue.ArrayValue) observed.values().get("nodes")).values()) {
+                    final RailixValue.ObjectValue node = (RailixValue.ObjectValue) value;
+                    assertThat(node.values().containsKey("executions")).isEqualTo(metricsStatus == 200);
+                    assertThat(node.values().containsKey("covered_count")).isEqualTo(coverageStatus == 200);
+                    assertThat(node.values().containsKey("selected_count")).isEqualTo(exampleStatus == 200);
+                    if (CreatorServerE2eSupport.string(node, "id").equals("external")) {
+                        assertThat(CreatorServerE2eSupport.number(node, "disabled_count")).isEqualTo(1);
+                    }
+                    if (metricsStatus == 200 && CreatorServerE2eSupport.string(node, "id").equals("app")) {
+                        assertThat(CreatorServerE2eSupport.number(node, "executions")).isEqualTo(7);
+                    }
+                }
+                for (final RailixValue value : ((RailixValue.ArrayValue) observed.values().get("links")).values()) {
+                    final RailixValue.ObjectValue link = (RailixValue.ObjectValue) value;
+                    assertThat(link.values().containsKey("selection")).isEqualTo(exampleStatus == 200);
+                    final String id = CreatorServerE2eSupport.string(link, "id");
+                    if (id.equals("command.next>external") || id.contains(">end:")) {
+                        assertThat(link.values()).doesNotContainKey("executions");
+                    }
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"metrics", "example", "coverage", "pid", "application", "flow"})
+    void malformedSuccessfulSceneObservationsRemainFailClosed(final String invalid) throws Exception {
+        try (ServerSocket upstream = new ServerSocket(0, 8, InetAddress.getLoopbackAddress())) {
+            final Bundle bundle = interferingBundle("observationinvalid", "http:" + upstream.getLocalPort());
+            final Workspace workspace = workspace(List.of(bundle));
+            final Path project = project(directory, bundle.definition().id());
+            Files.writeString(project, Files.readString(project).replace(
+                    "\"id\":\"external\",", "\"id\":\"external\",\"metrics\":false,"));
+            try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
+                 HttpClient client = HttpClient.newHttpClient()) {
+                final long pid = CreatorServerE2eSupport.number(CreatorServerE2eSupport.application(creator.baseUri()), "pid");
+                final String revision = CreatorServerE2eSupport.string(CreatorServerE2eSupport.object(
+                        CreatorServerE2eSupport.request(creator.baseUri(), "GET", "/api/scene", "").body()), "revision");
+                final var pending = observationRequest(client, creator,
+                        "/api/scene/observations?revision=" + revision + "&example=command%3A0");
+                for (final String read : invalid.equals("pid") ? List.of("metrics") : List.of("metrics", "example", "coverage")) {
+                    try (Socket socket = observationConnection(upstream)) {
+                        final String document = invalid.equals(read)
+                                ? "{\"application_pid\":" + pid + "}"
+                                : sceneObservationDocument(read, invalid.equals("pid") ? pid + 1 : pid);
+                        if (read.equals("metrics") && Set.of("application", "flow").contains(invalid)) {
+                            final Map<String, RailixValue> fields = new LinkedHashMap<>(
+                                    CreatorServerE2eSupport.object(document).values());
+                            final RailixValue.ObjectValue emptyCounters = RailixValue.object(Map.of("metrics", RailixValue.object(Map.of())));
+                            if (invalid.equals("application")) {
+                                fields.put("application", emptyCounters);
+                            } else {
+                                fields.put("flows", RailixValue.array(List.of(RailixValue.object(Map.of(
+                                        "id", RailixValue.string("command"), "metrics", RailixValue.object(Map.of()))))));
+                            }
+                            observationReply(socket, 200, RailixJson.write(RailixValue.object(fields)));
+                        } else {
+                            observationReply(socket, 200, document);
+                        }
+                    }
+                }
+                final HttpResponse<byte[]> response = pending.get(5, TimeUnit.SECONDS);
+                final String body = new String(response.body(), StandardCharsets.UTF_8);
+                assertThat(response.statusCode()).as(body).isEqualTo(502);
+                assertThat(body).contains("invalid-application-observation").doesNotContain("covered_count", "selected_count");
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "false, 16777216, /api/examples", "true, 16777216, /api/examples",
+            "false, 1048576, /api/metrics", "true, 1048576, /api/metrics",
+            "false, 1048576, /api/metrics/nodes/command", "true, 1048576, /api/metrics/nodes/command"
+    })
+    void observationBodiesEnforceTheExactByteLimitAndRecover(
+            final boolean chunked, final int limit, final String path
+    ) throws Exception {
+        try (ServerSocket upstream = new ServerSocket(0, 8, InetAddress.getLoopbackAddress())) {
+            final Bundle bundle = interferingBundle("observationlimit", "http:" + upstream.getLocalPort());
+            final Workspace workspace = workspace(List.of(bundle));
+            final Path project = project(directory, bundle.definition().id());
+            try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
+                 HttpClient client = HttpClient.newHttpClient()) {
+                for (final int bytes : List.of(limit - 1, limit, limit + 1, limit + 1, 2)) {
+                    final var pending = observationRequest(client, creator, path);
+                    try (Socket socket = observationConnection(upstream)) {
+                        final OutputStream output = socket.getOutputStream();
+                        output.write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                                + (chunked ? "Transfer-Encoding: chunked" : "Content-Length: " + bytes)
+                                + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                        final byte[] padding = new byte[8192];
+                        java.util.Arrays.fill(padding, (byte) ' ');
+                        for (int remaining = bytes; remaining > 0;) {
+                            final int length = Math.min(remaining, padding.length);
+                            if (chunked) output.write((Integer.toHexString(length) + "\r\n").getBytes(StandardCharsets.US_ASCII));
+                            output.write(padding, 0, length);
+                            if (chunked) output.write("\r\n".getBytes(StandardCharsets.US_ASCII));
+                            remaining -= length;
+                        }
+                        if (chunked) output.write("0\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+                        output.flush();
+                        final HttpResponse<byte[]> response = pending.get(10, TimeUnit.SECONDS);
+                        assertThat(response.statusCode()).as("body bytes: " + bytes).isEqualTo(bytes <= limit ? 200 : 502);
+                        if (bytes <= limit) {
+                            assertThat(response.body()).hasSize(bytes);
+                        } else {
+                            assertThat(response.body()).hasSizeLessThan(1024);
+                            assertThat(new String(response.body(), StandardCharsets.UTF_8)).contains(Integer.toString(limit));
+                        }
+                    } finally {
+                        pending.cancel(true);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void stalledMetricBodiesTimeOutAndReleaseAllForwardingPermits() throws Exception {
+        try (ServerSocket upstream = new ServerSocket(0, 64, InetAddress.getLoopbackAddress())) {
+            final Bundle bundle = interferingBundle("metricdeadline", "http:" + upstream.getLocalPort());
+            final Workspace workspace = workspace(List.of(bundle));
+            final Path project = project(directory, bundle.definition().id());
+            try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
+                 HttpClient client = HttpClient.newHttpClient()) {
+                final long pid = CreatorServerE2eSupport.number(CreatorServerE2eSupport.application(creator.baseUri()), "pid");
+                final List<CompletableFuture<HttpResponse<byte[]>>> requests = new ArrayList<>();
+                final List<Socket> bodies = new ArrayList<>();
+                try {
+                    for (int index = 0; index < CreatorServer.MAX_CONCURRENT_FORWARDS; index++) {
+                        requests.add(observationRequest(client, creator,
+                                index % 2 == 0 ? "/api/metrics" : "/api/metrics/nodes/command"));
+                        final Socket socket = observationConnection(upstream);
+                        bodies.add(socket);
+                        socket.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                                + "Content-Length: 2\r\nConnection: close\r\n\r\n{").getBytes(StandardCharsets.US_ASCII));
+                        socket.getOutputStream().flush();
+                    }
+                    final HttpResponse<String> saturated = CreatorServerE2eSupport.request(
+                            creator.baseUri(), "GET", "/api/metrics", "");
+                    assertThat(saturated.statusCode()).as(saturated.body()).isEqualTo(503);
+                    assertThat(saturated.body()).contains("\"reason\":\"saturated\"");
+                    for (final var pending : requests) {
+                        final HttpResponse<byte[]> response = pending.get(40, TimeUnit.SECONDS);
+                        assertThat(response.statusCode()).as(new String(response.body(), StandardCharsets.UTF_8)).isEqualTo(502);
+                        assertThat(response.body()).hasSizeLessThan(1024);
+                        assertThat(new String(response.body(), StandardCharsets.UTF_8)).contains("timed out");
+                    }
+                    for (final Socket socket : bodies) {
+                        assertThat(socket.getInputStream().read()).as("upstream body was cancelled").isEqualTo(-1);
+                    }
+                } finally {
+                    for (final Socket socket : bodies) socket.close();
+                    requests.forEach(pending -> pending.cancel(true));
+                }
+
+                requests.clear();
+                bodies.clear();
+                try {
+                    for (int index = 0; index < CreatorServer.MAX_CONCURRENT_FORWARDS; index++) {
+                        requests.add(observationRequest(client, creator,
+                                index % 2 == 0 ? "/api/metrics" : "/api/metrics/nodes/command"));
+                        bodies.add(observationConnection(upstream));
+                    }
+                    for (final Socket socket : bodies) {
+                        socket.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                                + "Content-Length: 2\r\nConnection: close\r\n\r\n{}").getBytes(StandardCharsets.US_ASCII));
+                        socket.getOutputStream().flush();
+                    }
+                    for (final var pending : requests) {
+                        final HttpResponse<byte[]> response = pending.get(5, TimeUnit.SECONDS);
+                        assertThat(response.statusCode()).as(new String(response.body(), StandardCharsets.UTF_8)).isEqualTo(200);
+                        assertThat(new String(response.body(), StandardCharsets.UTF_8)).isEqualTo("{}");
+                    }
+                    assertThat(CreatorServerE2eSupport.number(
+                            CreatorServerE2eSupport.application(creator.baseUri()), "pid")).isEqualTo(pid);
+                } finally {
+                    for (final Socket socket : bodies) socket.close();
+                    requests.forEach(pending -> pending.cancel(true));
+                }
+            }
         }
     }
 
@@ -1376,6 +1743,28 @@ final class ThirdPartyStepBundleE2eTest {
                                         java.net.InetAddress.getLoopbackAddress(),
                                         Integer.parseInt(parts[2])
                                 )) {
+                                    if (interference.startsWith("http:")) {
+                                        callback.getOutputStream().write(("READY " + parts[1] + " "
+                                                + interference.substring("http:".length()) + (char) 10)
+                                                .getBytes(StandardCharsets.UTF_8));
+                                        callback.getOutputStream().flush();
+                                        final java.io.ByteArrayOutputStream activation = new java.io.ByteArrayOutputStream();
+                                        for (int next; (next = ownership.read()) != 10;) {
+                                            if (next < 0 || activation.size() >= 128) {
+                                                throw new java.io.IOException("Invalid Creator activation frame.");
+                                            }
+                                            activation.write(next);
+                                        }
+                                        if (!activation.toString(StandardCharsets.UTF_8).equals("ACTIVATE " + parts[1])) {
+                                            throw new java.io.IOException("Invalid Creator activation token.");
+                                        }
+                                        callback.getOutputStream().write(("ACTIVATED " + parts[1] + (char) 10)
+                                                .getBytes(StandardCharsets.UTF_8));
+                                        callback.getOutputStream().flush();
+                                        callback.shutdownOutput();
+                                        ownership.transferTo(java.io.OutputStream.nullOutputStream());
+                                        System.exit(0);
+                                    }
                                     final String response = switch (interference) {
                                         case "activation-token" -> "READY " + parts[1] + " 1" + (char) 10;
                                         case "wrong-token" -> "READY wrong-token 1" + (char) 10;
@@ -2009,6 +2398,56 @@ final class ThirdPartyStepBundleE2eTest {
                 throw new IOException("Test class bytes are unavailable: " + type.getName() + ".");
             }
             return input.readAllBytes();
+        }
+    }
+
+    private static CompletableFuture<HttpResponse<byte[]>> observationRequest(
+            final HttpClient client, final CreatorServer creator, final String path
+    ) {
+        return client.sendAsync(HttpRequest.newBuilder(creator.baseUri().resolve(path))
+                        .header("X-Railix-Creator-Token", CreatorServerE2eSupport.tokenOrIncorrect(creator.baseUri()))
+                        .timeout(Duration.ofSeconds(45)).GET().build(), HttpResponse.BodyHandlers.ofByteArray());
+    }
+
+    private static String sceneObservationDocument(final String read, final long pid) {
+        final String counters = "{\"executions\":7,\"errors\":0,\"cancelled\":0,"
+                + "\"duration_samples\":1,\"duration_nanos_total\":7}";
+        return "{\"application_pid\":" + pid + "," + switch (read) {
+            case "metrics" -> "\"application\":{\"metrics\":" + counters
+                    + "},\"flows\":[{\"id\":\"command\",\"metrics\":" + counters
+                    + "}],\"steps\":[{\"id\":\"command\",\"metrics\":" + counters + "}]}";
+            case "example" -> "\"nodes\":[2]}";
+            default -> "\"revision\":1,\"coverage_bits\":\"Bg==\",\"covered_steps\":2}";
+        };
+    }
+
+    private static void observationReply(final Socket socket, final int status, final String body) throws IOException {
+        socket.getOutputStream().write(("HTTP/1.1 " + status + " Observation\r\nContent-Type: application/json\r\nContent-Length: "
+                + body.length() + "\r\nConnection: close\r\n\r\n" + body).getBytes(StandardCharsets.US_ASCII));
+        socket.getOutputStream().flush();
+    }
+
+    private static Socket observationConnection(final ServerSocket listener) throws IOException {
+        listener.setSoTimeout(5000);
+        final Socket socket = listener.accept();
+        try {
+            socket.setSoTimeout(5000);
+            final ByteArrayOutputStream headers = new ByteArrayOutputStream();
+            int ending = 0;
+            for (int count = 0; count < 16_384; count++) {
+                final int next = socket.getInputStream().read();
+                if (next < 0) throw new IOException("Observation request ended before headers.");
+                headers.write(next);
+                ending = (ending << 8) | next;
+                if (ending == 0x0d0a0d0a) {
+                    assertThat(headers.toString(StandardCharsets.US_ASCII)).contains("Authorization: Bearer ");
+                    return socket;
+                }
+            }
+            throw new IOException("Observation request headers exceeded 16384 bytes.");
+        } catch (final IOException | RuntimeException | AssertionError failure) {
+            socket.close();
+            throw failure;
         }
     }
 

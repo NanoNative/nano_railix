@@ -7,6 +7,7 @@ import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.TimeoutError;
+import com.microsoft.playwright.assertions.PlaywrightAssertions;
 import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixJson;
@@ -47,7 +48,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void newProjectStartsWithOnePermanentCenteredApp() {
         assertThat(page.locator(".graph-stage").textContent())
-                .contains("Application")
+                .contains("App")
                 .doesNotContain("Add Trigger")
                 .doesNotContain("CLI Trigger", "Field Manipulation");
         assertThat(page.locator(".app-node").count()).isEqualTo(1);
@@ -57,7 +58,34 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
+    void emptyProjectAppSelectionOffersATriggerWithoutDiscoveryPrompts() {
+        assertThat(page.locator("#world-objective").count()).isZero();
+
+        page.locator(".app-node").click();
+
+        assertThat(page.locator(".app-node").getAttribute("aria-pressed")).isEqualTo("true");
+        assertThat(page.locator("#add-trigger").isVisible()).isTrue();
+        assertThat(page.locator("#step-search").count()).isZero();
+    }
+
+    @Test
+    void triggerSelectionOffersItsNextStepWithoutDiscoveryPrompts() {
+        addTrigger();
+        waitForText("#build-state", "Built");
+        selectWorldNode("app");
+
+        selectTrigger();
+
+        assertThat(page.locator(".trigger-node").getAttribute("aria-pressed")).isEqualTo("true");
+        assertThat(page.locator("#add-next-step").isVisible()).isTrue();
+        assertThat(page.locator("#step-search").count()).isZero();
+    }
+
+    @Test
     void appInspectorShowsTruthfulWorkspaceFacts() {
+        openInspectorSection("Workspace and build");
+
+        assertThat(page.locator("#project-path").isVisible()).isTrue();
         assertThat(page.locator("#inspector").textContent()).contains(
                 directory.resolve("project.json").toAbsolutePath().normalize().toString(),
                 "0 flows",
@@ -68,12 +96,17 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
     @Test
     void appInspectorShowsTheRunningBuildPathAndPid() {
+        openInspectorSection("Workspace and build");
+
+        assertThat(page.locator("#build-path").isVisible()).isTrue();
+        assertThat(page.locator("#application-pid").isVisible()).isTrue();
         assertThat(page.locator("#build-path").textContent()).isNotBlank();
         assertThat(page.locator("#application-pid").textContent()).matches("[1-9][0-9]*");
     }
 
     @Test
     void appInspectorAutomaticallyShowsLiveRuntimeMetrics() {
+        openInspectorSection("Runtime metrics");
         page.locator(".runtime-metrics").waitFor();
 
         assertThat(page.locator(".runtime-metrics").textContent())
@@ -122,15 +155,17 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void selectingATriggerAutomaticallyShowsItsStepAndFlowMetrics() {
         addTrigger();
+        openInspectorSection("Runtime metrics");
         page.locator(".runtime-metrics").waitFor();
 
         assertThat(page.locator(".runtime-metrics").textContent())
-                .contains("Operational metrics", "Connected", "Step executions", "Flow executions");
+                .contains("Step metrics", "Connected", "Step executions", "Flow executions");
     }
 
     @Test
     void selectedStepMetricsIdentifySampledTimingAndOmitUnsupportedInflightCounts() {
         addTrigger();
+        openInspectorSection("Runtime metrics");
         page.locator(".runtime-metrics").waitFor();
 
         assertThat(page.locator(".runtime-metrics").textContent())
@@ -140,6 +175,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
     @Test
     void stoppedApplicationRemovesStaleRuntimeMetrics() {
+        openInspectorSection("Runtime metrics");
         page.locator(".runtime-metrics").waitFor();
         final long pid = ((Number) page.evaluate(
                 "async () => (await (await fetch('/api/application')).json()).pid"
@@ -181,6 +217,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
     @Test
     void metricsFromThePreviousApplicationCannotRenderAfterRollingReplacement() {
+        openInspectorSection("Runtime metrics");
         page.locator(".runtime-metrics").waitFor();
         final String previousPid = applicationPid();
         page.evaluate("""
@@ -263,7 +300,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                 }
                 """, previousPid);
 
-        page.locator(".app-node").click();
+        selectWorldNode("app");
         page.locator("#project-id").fill("example-replacement");
         page.locator("#project-id").press("Tab");
         waitForText("#build-state", "Built");
@@ -281,8 +318,12 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void enterSelectsTheApplicationNode() {
         addTrigger();
+        waitForText("#build-state", "Built");
+        page.locator("#zoom-fit").click();
+        awaitScene();
 
         page.locator(".app-node").press("Enter");
+        waitForText(".inspector-heading h2", "Application");
 
         assertThat(page.locator(".inspector-heading h2").textContent()).isEqualTo("Application");
     }
@@ -290,19 +331,27 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void spaceSelectsATriggerNode() {
         addTrigger();
-        final String flowName = page.locator(".trigger-node h2").textContent();
-        page.locator(".app-node").click();
+        final String flowName = page.locator(".inspector-heading h2").textContent();
+        selectWorldNode("app");
+        page.locator("#zoom-fit").click();
+        awaitScene();
 
         page.locator(".trigger-node").press("Space");
+        waitForText(".inspector-heading h2", flowName);
 
         assertThat(page.locator(".inspector-heading h2").textContent()).isEqualTo(flowName);
     }
 
     @Test
     void rollingBuildCompletionPreservesFocusedGraphNode() {
-        delayNextProjectWrite();
         addTrigger();
-        page.locator(".app-node").click();
+        waitForText("#build-state", "Built");
+        delayNextProjectWrite();
+        selectWorldNode("app");
+        page.locator("#zoom-fit").click();
+        awaitScene();
+        page.locator("#project-id").fill("focused-node-rebuild");
+        page.locator("#project-id").press("Tab");
         page.locator(".trigger-node").focus();
         page.waitForFunction("() => window.__railixProjectWriteStarted === true");
 
@@ -345,11 +394,232 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
+    void queuedEditCanRestoreAValueAfterAnOlderSaveIsAcknowledged() {
+        final String original = page.locator("#project-id").inputValue();
+        delayFirstProjectWriteAndRecordIds();
+        page.locator("#project-id").fill("temporary-name");
+        page.locator("#project-id").press("Tab");
+        page.waitForFunction("window.__railixProjectWriteStarted === true");
+        page.locator("#project-id").fill(original);
+        page.locator("#project-id").press("Tab");
+        page.waitForFunction("() => state.pendingWrite !== null");
+
+        page.evaluate("window.__railixReleaseProjectWrite()");
+        waitForText("#build-state", "Built");
+        page.reload();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.locator("#project-id").inputValue()).isEqualTo(original);
+    }
+
+    @Test
+    void editingOneOfSixThousandStepsTransfersOnlyThatStep() {
+        openProject(deepBranchProject(6_000));
+        selectWorldNode("step-3000");
+        final List<String> transfers = new ArrayList<>();
+        page.onRequest(request -> {
+            if (request.url().endsWith("/api/project") || request.url().endsWith("/api/creator")) {
+                transfers.add(request.method());
+            }
+        });
+
+        final var response = page.waitForResponse(candidate -> candidate.url().endsWith("/api/project")
+                && candidate.request().method().equals("PATCH"), () -> page.locator("#node-metrics").uncheck());
+        waitForText("#build-state", "Built");
+
+        final var edit = CreatorServerE2eSupport.object(response.request().postData());
+        final var changes = (RailixValue.ObjectValue) edit.values().get("changes");
+        assertThat(changes.values()).containsOnlyKeys("nodes");
+        assertThat(((RailixValue.ObjectValue) changes.values().get("nodes")).values())
+                .containsOnlyKeys("step-3000");
+        assertThat(CreatorServerE2eSupport.object(response.text()).values()).doesNotContainKeys("project", "creator");
+        assertThat(transfers).containsExactly("PATCH");
+        page.reload();
+        waitForText("#build-state", "Built");
+        selectWorldNode("step-3000");
+        assertThat(page.locator("#node-metrics").isChecked()).isFalse();
+    }
+
+    @Test
+    void staleEditorPreservesItsDraftWithoutOverwritingTheOtherEditor() {
+        page.evaluate("""
+                async () => {
+                  const project = (await (await fetch('/api/project')).json()).project;
+                  project.id = 'other-editor';
+                  const response = await fetch('/api/project', {
+                    method: 'POST', headers: mutationHeaders(), body: JSON.stringify(project)
+                  });
+                  if (!response.ok) throw new Error(await response.text());
+                }
+                """);
+        page.locator("#project-id").fill("my-unsaved-draft");
+        page.locator("#project-id").press("Tab");
+        waitForText("#build-state", "Not built");
+
+        assertThat(page.locator("#inspector").textContent()).contains("changed in another editor", "Reload");
+        assertThat(page.locator("#project-id").inputValue()).isEqualTo("my-unsaved-draft");
+        assertThat(page.evaluate("async () => (await (await fetch('/api/project')).json()).project.id"))
+                .isEqualTo("other-editor");
+    }
+
+    @Test
+    void metadataSaveDoesNotDiscardARejectedFunctionalDraft() {
+        final String original = page.locator("#project-id").inputValue();
+        page.locator("#project-id").fill("Invalid Name");
+        page.locator("#project-id").press("Tab");
+        waitForText("#build-state", "Not built");
+
+        page.evaluate("""
+                () => {
+                  state.creator.steps.app = {name: 'My application'};
+                  creatorDirty();
+                }
+                """);
+        page.waitForFunction("() => state.savedCreator.steps.app?.name === 'My application'");
+
+        assertThat(page.locator("#project-id").inputValue()).isEqualTo("Invalid Name");
+        assertThat(page.evaluate("async () => (await (await fetch('/api/project')).json()).project.id"))
+                .isEqualTo(original);
+        assertThat(page.locator("#build-state").textContent()).isEqualTo("Not built");
+        assertThat(page.locator("#inspector").textContent()).contains("PROJECT_ID_INVALID");
+    }
+
+    @Test
+    void functionalSavePreservesTheWarningAndSourceOfInvalidPresentationMetadata() throws Exception {
+        creator.close();
+        final Path metadata = directory.resolve("railix.creator.json");
+        Files.writeString(metadata, "{");
+        creator = CreatorServer.start(0, directory.resolve("project.json"), directory.resolve("railix-home"));
+        page.navigate(creator.baseUri().toString());
+        waitForText("#build-state", "Built");
+        assertThat(page.locator("#inspector").textContent()).contains("CREATOR_JSON_INVALID");
+
+        page.locator("#project-id").fill("functional-edit");
+        page.locator("#project-id").press("Tab");
+        waitForText("#build-state", "Built");
+
+        assertThat(page.locator("#inspector").textContent()).contains("CREATOR_JSON_INVALID");
+        assertThat(Files.readString(metadata)).isEqualTo("{");
+    }
+
+    @Test
+    void metadataFailureDoesNotForgetAnAcceptedFunctionalSave() {
+        page.evaluate("""
+                () => {
+                  state.creator.steps.unknown = {name: 'Invalid reference'};
+                  state.project.id = 'accepted-project';
+                  dirty();
+                }
+                """);
+        page.waitForFunction("() => !state.writeActive && state.build === 'Not saved'");
+
+        page.evaluate("""
+                () => {
+                  delete state.creator.steps.unknown;
+                  state.creator.steps.app = {name: 'Recovered metadata'};
+                  creatorDirty();
+                }
+                """);
+        waitForText("#build-state", "Built");
+        page.locator("#project-id").fill("next-project");
+        page.locator("#project-id").press("Tab");
+        waitForText("#build-state", "Built");
+        page.reload();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.locator("#project-id").inputValue()).isEqualTo("next-project");
+        assertThat(page.evaluate("() => state.creator.steps.app.name")).isEqualTo("Recovered metadata");
+    }
+
+    @Test
+    void insertingBeforeAnExistingStepKeepsItsRealExampleProjection() {
+        openProject(fourStepProject());
+        selectTrigger();
+        addManipulationAfterSelected();
+        waitForText("#build-state", "Built");
+        selectWorldNode("one");
+
+        page.waitForFunction("() => state.traceStep !== null && state.traceController === null");
+        assertThat(page.evaluate("() => state.traceStep.id")).isEqualTo("one");
+        assertThat(page.locator("#preview-source").textContent()).contains("1");
+        assertThat(page.evaluate("""
+                async () => {
+                  const nodes = (await (await fetch('/api/project')).json()).project.nodes;
+                  return state.builtProject.nodes.every(node => nodes[Number(state.editor.nodes[node.id].index)].id === node.id);
+                }
+                """)).isEqualTo(true);
+    }
+
+    @Test
+    void metadataDebounceCannotDropAnUnsentFunctionalEdit() {
+        page.evaluate("""
+                () => {
+                  const original = window.fetch.bind(window);
+                  let delayed = false;
+                  window.fetch = async (input, options = {}) => {
+                    const response = await original(input, options);
+                    if (!delayed && input === '/api/project' && options.method === 'PATCH') {
+                      delayed = true;
+                      window.__acceptedProjectWrite = true;
+                      await new Promise(resolve => { window.__releaseAcceptedWrite = resolve; });
+                    }
+                    return response;
+                  };
+                }
+                """);
+        page.locator("#project-id").fill("first-save");
+        page.locator("#project-id").press("Tab");
+        page.waitForFunction("() => window.__acceptedProjectWrite === true");
+        page.locator("#project-id").fill("queued-save");
+        page.locator("#project-id").press("Tab");
+        page.waitForFunction("() => state.pendingWrite !== null");
+
+        page.evaluate("""
+                () => {
+                  state.creator.steps.app = {name: 'Later appearance'};
+                  creatorDirty();
+                  window.__releaseAcceptedWrite();
+                }
+                """);
+        page.waitForFunction("() => state.savedCreator.steps.app?.name === 'Later appearance' && !state.writeActive");
+
+        assertThat(page.evaluate("async () => (await (await fetch('/api/project')).json()).project.id"))
+                .isEqualTo("queued-save");
+        assertThat(page.locator("#build-state").textContent()).isEqualTo("Running");
+    }
+
+    @Test
+    void rejectedMetadataDoesNotHideAnAcceptedTriggerFromTheCanvas() {
+        page.evaluate("""
+                async () => {
+                  const response = await fetch('/api/creator', {
+                    method: 'PATCH', headers: mutationHeaders(),
+                    body: JSON.stringify({revision: state.creatorVersion,
+                      changes: {steps: {app: {name: 'Other editor'}}}})
+                  });
+                  if (!response.ok) throw new Error(await response.text());
+                }
+                """);
+
+        addTrigger();
+        page.waitForFunction("() => !state.writeActive && state.build === 'Not saved'");
+
+        page.locator(".trigger-node").waitFor();
+        selectWorldNode("app");
+        assertThat(page.locator("#inspector").textContent()).contains("changed in another editor");
+        assertThat(page.evaluate("async () => (await (await fetch('/api/project')).json()).project.nodes.length"))
+                .isEqualTo(2);
+    }
+
+    @Test
     void enterSelectsTheFieldManipulationNode() {
         createResultJourney();
         selectTrigger();
+        page.locator("#zoom-fit").click();
+        awaitScene();
 
         page.locator(".step-node").press("Enter");
+        waitForText(".inspector-heading h2", "Field Manipulation");
 
         assertThat(page.locator(".inspector-heading h2").textContent())
                 .isEqualTo("Field Manipulation");
@@ -358,18 +628,26 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void selectedNodeIsVisuallyExclusive() {
         addTrigger();
+        waitForText("#build-state", "Built");
+        page.locator("#zoom-fit").click();
+        awaitScene();
 
         assertThat(page.locator(".trigger-node").getAttribute("class")).contains("selected");
-        assertThat(page.locator(".trigger-node").getAttribute("aria-selected")).isEqualTo("true");
+        assertThat(page.locator(".trigger-node").getAttribute("aria-pressed")).isEqualTo("true");
         assertThat(page.locator(".app-node").getAttribute("class")).doesNotContain("selected");
 
-        page.locator(".app-node").click();
+        selectWorldNode("app");
+        page.locator("#zoom-fit").click();
+        awaitScene();
 
         assertThat(page.locator(".app-node").getAttribute("class")).contains("selected");
-        assertThat(page.locator(".app-node").getAttribute("aria-selected")).isEqualTo("true");
+        assertThat(page.locator(".app-node").getAttribute("aria-pressed")).isEqualTo("true");
         assertThat(page.locator(".trigger-node").getAttribute("class")).doesNotContain("selected");
     }
 
+}
+
+final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void addingAFilterPersistsEveryDeclaredOutcomeConnection() {
         addFilterAfterTrigger();
@@ -389,9 +667,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     void filterRendersOneDeterministicLanePerOutcome() {
         addFilterAfterTrigger();
 
-        assertThat(page.locator(".branch-route").count()).isEqualTo(2);
-        assertThat(page.locator(".branch-route-label").allTextContents())
-                .containsExactly("Match", "Otherwise");
+        assertThat(branchOutcomes()).containsExactly("match", "otherwise");
     }
 
     @Test
@@ -418,10 +694,12 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void branchLayoutIsStableAcrossReload() {
         addFilterAfterTrigger();
+        page.locator("#zoom-fit").click();
         final String before = positions();
 
         page.reload();
         waitForText("#build-state", "Built");
+        page.locator("#zoom-fit").click();
 
         assertThat(positions()).isEqualTo(before);
     }
@@ -429,29 +707,182 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void nestedFilterLayoutIsStableAcrossReload() {
         addNestedFilterToMatchRoute();
+        page.locator("#zoom-fit").click();
         final String before = positions();
 
         page.reload();
         waitForText("#build-state", "Built");
+        page.locator("#zoom-fit").click();
 
-        assertThat(page.locator(".branch-route").count()).isEqualTo(4);
+        assertThat(branchOutcomes()).hasSize(4);
         assertThat(positions()).isEqualTo(before);
     }
 
     @Test
-    void nestedFiltersRenderOutcomesInDeclaredDepthFirstOrder() {
+    void nestedFiltersKeepEveryDeclaredOutcomeInTheScene() {
         addNestedFilterToMatchRoute();
 
-        assertThat(page.locator(".branch-route-label").allTextContents())
-                .containsExactly("Match", "Match", "Otherwise", "Otherwise");
+        assertThat(branchOutcomes()).containsExactlyInAnyOrder("match", "match", "otherwise", "otherwise");
+    }
+
+    @Test
+    void semanticZoomReplacesAnAggregateWithItsRealChildren() throws Exception {
+        openProject(deepBranchProject(96));
+        final String project = Files.readString(directory.resolve("project.json"));
+        final String metadata = creatorMetadata();
+
+        assertThat(page.locator("#world-canvas").count()).isEqualTo(1);
+        page.waitForFunction("() => state.world?.scene?.nodes.some(node => node.kind === 'region' && !node.expanded)");
+        final Object region = page.evaluate("""
+                () => state.world.scene.nodes.find(node => node.kind === 'region' && !node.expanded)
+                """);
+        final Path screenshots = Files.createDirectories(Path.of("target", "screenshots"));
+        page.screenshot(new Page.ScreenshotOptions().setPath(screenshots.resolve("semantic-zoom-overview.png")));
+        page.evaluate("region => void state.world.focus(region.id)", region);
+        page.waitForFunction("""
+                region => !state.world.scene.nodes.some(node => node.id === region.id && !node.expanded)
+                  && state.world.scene.nodes.some(node => node.id !== region.id && node.count < region.count
+                    && node.x >= region.x && node.y >= region.y
+                    && node.x + node.width <= region.x + region.width
+                    && node.y + node.height <= region.y + region.height)
+                """, region);
+
+        assertThat(page.locator("#world-labels > *").count()).isGreaterThan(0);
+        assertThat(page.locator("#world-labels > *").count()).isLessThanOrEqualTo(256);
+        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
+        assertThat(creatorMetadata()).isEqualTo(metadata);
+        assertThat(pageErrors).isEmpty();
+        page.screenshot(new Page.ScreenshotOptions().setPath(screenshots.resolve("semantic-zoom-region.png")));
+        selectWorldNode("step-48");
+        assertThat(page.locator("[data-node-id='step-48']").getAttribute("aria-pressed")).isEqualTo("true");
+        page.screenshot(new Page.ScreenshotOptions().setPath(screenshots.resolve("semantic-zoom-detail.png")));
+    }
+
+    @Test
+    void missingSceneFocusDoesNotTrapLaterNavigation() {
+        page.evaluate("() => void state.world.focus('missing-step')");
+        page.locator("#world-error").waitFor();
+
+        page.locator("#zoom-in").click();
+
+        page.waitForFunction("() => document.querySelector('#world-error').hidden");
+        assertThat(page.locator(".app-node").count()).isEqualTo(1);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void explicitZoomSupersedesAnUnfinishedFocusRequest() {
+        openProject(deepBranchProject(96));
+        final String expected = (String) page.evaluate("""
+                () => {
+                  state.world.focus('step-48');
+                  state.world.zoom(1.1);
+                  return document.querySelector('#graph').dataset.sceneScale;
+                }
+                """);
+        page.waitForResponse(response -> response.url().contains("/api/scene?")
+                && !response.url().contains("focus="), () -> page.locator("#graph").press("ArrowRight"));
+
+        assertThat(page.locator("#graph").getAttribute("data-scene-scale")).isEqualTo(expected);
+        assertThat(page.locator("#world-error").isVisible()).isFalse();
+    }
+
+    @Test
+    void graphicsContextLossRecoversTheRealScene() {
+        page.evaluate("""
+                () => {
+                  window.contextRecovery = document.querySelector('#world-canvas')
+                    .getContext('webgl2').getExtension('WEBGL_lose_context');
+                  window.contextRecovery.loseContext();
+                }
+                """);
+        page.locator("#world-error").waitFor();
+
+        page.evaluate("() => window.contextRecovery.restoreContext()");
+
+        page.waitForFunction("() => document.querySelector('#world-error').hidden");
+        selectWorldNode("app");
+        assertThat(page.locator("#project-id").isVisible()).isTrue();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void disposingTheCanvasReleasesItsSceneAndLabels() {
+        page.evaluate("() => void state.world.dispose()");
+
+        assertThat(page.locator("#world-labels > *").count()).isZero();
+        assertThat(page.evaluate("() => state.world.scene === null")).isEqualTo(true);
+        assertThat(page.locator("#world-canvas").getAttribute("width")).isEqualTo("1");
+        page.locator("#zoom-in").click();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void deletingAFocusedStepRevealsItsSurvivingPredecessor() {
+        openProject(fourStepProject());
+        selectWorldNode("two");
+
+        page.locator("#delete-step").click();
+        waitForText("#build-state", "Built");
+
+        page.locator("[data-node-id='one'][aria-pressed='true']").waitFor();
+        assertThat(stepIds()).containsExactly("one", "three", "four");
+    }
+
+    @Test
+    void deletingAFocusedTriggerRevealsTheApplication() {
+        openProject(fourStepProject());
+        selectWorldNode("command");
+
+        page.locator("#delete-step").click();
+        waitForText("#build-state", "Built");
+
+        page.locator("[data-node-id='app'][aria-pressed='true']").waitFor();
+        assertThat(stepIds()).isEmpty();
+    }
+
+    @Test
+    void largeCorridorKeepsBothBranchOutcomeLabelsReadable() {
+        openProject(deepBranchProject(96));
+        awaitScene();
+
+        assertThat(page.locator(".world-link-label strong").allTextContents())
+                .containsExactlyInAnyOrder("Match", "Otherwise");
+    }
+
+    @Test
+    void largeCorridorKeepsItsBranchAndTerminalStationsReadable() {
+        openProject(deepBranchProject(96));
+        awaitScene();
+
+        assertThat(page.locator("[data-node-id='filter']").isVisible()).isTrue();
+        assertThat(page.locator(".end-node").count()).isEqualTo(2);
+        assertThat(page.evaluate("""
+                () => state.world.scene.nodes.filter(node => node.id === 'filter' || node.kind === 'end')
+                  .every(node => node.width * Number(document.querySelector('#graph').dataset.sceneScale) >= 60)
+                """)).isEqualTo(true);
     }
 
     @Test
     void branchRenderingHandlesSixThousandLinearStepsWithoutCallStackGrowth() {
         openProject(deepBranchProject(6_000));
 
-        assertThat(page.locator(".step-node").count()).isEqualTo(6_001);
-        assertThat(page.locator(".branch-route").count()).isEqualTo(2);
+        page.locator("#zoom-fit").click();
+        awaitScene();
+        assertThat(page.locator("#world-labels > *").count()).isLessThanOrEqualTo(256);
+        assertThat(page.locator(".step-node").count()).isLessThan(6_001);
+        assertThat(page.evaluate("""
+                () => {
+                  const scene = state.world.scene;
+                  const stage = document.querySelector('#graph');
+                  return scene.nodes.length <= 2048
+                    && scene.links.reduce((sum, link) => sum + link.points.length - 1, 0) <= 4096
+                    && Number(stage.dataset.sceneNodeCount) === scene.nodes.length
+                    && Number(stage.dataset.sceneLinkCount) === scene.links.length
+                    && scene.nodes.some(node => node.kind === 'region' && node.count > 1);
+                }
+                """)).isEqualTo(true);
+        assertThat(pageErrors).isEmpty();
     }
 
     @Test
@@ -542,6 +973,8 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         waitForText("#build-state", "Built");
         page.locator("[data-add-candidate='literal']").click();
         waitForText("#build-state", "Built");
+        page.locator("#zoom-fit").click();
+        awaitScene();
 
         assertThat(page.evaluate("""
                 async () => {
@@ -557,8 +990,8 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                     + routes.length + '|' + routes.every(link => link.to === 'end');
                 }
                 """)).isEqualTo("2|Case 1,Case 2|true|true|3|true");
-        assertThat(page.locator(".branch-route").count()).isEqualTo(3);
-        assertThat(page.locator(".branch-routes").textContent()).contains("Case 1", "Case 2", "Otherwise");
+        assertThat(branchOutcomes()).hasSize(3).contains("otherwise");
+        assertThat(page.locator("#world-labels").textContent()).contains("Case 1", "Case 2", "Otherwise");
     }
 
     @Test
@@ -587,7 +1020,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                 async () => (await (await fetch('/api/project')).json()).project.nodes
                   .find(node => node.use === 'railix.switch').id
                 """));
-        page.locator("[data-select-step='" + id + "']").click();
+        selectWorldNode(id);
 
         assertThat(page.evaluate("""
                 async () => {
@@ -665,7 +1098,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         page.locator("#step-search").fill("field manipulation");
         page.locator("[data-add-step='railix.field-manipulation']").click();
         waitForText("#build-state", "Built");
-        page.locator("[data-select-step='" + route.get("id") + "']").click();
+        selectWorldNode((String) route.get("id"));
 
         assertThat(page.locator("[data-remove-candidate='0']").isDisabled()).isTrue();
         assertThat(page.evaluate("""
@@ -675,164 +1108,6 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                   return project.nodes.find(node => node.id === link?.to)?.use;
                 }
                 """, route)).isEqualTo("railix.field-manipulation");
-    }
-
-    @Test
-    void updateAllAddsOccurrenceLocalSwitchRoutesAndSharedLabels() {
-        openProject(switchPairProject());
-        shareSwitchPair();
-        editFirstSharedSwitch();
-
-        page.locator("[data-add-candidate='field']").click();
-        waitForText("#build-state", "Built");
-
-        assertThat(page.evaluate("""
-                async () => {
-                  const workspace = await (await fetch('/api/project')).json();
-                  const steps = workspace.project.nodes.filter(node => node.id === 'one' || node.id === 'two');
-                  const outcomes = steps.map(step => step.inputs.cases[0].outcome);
-                  return [
-                    outcomes[0] !== outcomes[1],
-                    workspace.project.links.some(link => link.from === 'one.' + outcomes[0]),
-                    workspace.project.links.some(link => link.from === 'two.' + outcomes[1]),
-                    workspace.creator.steps.one.outcomes[outcomes[0]],
-                    workspace.creator.steps.two.outcomes[outcomes[1]]
-                  ].join('|');
-                }
-                """)).isEqualTo("true|true|true|Case 1|Case 1");
-    }
-
-    @Test
-    void updateAllRenamesEachOccurrencesLocalSwitchOutcome() {
-        openProject(configuredSwitchPairProject());
-        shareSwitchPair();
-        editFirstSharedSwitch();
-
-        final Locator label = page.locator("[data-candidate-label]").first();
-        label.fill("Shared case");
-        clickAndWaitForCreatorSave(() -> label.press("Tab"));
-
-        assertThat(page.evaluate("""
-                async () => {
-                  const creator = (await (await fetch('/api/project')).json()).creator;
-                  return creator.steps.one.outcomes['case-one'] + '|'
-                    + creator.steps.two.outcomes['case-two'];
-                }
-                """)).isEqualTo("Shared case|Shared case");
-    }
-
-    @Test
-    void collapsedSwitchGroupDisplaysCasesBeforeOtherwise() {
-        openProject(configuredSwitchPairProject());
-        groupSteps("one", "one");
-
-        assertThat(page.evaluate("""
-                () => [...document.querySelector('.branch-routes')
-                  .querySelectorAll(':scope > .branch-route > .branch-route-label')]
-                  .map(label => label.textContent).join('|')
-                """)).isEqualTo("Case one|Case one extra|Otherwise");
-    }
-
-    @Test
-    void configuredSwitchesWithDifferentCaseIdsGroupAndSynchronizeWithoutLosingRoutes() {
-        openProject(configuredSwitchPairProject());
-        final String pid = applicationPid();
-        shareSwitchPair();
-        assertThat(applicationPid()).isEqualTo(pid);
-
-        editFirstSharedSwitch();
-        final Locator literal = page.locator("[data-candidate-index='0'] [data-input-json]").first();
-        literal.fill("\"shared\"");
-        literal.press("Tab");
-        waitForText("#build-state", "Built");
-
-        assertThat(page.evaluate("""
-                async () => {
-                  const project = (await (await fetch('/api/project')).json()).project;
-                  const one = project.nodes.find(node => node.id === 'one');
-                  const two = project.nodes.find(node => node.id === 'two');
-                  return [
-                    one.inputs.cases[0].outcome,
-                    two.inputs.cases[0].outcome,
-                    one.inputs.cases[0].inputs.value,
-                    two.inputs.cases[0].inputs.value,
-                    project.links.some(link => link.from === 'one.case-one'),
-                    project.links.some(link => link.from === 'two.case-two')
-                  ].join('|');
-                }
-                """)).isEqualTo("case-one|case-two|shared|shared|true|true");
-    }
-
-    @Test
-    void sharedSwitchInsertionUsesEachOccurrencesOwnCaseId() {
-        openProject(configuredSwitchPairProject());
-        shareSwitchPair();
-        editFirstSharedSwitch();
-
-        page.locator("[data-add-outcome='case-one']").click();
-        page.locator("#step-search").fill("field manipulation");
-        page.locator("[data-add-step='railix.field-manipulation']").click();
-        waitForText("#build-state", "Built");
-
-        assertThat(page.evaluate("""
-                async () => {
-                  const workspace = await (await fetch('/api/project')).json();
-                  const target = id => workspace.project.nodes.find(node => node.id === id)?.use;
-                  const one = workspace.project.links.find(link => link.from === 'one.case-one')?.to;
-                  const two = workspace.project.links.find(link => link.from === 'two.case-two')?.to;
-                  const occurrences = workspace.creator.groups[0].occurrences;
-                  return [
-                    target(one), target(two),
-                    Object.keys(occurrences[0].steps).length,
-                    Object.keys(occurrences[1].steps).length,
-                    Object.keys(occurrences[0].steps).join() === Object.keys(occurrences[1].steps).join()
-                  ].join('|');
-                }
-                """)).isEqualTo("railix.field-manipulation|railix.field-manipulation|2|2|true");
-    }
-
-    @Test
-    void sharedSwitchReorderPreservesEachOccurrencesOwnCaseIds() {
-        openProject(configuredSwitchPairProject());
-        shareSwitchPair();
-        editFirstSharedSwitch();
-
-        page.locator("[data-move-candidate='1'][data-direction='-1']").click();
-        waitForText("#build-state", "Built");
-
-        assertThat(page.evaluate("""
-                async () => {
-                  const project = (await (await fetch('/api/project')).json()).project;
-                  const cases = id => project.nodes.find(node => node.id === id).inputs.cases
-                    .map(candidate => candidate.outcome).join(',');
-                  return cases('one') + '|' + cases('two');
-                }
-                """)).isEqualTo("case-one-extra,case-one|case-two-extra,case-two");
-    }
-
-    @Test
-    void sharedSwitchRemovalDeletesEachOccurrencesOwnTerminalRoute() {
-        openProject(configuredSwitchPairProject());
-        shareSwitchPair();
-        editFirstSharedSwitch();
-
-        page.locator("[data-remove-candidate='0']").click();
-        waitForText("#build-state", "Built");
-
-        assertThat(page.evaluate("""
-                async () => {
-                  const project = (await (await fetch('/api/project')).json()).project;
-                  const cases = id => project.nodes.find(node => node.id === id).inputs.cases
-                    .map(candidate => candidate.outcome).join(',');
-                  return [
-                    cases('one'), cases('two'),
-                    project.links.some(link => link.from === 'one.case-one'),
-                    project.links.some(link => link.from === 'two.case-two'),
-                    project.links.some(link => link.from === 'one.case-one-extra'),
-                    project.links.some(link => link.from === 'two.case-two-extra')
-                  ].join('|');
-                }
-                """)).isEqualTo("case-one-extra|case-two-extra|false|false|true|true");
     }
 
     @Test
@@ -876,7 +1151,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                 async () => (await (await fetch('/api/project')).json()).project.nodes
                   .find(node => node.use === 'railix.choice').id
                 """));
-        page.locator("[data-select-step='" + choice + "']").click();
+        selectWorldNode(choice);
 
         assertThat(page.locator("[data-matcher-group='0']").count()).isEqualTo(1);
         assertThat(page.locator("[data-matcher-group='0'] [data-candidate-index='0'] select").inputValue())
@@ -1202,7 +1477,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void notEqualsAliasAddsABuildableDefaultThatReloadsPreviewsAndExecutes() {
         openProject(choiceProject());
-        page.locator("[data-select-step='choice']").click();
+        selectWorldNode("choice");
         page.locator("[data-matcher-group='0'] [data-remove-predicate='0']").click();
         waitForText("#build-state", "Built");
 
@@ -1221,7 +1496,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
         page.reload();
         waitForText("#build-state", "Built");
-        page.locator("[data-select-step='choice']").click();
+        selectWorldNode("choice");
         page.locator("[data-matcher-group='0'] [data-preview-slot='0']").waitFor();
 
         assertThat(page.locator("[data-matcher-group='0'] [data-input-json]").inputValue())
@@ -1288,110 +1563,84 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
-    void choiceBranchesUseStrongTwoPixelConnectors() {
+    void choiceBranchesExposeDistinctVisibleOutcomeLabels() {
         openProject(choiceProject());
 
-        assertThat(page.evaluate("""
-                () => [
-                  getComputedStyle(document.querySelector('.branch-routes'), '::before').height,
-                  getComputedStyle(document.querySelector('.branch-route'), '::before').width,
-                  getComputedStyle(document.querySelector('.branch-route-label')).fontWeight
-                ].join('|')
-                """)).isEqualTo("2px|2px|700");
+        assertThat(page.locator("#world-labels").textContent()).contains("Match", "Otherwise");
+        assertThat(branchOutcomes()).containsExactly("match", "otherwise");
     }
 
     @Test
-    void choiceConnectorHasATrunkBetweenTheNodeAndBranchBus() {
+    void choiceRailsStartAtTheChoiceStationWithoutAGap() {
         openProject(choiceProject());
-        positions();
-
-        @SuppressWarnings("unchecked")
-        final Map<String, Object> geometry = (Map<String, Object>) page.evaluate("""
-                () => {
-                  const choice = document.querySelector("[data-select-step='choice']").getBoundingClientRect();
-                  const routes = document.querySelector('.branch-routes').getBoundingClientRect();
-                  const trunk = document.querySelector('.branch-trunk')?.getBoundingClientRect();
-                  if (!trunk) return {missing: true};
-                  const busY = routes.top + parseFloat(getComputedStyle(
-                    document.querySelector('.branch-routes'), '::before').top);
-                  return {
-                    missing: false,
-                    centerDelta: (trunk.left + trunk.width / 2) - (choice.left + choice.width / 2),
-                    startDelta: trunk.top - choice.bottom,
-                    endDelta: trunk.bottom - busY,
-                    busDistance: busY - choice.bottom
-                  };
-                }
-                """);
-
-        assertThat(geometry.get("missing")).as("geometry: %s", geometry).isEqualTo(false);
-        assertThat(((Number) geometry.get("centerDelta")).doubleValue())
-                .as("geometry: %s", geometry).isBetween(-1.0, 1.0);
-        assertThat(((Number) geometry.get("startDelta")).doubleValue())
-                .as("geometry: %s", geometry).isBetween(-1.0, 1.0);
-        assertThat(((Number) geometry.get("endDelta")).doubleValue())
-                .as("geometry: %s", geometry).isBetween(-1.0, 1.0);
-        assertThat(((Number) geometry.get("busDistance")).doubleValue())
-                .as("geometry: %s", geometry).isGreaterThanOrEqualTo(20.0);
-    }
-
-    @Test
-    void horizontalChoiceBusEndsAtTheOuterBranchCenters() {
-        openProject(choiceProject());
-        positions();
 
         assertThat(page.evaluate("""
                 () => {
-                  const routes = document.querySelector('.branch-routes');
-                  const branches = [...routes.querySelectorAll(':scope > .branch-route')];
-                  const first = branches[0].getBoundingClientRect();
-                  const last = branches.at(-1).getBoundingClientRect();
-                  const firstCenter = first.left + first.width / 2;
-                  const lastCenter = last.left + last.width / 2;
-                  if (Math.abs(firstCenter - lastCenter) < 1) return true;
-                  const box = routes.getBoundingClientRect();
-                  const style = getComputedStyle(routes, '::before');
-                  const busLeft = box.left + parseFloat(style.left);
-                  const busRight = box.right - parseFloat(style.right);
-                  return Math.abs(busLeft - firstCenter) < 1 && Math.abs(busRight - lastCenter) < 1;
-                }
-                """)).isEqualTo(true);
-    }
-
-    @Test
-    void nestedBranchDropsConnectEveryBusToItsRoutes() {
-        addNestedFilterToMatchRoute();
-        positions();
-
-        assertThat(page.evaluate("""
-                () => [...document.querySelectorAll('.branch-routes')].every(routes => {
-                  const routeBox = routes.getBoundingClientRect();
-                  const busY = routeBox.top + parseFloat(getComputedStyle(routes, '::before').top);
-                  return [...routes.querySelectorAll(':scope > .branch-route')].every(branch => {
-                    const branchBox = branch.getBoundingClientRect();
-                    const drop = getComputedStyle(branch, '::before');
-                    const dropTop = branchBox.top + parseFloat(drop.top);
-                    const dropBottom = dropTop + parseFloat(drop.height);
-                    return Math.abs(dropTop - busY) < 1 && Math.abs(dropBottom - branchBox.top) < 1;
+                  const choice = state.world.scene.nodes.find(node => node.id === 'choice');
+                  const rails = state.world.scene.links.filter(link => link.from === 'choice');
+                  return rails.length === 2 && rails.every(link => {
+                    const start = link.points[0];
+                    return Math.abs(start[0] - (choice.x + choice.width)) < 0.5
+                      && Math.abs(start[1] - (choice.y + choice.height / 2)) < 0.5;
                   });
-                })
+                }
                 """)).isEqualTo(true);
     }
 
     @Test
-    void nestedSwitchRoutesKeepTheirTerminalCardsSeparate() {
-        openProject(nestedSwitchProject());
-        positions();
+    void choiceRailsEndAtTheirOwnBranchStationsWithoutOvershooting() {
+        openProject(choiceProject());
 
         assertThat(page.evaluate("""
                 () => {
-                  const routes = [...document.querySelectorAll('.branch-routes')]
-                    .find(candidate => candidate.querySelectorAll(':scope > .branch-route').length === 5);
-                  if (!routes) return false;
-                  const terminals = [...routes.querySelectorAll(':scope > .branch-route')]
-                    .map(branch => branch.querySelector(':scope > .end-node')?.getBoundingClientRect());
-                  return terminals.every(Boolean) && terminals.every((box, index) =>
-                    index === 0 || terminals[index - 1].right <= box.left + 0.5);
+                  const nodes = new Map(state.world.scene.nodes.map(node => [node.id, node]));
+                  const rails = state.world.scene.links.filter(link => link.from === 'choice');
+                  return rails.length === 2 && new Set(rails.map(link => link.to)).size === 2
+                    && rails.every(link => {
+                      const target = nodes.get(link.to);
+                      const end = link.points.at(-1);
+                      return target && Math.abs(end[0] - target.x) < 0.5
+                        && Math.abs(end[1] - (target.y + target.height / 2)) < 0.5;
+                    });
+                }
+                """)).isEqualTo(true);
+    }
+
+    @Test
+    void nestedBranchRailsAreContinuousOrthogonalPaths() {
+        addNestedFilterToMatchRoute();
+        awaitScene();
+
+        assertThat(page.evaluate("""
+                () => {
+                  const rails = state.world.scene.links.filter(link => ['match', 'otherwise'].includes(link.outcome));
+                  return rails.length === 4 && rails.every(link => link.points.length >= 2
+                    && link.points.every((point, index, points) => {
+                      if (index === 0) return true;
+                      const previous = points[index - 1];
+                      return point.every(Number.isFinite)
+                        && (point[0] === previous[0] || point[1] === previous[1]);
+                    })
+                  );
+                }
+                """)).isEqualTo(true);
+    }
+
+    @Test
+    void nestedSwitchRoutesKeepTheirTerminalStationsSeparate() {
+        openProject(nestedSwitchProject());
+
+        assertThat(page.evaluate("""
+                () => {
+                  const scene = state.world.scene;
+                  const rails = scene.links.filter(link => link.from === 'switch');
+                  const terminals = rails.map(link => scene.nodes.find(node => node.id === link.to));
+                  return terminals.length === 5 && terminals.every(node => node?.kind === 'end')
+                    && new Set(terminals.map(node => node.id)).size === 5
+                    && terminals.every((node, index) => terminals.slice(index + 1).every(other =>
+                      node.x + node.width <= other.x || other.x + other.width <= node.x
+                      || node.y + node.height <= other.y || other.y + other.height <= node.y
+                    ));
                 }
                 """)).isEqualTo(true);
     }
@@ -1418,7 +1667,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     void choicePreviewShowsTheBooleanResolvedByTheBuiltApplication() {
         openProject(choiceProject());
 
-        page.locator("[data-select-step='choice']").click();
+        selectWorldNode("choice");
         page.locator("[data-preview-input-value='conditions']").waitFor();
 
         assertThat(page.locator("[data-preview-input-value='conditions']").first().textContent())
@@ -1429,7 +1678,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     void choicePreviewShowsTheBuiltMatcherPredicateStage() {
         openProject(choiceProject());
 
-        page.locator("[data-select-step='choice']").click();
+        selectWorldNode("choice");
         page.locator("[data-matcher-group='0'] [data-preview-slot='0']").waitFor();
 
         assertThat(page.locator("[data-matcher-group='0'] [data-preview-slot='0']").textContent())
@@ -1440,6 +1689,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     void insertingAFilterPreservesTheExistingPrimaryRoute() {
         addTrigger();
         addManipulationAfterSelected();
+        waitForText("#build-state", "Built");
         selectTrigger();
         page.locator("#add-next-step").click();
         page.locator("#step-search").fill("filter");
@@ -1465,7 +1715,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                   .find(node => node.use === 'railix.filter').id
                 """));
 
-        page.locator("[data-select-step='" + filter + "']").click();
+        selectWorldNode(filter);
 
         assertThat(page.locator("#delete-step").isDisabled()).isEqualTo(true);
     }
@@ -1516,7 +1766,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                 async () => (await (await fetch('/api/project')).json()).project.nodes
                   .find(node => node.use === 'railix.filter').id
                 """));
-        page.locator("[data-select-step='" + filter + "']").click();
+        selectWorldNode(filter);
 
         page.locator("#delete-step").click();
         waitForText("#build-state", "Built");
@@ -1535,6 +1785,8 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void missingOutcomeLinkIsShownAsMissingInsteadOfEnd() {
         addFilterAfterTrigger();
+        page.locator("#zoom-fit").click();
+        awaitScene();
 
         page.evaluate("""
                 () => {
@@ -1555,6 +1807,8 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void duplicateOutcomeLinksAreShownAsMultipleInsteadOfChoosingOne() {
         addFilterAfterTrigger();
+        page.locator("#zoom-fit").click();
+        awaitScene();
 
         page.evaluate("""
                 () => {
@@ -1589,6 +1843,8 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void unknownOutcomeTargetIsShownAsUnknownInsteadOfDisappearing() {
         addFilterAfterTrigger();
+        page.locator("#zoom-fit").click();
+        awaitScene();
 
         page.evaluate("""
                 () => {
@@ -1611,6 +1867,8 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         page.locator("#step-search").fill("field");
         page.locator("[data-add-step='railix.field-manipulation']").click();
         waitForText("#build-state", "Built");
+        page.locator("#zoom-fit").click();
+        awaitScene();
 
         final String filter = String.valueOf(page.evaluate("""
                 () => {
@@ -1625,7 +1883,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
         assertThat(page.locator("[data-branch-outcome='otherwise']").textContent())
                 .contains("Repeated Step").doesNotContain("Field Manipulation");
-        page.locator("[data-select-step='" + filter + "']").click();
+        selectWorldNode(filter);
         assertThat(page.locator("[data-add-outcome='otherwise']").isDisabled()).isTrue();
     }
 
@@ -1645,204 +1903,9 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                 """)).isEqualTo("app:0");
     }
 
-    @Test
-    void existingGroupRemainsCollapsedAfterAddingAFilterBeforeIt() {
-        openProject(fourStepProject());
-        groupSteps(0, 1);
-        selectTrigger();
-        page.locator("#add-next-step").click();
-        page.locator("#step-search").fill("filter");
-        page.locator("[data-add-step='railix.filter']").click();
-        waitForText("#build-state", "Built");
+}
 
-        assertThat(page.locator(".flow-node").count()).isEqualTo(1);
-        assertThat(page.locator("[data-select-step='one']").count()).isZero();
-    }
-
-    @Test
-    void collapsedGroupInsideABranchHasOnlyOneIncomingConnector() {
-        openProject(fourStepProject());
-        groupSteps(0, 1);
-        selectTrigger();
-        page.locator("#add-next-step").click();
-        page.locator("#step-search").fill("filter");
-        page.locator("[data-add-step='railix.filter']").click();
-        waitForText("#build-state", "Built");
-
-        assertThat(page.locator(".branch-route .lane-connector + .lane-connector").count()).isZero();
-    }
-
-    @Test
-    void branchStepCanBeAddedInsideAnExistingGroup() {
-        openProject(fourStepProject());
-        groupSteps(0, 1);
-        page.locator("#open-group").click();
-        page.locator("[data-select-step='one']").click();
-
-        page.locator("#add-next-step").click();
-        page.locator("#step-search").fill("filter");
-        page.locator("[data-add-step='railix.filter']").click();
-        waitForText("#build-state", "Built");
-
-        assertThat(page.locator("[data-select-step]").count()).isEqualTo(3);
-        assertThat(page.locator("[data-branch-outcome='otherwise']").count()).isEqualTo(1);
-        assertThat(page.evaluate("""
-                async () => Object.keys((await (await fetch('/api/project')).json())
-                  .creator.groups[0].occurrences[0].steps).length
-                """)).isEqualTo(3);
-    }
-
-    @Test
-    void branchGroupCollapsesWithoutHidingAnExit() {
-        addFilterAfterTrigger();
-        page.locator("[data-add-outcome='match']").click();
-        page.locator("#step-search").fill("field");
-        page.locator("[data-add-step='railix.field-manipulation']").click();
-        waitForText("#build-state", "Built");
-        final String filter = String.valueOf(page.evaluate("""
-                async () => (await (await fetch('/api/project')).json()).project.nodes
-                  .find(node => node.use === 'railix.filter').id
-                """));
-        final String manipulation = String.valueOf(page.evaluate("""
-                async () => (await (await fetch('/api/project')).json()).project.nodes
-                  .find(node => node.use === 'railix.field-manipulation').id
-                """));
-
-        page.locator("[data-inspector-mode='groups']").click();
-        page.locator("#new-group").click();
-        page.locator("[data-select-step='" + filter + "']").click();
-        clickAndWaitForCreatorSave(() ->
-                page.locator("[data-select-step='" + manipulation + "']").click());
-
-        assertThat(page.locator("[data-select-group]").count()).isEqualTo(1);
-        assertThat(page.locator("[data-select-step='" + filter + "']").count()).isZero();
-        assertThat(page.locator("[data-select-step='" + manipulation + "']").count()).isZero();
-        assertThat(page.locator("[data-branch-source='" + filter
-                + "'][data-branch-outcome='otherwise']").count()).isEqualTo(1);
-        assertThat(page.locator("[data-branch-source='" + manipulation
-                + "'][data-branch-outcome='next']").count()).isEqualTo(1);
-    }
-
-    @Test
-    void deletingABranchGroupPreservesTheFlatProjectAndApplication() throws Exception {
-        openProject(choiceProject());
-        groupSteps("choice", "otherwise");
-        final String project = Files.readString(directory.resolve("project.json"));
-        final String pid = applicationPid();
-
-        page.locator("[data-select-group]").click();
-        clickAndWaitForCreatorSave(() -> page.locator("#delete-group").click());
-
-        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
-        assertThat(applicationPid()).isEqualTo(pid);
-        assertThat(page.locator("[data-select-step]").count()).isEqualTo(3);
-    }
-
-    @Test
-    void reverseBoundariesCreateAGroupOnTheSecondaryBranch() {
-        openProject(choiceProject());
-
-        page.locator("[data-inspector-mode='groups']").click();
-        page.locator("#new-group").click();
-        page.locator("[data-select-step='otherwise']").click();
-        clickAndWaitForCreatorSave(() -> page.locator("[data-select-step='choice']").click());
-
-        assertThat(page.locator("[data-select-group]").textContent()).contains("2 Steps");
-        assertThat(page.locator("[data-branch-source='choice'][data-branch-outcome='match']").count())
-                .isEqualTo(1);
-        assertThat(page.locator("[data-branch-source='otherwise'][data-branch-outcome='next']").count())
-                .isEqualTo(1);
-    }
-
-    @Test
-    void siblingBranchBoundariesAreRejectedAsDifferentPaths() {
-        openProject(choiceProject());
-
-        page.locator("[data-inspector-mode='groups']").click();
-        page.locator("#new-group").click();
-        page.locator("[data-select-step='matched']").click();
-        page.locator("[data-select-step='otherwise']").click();
-
-        assertThat(page.locator(".issues").textContent()).contains(
-                "CREATOR_GROUP_PATH_INVALID",
-                "Group start and end must share one path in one flow."
-        );
-        assertThat(page.evaluate("""
-                async () => (await (await fetch('/api/project')).json()).creator.groups.length
-                """)).isEqualTo(0);
-    }
-
-    @Test
-    void singletonBranchGroupRoutesEachOutcomeToItsExactExternalStep() {
-        openProject(choiceProject());
-
-        groupSteps("choice", "choice");
-
-        assertThat(page.locator("[data-branch-source='choice'][data-branch-outcome='match'] "
-                + "[data-select-step='matched']").count()).isEqualTo(1);
-        assertThat(page.locator("[data-branch-source='choice'][data-branch-outcome='otherwise'] "
-                + "[data-select-step='otherwise']").count()).isEqualTo(1);
-    }
-
-    @Test
-    void insertingOnAnInternalSecondaryRouteKeepsTheStepInsideTheGroup() {
-        openProject(choiceProject());
-        groupSteps("choice", "otherwise");
-        page.locator("[data-select-group]").click();
-        page.locator("#open-group").click();
-        page.locator("[data-select-step='choice']").click();
-
-        page.locator("[data-add-outcome='otherwise']").click();
-        page.locator("#step-search").fill("field");
-        page.locator("[data-add-step='railix.field-manipulation']").click();
-        waitForText("#build-state", "Built");
-        page.reload();
-        waitForText("#build-state", "Built");
-
-        assertThat(page.evaluate("""
-                async () => {
-                  const payload = await (await fetch('/api/project')).json();
-                  const occurrence = payload.creator.groups[0].occurrences[0];
-                  const inserted = payload.project.links.find(link => link.from === 'choice.otherwise').to;
-                  return [
-                    Object.keys(occurrence.steps).length,
-                    Object.values(occurrence.steps).includes(inserted),
-                    payload.project.links.find(link => link.from === inserted + '.next')?.to
-                  ].join('|');
-                }
-                """)).isEqualTo("3|true|otherwise");
-    }
-
-    @Test
-    void openingABranchGroupShowsItsStepsAndEveryBoundaryExit() {
-        openProject(choiceProject());
-        final String metadata = """
-                {"format":1,"steps":{},"groups":[{"id":"group-one","name":"Decision","occurrences":[{
-                  "id":"occurrence-one","flow":"command","parent":null,
-                  "steps":{"slot-choice":"choice","slot-match":"matched","slot-other":"otherwise"}
-                }]}]}
-                """;
-        assertThat(page.evaluate("""
-                async metadata => (await fetch('/api/creator', {
-                  method: 'POST', headers: mutationHeaders(), body: metadata
-                })).status
-                """, metadata)).isEqualTo(200);
-        page.reload();
-        waitForText("#build-state", "Built");
-
-        assertThat(page.locator("[data-select-group]").textContent()).contains("3 Steps");
-        assertThat(page.locator("[data-branch-source='matched'][data-branch-outcome='next']").count())
-                .isEqualTo(1);
-        assertThat(page.locator("[data-branch-source='otherwise'][data-branch-outcome='next']").count())
-                .isEqualTo(1);
-
-        page.locator("[data-select-group]").click();
-        page.locator("#open-group").click();
-
-        assertThat(page.locator("[data-select-step]").count()).isEqualTo(3);
-        assertThat(page.locator("[data-group-exit]").count()).isEqualTo(2);
-    }
-
+final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void addTriggerSearchUsesInstalledTriggerCatalog() {
         page.locator("#add-trigger").click();
@@ -1856,10 +1919,28 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     void addingTriggerCreatesARealFlowAndKeepsTheLastBuiltApplication() {
         addTrigger();
         waitForText("#build-state", "Built");
+        selectTrigger();
 
-        assertThat(page.locator(".graph-stage").textContent())
-                .contains("Trigger", "End")
-                .doesNotContain("stream");
+        final Locator trigger = page.locator("[data-kind='trigger'][data-node-id]");
+        assertThat(trigger.count()).isEqualTo(1);
+        final String id = trigger.getAttribute("data-node-id");
+        assertThat(trigger.getAttribute("aria-pressed")).isEqualTo("true");
+        assertThat(trigger.getAttribute("aria-label")).isNotBlank();
+        final Locator end = page.locator("[data-kind='end'][data-world-id='end:" + id + ".next']");
+        end.waitFor();
+        assertThat(end.getAttribute("aria-label")).isEqualTo("End");
+        assertThat(page.evaluate("""
+                async id => {
+                  const project = (await (await fetch('/api/project')).json()).project;
+                  return project.nodes.length === 2
+                    && project.nodes.find(node => node.id === id)?.use === 'railix.trigger.cli'
+                    && project.links.length === 2
+                    && project.links.some(link => link.from === 'app.start' && link.to === id)
+                    && project.links.some(link => link.from === id + '.next' && link.to === 'end');
+                }
+                """, id)).isEqualTo(true);
+        assertThat(applicationPid()).matches("[1-9][0-9]*");
+        assertThat(page.locator(".graph-stage").textContent()).doesNotContain("stream");
         assertThat(page.locator("#inspector").textContent())
                 .doesNotContain("PROJECT_TRIGGER_RESULT_REQUIRED", "Trigger example: example");
     }
@@ -1883,10 +1964,10 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         addTrigger();
 
         assertThat(page.locator("[data-inspector-mode]").allTextContents())
-                .containsExactly("Inspector", "Appearance", "Examples", "Groups");
+                .containsExactly("Inspector", "Appearance", "Examples");
         assertThat(((String) page.locator(".inspector-tabs").evaluate(
                 "tabs => getComputedStyle(tabs).gridTemplateColumns"
-        )).split(" ")).hasSize(4);
+        )).split(" ")).hasSize(3);
         assertThat(page.locator("#target-path").count()).isEqualTo(1);
         assertThat(page.locator("#example-payload, #presentation-name").count()).isZero();
 
@@ -2020,7 +2101,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         addTrigger();
         openInspectorTab("examples");
 
-        page.locator(".app-node").click();
+        selectWorldNode("app");
 
         assertThat(page.locator("[data-inspector-mode='inspect']").getAttribute("class"))
                 .contains("active");
@@ -2031,10 +2112,13 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     void triggerNodeShowsItsExampleCoverageCount() {
         addTrigger();
         openInspectorTab("examples");
+        waitForText("#status-observations", "Observations connected");
+        waitForText(".trigger-node .world-detail", "3 examples · 3 runs");
 
         assertThat(page.locator(".trigger-node").textContent()).contains("3 examples");
 
         page.locator("#add-example").click();
+        waitForText(".trigger-node .world-detail", "4 examples · 4 runs");
 
         assertThat(page.locator(".trigger-node").textContent()).contains("4 examples");
     }
@@ -2042,7 +2126,8 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void applicationInspectorRefreshesAutomaticExampleTraceStorage() {
         addTrigger();
-        page.locator(".app-node").click();
+        selectWorldNode("app");
+        openInspectorSection("Workspace and build");
         waitForText("#example-suite-state", "Completed");
         page.waitForFunction("""
                 () => document.querySelector('#example-trace-storage')?.textContent !== '0 B'
@@ -2057,14 +2142,11 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         selectTrigger();
         page.locator(".run-result").waitFor();
 
-        assertThat(page.locator("[data-node-id='command']").getAttribute("class"))
-                .contains("example-reached");
-        assertThat(page.locator("[data-node-id='filter']").getAttribute("class"))
-                .contains("example-reached");
-        assertThat(page.locator("[data-node-id='matched']").getAttribute("class"))
-                .contains("example-reached");
-        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("class"))
-                .doesNotContain("example-reached", "example-uncovered");
+        waitForCoverage("matched", "selected");
+        assertThat(page.locator("[data-node-id='command']").getAttribute("data-coverage")).isEqualTo("selected");
+        assertThat(page.locator("[data-node-id='filter']").getAttribute("data-coverage")).isEqualTo("selected");
+        assertThat(page.locator("[data-node-id='matched']").getAttribute("data-coverage")).isEqualTo("selected");
+        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("data-coverage")).isEqualTo("covered");
     }
 
     @Test
@@ -2078,9 +2160,8 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         openInspectorTab("inspect");
         page.locator(".run-result").waitFor();
 
-        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("class"))
-                .contains("example-uncovered")
-                .doesNotContain("example-reached");
+        waitForCoverage("otherwise", "uncovered");
+        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("data-coverage")).isEqualTo("uncovered");
     }
 
     @Test
@@ -2096,28 +2177,106 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
         page.evaluate("""
                 () => {
-                  const matched = state.project.nodes.findIndex(node => node.id === 'matched');
-                  const otherwise = state.project.nodes.findIndex(node => node.id === 'otherwise');
-                  [state.project.nodes[matched], state.project.nodes[otherwise]] =
-                    [state.project.nodes[otherwise], state.project.nodes[matched]];
+                  state.project.nodes.reverse();
                   state.project.format = 2;
                   dirty(true);
                 }
                 """);
         waitForText("#build-state", "Not built");
-        page.waitForFunction("""
-                () => document.querySelector("[data-node-id='matched']")
-                    ?.classList.contains('example-reached')
-                  && document.querySelector("[data-node-id='otherwise']")
-                    ?.classList.contains('example-uncovered')
-                """);
+        waitForCoverage("matched", "selected");
+        waitForCoverage("otherwise", "uncovered");
 
-        assertThat(page.locator("[data-node-id='matched']").getAttribute("class"))
-                .contains("example-reached")
-                .doesNotContain("example-uncovered");
-        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("class"))
-                .contains("example-uncovered")
-                .doesNotContain("example-reached");
+        assertThat(page.locator("[data-node-id='matched']").getAttribute("data-coverage")).isEqualTo("selected");
+        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("data-coverage")).isEqualTo("uncovered");
+    }
+
+    @Test
+    void exampleHighlightStaysVisibleWhileInspectingApplicationBuildFacts() {
+        openProject(filterProject());
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+        waitForCoverage("matched", "selected");
+
+        selectWorldNode("app");
+        openInspectorSection("Workspace and build");
+        page.locator("#zoom-fit").click();
+        awaitScene();
+        waitForCoverage("matched", "selected");
+        assertThat(page.locator("[data-node-id='matched']").getAttribute("data-coverage")).isEqualTo("selected");
+        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("data-coverage")).isEqualTo("covered");
+    }
+
+    @Test
+    void triggerExampleSelectionChangesTheRealRouteWithoutRebuilding() throws Exception {
+        openProject(choiceProject());
+        final String project = Files.readString(directory.resolve("project.json"));
+        final String metadata = creatorMetadata();
+        final String pid = applicationPid();
+        assertThat(page.locator("#world-example").count()).isZero();
+
+        selectTrigger();
+        openInspectorTab("examples");
+        page.locator("[data-select-example='0']").click();
+        waitForCoverage("matched", "selected");
+        page.locator("[data-select-example='1']").click();
+        waitForCoverage("otherwise", "selected");
+
+        assertThat(page.locator("[data-node-id='matched']").getAttribute("data-coverage")).isEqualTo("covered");
+        assertThat(page.locator("[data-select-example='1']").getAttribute("class")).contains("active");
+        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
+        assertThat(creatorMetadata()).isEqualTo(metadata);
+        assertThat(applicationPid()).isEqualTo(pid);
+    }
+
+    @Test
+    void statusRailShowsCoverageFromTheCompletedApplicationExamples() {
+        openProject(filterProject());
+        page.waitForFunction("() => document.querySelector('#status-coverage')?.hidden === false");
+
+        assertThat(page.locator("#status-coverage").textContent()).isEqualTo("100% example coverage");
+        assertThat(page.locator("#status-coverage").getAttribute("title"))
+                .isEqualTo("4 of 4 executable Steps reached by completed Examples");
+        assertThat(page.locator("#status-pid").textContent()).isEqualTo("PID " + applicationPid());
+    }
+
+    @Test
+    void completedExampleCoverageNeedsNoDiscoveryGuidance() {
+        openProject(filterProject());
+        waitForText("#status-coverage span", "100% example coverage");
+
+        assertThat(page.locator("#world-objective").count()).isZero();
+    }
+
+    @Test
+    void uncoveredStepCanBeInspectedWithoutDiscoveryGuidance() {
+        openProject(filterProject());
+        selectTrigger();
+        openInspectorTab("examples");
+        page.locator("[data-select-example='1']").click();
+        page.locator("#delete-example").click();
+        waitForText("#build-state", "Built");
+        waitForText("#status-coverage span", "75% example coverage");
+        assertThat(page.locator("#world-objective").count()).isZero();
+
+        page.locator("[data-select-node='otherwise']").click();
+
+        page.waitForFunction("() => document.querySelector('[data-node-id=otherwise]')?.getAttribute('aria-pressed') === 'true'");
+        assertThat(page.locator(".inspector-heading h2").textContent()).isEqualTo("Field Manipulation");
+    }
+
+    @Test
+    void stoppedApplicationClearsStatusTelemetryWithoutRemovingTheDiagram() {
+        page.locator("#status-memory").waitFor();
+        final long pid = Long.parseLong(applicationPid());
+
+        stopProcess(pid);
+        waitForText("#build-state", "Stopped");
+
+        assertThat(page.locator("#status-pid").isHidden()).isTrue();
+        assertThat(page.locator("#status-memory").isHidden()).isTrue();
+        assertThat(page.locator("#status-cpu").isHidden()).isTrue();
+        assertThat(page.locator("#status-uptime").isHidden()).isTrue();
+        assertThat(page.locator(".app-node").isVisible()).isTrue();
     }
 
     @Test
@@ -2191,7 +2350,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         page.locator("#preview-source").waitFor();
 
         assertThat(page.locator("#preview-values").textContent())
-                .contains("Built example", "RAILIX", "Built output", "railix");
+                .contains("RAILIX", "railix").doesNotContain("Built example", "Built output");
     }
 
     @Test
@@ -2200,10 +2359,16 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                 () => {
                   const request = window.fetch.bind(window);
                   window.__railixExampleRequests = [];
-                  window.fetch = (input, options = {}) => {
+                  window.__railixExampleIds = [];
+                  window.fetch = async (input, options = {}) => {
                     const url = typeof input === 'string' ? input : input.url;
                     window.__railixExampleRequests.push((options.method || 'GET') + ' ' + url);
-                    return request(input, options);
+                    const response = await request(input, options);
+                    if (url === '/api/examples' && response.ok) {
+                      const inventory = await response.clone().json();
+                      window.__railixExampleIds.push(...inventory.cases.map(example => example.id));
+                    }
+                    return response;
                   };
                 }
                 """);
@@ -2213,6 +2378,15 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
         @SuppressWarnings("unchecked")
         final List<String> requests = (List<String>) page.evaluate("() => window.__railixExampleRequests");
+        @SuppressWarnings("unchecked")
+        final List<String> applicationIds = (List<String>) page.evaluate("() => window.__railixExampleIds");
+        assertThat(applicationIds).isNotEmpty();
+        assertThat(requests.stream()
+                .filter(request -> request.matches("GET /api/examples/[^/]+$"))
+                .filter(request -> !request.endsWith("/status") && !request.endsWith("/coverage"))
+                .map(request -> java.net.URLDecoder.decode(
+                        request.substring("GET /api/examples/".length()), java.nio.charset.StandardCharsets.UTF_8
+                )).toList()).isNotEmpty().allMatch(applicationIds::contains);
         assertThat(requests).anyMatch(request -> request.equals("GET /api/application"));
         assertThat(requests).anyMatch(request -> request.equals("GET /api/examples"));
         assertThat(requests).anyMatch(request -> request.equals("GET /api/examples/status"));
@@ -2548,7 +2722,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     void nextStepCompatibilityUsesTheBuiltOutputOfTheCurrentStep() {
         final String conversion = addGraphPrimitive("\"12.9\"", "to number", "text.to-number");
 
-        page.locator("[data-select-step='" + conversion + "']").click();
+        selectWorldNode(conversion);
         page.locator("[data-add-outcome='ok']").click();
 
         assertThat(page.locator("[data-add-step='number.floor']").count()).isEqualTo(1);
@@ -2702,7 +2876,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
         assertThat(reloadedProject).contains("\"id\":\"" + id + "\"");
         assertThat(page.locator("#build-state").textContent())
-                .as(loadedState).isEqualTo("Built");
+                .as(loadedState).isEqualTo("Running");
         assertThat(page.locator(".trigger-node").count()).as(loadedState).isEqualTo(1);
         assertThat(page.locator(".trigger-node").getAttribute("data-node-id"))
                 .as(loadedState).isEqualTo(id);
@@ -2711,7 +2885,10 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void installedSingletonTriggerCannotBeAddedTwice() {
         addTrigger();
-        page.locator(".app-node").click();
+        waitForText("#build-state", "Built");
+        selectWorldNode("app");
+        page.locator("#zoom-fit").click();
+        awaitScene();
 
         assertThat(page.locator("#add-trigger").count()).isZero();
         assertThat(page.locator(".trigger-node").count()).isEqualTo(1);
@@ -2724,16 +2901,18 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
         exampleContext().fill("{\"runtime\":{}}");
         exampleContext().press("Tab");
+        page.locator("#zoom-fit").click();
+        awaitScene();
 
-        assertThat(page.locator("#build-state").textContent()).isEqualTo("Built");
-        assertThat(page.locator(".trigger-node").getAttribute("class")).contains("issue-error");
-        assertThat(page.locator(".app-node").getAttribute("class")).doesNotContain("issue-error");
+        assertThat(page.locator("#build-state").textContent()).isEqualTo("Running");
+        assertThat(page.locator(".trigger-node").getAttribute("data-error")).isEqualTo("true");
+        assertThat(page.locator(".app-node").getAttribute("data-error")).isEqualTo("false");
         openInspectorTab("inspect");
         assertThat(page.locator("#inspector").textContent())
                 .contains("PROJECT_TRIGGER_EXAMPLE_CONTEXT_INVALID")
                 .contains("Context must be an object without context.runtime.");
 
-        page.locator(".app-node").click();
+        selectWorldNode("app");
 
         assertThat(page.locator("#inspector").textContent())
                 .doesNotContain("Example context must be an object without context.runtime.");
@@ -2760,9 +2939,15 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         page.locator("#value-0-option").selectOption("literal");
         page.locator("#value-0-literal-value").fill("{\"token\":\"railix\"}");
         page.locator("#value-0-literal-value").press("Tab");
+        waitForText("#build-state", "Built");
+        awaitScene();
 
         assertThat(page.locator(".step-node").textContent())
-                .contains("Literal", "context.auth");
+                .contains("Field Manipulation", "context.auth");
+        assertThat(page.locator("#value-0-option").inputValue()).isEqualTo("literal");
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+        assertThat(page.locator(".run-result").textContent()).contains("\"auth\": {", "\"token\": \"railix\"");
     }
 
     @Test
@@ -2925,7 +3110,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
         assertThat(page.locator("#value-0-literal-value").inputValue()).isEqualTo("[");
         assertThat(page.locator("#inspector").textContent()).contains("Value must be valid JSON.");
-        assertThat(page.locator("#preview-values").textContent()).isEmpty();
+        assertThat(page.locator("#preview-values output").count()).isZero();
     }
 
     @Test
@@ -2942,7 +3127,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
         assertThat(page.locator(".path-browser").count()).isZero();
         assertThat(page.locator("#field-path").textContent()).isEqualTo(current);
-        assertThat(page.locator("#build-state").textContent()).isEqualTo("Built");
+        assertThat(page.locator("#build-state").textContent()).isEqualTo("Running");
     }
 
     @Test
@@ -2960,7 +3145,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
         assertThat(page.locator(".path-browser").count()).isZero();
         assertThat(page.locator("#value-0-source-path").textContent()).isEqualTo(current);
-        assertThat(page.locator("#build-state").textContent()).isEqualTo("Built");
+        assertThat(page.locator("#build-state").textContent()).isEqualTo("Running");
     }
 
     @Test
@@ -2987,137 +3172,280 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         assertThat(page.locator("[data-path-part='token']").count()).isEqualTo(1);
     }
 
+}
+
+final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void adjacentFieldManipulationsRemainSeparateUntilTheUserGroupsThem() {
         createLowercaseJourney();
 
-        assertThat(page.locator("[data-select-step]").count()).isEqualTo(2);
-        assertThat(page.locator("[data-select-group]").count()).isZero();
+        assertThat(stepIds()).hasSize(2);
+        assertThat(page.locator("[data-region-group]").count()).isZero();
     }
 
     @Test
-    void creatingAGroupPersistsOnlyCreatorMetadataWithoutRestarting() throws Exception {
+    void creatingAGroupPersistsOnlyFormatTwoCreatorMetadataWithoutRestarting() throws Exception {
         createLowercaseJourney();
         final String project = Files.readString(directory.resolve("project.json"));
         final String pid = applicationPid();
+        final List<String> steps = stepIds();
 
-        groupSteps(0, 1);
+        final String group = createGroup(steps.get(0), steps.get(1));
 
         assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
         assertThat(Files.readString(directory.resolve("railix.creator.json")))
-                .contains("\"groups\":[{", "\"occurrences\":[{", "\"steps\":{")
-                .doesNotContain("\"members\"");
+                .contains("\"format\":2", "\"id\":\"" + group + "\"", "\"group\":\"" + group + "\"")
+                .doesNotContain("occurrences", "members", "camera");
+        assertThat(stepIds()).hasSize(2);
+        assertThat(page.locator("[data-region-group]").count()).isEqualTo(1);
         assertThat(applicationPid()).isEqualTo(pid);
     }
 
     @Test
-    void groupedRangeRendersAsOneCollapsedNode() {
+    void groupPickerSearchesExistingGroupsWithoutCreatingThem() {
         createLowercaseJourney();
+        final List<String> steps = stepIds();
+        createGroup(steps.get(0));
 
-        groupSteps(0, 1);
+        selectWorldNode(steps.get(1));
+        openInspectorTab("appearance");
+        page.locator("#choose-group").click();
+        page.locator("#group-picker-search").fill("group 1");
 
-        assertThat(page.locator("[data-select-group]").count()).isEqualTo(1);
-        assertThat(page.locator("[data-select-step]").count()).isZero();
-        assertThat(page.locator("[data-select-group]").textContent()).contains("2 Steps");
+        assertThat(page.locator("[data-assign-group] strong").allTextContents())
+                .containsExactly("No group", "Group 1");
+        assertThat(page.locator("[data-assign-group] small").allTextContents())
+                .containsExactly("Remove the visual assignment", "1 Step");
+        assertThat(page.locator("#new-group").count()).isZero();
     }
 
     @Test
-    void openingAndClosingAGroupShowsItsFlatSteps() {
+    void selectingNoGroupRemovesOnlyTheStepAssignment() {
         createLowercaseJourney();
-        groupSteps(0, 1);
+        final String step = stepIds().get(0);
+        createGroup(step);
 
-        page.locator("[data-select-group]").click();
-        page.locator("#open-group").click();
+        selectWorldNode(step);
+        openInspectorTab("appearance");
+        page.locator("#choose-group").click();
+        clickAndWaitForCreatorSave(() -> page.locator("[data-assign-group='']").click());
 
-        assertThat(page.locator("#close-group").count()).isEqualTo(1);
-        assertThat(page.locator("[data-select-step]").count()).isEqualTo(2);
-
-        page.locator("#close-group").click();
-
-        assertThat(page.locator("[data-select-group]").count()).isEqualTo(1);
+        assertThat(page.evaluate("""
+                async step => {
+                  const creator = (await (await fetch('/api/project')).json()).creator;
+                  return creator.groups.length + '|' + (creator.steps[step]?.group || '');
+                }
+                """, step)).isEqualTo("1|");
+        assertThat(page.locator("[data-region-group]").count()).isZero();
     }
 
     @Test
-    void deletingAGroupPreservesEveryFunctionalStep() throws Exception {
+    void oneGroupCreatesOneRegionPerDisconnectedBranchWithoutChangingSteps() {
+        openProject(choiceProject());
+
+        createGroup("matched", "otherwise");
+
+        page.locator("[data-region-group]").first().waitFor();
+        assertThat(page.locator("[data-region-group]").count()).isEqualTo(2);
+        assertThat(stepIds()).containsExactly("choice", "matched", "otherwise");
+        assertThat(page.locator("#inspector").textContent()).contains("Steps2", "Regions2");
+        assertThat(page.locator(".issues").count()).isZero();
+    }
+
+    @Test
+    void applicationGroupManagerCreatesAndDeletesAnEmptyReusableIdentity() {
+        selectWorldNode("app");
+        page.locator("#manage-groups").click();
+
+        clickAndWaitForCreatorSave(() -> page.locator("#new-group").click());
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const creator = (await (await fetch('/api/project')).json()).creator;
+                  return creator.groups.length + '|' + Object.values(creator.steps)
+                    .filter(step => step.group).length;
+                }
+                """)).isEqualTo("1|0");
+        assertThat(page.locator("#inspector").textContent()).contains("Steps0", "Regions0");
+
+        clickAndWaitForCreatorSave(() -> page.locator("#delete-group").click());
+        assertThat(page.locator(".manager-heading").textContent()).contains("Group Manager");
+    }
+
+    @Test
+    void creatingAGroupFromStepAppearanceDoesNotChangeItsAssignment() {
         createLowercaseJourney();
-        groupSteps(0, 1);
+        final String selected = stepIds().get(1);
+        openInspectorTab("appearance");
+        page.locator("#manage-groups").click();
+
+        clickAndWaitForCreatorSave(() -> page.locator("#new-group").click());
+
+        assertThat(page.evaluate("""
+                async selected => {
+                  const creator = (await (await fetch('/api/project')).json()).creator;
+                  return creator.groups.length + '|' + (creator.steps[selected]?.group || '');
+                }
+                """, selected)).isEqualTo("1|");
+        assertThat(page.locator("[data-region-group]").count()).isZero();
+    }
+
+    @Test
+    void clickingARegionLabelOpensTheFocusedGroupManager() {
+        createLowercaseJourney();
+        final String group = createGroup(stepIds().get(0));
+        page.locator("#close-group-manager").click();
+        page.locator("[data-region-group]").waitFor();
+
+        page.locator("[data-region-group='" + group + "']").click();
+
+        assertThat(page.locator(".manager-heading").textContent()).contains("Group Manager");
+        assertThat(page.locator("[data-manage-group='" + group + "']").getAttribute("class"))
+                .contains("active");
+    }
+
+    @Test
+    void clickingADisconnectedRegionLabelFocusesOnlyThatRegion() {
+        openProject(choiceProject());
+        createGroup("matched", "otherwise");
+        page.locator("#close-group-manager").click();
+        page.locator("[data-region-group]").nth(1).waitFor();
+        final String before = canvasStyle();
+        final String selected = page.locator("[data-group-region-label]").first()
+                .getAttribute("data-group-region-label");
+
+        page.locator("[data-group-region-label]").first().click();
+        waitForCanvasChange(before);
+
+        page.waitForFunction("""
+                id => {
+                  const stage = document.querySelector('#graph');
+                  const scale = Number(stage.dataset.sceneScale);
+                  const region = state.world.scene.nodes.find(node => node.id === id);
+                  const label = document.querySelector(`[data-group-region-label='${id}']`);
+                  if (!region || !label) return false;
+                  const center = parseFloat(label.style.left) + parseFloat(label.style.width) / 2;
+                  return Math.abs(center - stage.clientWidth / 2) < 3
+                    && state.world.scene.nodes.filter(node => node.kind === 'region' && node.group === region.group && node.id !== id)
+                      .every(other => Math.hypot((other.x + other.width / 2) - (region.x + region.width / 2),
+                        (other.y + other.height / 2) - (region.y + region.height / 2)) * scale > 20);
+                }
+                """, selected);
+    }
+
+    @Test
+    void insertingBetweenGroupedStepsDoesNotInheritOrSynchronizeTheGroup() {
+        openProject(fourStepProject());
+        final String group = createGroup("one", "two");
+        selectWorldNode("one");
+
+        page.locator("#add-next-step").click();
+        page.locator("#step-search").fill("field manipulation");
+        page.locator("[data-add-step='railix.field-manipulation']").click();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => {
+                  const workspace = await (await fetch('/api/project')).json();
+                  const inserted = workspace.project.links.find(link => link.from === 'one.next').to;
+                  return [
+                    workspace.creator.steps.one.group,
+                    workspace.creator.steps.two.group,
+                    workspace.creator.steps[inserted]?.group || '',
+                    workspace.project.links.find(link => link.from === inserted + '.next').to
+                  ].join('|');
+                }
+                """)).isEqualTo(group + "|" + group + "||two");
+        page.locator("#zoom-fit").click();
+        awaitScene();
+        assertThat(page.locator("[data-region-group]").count()).isEqualTo(2);
+    }
+
+    @Test
+    void deletingAGroupPreservesTheFunctionalProjectAndApplication() throws Exception {
+        createLowercaseJourney();
         final String project = Files.readString(directory.resolve("project.json"));
         final String pid = applicationPid();
+        final List<String> steps = stepIds();
+        createGroup(steps.get(0), steps.get(1));
+        selectWorldNode(steps.get(0));
+        openInspectorTab("appearance");
+        page.locator("#manage-groups").click();
 
-        page.locator("[data-select-group]").click();
         clickAndWaitForCreatorSave(() -> page.locator("#delete-group").click());
 
         assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
         assertThat(page.evaluate("""
-                async () => (await (await fetch('/api/project')).json()).creator.groups.length
-                """)).isEqualTo(0);
-        assertThat(page.locator("[data-select-step]").count()).isEqualTo(2);
+                async () => {
+                  const creator = (await (await fetch('/api/project')).json()).creator;
+                  return creator.groups.length + '|' + Object.values(creator.steps)
+                    .filter(step => step.group).length;
+                }
+                """)).isEqualTo("0|0");
+        assertThat(stepIds()).hasSize(2);
         assertThat(applicationPid()).isEqualTo(pid);
     }
 
     @Test
-    void groupNamePersistsAcrossReloadWithoutRestarting() {
+    void groupNamePersistsAsEscapedRegionTextWithoutRestarting() {
         createLowercaseJourney();
-        groupSteps(0, 1);
+        createGroup(stepIds().get(0));
         final String pid = applicationPid();
+        final String name = "<img src=x onerror=\"window.__railixInjected=true\">";
 
-        presentationName().fill("Normalize result");
+        presentationName().fill(name);
         clickAndWaitForCreatorSave(() -> presentationName().press("Tab"));
         page.reload();
         waitForText("#build-state", "Built");
+        page.locator("[data-group-region-label]").waitFor();
 
-        assertThat(page.locator("[data-select-group] h2").textContent()).isEqualTo("Normalize result");
+        assertThat(page.locator("[data-group-region-label] strong").textContent()).isEqualTo(name);
+        assertThat(page.locator("[data-group-region-label] img").count()).isZero();
+        assertThat(page.evaluate("() => window.__railixInjected === true")).isEqualTo(false);
         assertThat(applicationPid()).isEqualTo(pid);
     }
 
     @Test
-    void groupNameIsRenderedAsTextInsideTheOpenGroupTrail() {
-        createLowercaseJourney();
-        groupSteps(0, 1);
-        final String name = "<img src=x onerror=\"window.__railixInjected=true\">";
-        presentationName().fill(name);
-        clickAndWaitForCreatorSave(() -> presentationName().press("Tab"));
-
-        page.locator("[data-select-group]").click();
-        page.locator("#open-group").click();
-
-        assertThat(page.locator(".flow-scope-header span").textContent()).isEqualTo(name);
-        assertThat(page.locator(".flow-scope-header img").count()).isZero();
-        assertThat(page.evaluate("() => window.__railixInjected === true")).isEqualTo(false);
-    }
-
-    @Test
-    void groupColorPersistsAcrossReloadWithoutRestarting() {
-        createLowercaseJourney();
-        groupSteps(0, 1);
+    void groupColorPersistsOnEveryDerivedRegionWithoutRestarting() {
+        openProject(choiceProject());
+        createGroup("matched", "otherwise");
         final String pid = applicationPid();
 
-        openInspectorTab("appearance");
         page.locator("#presentation-color").fill("#A10F22");
         clickAndWaitForCreatorSave(() -> page.locator("#presentation-color").press("Tab"));
         page.reload();
         waitForText("#build-state", "Built");
+        page.locator("[data-region-group]").first().waitFor();
 
-        assertThat(page.locator("[data-select-group]").getAttribute("style"))
-                .contains("--node-accent:#A10F22");
+        assertThat(page.locator("[data-region-group]").count()).isEqualTo(2);
+        assertThat(page.locator("[data-region-group] .world-detail").allTextContents())
+                .containsExactly("1 Step", "1 Step");
+        assertThat(page.evaluate("""
+                () => state.world.scene.nodes.filter(node => node.group).map(node => node.color)
+                """)).isEqualTo(List.of("#A10F22", "#A10F22"));
         assertThat(applicationPid()).isEqualTo(pid);
     }
 
     @Test
     void customGroupIconIsEmbeddedAndPortableAcrossReload() {
-        createLowercaseJourney();
-        groupSteps(0, 1);
+        openProject(choiceProject());
+        createGroup("matched", "otherwise");
         final String pid = applicationPid();
 
-        openInspectorTab("appearance");
         page.locator("#choose-icon").click();
         page.locator("#icon-search").fill("custom");
         clickAndWaitForCreatorSave(() -> page.locator("[data-select-icon='custom:bolt']").click());
         page.reload();
         waitForText("#build-state", "Built");
+        page.locator("[data-group-region-label]").first().waitFor();
 
-        assertThat(page.locator("[data-select-group] .flow-icon").getAttribute("src"))
-                .isEqualTo("data:image/svg+xml;base64,PHN2Zy8+");
+        assertThat(page.evaluate("""
+                () => {
+                  const urls = [...document.querySelectorAll('[data-group-region-label] .flow-icon')]
+                    .map(icon => icon.src);
+                  return urls.length + '|' + new Set(urls).size + '|' + urls.every(url => url.startsWith('blob:'));
+                }
+                """)).isEqualTo("2|1|true");
         assertThat(page.evaluate("""
                 async () => (await (await fetch('/api/project')).json()).creator.groups[0].icon.data
                 """)).isEqualTo("PHN2Zy8+");
@@ -3125,290 +3453,132 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
-    void cancellingGroupRangeCreationLeavesMetadataUnchanged() {
+    void groupBoundaryDefaultsToSolidAndPersistsOnlyAnExplicitAlternative() {
         createLowercaseJourney();
-        final String before = creatorMetadata();
+        createGroup(stepIds().get(0));
+        page.locator("[data-region-group]").waitFor();
 
-        page.locator("[data-inspector-mode='groups']").click();
-        page.locator("#new-group").click();
-        page.locator("[data-select-step]").first().click();
-        page.locator("#cancel-group-draft").click();
-
-        assertThat(creatorMetadata()).isEqualTo(before);
-        assertThat(page.locator("[data-select-group]").count()).isZero();
-        assertThat(page.locator("#cancel-group-draft").count()).isZero();
-    }
-
-    @Test
-    void nestedGroupOpensInsideItsParent() {
-        prepareNestedGroup();
-
-        assertThat(page.locator("[data-select-group]").count()).isEqualTo(1);
-        assertThat(page.locator("[data-select-step]").count()).isEqualTo(1);
-        page.locator("#open-group").click();
-
-        assertThat(page.locator("[data-select-step]").count()).isEqualTo(1);
-        assertThat(page.locator("#project-title").textContent()).isEqualTo("Field Manipulation");
-        assertThat(page.locator(".flow-scope-header").textContent())
-                .contains("Step Group", "Field Manipulation");
-    }
-
-    @Test
-    void deletingParentGroupReparentsNestedGroupAndPreservesSteps() throws Exception {
-        prepareNestedGroup();
-        final String project = Files.readString(directory.resolve("project.json"));
-        final String pid = applicationPid();
-        page.locator("#close-group").click();
-        page.locator("[data-select-group]").click();
-
-        clickAndWaitForCreatorSave(() -> page.locator("#delete-group").click());
-
-        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
-        assertThat(page.locator("[data-select-group]").count()).isEqualTo(1);
-        assertThat(page.locator("[data-select-step]").count()).isEqualTo(1);
+        assertThat(page.locator("[data-region-group]").getAttribute("data-boundary")).isEqualTo("solid");
         assertThat(page.evaluate("""
-                async () => {
-                  const groups = (await (await fetch('/api/project')).json()).creator.groups;
-                  return groups.length + ':' + groups[0].occurrences[0].parent;
-                }
-                """)).isEqualTo("1:null");
-        assertThat(applicationPid()).isEqualTo(pid);
-    }
+                async () => 'boundary' in (await (await fetch('/api/project')).json()).creator.groups[0]
+                """)).isEqualTo(false);
 
-    @Test
-    void sharedStepListsEveryExplicitEditChoice() {
-        prepareSharedGroup();
-
-        openSharedStep(1, 0);
-
-        assertThat(page.locator("[data-shared-action]").allTextContents())
-                .containsExactly("Update all", "Detach this", "Create variant", "Cancel");
-    }
-
-    @Test
-    void updateAllCopiesTheEditedStepPresentationToEveryOccurrence() {
-        prepareSharedGroup();
-        final String pid = applicationPid();
-        openSharedStep(1, 0);
-
-        page.locator("[data-shared-action='all']").click();
-        presentationName().fill("Shared value");
-        clickAndWaitForCreatorSave(() -> presentationName().press("Tab"));
-
-        assertThat(page.evaluate("""
-                async () => Object.values((await (await fetch('/api/project')).json()).creator.steps)
-                  .filter(step => step.name === 'Shared value').length
-                """)).isEqualTo(2);
-        assertThat(applicationPid()).isEqualTo(pid);
-    }
-
-    @Test
-    void addedOccurrenceMapsLogicalSlotsInVisibleFlowOrder() {
-        prepareSharedGroup();
-
-        assertThat(page.evaluate("""
-                async () => {
-                  const occurrences = (await (await fetch('/api/project')).json())
-                    .creator.groups[0].occurrences;
-                  return Object.keys(occurrences[0].steps)
-                    .map(slot => occurrences[0].steps[slot] + ':' + occurrences[1].steps[slot])
-                    .sort().join(',');
-                }
-                """)).isEqualTo("one:three,two:four");
-    }
-
-    @Test
-    void rejectedCreatorMetadataHighlightsOnlyTheAffectedGroup() {
-        prepareSharedGroup();
-        assertThat(page.evaluate("""
-                async () => {
-                  const project = (await (await fetch('/api/project')).json()).project;
-                  project.nodes = project.nodes.filter(node => node.id !== 'one');
-                  project.links = project.links.filter(link => !link.from.startsWith('one.'));
-                  project.links.find(link => link.from === 'command.next').to = 'two';
-                  return (await fetch('/api/project', {
-                    method: 'POST', headers: mutationHeaders(),
-                    body: JSON.stringify(project)
-                  })).status;
-                }
-                """)).isEqualTo(200);
-        page.locator("[data-select-group]").first().click();
-
-        presentationName().fill("Drifted group");
-        final var response = page.waitForResponse(candidate ->
-                        candidate.url().endsWith("/api/creator")
-                                && "POST".equals(candidate.request().method()),
-                () -> presentationName().press("Tab"));
-
-        assertThat(response.status()).isEqualTo(422);
-        page.locator("[data-select-group].issue-error").waitFor();
-        assertThat(page.locator(".app-node.issue-error").count()).isZero();
-        assertThat(page.locator("[data-select-group].issue-error").count()).isEqualTo(1);
-        openInspectorTab("inspect");
-        assertThat(page.locator("#inspector").textContent()).contains("CREATOR_OCCURRENCE_STEP_UNKNOWN");
-    }
-
-    @Test
-    void updateAllCopiesTheEditedStepInputToEveryOccurrence() {
-        prepareSharedGroup();
-        openSharedStep(1, 0);
-
-        page.locator("[data-shared-action='all']").click();
-        page.locator("#value-0-literal-value").fill("7");
-        page.locator("#value-0-literal-value").press("Tab");
+        clickAndWaitForCreatorSave(() -> page.locator("#group-boundary").selectOption("dashed"));
+        page.reload();
         waitForText("#build-state", "Built");
+        page.locator("[data-region-group]").waitFor();
 
-        assertThat(page.evaluate("""
-                async () => (await (await fetch('/api/project')).json()).project.nodes
-                  .filter(node => node.id === 'one' || node.id === 'three')
-                  .map(node => node.inputs.value[0].inputs.literal).join(',')
-                """)).isEqualTo("7,7");
+        assertThat(page.locator("[data-region-group]").getAttribute("data-boundary")).isEqualTo("dashed");
     }
 
     @Test
-    void updateAllInsertsOneFlatStepIntoEveryOccurrence() {
-        prepareSharedGroup();
-        openSharedStep(1, 0);
+    void zoomChangesOnlyTheEphemeralCanvasCamera() {
+        openProject(deepBranchProject(4));
+        final String metadata = creatorMetadata();
+        final String before = canvasStyle();
 
-        page.locator("[data-shared-action='all']").click();
-        addManipulationAfterSelected();
+        page.locator("#zoom-in").click();
+        waitForCanvasChange(before);
+
+        assertThat(page.locator("#zoom-level").textContent()).isNotBlank();
+        assertThat(creatorMetadata()).isEqualTo(metadata);
+    }
+
+    @Test
+    void focusingAStationRevealsItsSelectableLabelInsideALargeFlow() {
+        openProject(deepBranchProject(96));
+
+        page.evaluate("() => void state.world.focus('step-48')");
+        final Locator selected = page.locator("#world-labels [data-node-id='step-48']");
+        selected.waitFor();
+        selected.click();
+        waitForText(".inspector-heading h2", "Field Manipulation");
+        awaitScene();
+
+        assertThat(selected.getAttribute("aria-pressed")).isEqualTo("true");
+        assertThat(page.locator(".inspector-heading h2").textContent()).isEqualTo("Field Manipulation");
+        assertThat(page.locator("#world-labels > *").count()).isLessThanOrEqualTo(256);
+    }
+
+    @Test
+    void fittingTheWorldReplacesDetailedStationsWithAnAggregate() {
+        openProject(deepBranchProject(96));
+        page.evaluate("() => void state.world.focus('step-48')");
+        page.locator("#world-labels [data-node-id='step-48']").waitFor();
+
+        page.locator("#zoom-fit").click();
+        page.waitForFunction("""
+                () => state.world.scene.nodes.some(node => node.kind === 'region' && !node.expanded && node.count > 1)
+                  && !state.world.scene.nodes.some(node => node.id === 'step-48')
+                """);
+
+        assertThat(page.locator("#world-labels [data-node-id='step-48']").count()).isZero();
+        assertThat(page.locator("#world-labels > *").count()).isLessThanOrEqualTo(256);
+    }
+
+    @Test
+    void panningChangesOnlyTheEphemeralCanvasCamera() {
+        openProject(deepBranchProject(4));
+        final String metadata = creatorMetadata();
+        final String before = canvasStyle();
+        final var box = page.locator("#graph").boundingBox();
+
+        page.mouse().move(box.x + 8, box.y + 8);
+        page.mouse().down();
+        page.mouse().move(box.x + 108, box.y + 58);
+        page.mouse().up();
+
+        waitForCanvasChange(before);
+        assertThat(creatorMetadata()).isEqualTo(metadata);
+    }
+
+    @Test
+    void reloadRestoresTheDeterministicFitInsteadOfPersistingTheCamera() {
+        openProject(deepBranchProject(4));
+        final String fitted = canvasStyle();
+        page.locator("#zoom-in").click();
+        page.locator("#zoom-in").click();
+        waitForCanvasChange(fitted);
+
+        page.reload();
         waitForText("#build-state", "Built");
-
-        assertThat(page.evaluate("""
-                async () => {
-                  const payload = await (await fetch('/api/project')).json();
-                  const occurrences = payload.creator.groups[0].occurrences;
-                  const known = new Set(['app', 'command', 'one', 'two', 'three', 'four']);
-                  const slot = Object.keys(occurrences[0].steps)
-                    .find(candidate => !known.has(occurrences[0].steps[candidate]));
-                  const first = occurrences[0].steps[slot];
-                  const second = occurrences[1].steps[slot];
-                  const links = payload.project.links;
-                  return [
-                    occurrences[0].steps[slot] !== occurrences[1].steps[slot],
-                    payload.project.nodes.find(node => node.id === first)?.use,
-                    payload.project.nodes.find(node => node.id === second)?.use,
-                    links.find(link => link.from === 'one.next')?.to === first,
-                    links.find(link => link.from === first + '.next')?.to === 'two',
-                    links.find(link => link.from === 'three.next')?.to === second,
-                    links.find(link => link.from === second + '.next')?.to === 'four'
-                  ].join('|');
-                }
-                """)).isEqualTo("true|railix.field-manipulation|railix.field-manipulation|true|true|true|true");
+        assertThat(canvasStyle()).isEqualTo(fitted);
     }
 
     @Test
-    void updateAllInsertsOneBranchStepIntoEveryOccurrence() {
-        prepareSharedGroup();
-        openSharedStep(1, 0);
+    void largeUngroupedBranchGetsAnEphemeralAutomaticRegion() {
+        openProject(deepBranchProject(96));
 
-        page.locator("[data-shared-action='all']").click();
-        page.locator("#add-next-step").click();
-        page.locator("#step-search").fill("filter");
-        page.locator("[data-add-step='railix.filter']").click();
+        assertThat(page.evaluate("""
+                () => state.world.scene.nodes.some(node => node.kind === 'region' && !node.group && node.count > 1)
+                """)).isEqualTo(true);
+        assertThat(creatorMetadata()).doesNotContain("auto:", "region", "camera");
+    }
+
+    @Test
+    void legacyOccurrenceMetadataMigratesToFlatAssignmentsAndDerivedRegions() {
+        openProject(fourStepProject());
+        final String metadata = """
+                {"format":1,"steps":{},"groups":[{"id":"group-one","name":"Legacy","occurrences":[{
+                  "id":"occurrence-one","flow":"command","parent":null,
+                  "steps":{"slot-one":"one","slot-two":"two"}
+                }]}]}
+                """;
+
+        assertThat(page.evaluate("""
+                async metadata => (await fetch('/api/creator', {
+                  method: 'POST', headers: mutationHeaders(), body: metadata
+                })).status
+                """, metadata)).isEqualTo(200);
+        page.reload();
         waitForText("#build-state", "Built");
+        page.locator("[data-region-group]").waitFor();
 
-        assertThat(page.evaluate("""
-                async () => {
-                  const payload = await (await fetch('/api/project')).json();
-                  const filters = payload.project.nodes.filter(node => node.use === 'railix.filter');
-                  const links = payload.project.links;
-                  return [
-                    filters.length,
-                    payload.creator.groups[0].occurrences
-                      .map(occurrence => Object.keys(occurrence.steps).length).join(','),
-                    filters.every(filter => links.find(link => link.from === filter.id + '.otherwise')?.to === 'end'),
-                    filters.every(filter => links.find(link => link.from === filter.id + '.match')?.to !== 'end')
-                  ].join('|');
-                }
-                """)).isEqualTo("2|3,3|true|true");
-    }
-
-    @Test
-    void detachingANestedSharedOccurrenceReparentsItsChildGroup() throws Exception {
-        prepareSharedGroup();
-        page.locator("[data-inspector-mode='groups']").click();
-        page.locator("[data-manage-occurrence]").first().click();
-        page.locator("#open-group").click();
-        groupSteps("one", "one");
-        page.locator("[data-select-group]").click();
-        page.locator("#open-group").click();
-        page.locator("[data-select-step='one']").click();
-        final String project = Files.readString(directory.resolve("project.json"));
-        final String pid = applicationPid();
-
-        clickAndWaitForCreatorSave(() -> page.locator("[data-shared-action='detach']").click());
-
-        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
-        assertThat(applicationPid()).isEqualTo(pid);
-        assertThat(page.evaluate("""
-                async () => (await (await fetch('/api/project')).json()).creator.groups
-                  .flatMap(group => group.occurrences)
-                  .find(occurrence => Object.values(occurrence.steps).includes('one')).parent
-                """)).isNull();
-    }
-
-    @Test
-    void updateAllDeletesTheMatchingFlatStepFromEveryOccurrence() {
-        prepareSharedGroup();
-        openSharedStep(1, 0);
-
-        page.locator("[data-shared-action='all']").click();
-        page.locator("#delete-step").click();
-        waitForText("#build-state", "Built");
-
-        assertThat(page.evaluate("""
-                async () => {
-                  const project = (await (await fetch('/api/project')).json()).project;
-                  return [
-                    project.nodes.some(node => node.id === 'one'),
-                    project.nodes.some(node => node.id === 'three'),
-                    project.links.find(link => link.from === 'command.next')?.to,
-                    project.links.find(link => link.from === 'two.next')?.to
-                  ].join('|');
-                }
-                """)).isEqualTo("false|false|two|four");
-    }
-
-    @Test
-    void detachThisRemovesOnlyTheSelectedOccurrenceFromTheSharedGroup() {
-        prepareSharedGroup();
-        openSharedStep(1, 0);
-
-        clickAndWaitForCreatorSave(() -> page.locator("[data-shared-action='detach']").click());
-
-        assertThat(page.locator("[data-select-step]").count()).isEqualTo(2);
-        assertThat(page.evaluate("""
-                async () => (await (await fetch('/api/project')).json())
-                  .creator.groups[0].occurrences.length
-                """)).isEqualTo(1);
-    }
-
-    @Test
-    void createVariantMovesOnlyTheSelectedOccurrenceIntoANewGroup() {
-        prepareSharedGroup();
-        openSharedStep(1, 0);
-
-        clickAndWaitForCreatorSave(() -> page.locator("[data-shared-action='variant']").click());
-
-        final String remote = String.valueOf(page.evaluate("""
-                async () => (await (await fetch('/api/project')).json()).creator.groups
-                  .map(group => group.occurrences.length).join(',')
-                """));
-
-        assertThat(remote).isEqualTo("1,1");
-    }
-
-    @Test
-    void cancelSharedEditReturnsToTheGroupWithoutChangingMetadata() {
-        prepareSharedGroup();
-        final String before = creatorMetadata();
-        openSharedStep(1, 0);
-
-        page.locator("[data-shared-action='cancel']").click();
-
-        assertThat(page.locator(".inspector-heading").textContent()).contains("Group");
-        assertThat(creatorMetadata()).isEqualTo(before);
+        assertThat(creatorMetadata())
+                .contains("\"format\":2", "\"group\":\"group-one\"")
+                .doesNotContain("occurrences", "slot-one");
+        assertThat(page.locator("[data-region-group]").count()).isEqualTo(1);
+        assertThat(stepIds()).containsExactly("one", "two", "three", "four");
     }
 
     @Test
@@ -3430,7 +3600,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         assertThat(page.locator("#inspector").textContent())
                 .doesNotContain("Outcome routes", "Explicit branches", "Ends flow");
         waitForText("#build-state", "Built");
-        assertThat(page.locator("#build-state").textContent()).isEqualTo("Built");
+        assertThat(page.locator("#build-state").textContent()).isEqualTo("Running");
     }
 
     @Test
@@ -3440,7 +3610,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         assertThat(page.locator(".step-node").count()).isEqualTo(1);
         assertThat(page.locator(".step-node .operation-stack").count()).isZero();
         assertThat(page.locator(".outcome-routes").count()).isZero();
-        assertThat(page.locator("#build-state").textContent()).isEqualTo("Built");
+        assertThat(page.locator("#build-state").textContent()).isEqualTo("Running");
     }
 
     @Test
@@ -3450,7 +3620,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         page.locator("#delete-step").click();
         waitForText("#build-state", "Built");
 
-        assertThat(page.locator(".step-node").count()).isZero();
+        PlaywrightAssertions.assertThat(page.locator(".step-node")).hasCount(0);
         selectTrigger();
         page.locator(".run-result").waitFor();
         assertThat(runResult()).isEqualTo(RailixValue.nullValue());
@@ -3550,7 +3720,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         assertThat(page.locator("#steps-options [data-add-nested]").count()).isEqualTo(1);
         option.click();
         waitForText("#build-state", "Built");
-        assertThat(page.locator(".step-node.selected").textContent()).contains("Lowercase");
+        assertThat(page.locator(".program-list .nested-step").textContent()).contains("Lowercase");
     }
 
     @Test
@@ -4094,6 +4264,9 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         assertThat(page.locator(".run-result").textContent()).contains("\"result\": false");
     }
 
+}
+
+final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void selectedFieldOperationAutomaticallyPreviewsItsActualSourceValue() {
         createLowercaseJourney();
@@ -4125,7 +4298,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void selectingALaterFieldOperationPreviewsTheEarlierBuiltOutputAsItsSource() {
         createLowercaseJourney();
-        page.locator("[data-select-step]").nth(1).click();
+        selectWorldNode("result");
         page.locator("#preview-source").waitFor();
 
         assertThat(page.locator("#preview-source").textContent()).isEqualTo("\"hello railix\"");
@@ -4167,10 +4340,10 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         examplePayload().fill("[\"Fresh\"]");
         delayNextTrace();
         examplePayload().press("Tab");
-        page.locator("[data-select-step]").first().click();
+        selectWorldNode("lowercase");
         waitForText("#build-state", "Built");
         page.waitForFunction("window.__traceStarted === true");
-        page.locator(".trigger-node").click();
+        selectTrigger();
         page.evaluate("window.__releaseTrace()");
         page.evaluate("""
                 () => new Promise(resolve =>
@@ -4218,7 +4391,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         stopProcess(pid);
 
         page.waitForFunction("() => !document.querySelector('#preview-source')");
-        page.locator("[data-select-step]").first().click();
+        page.locator(".step-node").first().click();
         page.locator("#field-path").click();
         page.locator("[data-path-depth='0']").click();
 
@@ -4291,6 +4464,8 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
 
         page.locator("[data-remove-nested='0']").click();
         waitForText("#build-state", "Built");
+        waitForText("#preview-source", "\"Hello RAILIX\"");
+        page.mouse().move(0, 0);
         page.locator("#steps-options [data-add-nested='text.lowercase']").waitFor();
 
         assertThat(page.locator("#steps-options [data-add-nested='text.lowercase']").count()).isEqualTo(1);
@@ -4359,7 +4534,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         page.locator("#delete-step").click();
         waitForText("#build-state", "Built");
 
-        assertThat(page.locator(".trigger-node").count()).isZero();
+        PlaywrightAssertions.assertThat(page.locator(".trigger-node")).hasCount(0);
         assertThat(page.locator("#flow-count").textContent()).isEqualTo("0 flows");
     }
 
@@ -4377,6 +4552,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         addManipulationAfterSelected();
         page.locator("#field-path").click();
         page.locator("[data-path-depth='0']").click();
+        page.locator(".path-choices [data-path-part='header']").waitFor();
 
         assertThat(page.locator(".path-choices").textContent()).contains("payload", "header");
     }
@@ -4570,9 +4746,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         waitForText("#build-state", "Built");
         page.locator("#preview-source").waitFor();
 
-        assertThat(page.locator("#preview-values").textContent())
-                .contains("Value")
-                .doesNotContain("Field", "Candidates", "Source");
+        assertThat(page.locator("[data-input-result='value']").textContent()).isEqualTo("{\"arguments\":[]}");
     }
 
     @Test
@@ -4604,7 +4778,9 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         page.locator("#value-0-literal-value").fill("\"railix\"");
         page.locator("#value-0-literal-value").press("Tab");
 
-        assertThat(page.locator(".step-node").textContent()).contains("context.auth.token");
+        assertThat(page.locator("#field-path").textContent()).contains("context", "auth", "token");
+        page.locator("#preview-source").waitFor();
+        assertThat(page.locator("#preview-values").textContent()).contains("\"railix\"");
     }
 
     @Test
@@ -4833,7 +5009,15 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
 
     @Test
     void automaticExampleRunUsesTheBuiltChildAndShowsTheResultContext() {
-        createLowercaseJourney();
+        createResultJourney();
+        selectTrigger();
+        addManipulationAfterSelected();
+        choosePath("field", "payload", "text");
+        waitForText("#build-state", "Built");
+        page.locator("#preview-source").waitFor();
+        page.locator("#steps-search").fill("lower");
+        page.locator("#steps-options [data-add-nested='text.lowercase']").click();
+        waitForText("#build-state", "Built");
         selectTrigger();
 
         page.locator(".run-result").waitFor();
@@ -4935,6 +5119,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void graphLayoutIsDeterministicAcrossReload() {
         createResultJourney();
+        page.locator("#zoom-fit").click();
         final String before = positions();
 
         page.reload();
@@ -4955,12 +5140,34 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         assertThat(box.x + box.width).isLessThanOrEqualTo(viewport + 0.5);
     }
 
+    @Test
+    @Tag("responsive")
+    void canvasZoomControlsFitAndOperateInTheMobileViewport() {
+        final double viewport = ((Number) page.evaluate("window.innerWidth")).doubleValue();
+        final var box = page.locator(".canvas-tools").boundingBox();
+        final String before = page.locator("#zoom-level").textContent();
+
+        page.locator("#zoom-in").click();
+        page.waitForFunction("before => document.querySelector('#zoom-level').textContent !== before", before);
+
+        assertThat(box).isNotNull();
+        assertThat(box.x).isGreaterThanOrEqualTo(0);
+        assertThat(box.x + box.width).isLessThanOrEqualTo(viewport + 0.5);
+    }
+
 }
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Timeout(60)
 abstract class RailixCreatorBrowserSupport {
     private static final int VIEWPORT_WIDTH = Integer.getInteger("railix.browser.viewport.width", 1_280);
+    private static final String CANVAS_GEOMETRY = """
+            JSON.stringify([...document.querySelectorAll('#world-labels > *')].map(element => {
+              const box = element.getBoundingClientRect();
+              return [element.dataset.nodeId || element.dataset.groupRegionLabel || element.textContent,
+                box.x, box.y, box.width, box.height];
+            }))
+            """;
 
     @TempDir
     Path directory;
@@ -5194,15 +5401,21 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void createLowercaseJourney() {
-        createResultJourney();
-        selectTrigger();
-        addManipulationAfterSelected();
-        choosePath("field", "payload", "text");
-        waitForText("#build-state", "Built");
-        page.locator("#preview-source").waitFor();
-        page.locator("#steps-search").fill("lower");
-        page.locator("#steps-options [data-add-nested='text.lowercase']").click();
-        waitForText("#build-state", "Built");
+        openProject("""
+                {"format":1,"id":"lowercase-journey","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"no-arguments","payload":[],"context":{"payload":{"text":"Hello RAILIX"}}},
+                    {"name":"one-argument","payload":["railix"],"context":{}},
+                    {"name":"multiple-arguments","payload":["hello","railix"],"context":{}}]},
+                  {"id":"result","use":"railix.field-manipulation","inputs":{"field":["context","result"],
+                    "value":[{"option":"field","inputs":{"source":["context","payload","text"]}}],"steps":[]}},
+                  {"id":"lowercase","use":"railix.field-manipulation","inputs":{"field":["context","payload","text"],
+                    "value":[{"option":"current","inputs":{}}],"steps":[{"use":"text.lowercase","inputs":{}}]}}
+                ],"links":[{"from":"app.start","to":"command"},{"from":"command.next","to":"lowercase"},
+                  {"from":"lowercase.next","to":"result"},{"from":"result.next","to":"end"}]}
+                """);
+        selectWorldNode("lowercase");
     }
 
     void createPrimitiveResult(
@@ -5228,8 +5441,6 @@ abstract class RailixCreatorBrowserSupport {
         waitForText("#build-state", "Built");
         page.locator("[data-preview-stage='0']").waitFor();
         assertThat(page.locator("[data-preview-stage='0']").textContent()).isEqualTo(preview);
-        selectTrigger();
-        page.locator(".run-result").waitFor();
     }
 
     RailixValue runResult() {
@@ -5274,15 +5485,29 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void preparePrimitiveSearch(final String example, final String search) {
-        addTrigger();
-        exampleContext().fill(example);
-        exampleContext().press("Tab");
-        waitForText("#build-state", "Built");
-        addManipulationAfterSelected();
-        choosePath("field", "result");
-        page.locator("#value-0-option").selectOption("field");
-        choosePath("value-0-source", "payload", "value");
-        waitForText("#build-state", "Built");
+        openProject("""
+                {"format":1,"id":"primitive-search","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"no-arguments","payload":[],"context":%s},
+                    {"name":"one-argument","payload":["railix"],"context":{}},
+                    {"name":"multiple-arguments","payload":["hello","railix"],"context":{}}
+                  ]},
+                  {"id":"result","use":"railix.field-manipulation","inputs":{
+                    "field":["context","result"],
+                    "value":[{"option":"field","inputs":{"source":["context","payload","value"]}}],
+                    "steps":[]
+                  }}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"result"},
+                  {"from":"result.next","to":"end"}
+                ]}
+                """.formatted(example));
+        selectWorldNode("result");
+        page.waitForFunction("() => Boolean(document.querySelector('#preview-source'))");
+        final Locator summary = page.locator(".example-value:has(#preview-source) > summary");
+        if (summary.count() > 0) summary.click();
         page.locator("#preview-source").waitFor();
         page.locator("#steps-search").fill(search);
     }
@@ -5424,50 +5649,109 @@ abstract class RailixCreatorBrowserSupport {
         page.locator(".run-result").waitFor();
     }
 
-    void groupSteps(final int start, final int end) {
-        page.locator("[data-inspector-mode='groups']").click();
-        page.locator("#new-group").click();
-        page.locator("[data-select-step]").nth(start).click();
-        clickAndWaitForCreatorSave(() -> page.locator("[data-select-step]").nth(end).click());
+    @SuppressWarnings("unchecked")
+    List<String> stepIds() {
+        return (List<String>) page.evaluate("""
+                async () => (await (await fetch('/api/project')).json()).project.nodes
+                  .filter(node => state.definitions.get(node.use)?.kind === 'step').map(node => node.id)
+                """);
     }
 
-    void prepareSharedGroup() {
-        openProject(fourStepProject());
-        groupSteps("one", "two");
-        page.locator("[data-inspector-mode='groups']").click();
-        page.locator("[data-add-occurrence]").click();
-        page.locator("[data-select-step='three']").click();
-        clickAndWaitForCreatorSave(() -> page.locator("[data-select-step='four']").click());
-    }
-
-    void prepareNestedGroup() {
-        createLowercaseJourney();
-        groupSteps(0, 1);
-        page.locator("[data-select-group]").click();
-        page.locator("#open-group").click();
-        groupSteps(0, 0);
-    }
-
-    void groupSteps(final String start, final String end) {
-        page.locator("[data-inspector-mode='groups']").click();
-        page.locator("#new-group").click();
-        page.locator("[data-select-step='" + start + "']").click();
-        clickAndWaitForCreatorSave(() -> page.locator("[data-select-step='" + end + "']").click());
+    String createGroup(final String... steps) {
+        assertThat(steps).isNotEmpty();
+        selectWorldNode(steps[0]);
+        openInspectorTab("appearance");
+        page.locator("#manage-groups").click();
+        clickAndWaitForCreatorSave(() -> page.locator("#new-group").click());
+        final String group = String.valueOf(page.evaluate("""
+                async () => (await (await fetch('/api/project')).json()).creator.groups.at(-1).id
+                """));
+        page.locator("#close-group-manager").click();
+        openInspectorTab("appearance");
+        page.locator("#choose-group").click();
+        clickAndWaitForCreatorSave(() -> page.locator("[data-assign-group='" + group + "']").click());
+        for (int index = 1; index < steps.length; index++) {
+            final String step = steps[index];
+            selectWorldNode(step);
+            openInspectorTab("appearance");
+            page.locator("#choose-group").click();
+            clickAndWaitForCreatorSave(() -> page.locator("[data-assign-group='" + group + "']").click());
+        }
+        page.locator("#manage-groups").click();
+        page.locator("#zoom-fit").click();
+        awaitScene();
+        return group;
     }
 
     void clickAndWaitForCreatorSave(final Runnable click) {
+        final String revision = page.locator("#graph").getAttribute("data-scene-revision");
         final var response = page.waitForResponse(candidate ->
                 candidate.url().endsWith("/api/creator")
-                        && "POST".equals(candidate.request().method()), click);
+                        && "PATCH".equals(candidate.request().method()), click);
         assertThat(response.status()).isEqualTo(200);
+        page.waitForFunction("revision => document.querySelector('#graph').dataset.sceneRevision !== revision", revision);
+        awaitScene();
     }
 
-    void openSharedStep(final int occurrence, final int step) {
-        final String id = new String[][]{{"one", "two"}, {"three", "four"}}[occurrence][step];
-        page.locator("[data-inspector-mode='groups']").click();
-        page.locator("[data-manage-occurrence]").nth(occurrence).click();
-        page.locator("#open-group").click();
-        page.locator("[data-select-step='" + id + "']").click();
+    void selectWorldNode(final String id) {
+        page.evaluate("id => void state.world.focus(id)", id);
+        awaitScene();
+        selectWorldNode(page.locator("[data-select-node='" + id + "']"));
+    }
+
+    private void selectWorldNode(final Locator target) {
+        final String id = target.getAttribute("data-select-node");
+        final String selection = "node=" + java.net.URLEncoder.encode(id, java.nio.charset.StandardCharsets.UTF_8);
+        try {
+            final var response = page.waitForResponse(candidate -> {
+                final var uri = java.net.URI.create(candidate.url());
+                return "GET".equals(candidate.request().method()) && "/api/editor".equals(uri.getPath())
+                        && uri.getRawQuery() != null && List.of(uri.getRawQuery().split("&")).contains(selection);
+            }, target::click);
+            assertThat(response.status()).as("Editor selection for %s", id).isEqualTo(200);
+            response.finished();
+            // Reselecting the same node must not match the previous Inspector while its editor request is pending.
+            page.waitForFunction("""
+                    id => !state.editorController
+                      && document.querySelector('#inspector')?.dataset.selection === id
+                      && document.querySelector('#inspector [data-inspector-mode="inspect"]')?.classList.contains('active')
+                      && document.querySelector(`[data-select-node="${CSS.escape(id)}"]`)?.getAttribute('aria-pressed') === 'true'
+                    """, id);
+        } catch (final TimeoutError timeout) {
+            String diagnostic = "<browser snapshot unavailable>";
+            try {
+                diagnostic = String.valueOf(page.evaluate("""
+                        () => JSON.stringify({
+                          selection: state.selection,
+                          inspectorSelection: document.querySelector('#inspector')?.dataset.selection,
+                          inspectorMode: state.inspectorMode,
+                          build: state.build,
+                          buildText: document.querySelector('#build-state')?.textContent,
+                          projectVersion: state.projectVersion,
+                          creatorVersion: state.creatorVersion,
+                          editorController: {
+                            active: Boolean(state.editorController),
+                            aborted: state.editorController?.signal.aborted ?? null,
+                            request: state.editorRequest
+                          },
+                          writeActive: state.writeActive,
+                          pendingWrite: Boolean(state.pendingWrite),
+                          pendingProject: Boolean(state.pendingProject),
+                          localDiagnostics: JSON.stringify(state.localDiagnostics).slice(0, 1000),
+                          projectChanges: JSON.stringify(documentChanges(state.builtProject, state.project)).slice(0, 1500)
+                        })
+                        """));
+            } catch (final RuntimeException snapshotFailure) {
+                timeout.addSuppressed(snapshotFailure);
+            }
+            throw new AssertionError("Editor selection timed out for '" + id + "': " + diagnostic, timeout);
+        }
+    }
+
+    void waitForCoverage(final String id, final String coverage) {
+        page.waitForFunction("""
+                expected => document.querySelector(`[data-node-id='${expected.id}']`)?.dataset.coverage === expected.coverage
+                """, Map.of("id", id, "coverage", coverage));
     }
 
     String creatorMetadata() {
@@ -5592,24 +5876,6 @@ abstract class RailixCreatorBrowserSupport {
                 """;
     }
 
-    static String switchPairProject() {
-        return """
-                {"format":1,"id":"switch-pair","nodes":[
-                  {"id":"app","use":"railix.app","inputs":{}},
-                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
-                    "name":"example","payload":[],"context":{"payload":{}}
-                  }]},
-                  {"id":"one","use":"railix.switch","inputs":{"cases":[]}},
-                  {"id":"two","use":"railix.switch","inputs":{"cases":[]}}
-                ],"links":[
-                  {"from":"app.start","to":"command"},
-                  {"from":"command.next","to":"one"},
-                  {"from":"one.otherwise","to":"two"},
-                  {"from":"two.otherwise","to":"end"}
-                ]}
-                """;
-    }
-
     static String nestedSwitchProject() {
         return """
                 {"format":1,"id":"nested-switch","nodes":[
@@ -5639,36 +5905,6 @@ abstract class RailixCreatorBrowserSupport {
                   {"from":"switch.three","to":"end"},
                   {"from":"switch.four","to":"end"},
                   {"from":"switch.otherwise","to":"end"}
-                ]}
-                """;
-    }
-
-    static String configuredSwitchPairProject() {
-        return """
-                {"format":1,"id":"configured-switch-pair","nodes":[
-                  {"id":"app","use":"railix.app","inputs":{}},
-                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
-                    "name":"example","payload":[],"context":{"payload":{}}
-                  }]},
-                  {"id":"one","use":"railix.switch","inputs":{"cases":[{
-                    "outcome":"case-one","option":"literal","inputs":{"value":"one"},
-                    "when":{"transforms":[],"all":[]}},{
-                    "outcome":"case-one-extra","option":"literal","inputs":{"value":"one-extra"},
-                    "when":{"transforms":[],"all":[]}}]}},
-                  {"id":"two","use":"railix.switch","inputs":{"cases":[{
-                    "outcome":"case-two","option":"literal","inputs":{"value":"two"},
-                    "when":{"transforms":[],"all":[]}},{
-                    "outcome":"case-two-extra","option":"literal","inputs":{"value":"two-extra"},
-                    "when":{"transforms":[],"all":[]}}]}}
-                ],"links":[
-                  {"from":"app.start","to":"command"},
-                  {"from":"command.next","to":"one"},
-                  {"from":"one.case-one","to":"end"},
-                  {"from":"one.case-one-extra","to":"end"},
-                  {"from":"one.otherwise","to":"two"},
-                  {"from":"two.case-two","to":"end"},
-                  {"from":"two.case-two-extra","to":"end"},
-                  {"from":"two.otherwise","to":"end"}
                 ]}
                 """;
     }
@@ -5720,22 +5956,6 @@ abstract class RailixCreatorBrowserSupport {
         waitForText("#build-state", "Built");
     }
 
-    void shareSwitchPair() {
-        groupSteps("one", "one");
-        page.locator("[data-inspector-mode='groups']").click();
-        page.locator("[data-add-occurrence]").click();
-        page.locator("[data-select-step='two']").click();
-        clickAndWaitForCreatorSave(() -> page.locator("[data-select-step='two']").click());
-    }
-
-    void editFirstSharedSwitch() {
-        page.locator("[data-inspector-mode='groups']").click();
-        page.locator("[data-manage-occurrence]").first().click();
-        page.locator("#open-group").click();
-        page.locator("[data-select-step='one']").click();
-        page.locator("[data-shared-action='all']").click();
-    }
-
     void prepareSizeChoiceMatcher() {
         prepareSizeChoiceMatcher(1);
     }
@@ -5747,7 +5967,7 @@ abstract class RailixCreatorBrowserSupport {
                   "when":{"transforms":[],"all":[]}
                 }]]
         """.formatted(numberList(size))));
-        page.locator("[data-select-step='choice']").click();
+        selectWorldNode("choice");
         final Locator search = page.locator("[data-matcher-group='0'] .condition-transforms [data-step-query]");
         search.fill("size");
         page.locator("[data-matcher-group='0'] .condition-transforms [data-add-nested='list.size']").click();
@@ -5804,7 +6024,7 @@ abstract class RailixCreatorBrowserSupport {
                 """);
         assertThat(page.locator("#build-state").textContent())
                 .as("Creator state; browser errors: %s; inspector: %s", pageErrors, page.locator("#inspector").textContent())
-                .isEqualTo("Built");
+                .isEqualTo("Running");
     }
 
     static void copyTree(final Path source, final Path target) throws IOException {
@@ -5834,7 +6054,7 @@ abstract class RailixCreatorBrowserSupport {
                   };
                   window.fetch = (input, options = {}) => {
                     const url = typeof input === 'string' ? input : input.url;
-                    if (!delayed && url.endsWith('/api/project') && options.method === 'POST') {
+                    if (!delayed && url.endsWith('/api/project') && options.method === 'PATCH') {
                       delayed = true;
                       window.__railixProjectWriteStarted = true;
                       return new Promise((resolve, reject) => {
@@ -5855,10 +6075,10 @@ abstract class RailixCreatorBrowserSupport {
                   window.__railixProjectWriteStarted = false;
                   window.fetch = (input, options = {}) => {
                     const url = typeof input === 'string' ? input : input.url;
-                    if (!url.endsWith('/api/project') || options.method !== 'POST') {
+                    if (!url.endsWith('/api/project') || options.method !== 'PATCH') {
                       return request(input, options);
                     }
-                    window.__railixProjectWrites.push(JSON.parse(options.body).id);
+                    window.__railixProjectWrites.push(JSON.parse(options.body).changes.id);
                     if (window.__railixProjectWrites.length > 1) {
                       return request(input, options);
                     }
@@ -5926,7 +6146,16 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void selectTrigger() {
-        page.locator(".trigger-node").click();
+        page.locator("#zoom-fit").click();
+        awaitScene();
+        final String id = String.valueOf(page.evaluate(
+                "() => state.world.scene.nodes.find(node => node.kind === 'trigger').id"));
+        final Locator trigger = page.locator("[data-select-node='" + id + "']");
+        if (trigger.count() == 0) {
+            selectWorldNode(id);
+        } else {
+            selectWorldNode(trigger);
+        }
     }
 
     void choosePath(final String target, final String... parts) {
@@ -5973,6 +6202,14 @@ abstract class RailixCreatorBrowserSupport {
         page.locator("[data-inspector-mode='" + mode + "']").click();
     }
 
+    void openInspectorSection(final String summary) {
+        final Locator section = page.locator("#inspector details:has(> summary:text-is('" + summary + "'))");
+        section.waitFor();
+        if (section.getAttribute("open") == null) {
+            section.locator(":scope > summary").click();
+        }
+    }
+
     Locator examplePayload() {
         if (page.locator("#example-payload").count() == 0) {
             openInspectorTab("examples");
@@ -5995,13 +6232,18 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void prepareTextPayloadTrigger() {
-        addTrigger();
-        chooseCustomPathFor("target", "payload", "text");
-        waitForText("#build-state", "Built");
-        openInspectorTab("examples");
-        replaceExamplePayloads("\"RAILIX\"", "\"Railix\"", "\"railix\"");
-        waitForText("#build-state", "Built");
-        openInspectorTab("inspect");
+        openProject("""
+                {"format":1,"id":"text-payload","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli",
+                    "inputs":{"target":["context","payload","text"]},"examples":[
+                      {"name":"uppercase","payload":"RAILIX","context":{}},
+                      {"name":"mixed-case","payload":"Railix","context":{}},
+                      {"name":"lowercase","payload":"railix","context":{}}
+                    ]}
+                ],"links":[{"from":"app.start","to":"command"},{"from":"command.next","to":"end"}]}
+                """);
+        selectWorldNode("command");
     }
 
     String addGraphPrimitive(final String payload, final String query, final String id) {
@@ -6034,39 +6276,71 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     String positions() {
-        page.evaluate("""
-                () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-                  .then(() => Promise.allSettled(
-                    [...document.querySelectorAll(".node")]
-                      .flatMap(node => node.getAnimations())
-                      .map(animation => animation.finished)
-                  ))
+        awaitScene();
+        return (String) page.evaluate("""
+                () => JSON.stringify({
+                  nodes: state.world.scene.nodes.map(node => [node.id, node.x, node.y, node.width, node.height]),
+                  links: state.world.scene.links.map(link => [link.id, link.from, link.to, link.points])
+                })
                 """);
-        return (String) page.locator(".graph-stage").evaluate(
-                "root => { const rootBox = root.getBoundingClientRect();"
-                        + "const nodes = [...root.querySelectorAll('.node')];"
-                        + "const firstBox = nodes[0].getBoundingClientRect(); return JSON.stringify("
-                        + "nodes.map(node => {"
-                        + "const box = node.getBoundingClientRect();"
-                        + "return [node.dataset.nodeId,"
-                        + "Math.round(box.x - rootBox.x),"
-                        + "Math.round(box.y - firstBox.y)];"
-                        + "})); }"
-        );
+    }
+
+    String canvasStyle() {
+        awaitScene();
+        return (String) page.evaluate("() => " + CANVAS_GEOMETRY);
+    }
+
+    void waitForCanvasChange(final String before) {
+        page.waitForFunction("before => " + CANVAS_GEOMETRY + " !== before", before);
+    }
+
+    void awaitScene() {
+        page.evaluate("""
+                async () => {
+                  await state.world.refresh();
+                  await new Promise(resolve => requestAnimationFrame(resolve));
+                }
+                """);
+        page.waitForFunction("""
+                () => state.world?.scene?.nodes.length > 0
+                  && document.querySelector('#graph').dataset.sceneRevision === String(state.world.scene.revision)
+                  && document.querySelectorAll('#world-labels > *').length > 0
+                """);
+    }
+
+    @SuppressWarnings("unchecked")
+    List<String> branchOutcomes() {
+        awaitScene();
+        return (List<String>) page.evaluate("""
+                () => state.world.scene.links.map(link => link.outcome)
+                  .filter(outcome => outcome && !['start', 'next'].includes(outcome))
+                """);
     }
 
     void waitForText(final String selector, final String text) {
+        final String expected = "#build-state".equals(selector) && "Built".equals(text) ? "Running" : text;
         try {
             page.waitForFunction(
-                    "expected => document.querySelector(expected.selector)?.textContent === expected.text",
-                    Map.of("selector", selector, "text", text)
+                    """
+                    expected => {
+                      const actual = document.querySelector(expected.selector)?.textContent;
+                      return actual === expected.text || expected.selector === '#build-state' && actual === 'Unavailable';
+                    }
+                    """,
+                    Map.of("selector", selector, "text", expected)
             );
+            final String actual = page.locator(selector).textContent();
+            if (!expected.equals(actual)) {
+                throw new AssertionError("Creator cannot become " + expected + ": " + actual
+                        + ". Browser errors: " + pageErrors
+                        + ". Inspector: " + page.locator("#inspector").textContent());
+            }
         } catch (final TimeoutError timeout) {
             final String actual = page.locator(selector).count() == 0
                     ? "<missing>"
                     : page.locator(selector).textContent();
             throw new AssertionError(
-                    "Expected " + selector + " to contain '" + text + "' but was '" + actual
+                    "Expected " + selector + " to contain '" + expected + "' but was '" + actual
                             + "'. Browser errors: " + pageErrors
                             + ". Inspector: " + page.locator("#inspector").textContent(),
                     timeout

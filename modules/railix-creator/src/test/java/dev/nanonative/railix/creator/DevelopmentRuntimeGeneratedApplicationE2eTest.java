@@ -15,6 +15,8 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import thirdparty.conformance.ChunkGateStepHandler;
 import thirdparty.conformance.DevelopmentRuntimeConformanceSteps;
 import thirdparty.conformance.ProcessTreeStepHandler;
@@ -254,6 +256,8 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     void developmentArtifactWithoutCompiledExamplesFailsBeforeReadiness(@TempDir final Path workspace)
             throws Exception {
         final DevelopmentRuntimeGeneratedProcess.Build corrupt = withoutExampleManifest(build, workspace);
+        assertThat(corrupt.artifact().directory().getParent().resolveSibling("build.lock").startsWith(workspace))
+                .isTrue();
         try (var child = DevelopmentRuntimeGeneratedProcess.launch(corrupt).token(TOKEN)) {
             child.closeOwner();
 
@@ -609,7 +613,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                 .contains("application/json; charset=utf-8");
         assertThat(response.body())
                 .contains("\"initial_context\"")
-                .contains("\"nodes\":[15]")
+                .contains("\"nodes\":[14]")
                 .contains("\"result\":{\"context\"")
                 .contains("\"status\":\"succeeded\"")
                 .doesNotContain("\"type\"");
@@ -620,7 +624,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         awaitExample(shared, sharedUri, "success:0", "succeeded");
 
         final HttpResponse<String> response = request(
-                shared, sharedUri, TOKEN, "GET", "/v1/examples/success%3A0/steps/15", "", null
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/success%3A0/steps/14", "", null
         );
 
         assertThat(response.statusCode()).isEqualTo(200);
@@ -638,7 +642,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         awaitExample(shared, sharedUri, "details:0", "succeeded");
 
         final HttpResponse<String> response = request(
-                shared, sharedUri, TOKEN, "GET", "/v1/examples/details%3A0/steps/16", "", null
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/details%3A0/steps/15", "", null
         );
 
         assertThat(response.statusCode()).isEqualTo(200);
@@ -656,7 +660,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         awaitExample(shared, sharedUri, "failed:0", "failed");
 
         final HttpResponse<String> response = request(
-                shared, sharedUri, TOKEN, "GET", "/v1/examples/failed%3A0/steps/17", "", null
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/failed%3A0/steps/16", "", null
         );
 
         assertThat(response.statusCode()).isEqualTo(200);
@@ -674,12 +678,12 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         awaitExample(shared, sharedUri, "success:0", "succeeded");
 
         final HttpResponse<String> response = request(
-                shared, sharedUri, TOKEN, "GET", "/v1/examples/steps/15", "", null
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/steps/14", "", null
         );
 
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(response.body())
-                .contains("\"node\":15")
+                .contains("\"node\":14")
                 .contains("\"id\":\"success:0\"")
                 .contains("\"trigger\":\"success\"")
                 .contains("\"initial_context\"")
@@ -1328,36 +1332,68 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     }
 
     @Test
-    void automaticExamplesDoNotChangeOperationalMetrics() throws Exception {
+    void automaticExamplesCountNormalMetricsFromTriggerOutput() throws Exception {
         try (var child = started()) {
             final URI uri = child.awaitReady();
             awaitAutomaticExamples(child, uri);
 
-            assertExecutions(child, uri, 0);
+            assertExecutions(child, uri, 1);
+            final HttpResponse<String> response = request(
+                    child, uri, TOKEN, "GET", "/v1/metrics", "", null
+            );
+            assertThat(response.statusCode()).isEqualTo(200);
+            final String metrics = response.body();
+            assertThat(metric(metrics, "steps", "success", "executions")).isZero();
+            assertThat(metric(metrics, "flows", "success", "in_flight")).isZero();
+            assertThat(metric(metrics, "flows", "failed", "executions")).isEqualTo(1);
+            assertThat(metric(metrics, "flows", "failed", "errors")).isEqualTo(1);
+            assertThat(metric(metrics, "steps", "failed-step", "errors")).isEqualTo(1);
+            assertThat(metric(metrics, "flows", "cancelled", "executions")).isEqualTo(1);
+            assertThat(metric(metrics, "flows", "cancelled", "cancelled")).isEqualTo(1);
+            assertThat(metric(metrics, "flows", "cancelled", "errors")).isZero();
+            assertThat(metric(metrics, "steps", "cancelled-step", "cancelled")).isEqualTo(1);
+            assertThat(metric(metrics, "steps", "cancelled-step", "errors")).isZero();
+            assertThat(metric(metrics, "flows", "details", "executions")).isEqualTo(1);
+            assertThat(ids(metrics, "steps")).doesNotContain("details-step");
+
+            final HttpResponse<String> trace = request(
+                    child, uri, TOKEN, "GET", "/v1/examples/success%3A0/view", "", null
+            );
+            assertThat(trace.statusCode()).isEqualTo(200);
+            assertThat(trace.body()).contains("\"initial_context\"", "\"nodes\":[14]",
+                    "\"test\":true", "\"status\":\"succeeded\"");
         }
     }
 
     @Test
-    void explicitTestRunDoesNotChangeOperationalMetrics() throws Exception {
+    void explicitTestRunCountsNormalMetricsExactlyOnce() throws Exception {
         try (var child = started()) {
             final URI uri = child.awaitReady();
             awaitAutomaticExamples(child, uri);
-            assertThat(request(child, uri, TOKEN, "POST", "/v1/run/success", "{}", "true").statusCode())
-                    .isEqualTo(200);
+            final HttpResponse<String> response = request(
+                    child, uri, TOKEN, "POST", "/v1/run/success", "{}", "true"
+            );
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains("\"test\":true");
 
-            assertExecutions(child, uri, 0);
+            assertExecutions(child, uri, 2);
         }
     }
 
-    @Test
-    void developmentTraceDoesNotChangeOperationalMetrics() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void developmentTraceCountsNormalMetricsExactlyOnce(final boolean test) throws Exception {
         try (var child = started()) {
             final URI uri = child.awaitReady();
             awaitAutomaticExamples(child, uri);
-            assertThat(request(child, uri, TOKEN, "POST", "/v1/trace/success", "{}", "false").statusCode())
-                    .isEqualTo(200);
+            final HttpResponse<String> response = request(
+                    child, uri, TOKEN, "POST", "/v1/trace/success", "{}", Boolean.toString(test)
+            );
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains("\"type\":\"step_result\"", "\"id\":\"success-step\"",
+                    "\"test\":" + test, "\"status\":\"succeeded\"");
 
-            assertExecutions(child, uri, 0);
+            assertExecutions(child, uri, 2);
         }
     }
 
@@ -1369,7 +1405,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
             assertThat(request(child, uri, TOKEN, "POST", "/v1/run/success", "{}", "false").statusCode())
                     .isEqualTo(200);
 
-            assertExecutions(child, uri, 1);
+            assertExecutions(child, uri, 2);
         }
     }
 
@@ -1377,6 +1413,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     void metricEndpointsExposeExactExecutionsAndSampledStepTimingWithoutStepInflight() throws Exception {
         try (var child = started()) {
             final URI uri = child.awaitReady();
+            awaitAutomaticExamples(child, uri);
             for (int execution = 0; execution < 1_025; execution++) {
                 assertThat(request(
                         child,
@@ -1410,14 +1447,14 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                     null
             ).body();
 
-            assertThat(metric(json, "steps", "success-step", "executions")).isEqualTo(1_025);
+            assertThat(metric(json, "steps", "success-step", "executions")).isEqualTo(1_026);
             assertThat(metric(json, "steps", "success-step", "duration_samples")).isEqualTo(2);
             assertThat(((RailixValue.ObjectValue) step.values().get("metrics")).values())
                     .doesNotContainKey("in_flight");
             assertThat(prometheus)
                     .contains(
                             "railix_step_executions_total{project=\"development-runtime-conformance\","
-                                    + "step=\"success-step\"} 1025",
+                                    + "step=\"success-step\"} 1026",
                             "railix_step_duration_seconds_count{project=\"development-runtime-conformance\","
                                     + "step=\"success-step\"} 2"
                     )
@@ -1425,33 +1462,37 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
             assertThat(influx)
                     .contains(
                             "railix_step,project=development-runtime-conformance,step=success-step ",
-                            "executions=1025i",
+                            "executions=1026i",
                             "duration_samples=2i"
                     )
                     .doesNotContain("railix_step_in_flight");
         }
     }
 
-    @Test
-    void cancelledRunIsClassifiedWithoutCountingAnError() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void cancelledRunIsClassifiedWithoutCountingAnError(final boolean test) throws Exception {
         try (var child = started()) {
             final URI uri = child.awaitReady();
-            assertThat(request(child, uri, TOKEN, "POST", "/v1/run/cancelled", "{}", "false").statusCode())
+            awaitAutomaticExamples(child, uri);
+            assertThat(request(child, uri, TOKEN, "POST", "/v1/run/cancelled", "{}", Boolean.toString(test)).statusCode())
                     .isEqualTo(409);
 
             final String metrics = request(child, uri, TOKEN, "GET", "/v1/metrics", "", null).body();
 
-            assertThat(metric(metrics, "flows", "cancelled", "cancelled")).isEqualTo(1);
+            assertThat(metric(metrics, "flows", "cancelled", "cancelled")).isEqualTo(2);
             assertThat(metric(metrics, "flows", "cancelled", "errors")).isZero();
-            assertThat(metric(metrics, "steps", "cancelled-step", "cancelled")).isEqualTo(1);
+            assertThat(metric(metrics, "steps", "cancelled-step", "cancelled")).isEqualTo(2);
             assertThat(metric(metrics, "steps", "cancelled-step", "errors")).isZero();
         }
     }
 
-    @Test
-    void disabledStepIsAbsentFromMetricsAfterRealExecution() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void disabledStepIsAbsentFromMetricsAfterRealExecution(final boolean test) throws Exception {
         try (var child = started()) {
             final URI uri = child.awaitReady();
+            awaitAutomaticExamples(child, uri);
             assertThat(request(
                     child,
                     uri,
@@ -1459,12 +1500,12 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                     "POST",
                     "/v1/run/details",
                     "{\"payload\":{\"value\":\" RAILIX \"}}",
-                    "false"
+                    Boolean.toString(test)
             ).statusCode()).isEqualTo(200);
 
             final String metrics = request(child, uri, TOKEN, "GET", "/v1/metrics", "", null).body();
 
-            assertThat(metric(metrics, "flows", "details", "executions")).isEqualTo(1);
+            assertThat(metric(metrics, "flows", "details", "executions")).isEqualTo(2);
             assertThat(ids(metrics, "steps")).doesNotContain("details-step");
         }
     }
@@ -1667,7 +1708,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                         500,
                         "{\"failure\":{\"code\":\"STEP_IMPLEMENTATION_FAULT\","
                                 + "\"message\":\"Step implementation threw an unexpected exception.\","
-                                + "\"path\":\"nodes[29].inputs.operations[0]\","
+                                + "\"path\":\"nodes[27].inputs.operations[0]\","
                                 + "\"step\":\"development.runtime.nested-fault\"},"
                                 + "\"status\":\"failed\"}"
                 );
@@ -2545,26 +2586,16 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     @Test
     void ownershipEofTerminatesTheGeneratedStepsChildAndGrandchild(@TempDir final Path output) throws Exception {
         final Path marker = output.resolve("process-tree.pids");
-        List<Long> pids = List.of();
-        try (var child = started()) {
-            final URI uri = child.awaitReady();
-            final HttpResponse<String> response = request(
-                    child,
-                    uri,
-                    TOKEN,
-                    "POST",
-                    "/v1/run/process-tree",
-                    "{\"payload\":{\"marker\":\"" + escaped(marker.toString()) + "\"}}",
-                    "true"
-            );
-            pids = awaitPids(marker, 2);
+        final var tree = processTreeBuild(output, marker, "established");
+        try (var child = started(tree)) {
+            child.awaitReady();
+            final List<Long> pids = awaitPids(marker, 2);
 
-            assertThat(response.statusCode()).isEqualTo(200);
             child.closeOwner();
             assertThat(child.awaitExit()).isZero();
             assertThat(pids).allSatisfy(pid -> assertThat(awaitExit(pid)).isTrue());
         } finally {
-            pids.forEach(DevelopmentRuntimeGeneratedApplicationE2eTest::stopIfAlive);
+            stopRecordedPids(marker);
         }
     }
 
@@ -2573,24 +2604,10 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
             @TempDir final Path output
     ) throws Exception {
         final Path marker = output.resolve("ignore-termination.pids");
-        final DevelopmentRuntimeGeneratedProcess.Build forced = DevelopmentRuntimeGeneratedProcess.build(
-                output,
-                ignoringTerminationProject(marker),
-                List.of(
-                        trigger("process-tree-ignore", false),
-                        StepDefinition.named("development.runtime.process-tree", "1")
-                                .input("mode", StepDefinition.Input.json(ValueShape.STRING))
-                                .input("marker", StepDefinition.Input.path(READ)
-                                        .defaultPath("context", "payload", "marker"))
-                                .run(ProcessTreeStepHandler.class)
-                ),
-                DevelopmentRuntimeConformanceSteps.Pass.class,
-                ProcessTreeStepHandler.class
-        );
-        List<Long> pids = List.of();
+        final var forced = processTreeBuild(output, marker, "ignore-termination");
         try (var child = started(forced)) {
             child.awaitReady();
-            pids = awaitPids(marker, 1);
+            final List<Long> pids = awaitPids(marker, 1);
 
             child.closeOwner();
 
@@ -2600,7 +2617,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
             )).containsExactlyElementsOf(pids);
             assertThat(pids).allSatisfy(pid -> assertThat(awaitExit(pid)).isTrue());
         } finally {
-            pids.forEach(DevelopmentRuntimeGeneratedApplicationE2eTest::stopIfAlive);
+            stopRecordedPids(marker);
         }
     }
 
@@ -2916,7 +2933,8 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
             final byte[] replacement,
             final String fingerprint
     ) throws IOException {
-        final Path jar = workspace.resolve("application-with-rewritten-examples.jar");
+        final Path directory = Files.createDirectories(workspace.resolve(".railix/build").resolve(fingerprint));
+        final Path jar = directory.resolve("application.jar");
         try (JarFile input = new JarFile(source.artifact().jar().toFile());
              JarOutputStream output = new JarOutputStream(Files.newOutputStream(jar))) {
             for (final JarEntry entry : input.stream().toList()) {
@@ -2942,7 +2960,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                 source.project(),
                 source.compiled(),
                 new ApplicationBuilder.Artifact(
-                        workspace,
+                        directory,
                         original.source(),
                         original.classes(),
                         jar,
@@ -3320,7 +3338,6 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                 trigger("ignore-cancel", false),
                 trigger("delayed-cancel", false),
                 trigger("hold", false),
-                trigger("process-tree", false),
                 pass(),
                 StepDefinition.named("development.runtime.operation", "1")
                         .input("field", StepDefinition.Input.path(READ_WRITE))
@@ -3375,13 +3392,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                                 .defaultPath("context", "payload", "entered_port"))
                         .input("release_port", StepDefinition.Input.path(READ)
                                 .defaultPath("context", "payload", "release_port"))
-                        .run(DevelopmentRuntimeConformanceSteps.Hold.class),
-                StepDefinition.named("development.runtime.process-tree", "1")
-                        .input("mode", StepDefinition.Input.json(ValueShape.STRING)
-                                .defaultValue(RailixValue.string("established")))
-                        .input("marker", StepDefinition.Input.path(READ)
-                                .defaultPath("context", "payload", "marker"))
-                        .run(ProcessTreeStepHandler.class)
+                        .run(DevelopmentRuntimeConformanceSteps.Hold.class)
         );
     }
 
@@ -3509,20 +3520,29 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         return nodes.append(links).append("]}").toString();
     }
 
-    private static String ignoringTerminationProject(final Path marker) {
-        return """
-                {"format":1,"id":"ignore-termination","nodes":[
+    private static DevelopmentRuntimeGeneratedProcess.Build processTreeBuild(
+            final Path output, final Path marker, final String mode
+    ) throws IOException {
+        final String source = """
+                {"format":1,"id":"process-tree","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
-                  {"id":"process-tree-ignore","use":"development.runtime.trigger.process-tree-ignore",
+                  {"id":"process-tree","use":"development.runtime.trigger.process-tree",
                     "inputs":{},"examples":[{"name":"default","payload":{"marker":"%s"}}]},
                   {"id":"tree","use":"development.runtime.process-tree",
-                    "inputs":{"mode":"ignore-termination"}}
+                    "inputs":{"mode":"%s"}}
                 ],"links":[
-                  {"from":"app.start","to":"process-tree-ignore"},
-                  {"from":"process-tree-ignore.next","to":"tree"},
+                  {"from":"app.start","to":"process-tree"},
+                  {"from":"process-tree.next","to":"tree"},
                   {"from":"tree.next","to":"end"}
                 ]}
-                """.formatted(escaped(marker.toString()));
+                """.formatted(escaped(marker.toString()), mode);
+        return DevelopmentRuntimeGeneratedProcess.build(output, source, List.of(
+                trigger("process-tree", false),
+                StepDefinition.named("development.runtime.process-tree", "1")
+                        .input("mode", StepDefinition.Input.json(ValueShape.STRING))
+                        .input("marker", StepDefinition.Input.path(READ).defaultPath("context", "payload", "marker"))
+                        .run(ProcessTreeStepHandler.class)
+        ), DevelopmentRuntimeConformanceSteps.Pass.class, ProcessTreeStepHandler.class);
     }
 
     private static String aggregateStorageExamples() {
@@ -3609,7 +3629,6 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                   %s,
                   %s,
                   %s,
-                  %s,
                   {"id":"success-step","use":"development.runtime.pass","inputs":{}},
                   {"id":"details-step","use":"development.runtime.operation","metrics":false,"inputs":{
                     "field":["context","payload","value"],
@@ -3633,7 +3652,6 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                   {"id":"ignore-cancel-step","use":"development.runtime.ignore-interrupt","inputs":{}},
                   {"id":"delayed-cancel-step","use":"development.runtime.delayed-ignore-interrupt","inputs":{}},
                   {"id":"hold-step","use":"development.runtime.hold","inputs":{}},
-                  {"id":"process-tree-step","use":"development.runtime.process-tree","inputs":{}},
                   %s,
                   {"id":"nested-failed-step","use":"development.runtime.operation","inputs":{
                     "field":["context","payload","value"],
@@ -3681,10 +3699,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                   {"from":"delayed-cancel-step.next","to":"end"},
                   {"from":"app.start","to":"hold"},
                   {"from":"hold.next","to":"hold-step"},
-                  {"from":"hold-step.next","to":"end"},
-                  {"from":"app.start","to":"process-tree"},
-                  {"from":"process-tree.next","to":"process-tree-step"},
-                  {"from":"process-tree-step.next","to":"end"}
+                  {"from":"hold-step.next","to":"end"}
                 ]}
                 """.formatted(
                 triggerNode("success", "{}"),
@@ -3703,10 +3718,6 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                 triggerNode("ignore-cancel", "{\"entered_port\":1}"),
                 triggerNode("delayed-cancel", "{\"entered_port\":1}"),
                 triggerNode("hold", "{\"entered_port\":1,\"release_port\":2}"),
-                triggerNode(
-                        "process-tree",
-                        "{\"marker\":\"" + escaped(workspace.resolve("process-tree.pids").toString()) + "\"}"
-                ),
                 triggerNode("nested-failed", "{\"value\":\"input\"}")
         );
     }
@@ -3830,6 +3841,13 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         } catch (final InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new AssertionError("Test process cleanup was interrupted: " + pid, exception);
+        }
+    }
+
+    private static void stopRecordedPids(final Path marker) throws IOException {
+        if (Files.isRegularFile(marker)) {
+            Files.readAllLines(marker).stream().filter(line -> !line.isBlank()).mapToLong(Long::parseLong)
+                    .forEach(DevelopmentRuntimeGeneratedApplicationE2eTest::stopIfAlive);
         }
     }
 

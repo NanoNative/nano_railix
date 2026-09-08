@@ -522,13 +522,20 @@ final class ApplicationGenerator {
                     .append("            return WorkflowRuntime.rejectedResult(\"RUN_RUNTIME_RESERVED\",\n")
                     .append("                    \"context.runtime is supplied by Railix.\", ")
                     .append("\"context.runtime\");\n        }\n")
-                    .append("        final WorkflowRuntime.Execution execution = new TraceExecution(")
+                    .append("        final long metric = METRICS.startFlow(").append(flow).append(");\n")
+                    .append("        RunResult result = null;\n")
+                    .append("        try {\n")
+                    .append("            final WorkflowRuntime.Execution execution = new TraceExecution(")
                     .append(resultsReference(trigger)).append(", context, ")
                     .append(runtime(nodes.get(trigger.node()).id(), Variant.DEVELOPMENT, "test"))
                     .append(");\n")
-                    .append("        return DevelopmentRuntime.Trace.start(execution.context(), sink,\n")
-                    .append("                () -> traceExecute_").append(trigger.node())
+                    .append("            result = DevelopmentRuntime.Trace.start(execution.context(), sink,\n")
+                    .append("                    () -> traceExecute_").append(trigger.node())
                     .append("(execution, ").append(trigger.start()).append(", TRACE_CALLS));\n")
+                    .append("            return result;\n")
+                    .append("        } finally {\n")
+                    .append("            METRICS.finishFlow(").append(flow).append(", metric, result);\n")
+                    .append("        }\n")
                     .append("    }\n\n");
         }
     }
@@ -619,7 +626,7 @@ final class ApplicationGenerator {
                     .append("        final RunResult result = execute_").append(trigger.node())
                     .append(variant == Variant.PRODUCTION
                             ? "(execution, destination);\n"
-                            : "(execution, destination, CALLS, true);\n")
+                            : "(execution, destination, CALLS);\n")
                     .append("        return result instanceof RunResult.Succeeded\n")
                     .append("                ? new WorkflowRuntime.SourceResult(result, execution.responses(")
                     .append(responseSlotsReference(trigger)).append("))\n")
@@ -659,21 +666,14 @@ final class ApplicationGenerator {
                         .append("            return WorkflowRuntime.rejectedResult(\"RUN_RUNTIME_RESERVED\",\n")
                         .append("                    \"context.runtime is supplied by Railix.\", ")
                         .append("\"context.runtime\");\n        }\n")
-                        .append("        if (test) {\n")
-                        .append("            final WorkflowRuntime.Execution execution = WorkflowRuntime.execution(")
-                        .append(resultsReference(trigger)).append(", context, ")
-                        .append(runtime(triggerNode.id(), Variant.DEVELOPMENT, "true")).append(");\n")
-                        .append("            return execute_").append(trigger.node())
-                        .append("(execution, ").append(trigger.start()).append(", CALLS, false);\n")
-                        .append("        }\n")
                         .append("        final long metric = METRICS.startFlow(").append(flow).append(");\n")
                         .append("        RunResult result = null;\n")
                         .append("        try {\n")
                         .append("            final WorkflowRuntime.Execution execution = WorkflowRuntime.execution(")
                         .append(resultsReference(trigger)).append(", context, ")
-                        .append(runtime(triggerNode.id(), Variant.DEVELOPMENT, "false")).append(");\n")
+                        .append(runtime(triggerNode.id(), Variant.DEVELOPMENT, "test")).append(");\n")
                         .append("            result = execute_").append(trigger.node())
-                        .append("(execution, ").append(trigger.start()).append(", CALLS, true);\n")
+                        .append("(execution, ").append(trigger.start()).append(", CALLS);\n")
                         .append("            return result;\n")
                         .append("        } finally {\n")
                         .append("            METRICS.finishFlow(").append(flow).append(", metric, result);\n")
@@ -697,7 +697,6 @@ final class ApplicationGenerator {
                 .append(trace ? "traceExecute_" : "execute_").append(trigger)
                 .append("(final WorkflowRuntime.Execution execution, int current")
                 .append(variant == Variant.DEVELOPMENT ? ", final WorkflowRuntime.StepCall[] calls" : "")
-                .append(variant == Variant.DEVELOPMENT && !trace ? ", final boolean measure" : "")
                 .append(") {\n")
                 .append("        while (current != END) {\n");
         if (trace) {
@@ -708,9 +707,7 @@ final class ApplicationGenerator {
         source.append("            final int outcome = dispatch_").append(trigger)
                 .append(variant == Variant.PRODUCTION
                         ? "(execution, current);\n"
-                        : trace
-                                ? "(execution, current, calls, false);\n"
-                                : "(execution, current, calls, measure);\n")
+                        : "(execution, current, calls);\n")
                 .append("            if (outcome < 0) {\n")
                 .append("                final RunResult result = execution.finish();\n");
         if (trace) {
@@ -768,7 +765,7 @@ final class ApplicationGenerator {
             source.append("    private static int dispatch_").append(trigger)
                     .append("(final WorkflowRuntime.Execution execution, final int current")
                     .append(variant == Variant.DEVELOPMENT
-                            ? ", final WorkflowRuntime.StepCall[] calls, final boolean measure"
+                            ? ", final WorkflowRuntime.StepCall[] calls"
                             : "")
                     .append(") {\n")
                     .append("        return switch (current / NODE_PARTITION_SIZE) {\n");
@@ -776,7 +773,7 @@ final class ApplicationGenerator {
                 source.append("            case ").append(partition).append(" -> Routes_")
                         .append(trigger).append('_').append(partition)
                         .append(variant == Variant.DEVELOPMENT
-                                ? ".dispatch(execution, current, calls, measure);\n"
+                                ? ".dispatch(execution, current, calls);\n"
                                 : ".dispatch(execution, current);\n");
             }
             source.append("            default -> missingPlan(execution, current);\n")
@@ -815,7 +812,7 @@ final class ApplicationGenerator {
             source.append("        private static int dispatch(\n")
                     .append("                final WorkflowRuntime.Execution execution, final int current")
                     .append(variant == Variant.DEVELOPMENT
-                            ? ", final WorkflowRuntime.StepCall[] calls, final boolean measure"
+                            ? ", final WorkflowRuntime.StepCall[] calls"
                             : "")
                     .append(") {\n")
                     .append("            return switch (current) {\n");
@@ -825,12 +822,6 @@ final class ApplicationGenerator {
                 if (variant == Variant.DEVELOPMENT && metricIndexes.containsKey(index)) {
                     final int metricIndex = metricIndexes.get(index);
                     source.append("{\n")
-                            .append("                    if (!measure) {\n")
-                            .append("                        yield execution.call(")
-                            .append(planReference(index)).append(", ")
-                            .append(call(handlers.get(node.step().id()), variant, true)).append(", Map.of(), ")
-                            .append(inputsReference(index)).append(");\n")
-                            .append("                    }\n")
                             .append("                    final long metric = METRICS.startStep(")
                             .append(metricIndex).append(");\n")
                             .append("                    int outcome = Integer.MIN_VALUE;\n")

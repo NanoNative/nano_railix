@@ -58,7 +58,7 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
                     .doesNotContain("\"id\":\"command\"");
             assertThat(Files.readString(project)).contains("\"use\":\"railix.app\"");
             assertThat(Files.readString(directory.resolve("railix.creator.json")))
-                    .contains("\"format\":1", "\"groups\":[]", "\"steps\":{}");
+                    .contains("\"format\":2", "\"groups\":[]", "\"steps\":{}");
         }
     }
 
@@ -75,7 +75,7 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
 
             assertThat(workspace.statusCode()).isEqualTo(200);
             assertThat(workspace.body()).contains(
-                    "\"creator\":{\"format\":1,\"groups\":[],\"steps\":{}}",
+                    "\"creator\":{\"format\":2,\"groups\":[],\"steps\":{}}",
                     "\"code\":\"CREATOR_JSON_INVALID\""
             );
             assertThat(example.statusCode()).isEqualTo(200);
@@ -104,7 +104,7 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
 
             assertThat(workspace.statusCode()).isEqualTo(200);
             assertThat(workspace.body()).contains(
-                    "\"creator\":{\"format\":1,\"groups\":[],\"steps\":{}}",
+                    "\"creator\":{\"format\":2,\"groups\":[],\"steps\":{}}",
                     "\"code\":\"CREATOR_OCCURRENCE_RANGE_INVALID\"",
                     "\"id\":\"one\"",
                     "\"id\":\"two\"",
@@ -114,6 +114,121 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
             assertThat(example.body()).contains("\"status\":\"succeeded\"");
             assertThat(Files.readString(metadata)).isEqualTo(invalid);
         }
+    }
+
+    @Test
+    void validFormatOneMetadataMigratesToFormatTwoWithoutRestartingTheApplication() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final Path metadata = directory.resolve("railix.creator.json");
+        Files.writeString(project, CreatorProjects.grouping(), StandardCharsets.UTF_8);
+        Files.writeString(metadata, """
+                {"format":1,"steps":{"lowercase-text":{"name":"Normalize text"}},"groups":[{
+                  "id":"normalize","name":"Normalize","color":"#147982",
+                  "occurrences":[{
+                    "id":"normalize-one","flow":"command","parent":null,
+                    "steps":{"lowercase":"lowercase-text","result":"return-text"}
+                  }]
+                }]}
+                """, StandardCharsets.UTF_8);
+
+        try (CreatorServer creator = start(project)) {
+            final long pid = number(application(creator.baseUri()), "pid");
+            final String migrated = Files.readString(metadata);
+
+            assertThat(migrated).contains(
+                    "\"format\":2",
+                    "\"id\":\"normalize\"",
+                    "\"group\":\"normalize\"",
+                    "\"name\":\"Normalize text\""
+            ).doesNotContain("occurrences", "normalize-one", "lowercase\":");
+            assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+        }
+    }
+
+    @Test
+    void deepestLegacyGroupWinsOverlappingStepMembershipDuringMigration() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final Path metadata = directory.resolve("railix.creator.json");
+        Files.writeString(project, CreatorProjects.grouping(), StandardCharsets.UTF_8);
+        Files.writeString(metadata, """
+                {"format":1,"steps":{},"groups":[
+                  {"id":"outer","name":"Outer","occurrences":[{
+                    "id":"outer-one","flow":"command","parent":null,
+                    "steps":{"lowercase":"lowercase-text","result":"return-text"}
+                  }]},
+                  {"id":"inner","name":"Inner","occurrences":[{
+                    "id":"inner-one","flow":"command","parent":"outer-one",
+                    "steps":{"lowercase":"lowercase-text"}
+                  }]}
+                ]}
+                """, StandardCharsets.UTF_8);
+
+        try (CreatorServer ignored = start(project)) {
+            final String migrated = Files.readString(metadata);
+
+            assertThat(migrated).contains(
+                    "\"id\":\"outer\"",
+                    "\"id\":\"inner\"",
+                    "\"lowercase-text\":{\"group\":\"inner\"}",
+                    "\"return-text\":{\"group\":\"outer\"}"
+            ).doesNotContain("occurrences", "outer-one", "inner-one");
+        }
+    }
+
+    @Test
+    void legacyGroupMigrationIsIndependentOfParentDeclarationOrder() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final Path metadata = directory.resolve("railix.creator.json");
+        Files.writeString(project, CreatorProjects.grouping(), StandardCharsets.UTF_8);
+        Files.writeString(metadata, """
+                {"format":1,"steps":{},"groups":[
+                  {"id":"inner","occurrences":[{
+                    "id":"inner-one","flow":"command","parent":"outer-one",
+                    "steps":{"lowercase":"lowercase-text"}
+                  }]},
+                  {"id":"outer","occurrences":[{
+                    "id":"outer-one","flow":"command","parent":null,
+                    "steps":{"lowercase":"lowercase-text","result":"return-text"}
+                  }]}
+                ]}
+                """, StandardCharsets.UTF_8);
+
+        try (CreatorServer ignored = start(project)) {
+            assertThat(Files.readString(metadata)).contains(
+                    "\"lowercase-text\":{\"group\":\"inner\"}",
+                    "\"return-text\":{\"group\":\"outer\"}"
+            ).doesNotContain("occurrences", "inner-one", "outer-one");
+        }
+    }
+
+    @Test
+    void deepLegacyHierarchyMigratesIterativelyToItsDeepestGroup() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final Path metadata = directory.resolve("railix.creator.json");
+        Files.writeString(project, CreatorProjects.grouping(), StandardCharsets.UTF_8);
+        Files.writeString(metadata, deepLegacyMetadata(512), StandardCharsets.UTF_8);
+
+        try (CreatorServer ignored = start(project)) {
+            assertThat(Files.readString(metadata)).contains(
+                    "\"id\":\"group-511\"",
+                    "\"lowercase-text\":{\"group\":\"group-511\"}"
+            ).doesNotContain("occurrences", "occurrence-511");
+        }
+    }
+
+    private static String deepLegacyMetadata(final int depth) {
+        final StringBuilder source = new StringBuilder("{\"format\":1,\"steps\":{},\"groups\":[");
+        for (int index = 0; index < depth; index++) {
+            if (index > 0) {
+                source.append(',');
+            }
+            source.append("{\"id\":\"group-").append(index)
+                    .append("\",\"occurrences\":[{\"id\":\"occurrence-").append(index)
+                    .append("\",\"flow\":\"command\",\"parent\":")
+                    .append(index == 0 ? "null" : "\"occurrence-" + (index - 1) + "\"")
+                    .append(",\"steps\":{\"lowercase\":\"lowercase-text\"}}]}");
+        }
+        return source.append("]}").toString();
     }
 
     @Test
@@ -141,20 +256,13 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
         final Path project = directory.resolve("railix.project.json");
         Files.writeString(project, CreatorProjects.grouping(), StandardCharsets.UTF_8);
         final String creatorSource = """
-                {"format":1,"steps":{"lowercase-text":{
-                  "name":"Normalize text","outcomes":{"next":"Continue"}
-                }},"groups":[{
+                {"format":2,"steps":{"lowercase-text":{
+                  "name":"Normalize text","outcomes":{"next":"Continue"},
+                  "group":"group-8494a3c7-bda5-4f72-96f8-1ca7d76ac7ec"
+                },"return-text":{"group":"group-8494a3c7-bda5-4f72-96f8-1ca7d76ac7ec"}},"groups":[{
                   "id":"group-8494a3c7-bda5-4f72-96f8-1ca7d76ac7ec",
                   "name":"Normalize and return",
-                  "occurrences":[{
-                    "id":"occurrence-1314a8b1-b71a-41f4-9560-f3df05dba801",
-                    "flow":"command",
-                    "parent":null,
-                    "steps":{
-                      "slot-lowercase":"lowercase-text",
-                      "slot-return":"return-text"
-                    }
-                  }]
+                  "boundary":"dashed"
                 }]}
                 """;
 
@@ -176,8 +284,9 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
                     "\"name\":\"Normalize text\"",
                     "\"outcomes\":{\"next\":\"Continue\"}",
                     "\"name\":\"Normalize and return\"",
-                    "\"slot-lowercase\":\"lowercase-text\""
-            );
+                    "\"group\":\"group-8494a3c7-bda5-4f72-96f8-1ca7d76ac7ec\"",
+                    "\"boundary\":\"dashed\""
+            ).doesNotContain("occurrences", "slot-lowercase");
             assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
             assertThat(request(creator.baseUri(), "GET", "/api/project", "").body())
                     .contains("\"creator\":", "\"group-8494a3c7-bda5-4f72-96f8-1ca7d76ac7ec\"");
@@ -292,6 +401,8 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
                 Arguments.of("metadata must be an object", "[]", "CREATOR_OBJECT_REQUIRED", ""),
                 Arguments.of("steps must be an object", creatorMetadata("[]", "[]"), "CREATOR_STEPS_OBJECT_REQUIRED", "steps"),
                 Arguments.of("groups must be an array", creatorMetadata("{}", "{}"), "CREATOR_GROUPS_ARRAY_REQUIRED", "groups"),
+                Arguments.of("current steps must be an object", "{\"format\":2,\"steps\":[],\"groups\":[]}", "CREATOR_STEPS_OBJECT_REQUIRED", "steps"),
+                Arguments.of("current groups must be an array", "{\"format\":2,\"steps\":{},\"groups\":{}}", "CREATOR_GROUPS_ARRAY_REQUIRED", "groups"),
                 Arguments.of("Step presentation must be an object", creatorStep("true"), "CREATOR_PRESENTATION_OBJECT_REQUIRED", "steps.lowercase-text"),
                 Arguments.of("presentation name must be non-blank", creatorStep("{\"name\":\" \"}"), "CREATOR_PRESENTATION_NAME_INVALID", "steps.lowercase-text.name"),
                 Arguments.of("presentation color must use six hex digits", creatorStep("{\"color\":\"red\"}"), "CREATOR_PRESENTATION_COLOR_INVALID", "steps.lowercase-text.color"),
@@ -314,6 +425,16 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
                 Arguments.of("icon data must match media type", creatorIcon("{\"media_type\":\"image/svg+xml\",\"data\":\"PGJhZC8+\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon.data"),
                 Arguments.of("icon data is bounded", creatorIcon("{\"media_type\":\"image/png\",\"data\":\"" + Base64.getEncoder().encodeToString(new byte[65_537]) + "\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon.data"),
                 Arguments.of("Step presentation rejects unknown fields", creatorStep("{\"noise\":true}"), "CREATOR_PRESENTATION_FIELD_UNKNOWN", "steps.lowercase-text.noise"),
+                Arguments.of("legacy Step presentation rejects format-two group assignment", "{\"format\":1,\"steps\":{\"lowercase-text\":{\"group\":\"group-one\"}},\"groups\":[]}", "CREATOR_PRESENTATION_FIELD_UNKNOWN", "steps.lowercase-text.group"),
+                Arguments.of("current group rejects unknown fields", "{\"format\":2,\"steps\":{},\"groups\":[{\"id\":\"group-one\",\"noise\":true}]}", "CREATOR_GROUP_FIELD_UNKNOWN", "groups[0].noise"),
+                Arguments.of("current group boundary is explicit", "{\"format\":2,\"steps\":{},\"groups\":[{\"id\":\"group-one\",\"boundary\":\"double\"}]}", "CREATOR_GROUP_BOUNDARY_INVALID", "groups[0].boundary"),
+                Arguments.of("current Step group must be an id", "{\"format\":2,\"steps\":{\"lowercase-text\":{\"group\":4}},\"groups\":[]}", "CREATOR_STEP_GROUP_INVALID", "steps.lowercase-text.group"),
+                Arguments.of("current Step group must exist", "{\"format\":2,\"steps\":{\"lowercase-text\":{\"group\":\"missing\"}},\"groups\":[]}", "CREATOR_STEP_GROUP_UNKNOWN", "steps.lowercase-text.group"),
+                Arguments.of("Trigger cannot join a current group", "{\"format\":2,\"steps\":{\"command\":{\"group\":\"group-one\"}},\"groups\":[{\"id\":\"group-one\"}]}", "CREATOR_STEP_GROUP_UNSUPPORTED", "steps.command.group"),
+                Arguments.of("current duplicate group ids", "{\"format\":2,\"steps\":{},\"groups\":[{\"id\":\"group-one\"},{\"id\":\"group-one\"}]}", "CREATOR_GROUP_ID_DUPLICATE", "groups[1].id"),
+                Arguments.of("current group must be an object", "{\"format\":2,\"steps\":{},\"groups\":[true]}", "CREATOR_GROUP_OBJECT_REQUIRED", "groups[0]"),
+                Arguments.of("current group id must be non-blank", "{\"format\":2,\"steps\":{},\"groups\":[{\"id\":\"\"}]}", "CREATOR_ID_INVALID", "groups[0].id"),
+                Arguments.of("current group color must use six hex digits", "{\"format\":2,\"steps\":{},\"groups\":[{\"id\":\"group-one\",\"color\":\"red\"}]}", "CREATOR_PRESENTATION_COLOR_INVALID", "groups[0].color"),
                 Arguments.of("group must be an object", creatorGroup("true"), "CREATOR_GROUP_OBJECT_REQUIRED", "groups[0]"),
                 Arguments.of("group id must be non-blank", creatorGroup("{\"id\":\"\",\"occurrences\":[true]}"), "CREATOR_ID_INVALID", "groups[0].id"),
                 Arguments.of("group color must use six hex digits", creatorGroup("{\"id\":\"group-one\",\"color\":\"red\",\"occurrences\":[]}"), "CREATOR_PRESENTATION_COLOR_INVALID", "groups[0].color"),
@@ -334,7 +455,7 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
                 Arguments.of("metadata rejects unknown top-level fields", "{\"format\":1,\"steps\":{},\"groups\":[],\"noise\":true}", "CREATOR_FIELD_UNKNOWN", "noise"),
                 Arguments.of("group rejects unimplemented global flag", creatorGroup("{\"id\":\"group-one\",\"global\":true,\"occurrences\":[]}"), "CREATOR_GROUP_FIELD_UNKNOWN", "groups[0].global"),
                 Arguments.of("group requires occurrences", creatorGroup("{\"id\":\"group-one\",\"occurrences\":[]}"), "CREATOR_GROUP_OCCURRENCES_REQUIRED", "groups[0].occurrences"),
-                Arguments.of("unsupported format", "{\"format\":2,\"steps\":{},\"groups\":[]}", "CREATOR_FORMAT_UNSUPPORTED", "format"),
+                Arguments.of("unsupported format", "{\"format\":3,\"steps\":{},\"groups\":[]}", "CREATOR_FORMAT_UNSUPPORTED", "format"),
                 Arguments.of("missing format", "{\"steps\":{},\"groups\":[]}", "CREATOR_FORMAT_UNSUPPORTED", "format"),
                 Arguments.of("presentation references unknown Step", "{\"format\":1,\"steps\":{\"missing\":{}},\"groups\":[]}", "CREATOR_STEP_UNKNOWN", "steps.missing"),
                 Arguments.of("duplicate group ids", """
@@ -459,7 +580,7 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
-    void creatorMetadataAcceptsAConnectedBranchRegionWithOneEntry() throws Exception {
+    void connectedLegacyBranchRegionMigratesToFlatStepAssignments() throws Exception {
         final Path project = directory.resolve("project.json");
         Files.writeString(project, branchGroupProject(), StandardCharsets.UTF_8);
 
@@ -478,11 +599,12 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
 
             assertThat(response.statusCode()).isEqualTo(200);
             assertThat(response.body()).contains(
+                    "\"format\":2",
                     "\"id\":\"group-one\"",
-                    "\"slot-choice\":\"choice\"",
-                    "\"slot-match\":\"matched\"",
-                    "\"slot-other\":\"otherwise\""
-            );
+                    "\"choice\":{\"group\":\"group-one\"}",
+                    "\"matched\":{\"group\":\"group-one\"}",
+                    "\"otherwise\":{\"group\":\"group-one\"}"
+            ).doesNotContain("occurrences", "slot-choice", "slot-match", "slot-other");
         }
     }
 
@@ -2029,7 +2151,7 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
                     creator.baseUri(),
                     "POST",
                     "/api/creator",
-                    "{\"format\":1,\"groups\":[],\"steps\":{\"app\":{\"name\":\"Creator\"}}}"
+                    "{\"format\":2,\"groups\":[],\"steps\":{\"app\":{\"name\":\"Creator\"}}}"
             );
 
             assertThat(response.statusCode()).isEqualTo(500);
@@ -2242,24 +2364,6 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
                     "exampleContext(",
                     "writePath("
             );
-        }
-    }
-
-    @Test
-    void browserUsesOnlyApplicationOwnedExampleIdentifiers() throws Exception {
-        try (CreatorServer creator = start(directory.resolve("project.json"))) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "GET",
-                    "/app.js",
-                    ""
-            );
-
-            assertThat(response.statusCode()).isEqualTo(200);
-            assertThat(response.body()).contains(
-                    "fetch(\"/api/examples\"",
-                    "state.exampleIds.get(trigger.id)?.get(index)"
-            ).doesNotContain("return `${trigger.id}:${index}`");
         }
     }
 

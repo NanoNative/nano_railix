@@ -45,18 +45,19 @@ final class GeneratedApplicationVariantsE2eTest {
                         "startFlow(",
                         "startStep("
                 )
-                .doesNotContain("Metrics.invoke(", "execution.test()", "new boolean[]{");
+                .doesNotContain("Metrics.invoke(", "execution.test()", "new boolean[]{",
+                        "final boolean measure", "if (!measure)", "if (test)");
     }
 
     @Test
-    void traceExecutionNeverRecordsOperationalMetrics() {
+    void traceExecutionRecordsNormalFlowMetrics() {
         final String source = compiled().developmentApplicationSource();
         final String trace = source.substring(
                 source.indexOf("private static RunResult trace_1"),
                 source.indexOf("private static WorkflowRuntime.SourceResult source_1")
         );
 
-        assertThat(trace).doesNotContain("METRICS");
+        assertThat(trace).contains("METRICS.startFlow(0)", "METRICS.finishFlow(0, metric, result)");
     }
 
     @Test
@@ -158,7 +159,7 @@ final class GeneratedApplicationVariantsE2eTest {
                 .contains(
                         "private static final WorkflowRuntime.StepCall[] CALLS = calls();",
                         "private static final WorkflowRuntime.StepCall[] TRACE_CALLS = traceCalls();",
-                        "(execution, 2, CALLS, false);",
+                        "(execution, 2, CALLS);",
                         "(execution, 2, TRACE_CALLS));"
                 )
                 .containsPattern("calls\\[\\d+] = HANDLER_\\d+::run;")
@@ -174,7 +175,7 @@ final class GeneratedApplicationVariantsE2eTest {
         );
 
         assertThat(executor)
-                .contains("dispatch_1(execution, current, calls, measure)")
+                .contains("dispatch_1(execution, current, calls)")
                 .doesNotContain("DevelopmentRuntime.Trace", "TRACE_CALLS");
     }
 

@@ -16,9 +16,20 @@ window.fetch = (input, options = {}) => {
 const state = {
   project: null,
   builtProject: null,
-  creator: { format: 1, groups: [], steps: {} },
+  savedCreator: null,
+  projectVersion: 0,
+  editor: { nodes: {}, full: [], groups: {}, used: {} },
+  editorRequest: 0,
+  editorController: null,
+  removedFlows: [],
+  pendingPrune: false,
+  writePromise: Promise.resolve(),
+  creatorVersion: 0,
+  creator: { format: 2, groups: [], steps: {} },
   catalog: [],
+  definitions: new Map(),
   icons: [],
+  iconUrls: new Map(),
   iconDiagnostics: [],
   application: {},
   workspace: {},
@@ -36,6 +47,7 @@ const state = {
   stepQueries: {},
   candidateQueries: {},
   exampleIndex: 0,
+  exampleTrigger: "",
   exampleDraft: null,
   exampleIds: new Map(),
   exampleInventoryKey: "",
@@ -56,6 +68,7 @@ const state = {
   traceStep: null,
   traceKey: "",
   traceController: null,
+  optionsPending: false,
   applicationPollTimer: 0,
   applicationRefreshing: false,
   metrics: null,
@@ -63,9 +76,23 @@ const state = {
   metricsController: null,
   metricsPollTimer: 0,
   inspectorMode: "inspect",
-  groupDraft: null,
-  groupStack: [],
-  editScope: null,
+  groupPicker: null,
+  groupQuery: "",
+  managedGroup: "",
+  world: null,
+  sceneDirty: true,
+  revealNode: "",
+  observations: null,
+  observationTimer: 0,
+  observationController: null,
+  worldNodes: new Map(),
+  worldGroups: new Map(),
+  worldChanges: new Set(),
+  worldIssues: new Map(),
+  worldCovered: new Set(),
+  worldSelected: new Set(),
+  coverageSource: null,
+  coverageBits: "",
   pendingProject: false
 };
 
@@ -92,7 +119,7 @@ async function boot() {
       throw new Error("Browser does not support exact JSON numbers.");
     }
     const [projectResponse, catalogResponse, iconResponse] = await Promise.all([
-      fetch("/api/project"),
+      fetch("/api/editor"),
       fetch("/api/catalog"),
       fetch("/api/icons")
     ]);
@@ -105,15 +132,52 @@ async function boot() {
       iconResponse.text().then(parseExact)
     ]);
     state.project = project.project;
+    state.editor = project.editor;
     state.builtProject = clone(project.project);
-    state.creator = project.creator || { format: 1, groups: [], steps: {} };
+    state.creator = project.creator || { format: 2, groups: [], steps: {} };
+    state.savedCreator = clone(state.creator);
+    state.projectVersion = project.revision;
+    state.creatorVersion = project.creator_revision;
     state.application = project.application;
     state.workspace = project.workspace;
     state.diagnostics = project.diagnostics || [];
     state.catalog = catalog.steps;
+    state.definitions = new Map(state.catalog.map(definition => [definition.id, definition]));
     state.icons = icons.icons;
     state.iconDiagnostics = icons.diagnostics;
     state.build = "Built";
+    state.world = new RailixWorld(document.querySelector("#graph"), {
+      selectNode: selectWorldNode,
+      selectGroup: (group, region) => {
+        focusRegion(region);
+        if (group) openGroupManager(group);
+      },
+      appearance: worldAppearance,
+      linkAppearance: worldLinkAppearance,
+      motionActive: worldMotionActive,
+      linkLabel: link => {
+        const operation = state.worldNodes.get(link.from);
+        const label = outcomeLabel(operation, link.outcome);
+        const connection = operation && definitionFor(operation)?.kind !== "app" && state.editor.full.includes(link.from)
+          ? outcomeConnection(operation, link.outcome) : null;
+        return connection?.invalid ? `${label}: ${connection.label}` : label;
+      },
+      onScene: scene => {
+        releaseUnusedIconUrls();
+        const message = document.querySelector("#world-error");
+        message.hidden = !scene.limited;
+        message.dataset.severity = "warning";
+        message.textContent = scene.limited ? "This view has reached its detail limit. Zoom in to inspect the remaining connections." : "";
+        renderWorldStatus();
+        scheduleWorldObservations(180);
+      },
+      onError: message => {
+        const error = document.querySelector("#world-error");
+        error.dataset.severity = "error";
+        error.textContent = message;
+        error.hidden = false;
+      }
+    });
     render();
     scheduleApplicationPoll(0);
     scheduleMetricsPoll(0);
@@ -131,10 +195,7 @@ function render() {
   if (!state.project) {
     return;
   }
-  const focusedNode = document.activeElement?.closest("[data-node-id][tabindex='0']")?.dataset.nodeId;
-  document.querySelector("#project-title").textContent = currentGroup()
-    ? groupName(currentGroup().group)
-    : state.project.id;
+  document.querySelector("#project-title").textContent = state.project.id;
   renderBuildStatus();
   const flows = triggerNodes();
   document.querySelector("#flow-count").textContent = count(
@@ -149,26 +210,370 @@ function render() {
   document.querySelector("#last-build").textContent = builtAt
     ? new Date(builtAt).toLocaleString()
     : "Not built";
-  document.querySelector("#graph").innerHTML = graph(flows);
-  document.querySelector("#inspector").innerHTML = inspector();
-  document.querySelector("#overlay").innerHTML = picker() + iconPicker();
-  for (const candidate of document.querySelectorAll("[data-node-id][tabindex='0']")) {
-    if (candidate.dataset.nodeId === focusedNode) {
-      candidate.focus({ preventScroll: true });
-      break;
-    }
+  state.worldNodes = new Map(state.project.nodes.map(operation => [operation.id, operation]));
+  state.worldGroups = new Map(state.creator.groups.map(group => [group.id, group]));
+  state.worldChanges = changedIds();
+  state.worldIssues = new Map();
+  for (const issue of allDiagnostics()) {
+    const owner = diagnosticOwner(issue);
+    const issues = state.worldIssues.get(owner) || [];
+    issues.push(issue);
+    state.worldIssues.set(owner, issues);
   }
+  const inspectorElement = document.querySelector("#inspector");
+  state.optionsPending = false;
+  const openDetails = inspectorElement.dataset.selection === state.selection.id
+    ? [...inspectorElement.querySelectorAll("details[open][id]")].map(detail => detail.id) : [];
+  document.querySelector("#inspector-content").innerHTML = inspector();
+  inspectorElement.dataset.selection = state.selection.id;
+  renderPreview();
+  openDetails.forEach(id => {
+    const detail = document.getElementById(id);
+    if (detail) detail.open = true;
+  });
+  document.querySelector("#overlay").innerHTML = picker() + iconPicker() + groupPicker();
+  releaseUnusedIconUrls();
   applyExampleCoverage();
+  if (state.sceneDirty && state.world) {
+    state.sceneDirty = false;
+    const reveal = state.revealNode;
+    const view = state.world.viewVersion;
+    state.revealNode = "";
+    void state.world.refresh().then(() => {
+      if (reveal && reveal === state.selection.id && view === state.world.viewVersion) {
+        void state.world.focus(reveal);
+      }
+    });
+  }
+  renderWorldStatus();
+}
+
+function focusGroup(groupId) {
+  void state.world?.focus("group:" + groupId);
+}
+
+function focusRegion(regionId) {
+  void state.world?.focus(regionId);
 }
 
 function renderBuildStatus() {
-  document.querySelector("#build-state").textContent = state.build;
+  document.querySelector("#build-state").textContent = state.build === "Built"
+    ? inputLabel(state.application.state || "running") : state.build;
   document.body.dataset.build = state.build.toLowerCase().replace(" ", "-");
+}
+
+async function selectWorldNode(id) {
+  if (id === state.selection.id && document.querySelector("#inspector").hidden) {
+    showInspector(true);
+    return true;
+  }
+  state.revealNode = "";
+  state.world?.cancelFocus();
+  const loaded = await loadEditor(id);
+  if (loaded !== "loaded" && !(loaded === "conflict" && state.editor.full.includes(id))) return false;
+  const operation = node(id);
+  if (!operation) return false;
+  showInspector(true);
+  if (definitionOf(operation.use)?.kind === "step") {
+    selectStep(id);
+    return true;
+  }
+  clearPreview();
+  resetMetrics();
+  state.exampleDraft = null;
+  state.selection = { type: id === "app" ? "app" : "trigger", id };
+  state.inspectorMode = "inspect";
+  if (id !== "app" && state.exampleTrigger !== id) {
+    state.exampleTrigger = id;
+    state.exampleIndex = 0;
+  }
+  state.pathPicker = null;
+  clearInputQueries();
+  render();
+  scheduleMetricsPoll(0);
+  if (id !== "app") requestSelectedTrace();
+  return true;
+}
+
+async function loadEditor(id, group = state.managedGroup, query = state.groupQuery, offset = 0) {
+  const request = ++state.editorRequest;
+  state.editorController?.abort();
+  const controller = new AbortController();
+  state.editorController = controller;
+  try {
+    await state.writePromise;
+    if (request !== state.editorRequest) return "superseded";
+    const writer = state.writePromise;
+    const version = state.projectVersion;
+    const creatorVersion = state.creatorVersion;
+    const response = await fetch(`/api/editor?${new URLSearchParams({ node: id, group, q: query, offset })}`, { signal: controller.signal });
+    const payload = parseExact(await response.text());
+    if (request !== state.editorRequest) return "superseded";
+    if (writer !== state.writePromise || state.writeActive
+        || version !== state.projectVersion || creatorVersion !== state.creatorVersion) {
+      return loadEditor(id, group, query, offset);
+    }
+    if (!response.ok) {
+      state.localDiagnostics = [{ code: "CREATOR_EDITOR_UNAVAILABLE", message: payload.message || "Step could not be loaded.", node: id }];
+      render();
+      return "unavailable";
+    }
+    const projectChanges = documentChanges(state.builtProject, state.project);
+    const creatorChanges = documentChanges(state.savedCreator, state.creator);
+    if ((Object.keys(projectChanges).length || Object.keys(creatorChanges).length)
+        && (Number(payload.revision) !== Number(state.projectVersion)
+          || Number(payload.creator_revision) !== Number(state.creatorVersion))) {
+      state.localDiagnostics = [{ code: "CREATOR_EDIT_CONFLICT", message: "The project changed in another editor. Your unsaved changes are retained; reload before saving.", node: id }];
+      render();
+      return "conflict";
+    }
+    // Retain only unsaved entries outside the selected neighborhood, never a navigation history.
+    const retain = (loaded, before, changes) => {
+      for (const key of ["nodes", "links", "groups", "steps"]) {
+        if (!changes[key]) continue;
+        if (key === "steps") {
+          for (const id of Object.keys(changes[key])) {
+            if (Object.hasOwn(before.steps, id)) loaded.steps[id] = before.steps[id];
+          }
+        } else if (loaded[key]) {
+          const identity = key === "links" ? "from" : "id";
+          const existing = new Set(loaded[key].map(entry => entry[identity]));
+          loaded[key].push(...before[key].filter(entry => Object.hasOwn(changes[key], entry[identity]) && !existing.has(entry[identity])));
+        }
+      }
+      return loaded;
+    };
+    const apply = (before, changes) => {
+      const result = clone(before);
+      for (const [key, values] of Object.entries(changes)) {
+        if (["nodes", "links", "groups"].includes(key)) {
+          const identity = key === "links" ? "from" : "id";
+          result[key] = result[key].filter(entry => !Object.hasOwn(values, entry[identity]));
+          result[key].push(...Object.values(values).filter(value => value !== null).flat());
+        } else if (key === "steps") {
+          Object.entries(values).forEach(([id, value]) => value === null ? delete result.steps[id] : result.steps[id] = value);
+        } else result[key] = values;
+      }
+      return result;
+    };
+    state.builtProject = retain(payload.project, state.builtProject, projectChanges);
+    const draft = state.jsonDraft && node(state.jsonDraft.node);
+    if (draft && !state.builtProject.nodes.some(node => node.id === draft.id)) {
+      state.builtProject.nodes.push(clone(draft));
+      if (state.editor.nodes[draft.id]) payload.editor.nodes[draft.id] = state.editor.nodes[draft.id];
+    }
+    state.savedCreator = retain(payload.creator, state.savedCreator, creatorChanges);
+    state.project = apply(state.builtProject, projectChanges);
+    state.creator = apply(state.savedCreator, creatorChanges);
+    state.editor = payload.editor;
+    state.projectVersion = payload.revision;
+    state.creatorVersion = payload.creator_revision;
+    state.workspace = payload.workspace;
+    if (!currentApplication(payload.application)) {
+      replaceApplication(payload.application);
+      resetMetrics();
+    }
+    return "loaded";
+  } catch (error) {
+    if (error.name !== "AbortError" && request === state.editorRequest) {
+      state.localDiagnostics = [{ code: "CREATOR_EDITOR_UNAVAILABLE", message: "Step could not be loaded. Select it to retry.", node: id }];
+      render();
+    }
+    return error.name === "AbortError" || request !== state.editorRequest ? "superseded" : "unavailable";
+  } finally {
+    if (state.editorController === controller) state.editorController = null;
+  }
+}
+
+function worldAppearance(item) {
+  const operation = state.worldNodes.get(item.id);
+  const group = item.kind === "region" ? state.worldGroups.get(item.group) : null;
+  const presentation = group || state.creator.steps[item.id] || {};
+  const issues = state.worldIssues.get(item.id) || [];
+  const observation = currentWorldObservations()?.nodes.get(item.id);
+  const coverage = item.kind === "app" ? ""
+    : observation && Object.hasOwn(observation, "covered_count") ? Number(observation.selected_count) > 0 ? "selected"
+      : Number(observation.covered_count) > 0 ? "covered" : Number(observation.count) > 0 ? "uncovered" : ""
+    : state.worldSelected.has(item.id) ? "selected"
+    : state.worldCovered.has(item.id) ? "covered" : "";
+  const live = item.kind !== "end" && observation && Object.hasOwn(observation, "executions") ? observation : null;
+  const sampled = live && metricNumber(live.duration_samples) > 0;
+  const mean = sampled ? metricNumber(live.duration_nanos_total) / metricNumber(live.duration_samples) : 0;
+  const heat = sampled ? Math.log1p(mean) / Math.log1p(Math.max(1, state.observations.maxMean)) : 0;
+  const activity = observation && Number(observation.count) > 0
+    && Number(observation.disabled_count) === Number(observation.count) ? "disabled"
+    : live ? metricNumber(live.executions) > 0 ? "active" : "idle" : "";
+  const detail = activity === "disabled" ? "Metrics off"
+    : live ? `${formatInteger(live.executions)} executions${live.rate === undefined ? "" : ` · ${formatRate(live.rate)}/s`}${sampled ? ` · ${formatNanos(mean)} sampled` : ""}`
+    : observation && Object.hasOwn(observation, "covered_count") && item.kind === "region"
+      ? `${observation.covered_count}/${observation.count} reached${Number(observation.selected_count) ? ` · ${observation.selected_count} selected` : ""}` : "";
+  return {
+    selected: state.selection.id === item.id || Boolean(group
+      && state.inspectorMode === "groups" && state.managedGroup === group.id),
+    changed: state.worldChanges.has(item.id),
+    error: issues.length > 0 || Boolean(live && metricNumber(live.errors) > 0),
+    coverage,
+    activity,
+    meter: live?.rate > 0 ? Math.log1p(live.rate) / Math.log1p(Math.max(1, state.observations.maxRate)) : 0,
+    heat: sampled ? heat : undefined,
+    color: presentation.color || item.color,
+    shape: presentation.shape || item.shape || "rectangle",
+    aspect: presentation.aspect ?? item.aspect ?? 2.625,
+    roundness: presentation.roundness ?? item.roundness ?? 0,
+    boundary: presentation.boundary || item.boundary || (coverage === "uncovered" ? "dashed" : "solid"),
+    iconUrl: iconUrl(presentation.icon || state.world?.scene?.icons?.[item.icon_ref]),
+    label: presentation.name || (item.kind === "app" && operation && stepName(definitionFor(operation))) || item.name,
+    description: live ? `${detail}. ${formatInteger(live.errors)} errors; ${formatInteger(live.cancelled)} cancellations. ${
+      item.kind === "region" ? "Contained Step counters, not flow latency. " : ""}${sampled ? "Heat strip compares sampled mean duration in this view." : "No duration inferred."}` : detail,
+    detail: issues.length ? issues[0].message
+      : item.kind === "trigger" ? `${count(operation?.examples?.length ?? item.example_count ?? 0, "example")}${
+        activity === "disabled" ? " · Metrics off" : live ? ` · ${formatInteger(live.executions)} runs` : ""}`
+      : detail || (operation && item.kind === "step" && state.editor.full.includes(item.id) ? operationSummary(operation).primary : "")
+  };
+}
+
+function currentWorldObservations() {
+  return state.observations?.query === state.world?.query
+    && state.observations.revision === state.world?.scene?.revision
+    && Number(state.observations.application_revision) === Number(state.projectVersion)
+    && state.observations.requestedExample === selectedExampleId()
+    && Number(state.observations.application_pid) === Number(state.application.pid)
+    && state.application.state === "running" && state.build !== "Building" && !state.pendingProject ? state.observations : null;
+}
+
+function worldLinkAppearance(link) {
+  const observation = currentWorldObservations()?.links.get(link.id);
+  const rate = worldMotionActive() && Number.isFinite(observation?.rate) ? observation.rate : 0;
+  return {
+    selected: observation?.selection === "reached",
+    rate,
+    width: rate > 0 ? 3 + Math.min(4, Math.log10(1 + rate)) : 3
+  };
+}
+
+function worldMotionActive() {
+  const observation = currentWorldObservations();
+  return Boolean(observation && performance.now() - observation.observedAt < 3_000);
+}
+
+function formatRate(rate) {
+  return rate >= 100 ? Math.round(rate).toLocaleString() : rate.toFixed(rate >= 10 ? 1 : 2);
+}
+
+function scheduleWorldObservations(delay = 0) {
+  clearTimeout(state.observationTimer);
+  state.observationTimer = window.setTimeout(refreshWorldObservations, delay);
+}
+
+async function refreshWorldObservations() {
+  state.observationTimer = 0;
+  state.observationController?.abort();
+  const status = document.querySelector("#status-observations");
+  if (document.hidden || state.build === "Building" || state.pendingProject || state.application.state !== "running" || !state.world?.scene) {
+    state.observations = null;
+    state.world?.repaint();
+    status.hidden = true;
+    return;
+  }
+  const example = selectedExampleId();
+  const query = state.world.query;
+  const revision = state.world.scene.revision;
+  const pid = state.application.pid;
+  const controller = new AbortController();
+  state.observationController = controller;
+  const parameters = new URLSearchParams(query);
+  parameters.set("revision", revision);
+  if (example) parameters.set("example", example);
+  let repaint = true;
+  try {
+    const response = await fetch(`/api/scene/observations?${parameters}`, { signal: controller.signal, cache: "no-store" });
+    if (!response.ok) throw new Error("Observations unavailable");
+    const value = parseExact(await response.text());
+    if (state.observationController !== controller || selectedExampleId() !== example || state.world.query !== query
+        || state.world.scene.revision !== revision || Number(state.application.pid) !== Number(pid)
+        || Number(value.application_pid) !== Number(pid) || value.revision !== revision) return;
+    const nodes = new Map(value.nodes.map(node => [node.id, node]));
+    const links = new Map(value.links.map(link => [link.id, link]));
+    const previous = currentWorldObservations();
+    const observedAt = performance.now();
+    const elapsed = previous ? (observedAt - previous.observedAt) / 1000 : 0;
+    let maxMean = 0;
+    let maxRate = 0;
+    for (const [current, before] of [[nodes, previous?.nodes], [links, previous?.links]]) {
+      if (elapsed <= 0) continue;
+      for (const [id, item] of current) {
+        const prior = before.get(id);
+        if (!Object.hasOwn(item, "executions") || !prior || !Object.hasOwn(prior, "executions")) continue;
+        const delta = BigInt(numberText(item.executions)) - BigInt(numberText(prior.executions));
+        if (delta >= 0n) item.rate = Number(delta) / elapsed;
+      }
+    }
+    for (const node of nodes.values()) {
+      maxRate = Math.max(maxRate, node.rate || 0);
+      if (metricNumber(node.duration_samples) > 0) maxMean = Math.max(maxMean,
+        metricNumber(node.duration_nanos_total) / metricNumber(node.duration_samples));
+    }
+    repaint = !previous || [[nodes, previous.nodes], [links, previous.links]].some(([current, before]) =>
+      current.size !== before.size || [...current].some(([id, item]) => {
+        const prior = before.get(id);
+        return !prior || Object.keys(item).length !== Object.keys(prior).length
+          || Object.keys(item).some(key => numberText(item[key]) !== numberText(prior[key]));
+      }));
+    state.observations = { ...value, requestedExample: example, query, nodes, links, maxMean, maxRate, observedAt };
+    const metricsAvailable = value.nodes.some(node => Object.hasOwn(node, "executions"));
+    const examplesAvailable = Object.hasOwn(value, "coverage_revision");
+    status.hidden = false;
+    status.textContent = metricsAvailable && examplesAvailable ? "Observations connected"
+      : metricsAvailable ? "Metrics connected" : examplesAvailable ? "Examples connected" : "Observations unavailable";
+  } catch (error) {
+    if (controller.signal.aborted || state.observationController !== controller) return;
+    state.observations = null;
+    status.hidden = false;
+    status.textContent = "Observations unavailable";
+  } finally {
+    if (state.observationController === controller) {
+      state.observationController = null;
+      if (repaint) state.world?.repaint();
+      renderWorldStatus();
+      scheduleWorldObservations(1_000);
+    }
+  }
+}
+
+function renderWorldStatus() {
+  if (!state.project) return;
+  renderBuildStatus();
+  const metrics = Number(state.metrics?.application_pid) === Number(state.application.pid)
+    && state.application.state === "running" ? state.metrics : null;
+  const process = metrics?.process;
+  const values = {
+    "status-pid": state.application.state === "running" ? `PID ${state.application.pid}` : "",
+    "status-uptime": process ? `Up ${formatMillis(process.uptime_millis)}` : "",
+    "status-memory": process ? `Heap ${formatBytes(process.heap_used_bytes)}` : "",
+    "status-cpu": process?.process_cpu_load_ppm !== undefined
+      ? `CPU ${formatPercentPpm(process.process_cpu_load_ppm)}` : "",
+    "status-executions": metrics ? `${formatInteger(metrics.application.metrics.executions)} executions` : ""
+  };
+  for (const [id, value] of Object.entries(values)) {
+    const element = document.getElementById(id);
+    element.textContent = value;
+    element.hidden = !value;
+  }
+  const examples = state.application.examples;
+  const measurable = examples?.state === "completed" && state.build === "Built";
+  const total = Number(state.workspace.step_count) - 1;
+  const covered = Number(examples?.covered_steps || 0);
+  const coverage = document.querySelector("#status-coverage");
+  coverage.hidden = !measurable || total === 0;
+  coverage.querySelector("progress").max = Math.max(1, total);
+  coverage.querySelector("progress").value = covered;
+  coverage.querySelector("span").textContent = `${Math.round(covered / Math.max(1, total) * 100)}% example coverage`;
+  coverage.title = `${covered} of ${total} executable Steps reached by completed Examples`;
 }
 
 function refreshPathPicker() {
   const current = document.querySelector(".path-browser");
-  const operation = state.selection.type === "step" ? selectedOperation() : null;
+  const operation = selectedOperation();
   if (!current || !operation || !state.pathPicker) {
     return false;
   }
@@ -223,289 +628,6 @@ function refreshPathPicker() {
   }
   current.querySelector("#apply-path").disabled = desired.querySelector("#apply-path").disabled;
   return true;
-}
-
-function graph(flows) {
-  const routes = routeView();
-  const scoped = currentGroup();
-  if (scoped) {
-    const trigger = node(scoped.occurrence.flow);
-    return `
-      <section class="flow-scope">
-        <header class="flow-scope-header">
-          <button class="button" type="button" id="close-group">Back</button>
-          <span>${state.groupStack.map(id => html(groupName(groupOccurrence(id)?.group))).join(" / ")}</span>
-        </header>
-        ${trigger ? flowLane(trigger, changedIds(), routes) : ""}
-      </section>`;
-  }
-  const changed = changedIds();
-  const appClass = nodeClasses(
-    state.selection.type === "app",
-    changed.has("app"),
-    nodeIssues("app")
-  );
-  const app = `
-    <article class="node app-node${appClass}" data-node-id="app" data-select-node="app"
-             role="button" tabindex="0" aria-selected="${state.selection.type === "app"}">
-      <div class="node-kicker"><span class="node-mark">R</span> Core Step${nodeStatus(nodeIssues("app"))}</div>
-      <h2>Application</h2>
-      <p>${html(state.project.id)}</p>
-    </article>`;
-  if (!flows.length) {
-    return `<div class="empty-graph">${app}</div>`;
-  }
-  return `
-    <div class="graph-root">${app}<span class="graph-stem"></span></div>
-    <div class="flow-grid">${flows.map(trigger => flowLane(trigger, changed, routes)).join("")}</div>`;
-}
-
-function flowLane(trigger, changed, routes) {
-  const definition = definitionOf(trigger.use);
-  const presentation = stepPresentation(trigger.id);
-  const triggerSelected = state.selection.type === "trigger" && state.selection.id === trigger.id;
-  const triggerIssues = nodeIssues(trigger.id);
-  const triggerClass = nodeClasses(triggerSelected, changed.has(trigger.id), triggerIssues);
-  const scope = currentGroup();
-  const rendered = renderRoutes(trigger, changed, routes, scope);
-  const branching = rendered.branching;
-  return `
-    <section class="flow-lane${branching ? " branching-flow" : ""}" data-flow="${html(trigger.id)}">
-      ${scope ? "" : `<span class="lane-connector"></span>
-      <article class="node trigger-node${triggerClass}" data-node-id="${html(trigger.id)}"
-               ${presentation.color ? `style="--node-accent:${html(presentation.color)}"` : ""}
-               data-select-node="${html(trigger.id)}" role="button" tabindex="0"
-               aria-selected="${triggerSelected}">
-        <div class="node-kicker"><span class="node-mark trigger-mark">${
-          presentation.icon ? iconMarkup(presentation.icon) : "T"
-        }</span> Trigger${
-          nodeStatus(triggerIssues)
-        }</div>
-        <h2>${html(presentation.name || stepName(definition))}</h2>
-        <p>${html(trigger.id)} · ${count(trigger.examples.length, "example")}</p>
-      </article>`}
-      ${rendered.html}
-    </section>`;
-}
-
-function routeView() {
-  const links = new Map();
-  state.project.links.forEach(link => {
-    const outgoing = links.get(link.from) || [];
-    outgoing.push(link);
-    links.set(link.from, outgoing);
-  });
-  const groups = new Map();
-  const parent = currentGroup()?.occurrence.id || null;
-  state.creator.groups.forEach(group => group.occurrences
-    .filter(occurrence => occurrence.parent === parent)
-    .forEach(occurrence => {
-      const region = occurrenceRegion(occurrence);
-      if (region.entry) {
-        groups.set(region.entry.id, { group, occurrence, ...region });
-      }
-    }));
-  return {
-    nodes: new Map(state.project.nodes.map(operation => [operation.id, operation])),
-    definitions: new Map(state.catalog.map(definition => [definition.id, definition])),
-    links,
-    groups
-  };
-}
-
-function renderRoutes(trigger, changed, routes, scope = null) {
-  const fragments = [];
-  const scopeRegion = scope ? occurrenceRegion(scope.occurrence) : null;
-  const allowed = scopeRegion ? new Set(scopeRegion.operations.map(operation => operation.id)) : null;
-  const pending = scopeRegion?.entry
-    ? [{ target: scopeRegion.entry.id }]
-    : [{ source: trigger.id, outcome: primaryOutcome(trigger) }];
-  const seen = new Set();
-  let branching = false;
-  while (pending.length) {
-    const frame = pending.pop();
-    if (Object.hasOwn(frame, "html")) {
-      fragments.push(frame.html);
-      continue;
-    }
-    let target = frame.target;
-    if (target === undefined) {
-      const route = frame.source + "." + frame.outcome;
-      const outgoing = routes.links.get(route) || [];
-      if (outgoing.length !== 1) {
-        fragments.push(routeErrorNode(
-          frame.source,
-          frame.outcome,
-          outgoing.length ? "Multiple links" : "Missing link"
-        ));
-        continue;
-      }
-      target = outgoing[0].to;
-    }
-    if (allowed && (target === "end" || !allowed.has(target))) {
-      fragments.push(groupExitNode(frame.source, frame.outcome, target));
-      continue;
-    }
-    if (target === "end") {
-      fragments.push(terminalNode(frame.source + "-" + frame.outcome));
-      continue;
-    }
-    const operation = routes.nodes.get(target);
-    if (!operation) {
-      fragments.push(routeErrorNode(frame.source, frame.outcome, "Unknown Step"));
-      continue;
-    }
-    if (seen.has(operation.id)) {
-      fragments.push(routeErrorNode(frame.source, frame.outcome, "Repeated Step"));
-      continue;
-    }
-    const grouped = routes.groups.get(operation.id);
-    if (grouped) {
-      const repeated = grouped.operations.find(member => seen.has(member.id));
-      if (repeated) {
-        fragments.push(routeErrorNode(frame.source, frame.outcome, "Repeated Step"));
-        continue;
-      }
-      grouped.operations.forEach(member => seen.add(member.id));
-      fragments.push(groupNode(grouped.group, grouped.occurrence, changed));
-      if (grouped.exits.length === 1) {
-        pending.push(grouped.exits[0]);
-      } else {
-        branching = pushBranchRoutes(fragments, pending, grouped.exits) || branching;
-      }
-      continue;
-    }
-    seen.add(operation.id);
-    fragments.push(stepNode(operation, changed));
-    const declared = displayOutcomes(operation);
-    if (declared.length === 1) {
-      pending.push({ source: operation.id, outcome: declared[0] });
-      continue;
-    }
-    if (!declared.length) {
-      fragments.push(routeErrorNode(operation.id, "outcome", "Missing outcome"));
-      continue;
-    }
-    branching = true;
-    pushBranchRoutes(fragments, pending, declared.map(outcome => ({ source: operation.id, outcome })));
-  }
-  return { branching, html: fragments.join("") };
-}
-
-function pushBranchRoutes(fragments, pending, routes) {
-  if (!routes.length) {
-    return false;
-  }
-  fragments.push(`<div class="branch-routes" style="--branch-count:${routes.length};--branch-start:${50 / routes.length}%">
-    <span class="branch-trunk" aria-hidden="true"></span>`);
-  pending.push({ html: "</div>" });
-  for (let index = routes.length - 1; index >= 0; index--) {
-    const route = routes[index];
-    pending.push({ html: "</section>" });
-    pending.push(route);
-    pending.push({ html: `
-      <section class="branch-route" data-branch-source="${html(route.source)}"
-               data-branch-outcome="${html(route.outcome)}">
-        <strong class="branch-route-label">${html(groupRouteLabel(route, routes))}</strong>` });
-  }
-  return routes.length > 1;
-}
-
-function groupRouteLabel(route, routes) {
-  if (routes.every(candidate => candidate.source === route.source)) {
-    return outcomeLabel(node(route.source), route.outcome);
-  }
-  const source = node(route.source);
-  const name = stepPresentation(route.source).name || stepName(definitionFor(source));
-  return name + " · " + outcomeLabel(source, route.outcome);
-}
-
-function terminalNode(route) {
-  return `<span class="lane-connector short"></span>
-    <article class="node end-node" data-node-id="end-${html(route)}">
-      <div class="node-kicker">Terminal</div>
-      <h2>End</h2>
-      <p>Trigger result</p>
-    </article>`;
-}
-
-function groupExitNode(source, outcome, target) {
-  return `<span class="lane-connector short"></span>
-    <article class="node end-node group-exit" data-node-id="exit-${html(source)}-${html(outcome)}"
-             data-group-exit="${html(source)}.${html(outcome)}">
-      <div class="node-kicker">Group exit</div>
-      <h2>${html(outcomeLabel(node(source), outcome))}</h2>
-      <p>${target === "end" ? "End" : html(target)}</p>
-    </article>`;
-}
-
-function routeErrorNode(source, outcome, message) {
-  return `<span class="lane-connector short"></span>
-    <article class="node end-node issue-error route-error"
-             data-node-id="route-${html(source)}-${html(outcome)}"
-             data-route-source="${html(source)}" data-route-outcome="${html(outcome)}">
-      <div class="node-kicker">Error</div>
-      <h2>${html(message)}</h2>
-      <p>${html(source)}.${html(outcome)}</p>
-    </article>`;
-}
-
-function stepNode(operation, changed) {
-  const definition = definitionFor(operation);
-  const issues = nodeIssues(operation.id);
-  const selected = (state.selection.type === "step" && operation.id === state.selection.id)
-    || state.groupDraft?.start === operation.id || state.groupDraft?.end === operation.id;
-  const presentation = stepPresentation(operation.id);
-  const classes = nodeClasses(
-    selected,
-    changed.has(operation.id),
-    issues
-  );
-  return `
-    <span class="lane-connector short"></span>
-    <article class="node step-node${classes}"
-             ${presentation.color ? `style="--node-accent:${html(presentation.color)}"` : ""}
-             data-node-id="${html(operation.id)}"
-             data-select-step="${html(operation.id)}" role="button" tabindex="0"
-             aria-selected="${selected}">
-      <div class="node-kicker"><span class="node-mark field-mark">${
-        presentation.icon ? iconMarkup(presentation.icon) : "S"
-      }</span> ${html(presentation.name || stepName(definition))}${nodeStatus(issues)}</div>
-      ${stepSummary(operation)}
-    </article>`;
-}
-
-function groupNode(group, occurrence, changed) {
-  const operations = occurrenceSteps(occurrence);
-  const issues = [...nodeIssues(occurrence.id),
-    ...operations.flatMap(operation => nodeIssues(operation.id))];
-  const selected = state.selection.type === "group" && state.selection.id === occurrence.id;
-  const fallback = operations[0] ? stepPresentation(operations[0].id) : {};
-  const color = group.color || fallback.color || "#147982";
-  const icon = group.icon || fallback.icon || state.icons.find(candidate => candidate.id === "flow");
-  return `
-    <span class="lane-connector short"></span>
-    <article class="node step-node flow-node${nodeClasses(
-      selected,
-      operations.some(operation => changed.has(operation.id)),
-      issues
-    )}" style="--node-accent:${html(color)}"
-             data-node-id="${html(occurrence.id)}" data-select-group="${html(occurrence.id)}"
-             role="button" tabindex="0" aria-selected="${selected}">
-      <div class="node-kicker"><span class="node-mark flow-mark">${iconMarkup(icon)}</span>
-        Group${nodeStatus(issues)}</div>
-      <h2>${html(groupName(group))}</h2>
-      <p>${count(operations.length, "Step")}</p>
-    </article>`;
-}
-
-function stepSummary(operation) {
-  const summary = operationSummary(operation);
-  return `
-    <div class="step-summary">
-      <strong>${html(summary.primary)}</strong>
-      <small>${html(summary.secondary)}</small>
-    </div>`;
 }
 
 function operationSummary(operation) {
@@ -573,12 +695,14 @@ function mergeSummary(target, source) {
 }
 
 function inspector() {
+  if (state.inspectorMode === "groups") {
+    return manageGroupsInspector();
+  }
   const modes = [
     ["inspect", "Inspector"],
-    ...(["trigger", "step", "group"].includes(state.selection.type)
+    ...(["trigger", "step"].includes(state.selection.type)
       ? [["appearance", "Appearance"]] : []),
-    ...(state.selection.type === "trigger" ? [["examples", "Examples"]] : []),
-    ["groups", "Groups"]
+    ...(state.selection.type === "trigger" ? [["examples", "Examples"]] : [])
   ];
   if (!modes.some(([mode]) => mode === state.inspectorMode)) {
     state.inspectorMode = "inspect";
@@ -588,17 +712,11 @@ function inspector() {
     <button type="button" data-inspector-mode="${mode}" class="${
       state.inspectorMode === mode ? "active" : ""
     }">${label}</button>`).join("")}</nav>`;
-  if (state.inspectorMode === "groups") {
-    return tabs + manageGroupsInspector();
-  }
   if (state.inspectorMode === "examples") {
     return tabs + examplesInspector(node(state.selection.id));
   }
   if (state.inspectorMode === "appearance") {
     return tabs + appearanceInspector();
-  }
-  if (state.selection.type === "group") {
-    return tabs + groupInspector(groupOccurrence(state.selection.id));
   }
   if (state.selection.type === "trigger") {
     const trigger = node(state.selection.id);
@@ -615,32 +733,7 @@ function inspector() {
   return tabs + appInspector(issueList("app"));
 }
 
-function groupInspector(item) {
-  if (!item) {
-    return appInspector(issueList("app"));
-  }
-  const { group, occurrence } = item;
-  return `
-    ${inspectorHeader("Group", groupName(group), occurrence.id)}
-    ${issueList(occurrence.id)}
-    <section class="inspector-section facts">
-      <dl>
-        <div><dt>Occurrences</dt><dd>${group.occurrences.length}</dd></div>
-        <div><dt>Steps here</dt><dd>${Object.keys(occurrence.steps).length}</dd></div>
-      </dl>
-    </section>
-    <footer class="inspector-actions">
-      <button class="button primary" type="button" id="open-group">Open Group</button>
-      <button class="button danger" type="button" id="delete-group">Delete Group</button>
-    </footer>`;
-}
-
 function appearanceInspector() {
-  if (state.selection.type === "group") {
-    const item = groupOccurrence(state.selection.id);
-    return item ? `${inspectorHeader("Group", groupName(item.group), item.occurrence.id)}
-      ${presentationEditor(item.group, {}, "group:" + item.group.id)}` : appInspector(issueList("app"));
-  }
   const operation = selectedOperation();
   const definition = definitionFor(operation);
   return operation && definition
@@ -652,40 +745,78 @@ function appearanceInspector() {
         stepPresentation(operation.id),
         { name: stepName(definition) },
         "step:" + operation.id
-      )}`
+      )}${definition.kind === "step" ? groupAssignment(operation) : ""}`
     : appInspector(issueList("app"));
 }
 
 function manageGroupsInspector() {
-  const draft = state.groupDraft;
+  const query = state.groupQuery.trim().toLowerCase();
+  const available = state.creator.groups.filter(group => groupName(group).toLowerCase().includes(query));
+  const inventory = groupInventory();
+  const selected = state.creator.groups.find(group => group.id === state.managedGroup)
+    || state.creator.groups[0] || null;
+  if (selected) {
+    state.managedGroup = selected.id;
+  }
+  const members = selected ? inventory.get(selected.id) || 0 : 0;
+  const regions = Number(state.editor.groups[selected?.id]?.regions || 0);
   return `
-    ${inspectorHeader("Creator", "Manage Groups", "Groups change only how the graph is displayed")}
-    ${draft ? issueList(draft.start || draft.end || "app") : ""}
-    ${draft ? `<section class="inspector-section group-draft">
-      <div class="section-heading"><strong>${draft.group
-        ? "Add " + html(groupName(state.creator.groups.find(group => group.id === draft.group)))
-        : "Select a range"}</strong><span>Start then end</span></div>
-      <p>Start: <code>${html(draft.start || "Select a Step")}</code></p>
-      <p>End: <code>${html(draft.end || "Select a Step")}</code></p>
-      <button class="button" type="button" id="cancel-group-draft">Cancel</button>
-    </section>` : `<section class="inspector-section">
-      <button class="button primary wide" type="button" id="new-group">New Group</button>
-    </section>`}
+    <header class="manager-heading">
+      <button class="button" type="button" id="close-group-manager">Back</button>
+      ${inspectorHeader("Creator", "Group Manager", "Presentation only")}
+    </header>
     <section class="inspector-section">
-      <div class="section-heading"><strong>Groups</strong><span>${state.creator.groups.length}</span></div>
-      <div class="group-list">${state.creator.groups.map(group => `
-        <article data-group-list="${html(group.id)}">
-          <header><strong>${html(groupName(group))}</strong>
-            <small>${count(group.occurrences.length, "occurrence")}</small></header>
-          ${group.occurrences.map(occurrence => `
-            <button type="button" data-manage-occurrence="${html(occurrence.id)}">
-              ${html(occurrence.flow)} · ${count(Object.keys(occurrence.steps).length, "Step")}
-            </button>`).join("")}
-          <button class="button" type="button" data-add-occurrence="${html(group.id)}">
-            Add occurrence
-          </button>
-        </article>`).join("") || '<p class="empty-options">No groups yet.</p>'}</div>
-    </section>`;
+      <div class="section-heading"><strong>Groups</strong><span>${state.editor.group_count}</span></div>
+      <input id="group-search" type="search" value="${html(state.groupQuery)}"
+             placeholder="Search groups" autocomplete="off">
+      <div id="group-results">${groupListMarkup(
+        available,
+        selected?.id || "",
+        inventory
+      )}</div>
+      <button class="button primary wide" type="button" id="new-group">New Group</button>
+    </section>
+    ${selected ? `
+      ${presentationEditor(selected, { name: "Group", color: "#147982" }, "group:" + selected.id)}
+      <section class="inspector-section">
+        <label for="group-boundary">Boundary</label>
+        <select id="group-boundary">
+          ${["solid", "dashed", "dotted"].map(boundary => `<option value="${boundary}" ${
+            (selected.boundary || "solid") === boundary ? "selected" : ""
+          }>${inputLabel(boundary)}</option>`).join("")}
+        </select>
+      </section>
+      <section class="inspector-section facts">
+        <dl>
+          <div><dt>Steps</dt><dd>${members}</dd></div>
+          <div><dt>Regions</dt><dd>${regions}</dd></div>
+        </dl>
+      </section>
+      <footer class="inspector-actions">
+        <button class="button" type="button" id="focus-group" ${regions ? "" : "disabled"}>Show</button>
+        <button class="button danger" type="button" id="delete-group">Delete Group</button>
+      </footer>` : ""}`;
+}
+
+function groupListMarkup(groups, selected, inventory = groupInventory()) {
+  return `<div id="group-list" class="group-list">${groups.map(group => `
+    <button type="button" data-manage-group="${html(group.id)}"
+            class="${selected === group.id ? "active" : ""}"
+            style="--group-color:${html(group.color || "#147982")}">
+      <strong>${html(groupName(group))}</strong>
+      <span>${count(inventory.get(group.id) || 0, "Step")}</span>
+    </button>`).join("") || '<p class="empty-options">No matching groups.</p>'}</div>${groupPages()}`;
+}
+
+function groupAssignment(operation) {
+  const group = groupForStep(operation.id);
+  return `<section class="inspector-section">
+    <label>Group</label>
+    <div class="group-assignment">
+      <button class="button" type="button" id="choose-group">${html(group ? groupName(group) : "No group")}</button>
+      <button class="button" type="button" id="manage-groups">Manage</button>
+    </div>
+  </section>`;
 }
 
 function presentationEditor(presentation = {}, defaults = {}, target) {
@@ -717,6 +848,18 @@ function presentationEditor(presentation = {}, defaults = {}, target) {
         <button id="reset-icon" type="button" data-reset-presentation="icon"
                 data-presentation-target="${target}" ${presentation.icon ? "" : "disabled"}>Reset</button>
       </div>
+      <label for="presentation-shape">Shape</label>
+      <select id="presentation-shape" data-presentation="shape" data-presentation-target="${target}">
+        ${["rectangle", "ellipse", "triangle", "diamond"].map(shape => `<option value="${shape}" ${
+          shape === (presentation.shape || "rectangle") ? "selected" : ""}>${inputLabel(shape)}</option>`).join("")}
+      </select>
+      ${[["aspect", "Width / height", .5, 4, 2.625], ["roundness", "Corner rounding (%)", 0, 50, 0]]
+        .filter(([field]) => field !== "roundness" || !presentation.shape || presentation.shape === "rectangle")
+        .map(([field, label, min, max, fallback]) => `<label for="presentation-${field}">${label}</label>
+          <div class="dimension-editor"><input id="presentation-${field}" type="number" min="${min}" max="${max}" step="any"
+            data-presentation="${field}" data-presentation-target="${target}" value="${presentation[field] ?? fallback}">
+            <button type="button" data-reset-presentation="${field}" data-presentation-target="${target}"
+              ${presentation[field] === undefined ? "disabled" : ""}>Reset</button></div>`).join("")}
     </section>`;
 }
 
@@ -768,14 +911,13 @@ function diagnosticOwner(diagnostic) {
   if (diagnostic.node) {
     return diagnostic.node;
   }
-  const groupPath = /^groups\[(\d+)](?:\.occurrences\[(\d+)])?/.exec(diagnostic.path || "");
-  if (groupPath) {
-    const group = state.creator.groups[Number(groupPath[1])];
-    return group?.occurrences[Number(groupPath[2] || 0)]?.id || "app";
+  const creatorStep = /^steps\.([^.]+)/.exec(diagnostic.path || "");
+  if (creatorStep && node(creatorStep[1])) {
+    return creatorStep[1];
   }
   const nodePath = /^nodes\[(\d+)]/.exec(diagnostic.path || "");
   if (nodePath) {
-    return state.project.nodes[Number(nodePath[1])]?.id || "app";
+    return Object.entries(state.editor.nodes).find(([, value]) => Number(value.index) === Number(nodePath[1]))?.[0] || "app";
   }
   const linkPath = /^links\[(\d+)]/.exec(diagnostic.path || "");
   if (linkPath) {
@@ -792,29 +934,20 @@ function nodeIssues(id) {
   return allDiagnostics().filter(diagnostic => diagnosticOwner(diagnostic) === id);
 }
 
-function nodeClasses(selected, changed, diagnostics) {
-  const severity = diagnostics.some(diagnostic => diagnostic.severity !== "warning")
-    ? " issue-error"
-    : diagnostics.length ? " issue-warning" : "";
-  return `${selected ? " selected" : ""}${changed ? " changed" : ""}${severity}`;
-}
-
-function nodeStatus(diagnostics) {
-  if (!diagnostics.length) {
-    return "";
-  }
-  const warnings = diagnostics.every(diagnostic => diagnostic.severity === "warning");
-  return `<span class="node-status">${diagnostics.length} ${warnings ? "warning" : "error"}${
-    diagnostics.length === 1 ? "" : "s"
-  }</span>`;
-}
-
 function appInspector(issues) {
   const builtAt = Number(state.application.built_at || 0);
   return `
     ${inspectorHeader("Application Step", "Application", "Project settings and build facts")}
     ${issues}
-    <section class="inspector-section facts">
+    <section class="inspector-section">
+      <label for="project-id">Project name</label>
+      <input id="project-id" value="${html(state.project.id)}" autocomplete="off">
+    </section>
+    <section class="inspector-section">
+      <button class="button wide" type="button" id="manage-groups">Manage Groups</button>
+    </section>
+    <details id="workspace-details" class="inspector-section facts">
+      <summary>Workspace and build</summary>
       <dl>
         <div><dt>Project path</dt><dd id="project-path">${html(state.workspace.project_path || "")}</dd></div>
         <div><dt>Build path</dt><dd id="build-path">${html(state.application.build_path || "")}</dd></div>
@@ -837,12 +970,8 @@ function appInspector(issues) {
           builtAt ? html(new Date(builtAt).toLocaleString()) : "Not built"
         }</dd></div>
       </dl>
-    </section>
-    <div id="metrics-panel">${metricsPanel()}</div>
-    <section class="inspector-section">
-      <label for="project-id">Project name</label>
-      <input id="project-id" value="${html(state.project.id)}" autocomplete="off">
-    </section>
+    </details>
+    ${runtimeDetails()}
     ${availableTriggers().length ? `
       <footer class="inspector-actions">
         <button class="button primary" id="add-trigger" type="button"
@@ -857,7 +986,7 @@ function triggerInspector(trigger, issues) {
     ${issues}
     ${inputFields(trigger, definition.inputs, ["inputs"])}
     ${metricsSetting(trigger)}
-    <div id="metrics-panel">${metricsPanel()}</div>
+    ${runtimeDetails()}
     <section class="inspector-section">
       <div class="section-heading"><strong>Expected results</strong><span>Trigger contract</span></div>
       <div class="contract-list">${definition.results.map(result => `
@@ -915,26 +1044,16 @@ function examplesInspector(trigger) {
 
 function stepInspector(operation, issues) {
   const definition = definitionOf(operation.use);
-  const shared = sharedMembership(operation.id);
-  if (shared && !state.editScope) {
-    return `
-      ${inspectorHeader("Shared Step", stepPresentation(operation.id).name || stepName(definition), operation.id)}
-      <section class="inspector-section shared-choice">
-        <p>This group occurs ${shared.group.occurrences.length} times. Choose where the next edit applies.</p>
-        <button class="button primary" type="button" data-shared-action="all">Update all</button>
-        <button class="button" type="button" data-shared-action="detach">Detach this</button>
-        <button class="button" type="button" data-shared-action="variant">Create variant</button>
-        <button class="button" type="button" data-shared-action="cancel">Cancel</button>
-      </section>`;
-  }
   return `
     ${inspectorHeader("Step", stepPresentation(operation.id).name || stepName(definition), operation.id)}
     ${issues}
-    ${portMappings(operation, definition)}
-    ${inputFields(operation, definition.inputs, ["inputs"])}
+    <div id="preview-values">
+      ${portMappings(operation, definition)}
+      ${inputFields(operation, definition.inputs, ["inputs"])}
+    </div>
     ${metricsSetting(operation)}
-    <div id="metrics-panel">${metricsPanel()}</div>
-    <div id="preview-values" aria-live="polite">${previewSource(operation)}</div>
+    ${runtimeDetails()}
+    <div id="preview-error" role="status"></div>
     <footer class="inspector-actions">
       ${nextStepControls(operation)}
       <button class="button danger" id="delete-step" type="button" ${removableStep(operation)
@@ -982,23 +1101,26 @@ function nextStepControls(operation) {
   }
   return `<section class="next-routes" aria-label="Next Steps">
     ${declared.map(outcome => {
-      const destinations = outcomeDestinations(operation, outcome);
-      const destination = destinations.length === 1 ? destinations[0] : undefined;
-      const target = node(destination);
-      const repeated = target && state.project.links.filter(link => link.to === target.id).length !== 1;
+      const connection = outcomeConnection(operation, outcome);
       const insertable = insertionAllowed(operation, outcome);
       return `<div>
-        <span><strong>${html(outcomeLabel(operation, outcome))}</strong><small>${html(
-          destinations.length > 1 ? "Multiple links"
-            : repeated ? "Repeated Step"
-              : target ? stepPresentation(target.id).name || stepName(definitionFor(target))
-              : destination === "end" ? "End" : destination ? "Unknown Step" : "Missing link"
-        )}</small></span>
+        <span><strong>${html(outcomeLabel(operation, outcome))}</strong><small>${html(connection.label)}</small></span>
         <button class="button" type="button" data-add-outcome="${html(outcome)}"
                 ${insertable ? "" : "disabled"}>Add Step</button>
       </div>`;
     }).join("")}
   </section>`;
+}
+
+function outcomeConnection(operation, outcome) {
+  const destinations = outcomeDestinations(operation, outcome);
+  const destination = destinations.length === 1 ? destinations[0] : undefined;
+  const target = node(destination);
+  const issue = destinations.length > 1 ? "Multiple links"
+    : target && state.project.links.filter(link => link.to === target.id).length !== 1 ? "Repeated Step"
+    : !target && destination !== "end" ? destination ? "Unknown Step" : "Missing link" : "";
+  return { invalid: Boolean(issue), label: issue || (target
+    ? stepPresentation(target.id).name || stepName(definitionFor(target)) : "End") };
 }
 
 function removableStep(operation) {
@@ -1009,7 +1131,12 @@ function inputFields(operation, inputs, base) {
   if (!inputs.length) {
     return "";
   }
-  return inputs.map(input => inputEditor(operation, input, [...base, input.name], inputs, base)).join("");
+  return inputs.map(input => {
+    const editor = inputEditor(operation, input, [...base, input.name], inputs, base);
+    return base.length === 1 && input.type !== "path" && input.type !== "steps"
+      ? `<div class="observed-input">${editor}<div class="input-result"
+          data-input-result="${html(input.name)}" aria-live="polite"></div></div>` : editor;
+  }).join("");
 }
 
 function inputEditor(operation, input, locator, scopeInputs, scopeBase) {
@@ -1070,6 +1197,8 @@ function pathInput(operation, input, locator, value) {
               data-open-path="${locatorToken(locator)}" data-input-meta="${metaToken(input)}">
         ${selected?.length ? pathCrumbs(selected) : "Choose path"}
       </button>
+      <div class="path-values" data-path-observation="${locatorToken(locator)}"
+           data-input-meta="${metaToken(input)}" aria-live="polite">${pathValues(operation, input, selected, locator)}</div>
       ${open ? pathBrowser(input, operation, locator) : ""}
     </section>`;
 }
@@ -1214,8 +1343,7 @@ function candidateEditor(
   const authored = input.authored_outcomes === true;
   const noun = authored ? "Case" : view.noun || "Candidate";
   const removable = size > (view.minimum || 0)
-    && (!authored || alignedCandidates(operation, index)
-      .every(item => item.candidate && outcomeTarget(item.operation, item.candidate.outcome) === "end"));
+    && (!authored || candidate.outcome && outcomeTarget(operation, candidate.outcome) === "end");
   const predicateName = view.predicateName || input.name + "[" + index + "].when";
   const condition = conditionOf(candidate.when);
   const predicateStatus = !condition.transforms.length && !condition.all.length
@@ -1678,9 +1806,9 @@ function pathBrowser(input, operation, locator) {
             return `
               <button type="button" class="path-choice" data-path-part="${html(pathPart(part))}"
                       data-path-draft-json="${encodeURIComponent(JSON.stringify(entry.path))}">
-                <strong>${html(pathPart(part))}</strong><small>${entry.shape}${
+                <span><strong>${html(pathPart(part))}</strong><small>${entry.shape}${
                   entry.examples < entry.total ? ` · ${entry.examples}/${entry.total} examples` : ""
-                }</small>
+                }</small></span>${pathChoiceValue(operation, entry.path)}
               </button>`;
           }).join("") || `<small class="path-hint">${
             selected ? "Selected " + selected.shape + " value." : "New path."
@@ -1743,6 +1871,40 @@ function iconPicker() {
     </div>`;
 }
 
+function groupPicker() {
+  if (!state.groupPicker) {
+    return "";
+  }
+  return `
+    <div class="picker-backdrop group-picker-backdrop">
+      <section class="step-picker group-picker" role="dialog" aria-modal="true" aria-label="Choose group">
+        <header class="icon-picker-heading">
+          <div><span class="eyebrow">Creator groups</span><h2>Choose Group</h2></div>
+          <button type="button" id="close-group-picker">Cancel</button>
+        </header>
+        <input type="search" id="group-picker-search" value="${html(state.groupPicker.query)}"
+               placeholder="Search groups" autocomplete="off" autofocus>
+        <div id="group-picker-options">${groupPickerOptions()}</div>
+      </section>
+    </div>`;
+}
+
+function groupPickerOptions() {
+  const query = state.groupPicker?.query.toLowerCase() || "";
+  const groups = state.creator.groups.filter(group => groupName(group).toLowerCase().includes(query));
+  const inventory = groupInventory();
+  return `
+    <button type="button" class="catalog-option" data-assign-group="">
+      <strong>No group</strong><small>Remove the visual assignment</small>
+    </button>
+    ${groups.map(group => `
+      <button type="button" class="catalog-option group-option" data-assign-group="${html(group.id)}"
+              style="--group-color:${html(group.color || "#147982")}">
+        <strong>${html(groupName(group))}</strong>
+        <small>${count(inventory.get(group.id) || 0, "Step")}</small>
+      </button>`).join("") || '<p class="empty-options">No group matches.</p>'}${groupPages()}`;
+}
+
 function iconOptions() {
   const query = state.iconPicker?.query.toLowerCase() || "";
   return state.icons
@@ -1766,7 +1928,7 @@ function pickerOptions() {
   const matching = candidates
     .filter(definition => definitionMatchesQuery(definition, query));
   const options = matching.filter(definition => state.picker.mode === "trigger"
-      || automaticBindingsAvailable(state.picker.anchor, state.picker.outcome, definition));
+      || automaticBindingsAvailable(state.picker.anchor, definition));
   return options
     .map(definition => `
       <button type="button" class="catalog-option" data-add-step="${html(definition.id)}">
@@ -1811,6 +1973,7 @@ function addCatalogStep(id) {
     );
     state.creator.steps[triggerId] = { name: generatedName() };
     state.selection = { type: "trigger", id: triggerId };
+    state.exampleTrigger = triggerId;
     state.exampleIndex = 0;
   } else if (!insertStep(state.picker.anchor, definition, state.picker.outcome)) {
     return;
@@ -1830,36 +1993,16 @@ function insertStep(afterId, definition, selectedOutcome = "") {
   if (!outcomes(after).includes(outcome)) {
     return false;
   }
-  const targets = structuralStepIds(afterId);
-  const targetOutcomes = new Map(targets.map(target => [
-    target,
-    alignedOutcome(after, node(target), outcome)
-  ]));
-  if (targets.some(target => !insertionAllowed(node(target), targetOutcomes.get(target)))) {
+  if (!insertionAllowed(after, outcome)) {
     return false;
   }
-  const bindings = new Map(targets.map(target => [target, graphBindings(node(target), definition)]));
-  if ([...bindings.values()].some(binding => binding === null)) {
+  const bindings = graphBindings(after, definition);
+  if (bindings === null) {
     return false;
   }
-  const inserted = new Map(targets.map(target => [target, opaqueId("step")]));
-  targets.forEach(target => insertFlatStep(
-    target,
-    definition,
-    inserted.get(target),
-    targetOutcomes.get(target),
-    bindings.get(target)
-  ));
-  const slots = new Map();
-  targets.forEach(target =>
-    occurrenceMemberships(target).forEach(membership => {
-    const key = membership.group.id + "\u0000" + membership.slot;
-    const slot = slots.get(key) || opaqueId("slot");
-    slots.set(key, slot);
-    insertOccurrenceStep(membership.occurrence, membership.slot, slot, inserted.get(target));
-    }));
-  state.selection = { type: "step", id: inserted.get(afterId) };
-  state.editScope = null;
+  const inserted = opaqueId("step");
+  insertFlatStep(afterId, definition, inserted, outcome, bindings);
+  state.selection = { type: "step", id: inserted };
   return true;
 }
 
@@ -1873,8 +2016,7 @@ function insertFlatStep(afterId, definition, id, outcome, bindings) {
     from: id + "." + candidate,
     to: candidate === primaryOutcome(definition) ? target : "end"
   }));
-  const index = state.project.nodes.findIndex(candidate => candidate.id === after.id);
-  state.project.nodes.splice(index + 1, 0, {
+  state.project.nodes.push({
     id,
     use: definition.id,
     inputs: defaultInputs(definition.inputs),
@@ -1908,26 +2050,17 @@ function graphBindings(after, definition) {
   return { receives, returns };
 }
 
-function automaticBindingsAvailable(afterId, selectedOutcome, definition) {
+function automaticBindingsAvailable(afterId, definition) {
   const after = node(afterId);
-  if (!after) {
-    return false;
-  }
-  const outcome = selectedOutcome || primaryOutcome(after);
-  const targets = structuralStepIds(afterId);
-  return targets.every(target => graphBindings(node(target), definition) !== null);
-}
-
-function insertOccurrenceStep(occurrence, afterSlot, slot, id) {
-  occurrence.steps = Object.fromEntries(Object.entries(occurrence.steps).flatMap(entry =>
-    entry[0] === afterSlot ? [entry, [slot, id]] : [entry]
-  ));
+  return Boolean(after) && graphBindings(after, definition) !== null;
 }
 
 function deleteSelection() {
   if (state.selection.type === "trigger") {
     const trigger = node(state.selection.id);
+    state.removedFlows.push(trigger.id);
     const ids = new Set([trigger.id, ...reachableSteps(trigger).map(candidate => candidate.id)]);
+    if (state.jsonDraft && (ids.has(state.jsonDraft.node) || state.editor.nodes[state.jsonDraft.node]?.trigger === trigger.id)) state.jsonDraft = null;
     state.project.nodes = state.project.nodes.filter(candidate => !ids.has(candidate.id));
     state.project.links = state.project.links.filter(link =>
       !ids.has(link.from.split(".")[0]) && !ids.has(link.to)
@@ -1935,25 +2068,22 @@ function deleteSelection() {
     removeCreatorReferences(ids);
     state.selection = { type: "app", id: "app" };
   } else if (state.selection.type === "step" && removableStep(node(state.selection.id))) {
-    removeStepGroup(state.selection.id);
+    removeStep(state.selection.id);
   } else {
     return;
   }
+  state.revealNode = state.selection.id;
   dirty(true);
 }
 
-function removeStepGroup(id) {
+function removeStep(id) {
   const selected = node(id);
-  const removed = new Set(structuralStepIds(id));
-  let predecessor = state.project.links.find(link => link.to === selected.id);
-  while (predecessor && removed.has(linkNode(predecessor))) {
-    predecessor = state.project.links.find(link => link.to === linkNode(predecessor));
-  }
+  const removed = new Set([id]);
+  const predecessor = state.project.links.find(link => link.to === selected.id);
   const predecessorId = predecessor ? linkNode(predecessor) : "";
-  removed.forEach(removeFlatStep);
+  removeFlatStep(id);
   removeCreatorReferences(removed);
-  state.jsonDraft = null;
-  state.editScope = null;
+  if (state.jsonDraft?.node === id) state.jsonDraft = null;
   const previous = node(predecessorId);
   state.selection = definitionOf(previous?.use)?.kind === "trigger"
     ? { type: "trigger", id: previous.id }
@@ -2036,6 +2166,7 @@ function updateExampleName(value) {
 
 function selectExample(index) {
   const trigger = node(state.selection.id);
+  state.exampleTrigger = trigger.id;
   state.exampleIndex = Math.max(0, Math.min(index, trigger.examples.length - 1));
   state.exampleDraft = null;
   clearPreview(true, false);
@@ -2073,6 +2204,10 @@ function deleteExample() {
 }
 
 function selectedExample(trigger) {
+  if (state.exampleTrigger !== trigger.id) {
+    state.exampleTrigger = trigger.id;
+    state.exampleIndex = 0;
+  }
   state.exampleIndex = Math.max(0, Math.min(state.exampleIndex, trigger.examples.length - 1));
   return trigger.examples[state.exampleIndex];
 }
@@ -2220,23 +2355,18 @@ function addCandidate(locator, input, optionName) {
     return;
   }
   const operation = selectedOperation();
-  const targets = input.authored_outcomes
-    ? structuralStepIds(operation.id).map(node).filter(Boolean)
-    : [operation];
   const label = input.authored_outcomes ? nextCaseLabel(operation) : "";
-  targets.forEach(target => {
-    let candidates = valueAt(target, locator);
-    if (!Array.isArray(candidates)) {
-      candidates = [];
-      setAt(target, locator, candidates);
-    }
-    const candidate = authoredCandidate(option, input);
-    candidates.push(candidate);
-    if (input.authored_outcomes) {
-      state.project.links.push({ from: target.id + "." + candidate.outcome, to: "end" });
-      setOutcomeLabel(target.id, candidate.outcome, label);
-    }
-  });
+  let candidates = valueAt(operation, locator);
+  if (!Array.isArray(candidates)) {
+    candidates = [];
+    setAt(operation, locator, candidates);
+  }
+  const candidate = authoredCandidate(option, input);
+  candidates.push(candidate);
+  if (input.authored_outcomes) {
+    state.project.links.push({ from: operation.id + "." + candidate.outcome, to: "end" });
+    setOutcomeLabel(operation.id, candidate.outcome, label);
+  }
   delete state.candidateQueries[locatorToken(locator)];
   dirty();
 }
@@ -2300,25 +2430,18 @@ function updateCandidateLabel(locator, index, value) {
     render();
     return;
   }
-  alignedCandidates(selectedOperation(), index)
-    .forEach(item => setOutcomeLabel(item.operation.id, item.candidate.outcome, label));
+  setOutcomeLabel(selectedOperation().id, candidates[index].outcome, label);
   creatorDirty();
 }
 
-function moveListItem(locator, index, direction, input = {}) {
+function moveListItem(locator, index, direction) {
   const items = valueAt(selectedOperation(), locator);
   const target = index + direction;
   if (!Array.isArray(items) || target < 0 || target >= items.length) {
     return;
   }
-  const lists = input.authored_outcomes
-    ? structuralStepIds(selectedOperation().id).map(id => valueAt(node(id), locator))
-    : [items];
-  if (lists.some(list => !Array.isArray(list) || target >= list.length)) {
-    return;
-  }
   moveDraft(locator, index, target);
-  lists.forEach(list => [list[index], list[target]] = [list[target], list[index]]);
+  [items[index], items[target]] = [items[target], items[index]];
   clearInputQueries();
   dirty();
 }
@@ -2342,17 +2465,15 @@ function removeListItem(locator, index, input = {}) {
     return;
   }
   if (input.authored_outcomes) {
-    const aligned = alignedCandidates(selectedOperation(), index);
-    if (aligned.some(item => !item.candidate
-        || outcomeTarget(item.operation, item.candidate.outcome) !== "end")) {
+    const operation = selectedOperation();
+    const candidate = items[index];
+    if (!candidate?.outcome || outcomeTarget(operation, candidate.outcome) !== "end") {
       return;
     }
-    const routes = new Set(aligned.map(item => item.operation.id + "." + item.candidate.outcome));
-    state.project.links = state.project.links.filter(link => !routes.has(link.from));
-    aligned.forEach(item => {
-      setOutcomeLabel(item.operation.id, item.candidate.outcome);
-      valueAt(item.operation, locator).splice(index, 1);
-    });
+    const route = operation.id + "." + candidate.outcome;
+    state.project.links = state.project.links.filter(link => link.from !== route);
+    setOutcomeLabel(operation.id, candidate.outcome);
+    items.splice(index, 1);
   } else {
     items.splice(index, 1);
   }
@@ -2950,7 +3071,8 @@ function sourceReference(option, ownerLocator, scopeInputs, scopeBase) {
 }
 
 function valueAt(root, locator) {
-  return locator.reduce((value, part) => value?.[part], root);
+  return locator.reduce((value, part) => value !== null && value !== undefined && Object.hasOwn(value, part)
+    ? value[part] : undefined, root);
 }
 
 function hasAt(root, locator) {
@@ -2995,7 +3117,7 @@ function inputLabel(value) {
 }
 
 function inputDiagnosticPath(nodeId, locator) {
-  const index = state.project.nodes.findIndex(candidate => candidate.id === nodeId);
+  const index = Number(state.editor.nodes[nodeId]?.index ?? -1);
   return "nodes[" + index + "]" + locator.reduce((path, part) => typeof part === "number"
     ? path + "[" + part + "]"
     : path + "." + part, "");
@@ -3025,6 +3147,10 @@ function replaceApplication(application) {
   const changed = !currentApplication(application);
   if (changed) {
     clearPreview(true);
+    state.observationController?.abort();
+    state.observations = null;
+    document.querySelector("#status-observations").hidden = true;
+    scheduleWorldObservations();
     state.exampleIds = new Map();
     state.exampleInventoryKey = "";
     state.exampleCoverageKey = "";
@@ -3138,6 +3264,11 @@ async function refreshApplication() {
     nextDelay = observationRetryDelay();
   } finally {
     state.applicationRefreshing = false;
+    if (state.optionsPending) {
+      state.optionsPending = false;
+      refreshPickerOptions();
+      if (!state.pathPicker) refreshNestedOptions();
+    }
     const running = ["queued", "running"].includes(state.application.examples?.state);
     scheduleApplicationPoll(nextDelay ?? (document.hidden ? 2_000 : running ? 100 : 500));
   }
@@ -3211,15 +3342,7 @@ async function refreshExampleCoverage(application, examples) {
 }
 
 function selectedExampleId() {
-  const operation = ["trigger", "step"].includes(state.selection.type)
-    ? node(state.selection.id)
-    : null;
-  const trigger = operation ? triggerFor(operation.id) : null;
-  if (!trigger?.examples.length) {
-    return "";
-  }
-  const index = Math.max(0, Math.min(state.exampleIndex, trigger.examples.length - 1));
-  return state.exampleIds.get(trigger.id)?.get(index) || "";
+  return state.exampleIds.get(state.exampleTrigger)?.get(state.exampleIndex) || "";
 }
 
 function refreshApplicationFacts() {
@@ -3241,6 +3364,8 @@ function refreshApplicationFacts() {
       target.textContent = value;
     }
   });
+  renderWorldStatus();
+  scheduleWorldObservations(180);
 }
 
 function exampleProgress() {
@@ -3250,11 +3375,18 @@ function exampleProgress() {
     : `${examples.completed || 0} / ${examples.total}`;
 }
 
+function runtimeDetails() {
+  return `<details id="runtime-details" class="inspector-section">
+    <summary>Runtime metrics</summary>
+    <div id="metrics-panel">${metricsPanel()}</div>
+  </details>`;
+}
+
 function metricsSetting(operation) {
   return `
     <section class="inspector-section metric-setting">
       <label class="check-line" for="node-metrics">
-        <span>Operational metrics</span>
+        <span>Measure this Step</span>
         <input id="node-metrics" type="checkbox" data-node-metrics
                ${operation.metrics === false ? "" : "checked"}>
       </label>
@@ -3263,7 +3395,7 @@ function metricsSetting(operation) {
 
 function metricTarget() {
   if (state.inspectorMode !== "inspect") {
-    return "";
+    return "app";
   }
   if (state.selection.type === "app") {
     return "app";
@@ -3345,6 +3477,7 @@ function renderMetrics() {
   if (panel) {
     panel.innerHTML = metricsPanel();
   }
+  renderWorldStatus();
 }
 
 function metricsPanel() {
@@ -3388,7 +3521,7 @@ function metricsPanel() {
       [flow ? "Step in flight" : "In flight",
         step.in_flight === undefined ? null : formatInteger(step.in_flight)],
       [flow ? "Step sampled average" : "Sampled average", averageNanos(step)],
-      [flow ? "Step sampled maximum" : "Sampled maximum", formatNanos(step.duration_nanos_max)]
+      [flow ? "Step sampled maximum" : "Sampled maximum", metricNumber(step.duration_samples) ? formatNanos(step.duration_nanos_max) : "No sample"]
     );
   }
   if (flow) {
@@ -3398,10 +3531,10 @@ function metricsPanel() {
       ["Flow cancelled", formatInteger(flow.cancelled)],
       ["Flow in flight", formatInteger(flow.in_flight)],
       ["Flow average", averageNanos(flow)],
-      ["Flow maximum", formatNanos(flow.duration_nanos_max)]
+      ["Flow maximum", metricNumber(flow.duration_samples) ? formatNanos(flow.duration_nanos_max) : "No sample"]
     );
   }
-  return metricFacts("Operational metrics", rows);
+  return metricFacts("Step metrics", rows);
 }
 
 function metricFacts(title, rows) {
@@ -3417,7 +3550,7 @@ function metricFacts(title, rows) {
 
 function averageNanos(metrics) {
   const samples = metricNumber(metrics.duration_samples);
-  return formatNanos(samples ? metricNumber(metrics.duration_nanos_total) / samples : 0);
+  return samples ? formatNanos(metricNumber(metrics.duration_nanos_total) / samples) : "No sample";
 }
 
 function metricNumber(value) {
@@ -3518,7 +3651,6 @@ async function requestSelectedTrace() {
   ].join(":");
   const key = summaryKey + ":" + casesKey;
   if (state.traceKey === key && state.traceSummary && state.traceCasesKey === casesKey) {
-    selectTracePreview(example);
     return;
   }
   state.traceController?.abort();
@@ -3672,13 +3804,13 @@ function selectedCandidates(operation, options) {
 function refreshTraceView() {
   applyExampleCoverage();
   refreshPickerOptions();
+  renderPreview();
   if (state.pathPicker) {
     renderBuildStatus();
     refreshPathPicker();
     return;
   }
   refreshNestedOptions();
-  renderPreview();
   renderRunResult();
 }
 
@@ -3694,47 +3826,64 @@ function observationMayReplace(container) {
     return true;
   }
   const active = document.activeElement;
-  return !container.matches(":hover") && !(active instanceof Element && container.contains(active));
+  const replace = !container.matches(":hover") && !(active instanceof Element && container.contains(active));
+  state.optionsPending ||= !replace;
+  return replace;
 }
 
 function applyExampleCoverage() {
   const examples = state.application.examples;
-  if (!state.project || !examples) {
-    return;
-  }
+  if (!state.project) return;
   const deployed = state.builtProject || state.project;
-  const covered = exampleCoverage(examples.coverage_bits, deployed);
-  const selected = new Set([...(state.traceSummary?.nodes || [])]
-    .map(index => deployed.nodes[index]?.id)
-    .filter(Boolean));
-  if (selectedTraceCase()?.trigger) {
-    selected.add(selectedTraceCase().trigger);
+  const bits = state.application.state === "running" ? examples?.coverage_bits || "" : "";
+  if (state.coverageSource !== deployed || state.coverageBits !== bits) {
+    state.worldCovered = exampleCoverage(bits, deployed);
+    state.worldCovered.delete("app");
+    state.coverageSource = deployed;
+    state.coverageBits = bits;
   }
-  const complete = examples.state === "completed";
-  document.querySelectorAll("[data-node-id]").forEach(element => {
-    const id = element.dataset.nodeId;
-    element.classList.toggle("example-reached", selected.has(id));
-    element.classList.toggle("example-uncovered", complete
-      && !["app", selectedTraceCase()?.trigger].includes(id)
-      && !covered.has(id));
-  });
+  const selectedIndexes = new Set(selectedTraceCase() ? [...(state.traceSummary?.nodes || [])].map(Number) : []);
+  state.worldSelected = new Set(Object.entries(state.editor.nodes)
+    .filter(([, value]) => selectedIndexes.has(Number(value.index))).map(([id]) => id));
+  if (selectedTraceCase()?.trigger) {
+    state.worldSelected.add(selectedTraceCase().trigger);
+  }
+  state.world?.repaint();
+  renderWorldStatus();
+  scheduleWorldObservations(180);
 }
 
 function exampleCoverage(encoded, project) {
   const bytes = encoded
     ? Uint8Array.from(atob(encoded), character => character.charCodeAt(0))
     : new Uint8Array();
-  return new Set(project.nodes.filter((_operation, index) =>
-    (bytes[index >> 3] & (1 << (index & 7))) !== 0).map(operation => operation.id));
+  return new Set(Object.entries(state.editor.nodes).filter(([, value]) => {
+    const index = Number(value.index);
+    return (bytes[index >> 3] & (1 << (index & 7))) !== 0;
+  }).map(([id]) => id));
 }
 
 function renderPreview() {
-  const operation = state.selection.type === "step" ? selectedOperation() : null;
-  const values = document.querySelector("#preview-values");
-  if (!operation || !values) {
-    return;
-  }
-  values.innerHTML = previewSource(operation);
+  const operation = selectedOperation();
+  if (!operation) return;
+  document.querySelectorAll("[data-path-observation]").forEach(slot => {
+    const locator = parseToken(slot.dataset.pathObservation);
+    const input = parseToken(slot.dataset.inputMeta);
+    const path = hasAt(operation, locator) ? valueAt(operation, locator) : defaultInput(input);
+    const content = pathValues(operation, input, path, locator);
+    if (slot.innerHTML !== content) slot.innerHTML = content;
+  });
+  const inputs = previewInputs(operation);
+  document.querySelectorAll("[data-input-result]").forEach(slot => {
+    const name = slot.dataset.inputResult;
+    const content = inputs.has(name)
+      ? exampleValue(inputs.get(name), `data-preview-input-value="${html(name)}"`) : "";
+    if (slot.innerHTML !== content) slot.innerHTML = content;
+  });
+  const first = document.querySelector("[data-preview-input-value]");
+  if (first && state.selection.type === "step") first.id = "preview-source";
+  const error = document.querySelector("#preview-error");
+  if (error) error.textContent = state.preview?.message || "";
   document.querySelectorAll("[data-preview-slot]").forEach(slot => {
     slot.innerHTML = previewStage(
       operation,
@@ -3788,10 +3937,10 @@ function refreshNestedOptions() {
   });
 }
 
-function previewSource(operation) {
+function previewInputs(operation) {
   const preview = state.preview?.step === operation.id ? state.preview : null;
   if (!preview) {
-    return "";
+    return new Map();
   }
   const definition = definitionOf(operation.use);
   const previewInputs = preview.inputs || {};
@@ -3816,36 +3965,54 @@ function previewSource(operation) {
     .filter(input => input.type !== "path" && input.type !== "steps" && !consumed.has(input.name))
     .filter(input => Object.hasOwn(previewInputs, input.name))
     .forEach(input => values.push([input.name, previewInputs[input.name]]));
-  const returned = preview.returns || {};
-  const outputs = definition.returns.flatMap(port => Object.hasOwn(returned, port.name)
-    ? [[port.name, returned[port.name]]]
-    : []);
-  if (!values.length && preview.status !== "succeeded") {
-    return `
-      <section class="inspector-section preview-error">
-        <strong>Preview unavailable</strong>
-        <p>${html(preview.message)}</p>
-      </section>`;
-  }
-  return `
-    <section class="inspector-section">
-      <div class="section-heading"><strong>Built example</strong><span>Resolved inputs</span></div>
-      ${values.map(([name, value], index) => `
-        <div class="preview-source">
-          <span>${html(inputLabel(name))}</span>
-          <output ${index === 0 ? 'id="preview-source"' : ""} data-preview-input-value="${html(name)}">${
-            html(previewValue(value))
-          }</output>
-        </div>`).join("")}
-    </section>
-    ${outputs.length ? `<section class="inspector-section">
-      <div class="section-heading"><strong>Built output</strong><span>Actual value</span></div>
-      ${outputs.map(([name, value]) => `<div class="preview-source">
-        <span>${html(inputLabel(name))}</span><output data-preview-output="${html(name)}">${
-          html(previewValue(value))
-        }</output>
-      </div>`).join("")}
-    </section>` : ""}`;
+  return new Map(values);
+}
+
+function observedExampleContext(operation, after = false) {
+  if (state.build !== "Built" || state.pendingProject) return { status: "Pending build" };
+  const selected = selectedTraceCase();
+  const example = selected && state.traceCases.find(candidate => candidate.id === selected.id);
+  if (!example) return { status: state.traceController ? "Loading example" : "Unavailable" };
+  if (["queued", "running"].includes(example.status)) return { status: "Example running" };
+  const projection = example.projection;
+  if (state.traceContext === "input" && !plainObject(projection)) return { status: "Not reached" };
+  if (after && state.traceContext !== "input"
+      && definitionFor(operation)?.kind !== "trigger") return { status: "Pending build" };
+  const context = state.traceContext === "trigger" ? example.initial_context
+    : after || state.traceContext === "output" ? projection?.context : projection?.input_context;
+  return plainObject(context) ? { root: { context } } : { status: "Unavailable" };
+}
+
+function pathValues(operation, input, path, locator) {
+  if (!path?.length) return "";
+  const before = observedExampleContext(operation);
+  if (before.status) return `<span class="value-status">${before.status}</span>`;
+  const value = valueAt(before.root, path);
+  if (definitionFor(operation)?.kind === "trigger") return exampleValue(value, 'data-path-value="after"');
+  const received = locator[0] === "receives" ? `data-preview-input-value="${html(locator[1])}"` : "";
+  const source = exampleValue(value, `data-path-value="before" ${received}`);
+  if (input.access === "read") return source;
+  const after = observedExampleContext(operation, true);
+  const result = after.status ? `<span class="value-status">${after.status}</span>`
+    : exampleValue(valueAt(after.root, path), `data-path-value="after"${
+      locator[0] === "returns" ? ` data-preview-output="${html(locator[1])}"` : ""}`);
+  return `${source}<span class="value-arrow" aria-label="becomes">&rarr;</span>${result}`;
+}
+
+function pathChoiceValue(operation, path) {
+  const observation = observedExampleContext(operation);
+  return observation.status ? `<span class="value-status">${observation.status}</span>`
+    : exampleValue(valueAt(observation.root, path), "", false);
+}
+
+function exampleValue(value, attributes = "", expandable = true) {
+  const source = value === undefined ? "Missing" : previewValue(value);
+  if (source.length <= 80) return `<output ${attributes}>${html(source)}</output>`;
+  const summary = Array.isArray(value) ? `Array (${value.length})`
+    : plainObject(value) && !exactNumber(value) ? `Object (${Object.keys(value).length} fields)`
+    : source.slice(0, 77) + "...";
+  return expandable ? `<details class="example-value"><summary>${html(summary)}</summary>
+      <output ${attributes}>${html(source)}</output></details>` : `<output>${html(summary)}</output>`;
 }
 
 function previewStage(operation, input, index) {
@@ -3880,9 +4047,8 @@ function renderRunResult() {
 
 function dirty(projectChanged = true) {
   if (projectChanged) {
-    propagateSharedOperation();
-    if (state.jsonDraft && !node(state.jsonDraft.node)) {
-      state.jsonDraft = null;
+    if (state.builtProject && !state.builtProject.nodes.some(operation => operation.id === state.selection.id)) {
+      state.revealNode = state.selection.id;
     }
     clearPreview(false, state.selection.type === "trigger");
     resetMetrics();
@@ -3891,7 +4057,9 @@ function dirty(projectChanged = true) {
     state.runResult = "";
   }
   state.revision++;
-  state.diagnostics = [];
+  if (projectChanged) {
+    state.diagnostics = state.diagnostics.filter(diagnostic => diagnostic.code.startsWith("CREATOR_"));
+  }
   state.localDiagnostics = [];
   clearTimeout(state.saveTimer);
   state.saveTimer = window.setTimeout(() => {
@@ -3915,7 +4083,7 @@ function enqueueWrite(write) {
     : write;
   if (!state.writeActive) {
     state.writeActive = true;
-    void drainWrites();
+    state.writePromise = drainWrites();
   }
 }
 
@@ -3926,19 +4094,37 @@ async function drainWrites() {
     await save(write.revision, write.projectChanged, write.projectSource, write.creatorSource);
   }
   state.writeActive = false;
+  window.setTimeout(() => {
+    if (state.build === "Built" && !state.pendingProject && !state.writeActive && !state.editorController) {
+      void loadEditor(state.selection.id).then(loaded => {
+        if (loaded !== "loaded") return;
+        state.worldNodes = new Map(state.project.nodes.map(operation => [operation.id, operation]));
+        state.worldGroups = new Map(state.creator.groups.map(group => [group.id, group]));
+        if (state.inspectorMode === "groups") render();
+        else applyExampleCoverage();
+        void requestSelectedTrace();
+      });
+    }
+  }, 0);
 }
 
 async function save(revision, projectChanged, projectSource, creatorSource) {
   if (revision !== state.revision) {
+    state.pendingProject ||= projectChanged;
     return false;
   }
   try {
+    const project = parseExact(projectSource);
+    const creator = parseExact(creatorSource);
     let payload = null;
-    if (projectChanged) {
+    const changes = projectChanged ? documentChanges(state.builtProject, project) : {};
+    const removedFlows = [...state.removedFlows];
+    if (removedFlows.length) changes.remove_flows = removedFlows;
+    if (Object.keys(changes).length) {
       const projectResponse = await fetch("/api/project", {
-        method: "POST",
+        method: "PATCH",
         headers: mutationHeaders(),
-        body: projectSource
+        body: JSON.stringify({ revision: state.projectVersion, changes })
       });
       payload = parseExact(await projectResponse.text());
       if (!projectResponse.ok) {
@@ -3956,35 +4142,50 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
         }
         return false;
       }
+      // A stale UI response still advances the transport baseline for the next queued save.
+      state.projectVersion = payload.revision;
+      state.builtProject = project;
+      state.removedFlows = state.removedFlows.filter(id => !removedFlows.includes(id));
+      state.pendingPrune ||= removedFlows.length > 0;
+      state.workspace = payload.workspace;
+      state.sceneDirty = true;
     }
-    const creatorResponse = await fetch("/api/creator", {
-      method: "POST",
-      headers: mutationHeaders(),
-      body: creatorSource
-    });
-    payload = parseExact(await creatorResponse.text());
+    const metadataChanges = documentChanges(state.savedCreator, creator);
+    if (state.pendingPrune) metadataChanges.prune_removed_steps = true;
+    if (Object.keys(metadataChanges).length) {
+      const creatorResponse = await fetch("/api/creator", {
+        method: "PATCH",
+        headers: mutationHeaders(),
+        body: JSON.stringify({ revision: state.creatorVersion, changes: metadataChanges })
+      });
+      payload = parseExact(await creatorResponse.text());
+      if (!creatorResponse.ok) {
+        if (revision === state.revision) {
+          state.diagnostics = payload.diagnostics || [{
+            code: "CREATOR_METADATA_SAVE_FAILED",
+            message: payload.message || "Creator metadata could not be saved.",
+            path: ""
+          }];
+          state.build = "Not saved";
+          render();
+        }
+        return false;
+      }
+      state.creatorVersion = payload.creator_revision;
+      state.savedCreator = creator;
+      state.pendingPrune = false;
+    }
     if (revision !== state.revision) {
-      return creatorResponse.ok;
+      return true;
     }
-    if (payload.application) {
+    if (payload?.application) {
       replaceApplication(payload.application);
     }
-    if (!creatorResponse.ok) {
-      state.diagnostics = payload.diagnostics || [{
-        code: "CREATOR_METADATA_SAVE_FAILED",
-        message: payload.message || "Creator metadata could not be saved.",
-        path: ""
-      }];
-      state.build = projectChanged ? "Built" : state.build;
-      render();
-      return false;
+    state.build = Object.keys(documentChanges(state.builtProject, state.project)).length ? "Not built" : "Built";
+    if (state.build === "Built") {
+      state.diagnostics = payload?.diagnostics || state.diagnostics;
     }
-    state.project = payload.project;
-    state.creator = payload.creator;
-    state.builtProject = clone(payload.project);
-    state.workspace = payload.workspace;
-    state.diagnostics = [];
-    state.build = "Built";
+    state.sceneDirty = true;
     if (state.pathPicker) {
       renderBuildStatus();
       if (!refreshPathPicker()) {
@@ -4012,6 +4213,27 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     return false;
   }
 }
+
+function documentChanges(before, after) {
+  const entries = value => Object.fromEntries(value.map(entry => [entry.id, entry]));
+  const connections = value => Object.groupBy(value, link => link.from);
+  const changed = (left, right) => Object.fromEntries(
+    [...new Set([...Object.keys(left), ...Object.keys(right)])]
+      .filter(key => JSON.stringify(left[key]) !== JSON.stringify(right[key]))
+      .map(key => [key, Object.hasOwn(right, key) ? right[key] : null])
+  );
+  return Object.fromEntries([...new Set([...Object.keys(before), ...Object.keys(after)])].flatMap(key => {
+    const left = before[key];
+    const right = after[key];
+    if (["nodes", "groups", "links", "steps"].includes(key)) {
+      const index = key === "steps" ? value => value : key === "links" ? connections : entries;
+      const changes = changed(index(left), index(right));
+      return Object.keys(changes).length ? [[key, changes]] : [];
+    }
+    return JSON.stringify(left) === JSON.stringify(right) ? [] : [[key, right ?? null]];
+  }));
+}
+
 function changedIds() {
   const changed = new Set();
   if (state.build === "Built" || !state.builtProject) {
@@ -4083,7 +4305,8 @@ function observationFor(operation) {
   let context = definitionFor(candidate)?.kind === "trigger" ? "trigger" : "input";
   const visited = new Set();
   while (candidate && visited.add(candidate.id)) {
-    const index = built.findIndex(deployed => deployed.id === candidate.id);
+    const index = built.some(deployed => deployed.id === candidate.id)
+      ? Number(state.editor.nodes[candidate.id]?.index ?? -1) : -1;
     if (index >= 0) {
       return { node: index, context };
     }
@@ -4129,10 +4352,57 @@ function collectPaths(value, path, entries) {
 function addableDefinitions() {
   return state.catalog.filter(definition => definition.kind === "step");
 }
+
 function iconMarkup(icon) {
-  return icon?.media_type && icon?.data
-    ? `<img class="flow-icon" src="${html("data:" + icon.media_type + ";base64," + icon.data)}" alt="">`
-    : "";
+  const url = iconUrl(icon);
+  return url ? `<img class="flow-icon" src="${html(url)}" alt="">` : "";
+}
+
+function iconUrl(icon) {
+  if (!icon?.media_type || !icon?.data) {
+    return "";
+  }
+  const key = iconKey(icon);
+  if (state.iconUrls.has(key)) {
+    return state.iconUrls.get(key);
+  }
+  try {
+    const source = atob(icon.data);
+    const bytes = new Uint8Array(source.length);
+    for (let index = 0; index < source.length; index++) {
+      bytes[index] = source.charCodeAt(index);
+    }
+    const url = URL.createObjectURL(new Blob([bytes], { type: icon.media_type }));
+    state.iconUrls.set(key, url);
+    return url;
+  } catch (_ignored) {
+    return "";
+  }
+}
+
+function iconKey(icon) {
+  return icon.media_type + "\n" + icon.data;
+}
+
+function releaseUnusedIconUrls() {
+  const live = new Set(state.icons.map(iconKey));
+  Object.values(state.world?.scene?.icons || {}).forEach(icon => live.add(iconKey(icon)));
+  state.creator.groups.forEach(group => {
+    if (group.icon) {
+      live.add(iconKey(group.icon));
+    }
+  });
+  Object.values(state.creator.steps).forEach(presentation => {
+    if (presentation.icon) {
+      live.add(iconKey(presentation.icon));
+    }
+  });
+  state.iconUrls.forEach((url, key) => {
+    if (!live.has(key)) {
+      URL.revokeObjectURL(url);
+      state.iconUrls.delete(key);
+    }
+  });
 }
 
 function triggerNodes() {
@@ -4144,10 +4414,10 @@ function availableTriggers() {
     if (definition.kind !== "trigger" || !definition.examples?.length) {
       return false;
     }
-    const used = state.project.nodes.filter(candidate => candidate.use === definition.id).length;
-    const sourceUsed = definition.source && state.project.nodes.some(candidate =>
-      definitionOf(candidate.use)?.source?.name === definition.source.name
-    );
+    const used = Number(state.editor.used[definition.id] || 0)
+      + state.project.nodes.filter(candidate => candidate.use === definition.id && !state.builtProject.nodes.some(old => old.id === candidate.id)).length;
+    const sourceUsed = definition.source && state.catalog.some(candidate =>
+      candidate.source?.name === definition.source.name && Number(state.editor.used[candidate.id] || 0) > 0);
     return used < Number(definition.maximum_instances) && !sourceUsed;
   });
 }
@@ -4180,23 +4450,6 @@ function authoredOutcomes(candidate) {
 function authoredOutcomeInput(definition) {
   return (definition?.inputs || [])
     .find(field => field.type === "candidates" && field.authored_outcomes);
-}
-
-function alignedCandidates(operation, index) {
-  return structuralStepIds(operation.id).map(id => {
-    const target = node(id);
-    return { operation: target, candidate: authoredOutcomes(target)[index] };
-  });
-}
-
-function alignedOutcome(source, target, outcome) {
-  const index = authoredOutcomes(source).findIndex(candidate => candidate.outcome === outcome);
-  return index < 0 ? outcome : authoredOutcomes(target)[index]?.outcome || "";
-}
-
-function topologyOutcome(operation, outcome) {
-  const index = authoredOutcomes(operation).findIndex(candidate => candidate.outcome === outcome);
-  return index < 0 ? outcome : "@case[" + index + "]";
 }
 
 function outcomeLabel(candidate, outcome) {
@@ -4258,71 +4511,26 @@ function reachableSteps(trigger) {
   return values;
 }
 
-function groupOccurrence(id) {
-  for (const group of state.creator.groups) {
-    const occurrence = group.occurrences.find(candidate => candidate.id === id);
-    if (occurrence) {
-      return { group, occurrence };
-    }
-  }
-  return null;
-}
-
-function currentGroup() {
-  return groupOccurrence(state.groupStack.at(-1));
-}
-
-function occurrenceSteps(occurrence) {
-  const ids = new Set(Object.values(occurrence.steps));
-  const trigger = node(occurrence.flow);
-  return trigger ? reachableSteps(trigger).filter(candidate => ids.has(candidate.id)) : [];
-}
-
-function occurrenceRegion(occurrence) {
-  const operations = occurrenceSteps(occurrence);
-  const ids = new Set(operations.map(operation => operation.id));
-  const incoming = state.project.links.filter(link => ids.has(link.to) && !ids.has(linkNode(link)));
-  const exits = operations.flatMap(operation => displayOutcomes(operation).flatMap(outcome => {
-    const destinations = outcomeDestinations(operation, outcome);
-    return destinations.length !== 1 || !ids.has(destinations[0])
-      ? [{ source: operation.id, outcome }]
-      : [];
-  }));
-  return {
-    operations,
-    entry: incoming.length === 1 ? node(incoming[0].to) : null,
-    exits
-  };
-}
-
-function occurrenceTopology(occurrence) {
-  const concreteSlots = new Map(Object.entries(occurrence.steps).map(([slot, id]) => [id, slot]));
-  const incoming = state.project.links.find(link =>
-    concreteSlots.has(link.to) && !concreteSlots.has(linkNode(link))
-  );
-  return JSON.stringify({
-    entry: concreteSlots.get(incoming?.to) || "",
-    nodes: Object.keys(occurrence.steps).sort().map(slot => {
-      const operation = node(occurrence.steps[slot]);
-      return [slot, operation?.use || "", outcomes(operation).map(outcome => [
-        topologyOutcome(operation, outcome),
-        concreteSlots.get(outcomeTarget(operation, outcome)) || ""
-      ])];
-    })
-  });
-}
-
-function occurrenceSlots(occurrence) {
-  const slots = new Map(Object.entries(occurrence.steps).map(([slot, id]) => [id, slot]));
-  return occurrenceSteps(occurrence).map(step => slots.get(step.id));
+function groupForStep(id) {
+  const groupId = stepPresentation(id).group;
+  return state.creator.groups.find(group => group.id === groupId) || null;
 }
 
 function groupName(group) {
-  if (group?.name) {
-    return group.name;
-  }
-  const first = group?.occurrences[0] && occurrenceSteps(group.occurrences[0])[0];
-  return first ? stepPresentation(first.id).name || stepName(definitionFor(first)) : "Group";
+  return group?.name || "Group";
+}
+
+function groupInventory() {
+  return new Map(Object.entries(state.editor.groups).map(([id, counts]) => [id, Number(counts.steps)]));
+}
+
+function groupPages() {
+  const offset = Number(state.editor.offset);
+  const more = offset + 64 < Number(state.editor.group_matches);
+  return offset || more ? `<div class="inspector-actions">
+    <button class="button" data-group-page="${Math.max(0, offset - 64)}" ${offset ? "" : "disabled"}>Previous</button>
+    <button class="button" data-group-page="${offset + 64}" ${more ? "" : "disabled"}>Next</button>
+  </div>` : "";
 }
 
 function stepPresentation(id) {
@@ -4348,141 +4556,14 @@ function setOutcomeLabel(id, outcome, label) {
   }
 }
 
-function startGroupDraft(group = null) {
-  if (group && !state.creator.groups.some(candidate => candidate.id === group)) {
-    return;
-  }
-  state.groupDraft = { group, start: null, end: null };
-  state.inspectorMode = "groups";
-  render();
-}
-
-function chooseGroupBoundary(id) {
-  if (!state.groupDraft || !node(id) || definitionFor(node(id))?.kind !== "step") {
-    return false;
-  }
-  if (!state.groupDraft.start) {
-    state.groupDraft.start = id;
-    render();
-    return true;
-  }
-  state.groupDraft.end = id;
-  const selection = groupRange(state.groupDraft.start, id);
-  if (!selection.length) {
-    state.localDiagnostics = [{
-      code: "CREATOR_GROUP_PATH_INVALID",
-      message: "Group start and end must share one path in one flow.",
-      path: "groups",
-      node: state.groupDraft.start
-    }];
-    render();
-    return true;
-  }
-  const trigger = flowTrigger(selection[0]);
-  const occupied = new Set(state.creator.groups.flatMap(group => group.occurrences
-    .filter(occurrence => occurrence.parent === (currentGroup()?.occurrence.id || null))
-    .flatMap(occurrence => Object.values(occurrence.steps))));
-  if (selection.some(step => occupied.has(step.id))) {
-    state.localDiagnostics = [{
-      code: "CREATOR_GROUP_RANGE_OVERLAP",
-      message: "A Step can belong to only one group at this level.",
-      path: "groups",
-      node: selection.find(step => occupied.has(step.id)).id
-    }];
-    render();
-    return true;
-  }
-  const existing = state.groupDraft.group
-    ? state.creator.groups.find(group => group.id === state.groupDraft.group)
-    : null;
-  const slots = existing ? occurrenceSlots(existing.occurrences[0]) : [];
-  if (existing && slots.length !== selection.length) {
-    state.localDiagnostics = [{
-      code: "CREATOR_GROUP_RANGE_SIZE_MISMATCH",
-      message: "This occurrence must contain " + slots.length + " Steps.",
-      path: "groups",
-      node: selection[0].id
-    }];
-    render();
-    return true;
-  }
-  const mappedSteps = Object.fromEntries(selection.map((step, index) => [
-    slots[index] || opaqueId("slot"),
-    step.id
-  ]));
-  if (existing && occurrenceTopology(existing.occurrences[0]) !== occurrenceTopology({ steps: mappedSteps })) {
-    state.localDiagnostics = [{
-      code: "CREATOR_GROUP_TOPOLOGY_MISMATCH",
-      message: "This occurrence must have the same Steps and routes as the existing group.",
-      path: "groups",
-      node: selection[0].id
-    }];
-    render();
-    return true;
-  }
-  const occurrence = {
-    id: opaqueId("occurrence"),
-    flow: trigger.id,
-    parent: currentGroup()?.occurrence.id || null,
-    steps: mappedSteps
-  };
-  if (existing) {
-    existing.occurrences.push(occurrence);
-  } else {
-    state.creator.groups.push({
-      id: opaqueId("group"),
-      name: selection.length === 1
-        ? stepPresentation(selection[0].id).name || stepName(definitionFor(selection[0]))
-        : "Step Group",
-      occurrences: [occurrence]
-    });
-  }
-  state.groupDraft = null;
-  state.selection = { type: "group", id: occurrence.id };
-  state.inspectorMode = "inspect";
-  creatorDirty();
-  return true;
-}
-
-function groupRange(startId, endId) {
-  const trigger = flowTrigger(node(startId));
-  if (!trigger || flowTrigger(node(endId))?.id !== trigger.id) {
-    return [];
-  }
-  const direct = groupPath(startId, endId);
-  if (direct.length) {
-    return direct;
-  }
-  return groupPath(endId, startId);
-}
-
-function groupPath(startId, endId) {
-  const path = [];
-  let current = endId;
-  const seen = new Set();
-  while (current && current !== "end" && seen.add(current)) {
-    const operation = node(current);
-    if (!operation || definitionFor(operation)?.kind !== "step") {
-      return [];
-    }
-    path.push(operation);
-    if (current === startId) {
-      return path.reverse();
-    }
-    const incoming = state.project.links.filter(link => link.to === current);
-    current = incoming.length === 1 ? linkNode(incoming[0]) : "";
-  }
-  return [];
-}
-
-function reachable(start, reverse) {
+function reachable(start) {
   const result = new Set([start]);
   const pending = [start];
   for (let index = 0; index < pending.length; index++) {
     const current = pending[index];
     const next = state.project.links
-      .filter(link => reverse ? link.to === current : linkNode(link) === current)
-      .map(link => reverse ? linkNode(link) : link.to)
+      .filter(link => linkNode(link) === current)
+      .map(link => link.to)
       .filter(id => id !== "end");
     next.forEach(id => {
       if (!result.has(id)) {
@@ -4498,173 +4579,76 @@ function flowTrigger(operation) {
   if (!operation) {
     return null;
   }
-  return triggerNodes().find(trigger => reachable(trigger.id, false).has(operation.id)) || null;
+  return node(state.editor.nodes[operation.id]?.trigger)
+    || triggerNodes().find(trigger => reachable(trigger.id).has(operation.id)) || null;
 }
 
-function openGroup(id) {
-  if (!groupOccurrence(id)) {
-    return;
-  }
-  state.groupStack.push(id);
-  state.selection = { type: "group", id };
-  state.inspectorMode = "inspect";
+async function openGroupManager(id = "") {
+  const selected = selectedOperation();
+  state.managedGroup = id || groupForStep(selected?.id)?.id || state.creator.groups[0]?.id || "";
+  state.groupQuery = "";
+  state.groupPicker = null;
+  state.inspectorMode = "groups";
+  if (await loadEditor(state.selection.id, state.managedGroup, "") !== "loaded") return;
+  showInspector(true);
   render();
 }
 
-function closeGroup() {
-  state.groupStack.pop();
-  const current = currentGroup();
-  state.selection = current
-    ? { type: "group", id: current.occurrence.id }
-    : { type: "app", id: "app" };
-  render();
-}
-
-function deleteGroup(id) {
-  const item = groupOccurrence(id);
-  if (!item) {
-    return;
+function createGroup() {
+  let index = state.creator.groups.length + 1;
+  const names = new Set(state.creator.groups.map(group => groupName(group)));
+  while (names.has("Group " + index)) {
+    index++;
   }
-  const removed = new Map(item.group.occurrences.map(occurrence => [occurrence.id, occurrence.parent]));
-  state.creator.groups = state.creator.groups.filter(group => group.id !== item.group.id);
-  state.creator.groups.forEach(group => group.occurrences.forEach(occurrence => {
-    while (removed.has(occurrence.parent)) {
-      occurrence.parent = removed.get(occurrence.parent);
-    }
-  }));
-  state.groupStack = state.groupStack.filter(occurrence => groupOccurrence(occurrence));
-  state.selection = { type: "app", id: "app" };
+  const group = { id: opaqueId("group"), name: "Group " + index };
+  state.creator.groups.push(group);
+  state.managedGroup = group.id;
   creatorDirty();
 }
 
-function occurrenceMemberships(stepId) {
-  const memberships = [];
-  for (const group of state.creator.groups) {
-    for (const occurrence of group.occurrences) {
-      const slot = Object.entries(occurrence.steps).find(([_slot, id]) => id === stepId)?.[0];
-      if (slot) {
-        memberships.push({ group, occurrence, slot });
-      }
-    }
+function setStepGroup(stepId, groupId, save = true) {
+  const operation = node(stepId);
+  if (!operation || definitionFor(operation)?.kind !== "step"
+      || (groupId && !state.creator.groups.some(group => group.id === groupId))) {
+    return false;
   }
-  return memberships;
-}
-
-function sharedMembership(stepId) {
-  const memberships = occurrenceMemberships(stepId)
-    .filter(membership => membership.group.occurrences.length > 1);
-  const current = currentGroup()?.occurrence.id;
-  return memberships.find(membership => membership.occurrence.id === current)
-    || memberships[0] || null;
-}
-
-function structuralStepIds(stepId) {
-  const shared = state.editScope === "all" ? sharedMembership(stepId) : null;
-  if (!shared) {
-    return [stepId];
-  }
-  const result = new Set(shared.group.occurrences.map(occurrence => occurrence.steps[shared.slot]));
-  const pending = [...result];
-  for (let index = 0; index < pending.length; index++) {
-    occurrenceMemberships(pending[index])
-      .filter(membership => membership.group.occurrences.length > 1)
-      .forEach(membership => membership.group.occurrences.forEach(occurrence => {
-        const target = occurrence.steps[membership.slot];
-        if (!result.has(target)) {
-          result.add(target);
-          pending.push(target);
-        }
-      }));
-  }
-  return [...result];
-}
-
-function chooseSharedAction(action) {
-  const membership = sharedMembership(state.selection.id);
-  if (!membership) {
-    state.editScope = "this";
-    render();
-    return;
-  }
-  if (action === "all") {
-    state.editScope = "all";
-  } else if (action === "detach" || action === "variant") {
-    const variant = clone(membership.group);
-    membership.group.occurrences = membership.group.occurrences
-      .filter(occurrence => occurrence !== membership.occurrence);
-    if (action === "variant") {
-      state.creator.groups.push({
-        ...variant,
-        id: opaqueId("group"),
-        name: groupName(membership.group) + " Variant",
-        occurrences: [membership.occurrence]
-      });
-    } else {
-      state.creator.groups.forEach(group => group.occurrences.forEach(occurrence => {
-        if (occurrence.parent === membership.occurrence.id) {
-          occurrence.parent = membership.occurrence.parent;
-        }
-      }));
-      state.groupStack = state.groupStack.filter(id => groupOccurrence(id));
-    }
-    state.editScope = "this";
-    creatorDirty();
+  const presentation = state.creator.steps[stepId] || {};
+  if (groupId) {
+    presentation.group = groupId;
+    state.creator.steps[stepId] = presentation;
   } else {
-    state.selection = { type: "group", id: membership.occurrence.id };
-    state.editScope = null;
+    delete presentation.group;
+    if (Object.keys(presentation).length) {
+      state.creator.steps[stepId] = presentation;
+    } else {
+      delete state.creator.steps[stepId];
+    }
   }
-  render();
+  state.groupPicker = null;
+  if (save) {
+    state.revealNode = stepId;
+    creatorDirty();
+  }
+  return true;
 }
 
-function propagateSharedOperation() {
-  if (state.editScope !== "all" || state.selection.type !== "step") {
+function deleteGroup(id) {
+  if (!state.creator.groups.some(group => group.id === id)) {
     return;
   }
-  const membership = sharedMembership(state.selection.id);
-  const source = node(state.selection.id);
-  if (!membership || !source) {
-    return;
-  }
-  membership.group.occurrences.forEach(occurrence => {
-    const target = node(occurrence.steps[membership.slot]);
-    if (target && target !== source) {
-      target.use = source.use;
-      target.inputs = sharedInputs(source, target);
+  Object.keys(state.creator.steps).forEach(stepId => {
+    if (state.creator.steps[stepId].group === id) {
+      setStepGroup(stepId, "", false);
     }
   });
-}
-
-function sharedInputs(source, target) {
-  const inputs = clone(source.inputs);
-  const authored = authoredOutcomeInput(definitionFor(source));
-  const sourceCandidates = authored && inputs?.[authored.name];
-  const targetCandidates = authored && target.inputs?.[authored.name];
-  if (Array.isArray(sourceCandidates) && Array.isArray(targetCandidates)
-      && sourceCandidates.length === targetCandidates.length) {
-    sourceCandidates.forEach((candidate, index) => candidate.outcome = targetCandidates[index].outcome);
-  }
-  return inputs;
+  state.creator.groups = state.creator.groups.filter(group => group.id !== id);
+  state.managedGroup = state.creator.groups[0]?.id || "";
+  state.revealNode = state.selection.id;
+  creatorDirty();
 }
 
 function removeCreatorReferences(ids) {
   ids.forEach(id => delete state.creator.steps[id]);
-  const removedParents = new Map();
-  state.creator.groups.forEach(group => {
-    group.occurrences.forEach(occurrence => {
-      occurrence.steps = Object.fromEntries(Object.entries(occurrence.steps)
-        .filter(([_slot, id]) => !ids.has(id)));
-      if (!Object.keys(occurrence.steps).length) {
-        removedParents.set(occurrence.id, occurrence.parent);
-      }
-    });
-    group.occurrences = group.occurrences.filter(occurrence => Object.keys(occurrence.steps).length);
-  });
-  state.creator.groups.forEach(group => group.occurrences.forEach(occurrence => {
-    while (removedParents.has(occurrence.parent)) {
-      occurrence.parent = removedParents.get(occurrence.parent);
-    }
-  }));
-  state.creator.groups = state.creator.groups.filter(group => group.occurrences.length);
 }
 
 function linkNode(link) {
@@ -4684,12 +4668,17 @@ function selectedOperation() {
 }
 
 function selectStep(id) {
+  showInspector(true);
   clearPreview();
   resetMetrics();
   state.exampleDraft = null;
   state.selection = { type: "step", id };
+  const trigger = triggerFor(id);
+  if (trigger && state.exampleTrigger !== trigger.id) {
+    state.exampleTrigger = trigger.id;
+    state.exampleIndex = 0;
+  }
   state.inspectorMode = "inspect";
-  state.editScope = null;
   state.pathPicker = null;
   clearInputQueries();
   render();
@@ -4712,19 +4701,21 @@ function presentationOwner(target) {
 }
 
 function updatePresentation(target, field, source) {
-  if (!["name", "color"].includes(field)) {
+  if (!["name", "color", "shape", "aspect", "roundness"].includes(field)) {
     return;
   }
   const trimmed = source.trim();
   const value = field === "color" && /^#[0-9a-fA-F]{6}$/.test(trimmed)
     ? trimmed.toUpperCase()
     : trimmed;
-  setPresentation(target, field, value || undefined);
+  const defaults = { shape: "rectangle", aspect: 2.625, roundness: 0 };
+  const parsed = ["aspect", "roundness"].includes(field) && value !== "" ? Number(value) : value;
+  setPresentation(target, field, parsed === "" || parsed === defaults[field] ? undefined : parsed);
 }
 
 function setPresentation(target, field, value) {
   const owner = presentationOwner(target);
-  if (!owner || !["name", "color", "icon"].includes(field)) {
+  if (!owner || !["name", "color", "icon", "shape", "aspect", "roundness"].includes(field)) {
     return;
   }
   if (value !== undefined) {
@@ -4733,24 +4724,6 @@ function setPresentation(target, field, value) {
     delete owner[field];
   }
   const [kind, id] = target.split(":", 2);
-  if (kind === "step" && state.editScope === "all") {
-    const membership = sharedMembership(id);
-    membership?.group.occurrences.forEach(occurrence => {
-      const targetId = occurrence.steps[membership.slot];
-      if (targetId === id) {
-        return;
-      }
-      state.creator.steps[targetId] = state.creator.steps[targetId] || {};
-      if (value === undefined) {
-        delete state.creator.steps[targetId][field];
-      } else {
-        state.creator.steps[targetId][field] = clone(value);
-      }
-      if (!Object.keys(state.creator.steps[targetId]).length) {
-        delete state.creator.steps[targetId];
-      }
-    });
-  }
   if (kind === "step" && !Object.keys(owner).length) {
     delete state.creator.steps[id];
   }
@@ -4762,7 +4735,7 @@ function node(id) {
 }
 
 function definitionOf(id) {
-  return state.catalog.find(definition => definition.id === id);
+  return state.definitions.get(id);
 }
 
 function stepKind(kind) {
@@ -4908,10 +4881,27 @@ function html(value) {
     .replaceAll("'", "&#039;");
 }
 
+function showInspector(open) {
+  document.querySelector("#inspector").hidden = !open;
+  document.querySelector("#open-inspector").hidden = open;
+  document.querySelector(".creator-shell").classList.toggle("inspector-closed", !open);
+  if (!open) document.querySelector("#graph").focus({ preventScroll: true });
+}
+
 document.addEventListener("click", event => {
   const target = event.target;
-  if (target.closest("#close-group")) {
-    closeGroup();
+  if (target.closest("#close-inspector")) {
+    showInspector(false);
+    return;
+  }
+  if (target.closest("#open-inspector")) {
+    showInspector(true);
+    document.querySelector("#close-inspector").focus({ preventScroll: true });
+    return;
+  }
+  if (target.closest("#close-group-manager")) {
+    state.inspectorMode = "inspect";
+    render();
     return;
   }
   const inspectorMode = target.closest("[data-inspector-mode]");
@@ -4923,37 +4913,47 @@ document.addEventListener("click", event => {
     return;
   }
   if (target.closest("#new-group")) {
-    startGroupDraft();
+    createGroup();
     return;
   }
-  const addOccurrence = target.closest("[data-add-occurrence]");
-  if (addOccurrence) {
-    startGroupDraft(addOccurrence.dataset.addOccurrence);
-    return;
-  }
-  if (target.closest("#cancel-group-draft")) {
-    state.groupDraft = null;
-    render();
-    return;
-  }
-  if (target.closest("#open-group") && state.selection.type === "group") {
-    openGroup(state.selection.id);
-    return;
-  }
-  if (target.closest("#delete-group") && state.selection.type === "group") {
-    deleteGroup(state.selection.id);
-    return;
-  }
-  const managed = target.closest("[data-manage-occurrence]");
+  const managed = target.closest("[data-manage-group]");
   if (managed) {
-    state.selection = { type: "group", id: managed.dataset.manageOccurrence };
-    state.inspectorMode = "inspect";
+    state.managedGroup = managed.dataset.manageGroup;
     render();
     return;
   }
-  const sharedAction = target.closest("[data-shared-action]");
-  if (sharedAction) {
-    chooseSharedAction(sharedAction.dataset.sharedAction);
+  const groupPage = target.closest("[data-group-page]");
+  if (groupPage) {
+    void loadEditor(state.selection.id, state.managedGroup, state.groupPicker?.query || state.groupQuery,
+      Number(groupPage.dataset.groupPage)).then(loaded => { if (loaded === "loaded") render(); });
+    return;
+  }
+  if (target.closest("#manage-groups")) {
+    openGroupManager();
+    return;
+  }
+  if (target.closest("#choose-group") && state.selection.type === "step") {
+    state.groupPicker = { step: state.selection.id, query: "" };
+    render();
+    document.querySelector("#group-picker-search")?.focus();
+    return;
+  }
+  const assignGroup = target.closest("[data-assign-group]");
+  if (assignGroup && state.groupPicker) {
+    setStepGroup(state.groupPicker.step, assignGroup.dataset.assignGroup);
+    return;
+  }
+  if (target.closest("#close-group-picker") || target.matches(".group-picker-backdrop")) {
+    state.groupPicker = null;
+    render();
+    return;
+  }
+  if (target.closest("#focus-group")) {
+    focusGroup(state.managedGroup);
+    return;
+  }
+  if (target.closest("#delete-group")) {
+    deleteGroup(state.managedGroup);
     return;
   }
   if (target.closest("#add-trigger") || target.closest("[data-open-picker='trigger']")) {
@@ -5103,8 +5103,7 @@ document.addEventListener("click", event => {
     moveListItem(
       parseToken(moveCandidateButton.dataset.candidateLocator),
       Number(moveCandidateButton.dataset.moveCandidate),
-      Number(moveCandidateButton.dataset.direction),
-      parseToken(moveCandidateButton.dataset.inputMeta)
+      Number(moveCandidateButton.dataset.direction)
     );
     return;
   }
@@ -5172,42 +5171,6 @@ document.addEventListener("click", event => {
     deleteExample();
     return;
   }
-  const step = target.closest("[data-select-step]");
-  if (step) {
-    if (!chooseGroupBoundary(step.dataset.selectStep)) {
-      selectStep(step.dataset.selectStep);
-    }
-    return;
-  }
-  const group = target.closest("[data-select-group]");
-  if (group) {
-    resetMetrics();
-    state.selection = { type: "group", id: group.dataset.selectGroup };
-    state.inspectorMode = "inspect";
-    state.editScope = null;
-    render();
-    return;
-  }
-  const selected = target.closest("[data-select-node]");
-  if (selected) {
-    clearPreview();
-    resetMetrics();
-    state.exampleDraft = null;
-    const id = selected.dataset.selectNode;
-    state.selection = id === "app" ? { type: "app", id } : { type: "trigger", id };
-    state.inspectorMode = "inspect";
-    state.editScope = null;
-    if (id !== "app") {
-      state.exampleIndex = 0;
-    }
-    state.pathPicker = null;
-    clearInputQueries();
-    render();
-    scheduleMetricsPoll(0);
-    if (id !== "app") {
-      requestSelectedTrace();
-    }
-  }
 });
 
 document.addEventListener("input", event => {
@@ -5217,6 +5180,19 @@ document.addEventListener("input", event => {
   } else if (event.target.id === "icon-search" && state.iconPicker) {
     state.iconPicker.query = event.target.value;
     document.querySelector("#icon-options").innerHTML = iconOptions();
+  } else if (event.target.id === "group-search") {
+    state.groupQuery = event.target.value;
+    void loadEditor(state.selection.id).then(loaded => {
+      const list = document.querySelector("#group-results");
+      if (loaded === "loaded" && list) list.innerHTML = groupListMarkup(state.creator.groups.filter(group =>
+        groupName(group).toLowerCase().includes(state.groupQuery.toLowerCase())), state.managedGroup);
+    });
+  } else if (event.target.id === "group-picker-search" && state.groupPicker) {
+    state.groupPicker.query = event.target.value;
+    void loadEditor(state.selection.id, state.managedGroup, state.groupPicker.query).then(loaded => {
+      const list = document.querySelector("#group-picker-options");
+      if (loaded === "loaded" && list) list.innerHTML = groupPickerOptions();
+    });
   } else if (event.target.matches("[data-step-query]")) {
     state.stepQueries[event.target.dataset.stepQuery] = event.target.value;
     const locator = parseToken(event.target.dataset.stepQuery);
@@ -5309,30 +5285,59 @@ document.addEventListener("change", event => {
   } else if (target.matches("[data-color-picker]")) {
     updatePresentation(target.dataset.colorPicker, "color", target.value);
   } else if (target.matches("[data-presentation]")) {
+    if (target.type === "number" && !target.validity.valid) {
+      target.reportValidity();
+      return;
+    }
     updatePresentation(target.dataset.presentationTarget, target.dataset.presentation, target.value);
+  } else if (target.id === "group-boundary") {
+    const group = state.creator.groups.find(candidate => candidate.id === state.managedGroup);
+    if (group) {
+      group.boundary = target.value === "solid" ? undefined : target.value;
+      if (group.boundary === undefined) {
+        delete group.boundary;
+      }
+      creatorDirty();
+    }
   }
 });
 
 document.addEventListener("keydown", event => {
-  if (event.key === "Escape" && (state.picker || state.iconPicker)) {
+  if (event.key !== "Escape") return;
+  if (state.picker || state.iconPicker || state.groupPicker) {
     state.picker = null;
     state.iconPicker = null;
+    state.groupPicker = null;
     render();
     return;
   }
-  if (event.key !== "Enter" && event.key !== " ") {
+  if (state.pathPicker) {
+    closePathPicker();
+    render();
     return;
   }
-  const selectable = event.target.closest("[data-select-node], [data-select-step], [data-select-group]");
-  if (!selectable || event.target !== selectable) {
-    return;
-  }
-  event.preventDefault();
-  selectable.click();
+  showInspector(false);
 });
 
 document.addEventListener("visibilitychange", () => {
+  scheduleWorldObservations();
   if (!document.hidden) {
     scheduleMetricsPoll(0);
   }
+});
+
+document.querySelector("#zoom-out").addEventListener("click", () => state.world?.zoom(1 / 1.4));
+document.querySelector("#zoom-in").addEventListener("click", () => state.world?.zoom(1.4));
+document.querySelector("#zoom-fit").addEventListener("click", () => state.world?.fit());
+window.addEventListener("beforeunload", () => {
+  state.world?.dispose();
+  clearTimeout(state.applicationPollTimer);
+  clearTimeout(state.metricsPollTimer);
+  clearTimeout(state.observationTimer);
+  state.observationController?.abort();
+  state.metricsController?.abort();
+  state.traceController?.abort();
+  state.editorController?.abort();
+  state.iconUrls.forEach(url => URL.revokeObjectURL(url));
+  state.iconUrls.clear();
 });

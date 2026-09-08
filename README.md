@@ -75,6 +75,10 @@ Railix has one functional model and five deliberately non-overlapping ownership 
 `railix.project.json` remains the functional source of truth, including authored Examples.
 `railix.creator.json` remains presentation-only. The generated development application embeds the
 compiled Example inputs; the running application, not Creator, owns their execution and results.
+Creator saves changed Steps, connections, and presentation entries by stable ID. Revision checks
+reject stale saves, and acknowledgements do not resend the project. The browser loads only the
+selected Step's editing neighborhood, paged Group definitions, and the visible scene. Canonical
+graph indexes stay on the Creator server; unloaded Steps do not become browser configuration objects.
 
 See [ROADMAP.md](ROADMAP.md) for exact progress and unsupported scope. [ADR
 0020](adr/0020-creator-first-application-graph.md) owns the active graph, metadata, and workflow
@@ -94,6 +98,19 @@ The checked-in wrapper downloads the pinned Maven version on first use. The norm
 ```sh
 ./mvnw test
 ```
+
+For a focused change, select its public-entrypoint suite without rebuilding the native image:
+
+```sh
+./mvnw -pl modules/railix-creator -am -Dtest=RailixValueNullContractTest,PrimitiveStepsCreatorProjectE2eTest,CreatorEditorE2eTest -Dsurefire.failIfNoSpecifiedTests=false test
+```
+
+For UI work, replace `CreatorEditorE2eTest` with a browser suite such as `CreatorEditorBrowserIT`.
+Keep the two upstream smoke suites: each reactor module requires at least one test. Check that
+the selected suite was discovered.
+Normal verification still requires every configured suite. For asynchronous UI changes, assert
+the visible result with Playwright's retrying assertions; a completed build does not mean its
+canvas refresh has finished.
 
 Before opening or merging a pull request, build and verify every generated application, package,
 and desktop/mobile browser scenario:
@@ -160,9 +177,9 @@ in project files. Treat the complete local URL as a credential while Creator is 
 3. Set its Target to `context.payload.arguments` and its Example payload to `["Hello RAILIX"]`.
 4. Choose **Add next Step**, search for **Lowercase**, and add it as an ordinary graph Step.
 5. Keep Source at `context.payload.arguments[0]` and set Target to `context.result`.
-6. Wait for **Built** and select the CLI Trigger. Creator shows the Example result automatically.
+6. Wait for **Running** and select the CLI Trigger. Creator shows the Example result automatically.
 
-Each ordinary Step remains one graph node until the user explicitly creates a visual group.
+Each ordinary Step remains one graph node whether or not the user assigns it to a visual group.
 Project persistence, structural compilation, development-application replacement, and example
 execution are automatic. The built development application starts its own compiled Examples; the
 compiler and Creator never execute Step handlers.
@@ -276,43 +293,66 @@ controls process status.
 
 ## Creator Metadata
 
-`railix.creator.json` is optional and has only `format`, `groups`, and `steps`. One group occurrence
-over the functional Lowercase Step can be represented as:
+`railix.creator.json` is optional and has only `format`, `groups`, and `steps`. A visual group over
+the functional Lowercase Step can be represented as:
 
 ```json
 {
-  "format": 1,
+  "format": 2,
   "groups": [
     {
       "id": "group-b5b8ad04-ec95-43c3-a32e-e33874b7a402",
       "name": "Normalize result",
       "color": "#147982",
-      "occurrences": [
-        {
-          "id": "occurrence-f2524963-fde3-4bbb-a4f3-c4db188a52db",
-          "flow": "command",
-          "parent": null,
-          "steps": {
-            "slot-bbb92270-6a44-4365-afac-ad3e96a14de7": "lowercase-text"
-          }
-        }
-      ]
+      "boundary": "solid"
     }
   ],
-  "steps": {}
+  "steps": {
+    "lowercase-text": {
+      "group": "group-b5b8ad04-ec95-43c3-a32e-e33874b7a402"
+    }
+  }
 }
 ```
 
-Each occurrence maps stable logical slot IDs to concrete functional Step IDs. Shared occurrences
-use the same slots, allowing explicit **Update all**, **Detach this**, **Create variant**, or
-**Cancel** decisions. Groups may be nested through `parent`, render as semantic zoom, and carry
-optional Creator-only `name`, `color`, and embedded Base64 `icon`. Deleting a group preserves all
-functional Steps and reparents nested groups.
+Each ordinary Step belongs to zero or one visual group. A group may be empty and carries optional
+Creator-only `name`, `color`, embedded Base64 `icon`, and boundary style. Connected components are
+derived from the flat functional links, so the same group can produce multiple disconnected visual
+regions without persisting occurrences or geometry. Group Manager edits definitions; Step
+Appearance assigns or unassigns membership. Deleting a group only unassigns its Steps.
+
+The canvas uses viewport-only recursive semantic zoom, not a DOM element for every Step.
+Scroll to zoom, drag to pan, and use Fit to return to the overview. Collapsed regions use the same
+station size as ordinary Steps and reveal their actual children at stable positions; WebGL2 is required.
+One diagram shows pending changes, application-owned Example coverage, the selected route and
+actual execution metrics. Choose an Example beside its definition in the Trigger's Examples tab;
+the choice remains highlighted while inspecting downstream Steps or application facts.
+Connection width and a moving rail pattern reflect measured counter changes per second. Pattern
+density grows logarithmically from sparse to busy traffic; it is not one particle per request or
+a measurement of transit time. Motion stops when readings expire, metrics disappear, the page is
+hidden, or reduced motion is enabled. Heat strips compare sampled mean
+durations without replacing authored colors. Regions aggregate contained Steps, not flow latency.
+Disabled metrics, idle Steps, and absent timing samples remain distinct. Workspace and runtime
+details stay in the Inspector, with Runtime metrics behind a disclosure and current application
+facts in the bottom status rail. Examples count in the same execution metrics as ordinary inputs;
+there is no excluded test counter or view-mode switch. A completed Example path is not ongoing traffic.
+Source/target selectors show the selected Example's actual values beside each field, including
+before/after writes. Missing fields and unreached Steps are distinct. Close the Inspector to give
+the canvas more space; the Inspector button reopens it without losing the current selection or draft.
+Step and Group Appearance share rectangle, ellipse, triangle, and diamond shapes, width/height
+proportions, and rectangle corner rounding. A ratio of 1 produces a square or circle. These settings
+are metadata only and never change the compiled application or layout positions.
+The current compiler supports at most 16,384 nodes and 512 Triggers, subject to the 1 MiB source
+limit. Bounded rendering is not a claim that million-Step applications are supported. See
+[checkpoint 5.3](ROADMAP.md#5-flow-control-groups-and-flat-compilation) for verification evidence.
+Camera position, zoom level, automatic regions, and group bounds are never persisted.
+Legacy format-1 metadata is validated and
+rewritten to canonical format 2; invalid legacy source remains untouched for recovery.
 
 The compiler and built application never read this file. Missing or invalid metadata opens the
 functional graph flat, preserves the invalid file for recovery, and reports a targeted Creator
-diagnostic. There is no `members`, `instances`, `global`, live blueprint link, or compiler group
-expansion.
+diagnostic. There is no persisted `members`, `instances`, occurrence, logical slot, parent,
+geometry, camera, `global`, live blueprint link, or compiler group expansion.
 
 ## Field Manipulation
 

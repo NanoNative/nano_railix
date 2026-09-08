@@ -99,8 +99,9 @@
                             <argLine>@{jacocoDesktopArgLine}</argLine>
                             <forkCount>${railix.test.forks}</forkCount>
                             <includes>
-                                <include>**/RailixCreatorWorkspaceBrowserIT.java</include>
-                                <include>**/RailixCreatorStepBrowserIT.java</include>
+                                <include>**/RailixCreator*BrowserIT.java</include>
+                                <include>**/CreatorEditorBrowserIT.java</include>
+                                <include>**/CreatorWorldBrowserIT.java</include>
                             </includes>
                             <promoteUserPropertiesToSystemProperties>false</promoteUserPropertiesToSystemProperties>
                             <reportsDirectory>${project.build.directory}/failsafe-reports-browser</reportsDirectory>
@@ -135,7 +136,9 @@
                             <argLine>@{jacocoMobileArgLine}</argLine>
                             <groups>responsive</groups>
                             <includes>
-                                <include>**/RailixCreatorStepBrowserIT.java</include>
+                                <include>**/RailixCreator*BrowserIT.java</include>
+                                <include>**/CreatorEditorBrowserIT.java</include>
+                                <include>**/CreatorWorldBrowserIT.java</include>
                             </includes>
                             <promoteUserPropertiesToSystemProperties>false</promoteUserPropertiesToSystemProperties>
                             <reportsDirectory>${project.build.directory}/failsafe-reports-mobile</reportsDirectory>

@@ -2,9 +2,10 @@
 
 ## Status
 
-Accepted on 2026-07-29. Refined through 2026-08-30 to separate the flat functional graph from
+Accepted on 2026-07-29. Refined through 2026-09-01 to separate the flat functional graph from
 optional Creator metadata, remove compiler-expanded reusable flows, and add generic explicit
-flow-control inputs and explicit Creator/compiler/generated-application ownership.
+flow-control inputs, continuous semantic zoom, and explicit Creator/compiler/generated-application
+ownership.
 
 ## Context
 
@@ -198,11 +199,10 @@ routes. Creator derives availability and editing from the contract and excludes 
 nested Transform and Matcher searches; neither compiler nor Creator branches on `railix.switch`.
 
 The functional project owns stable route IDs and links. Optional human labels live only in the
-owning Step's Creator presentation and merely reference those IDs. Shared group occurrences align
-authored routes by ordered candidate slot while preserving each occurrence's concrete route IDs and
-labels. Compilation adds the configured routes to that node's immutable outcome plan. Generated
-applications initialize the node-specific candidate routes once, while each invocation holds only
-its own selected outcome.
+owning Step's Creator presentation and merely reference those IDs. Visual grouping neither aligns
+nor copies routes. Compilation adds the configured routes to that node's immutable outcome plan.
+Generated applications initialize the node-specific candidate routes once, while each invocation
+holds only its own selected outcome.
 
 ### Optional Creator Metadata
 
@@ -218,46 +218,127 @@ The compiler and application never read this file. Removing it cannot change com
 dependencies, execution, or results. A missing or invalid file opens the functional graph flat.
 Invalid source is preserved for recovery and shown as a targeted Creator diagnostic.
 
-A group contains optional `name`, `color`, and embedded Base64 `icon`, plus one or more
-occurrences. An occurrence contains:
+A group definition contains:
 
 ```text
-id      stable opaque occurrence ID
-flow    owning Trigger ID
-parent  enclosing occurrence ID or null
-steps   logical slot ID -> concrete functional Step ID
+id        stable opaque group ID
+name      optional display name
+color     optional #RRGGBB accent
+icon      optional embedded SVG or PNG
+boundary  optional solid, dashed, or dotted outline
 ```
 
-There is no redundant `members` array, `instances` map, `global` flag, live link, or compiler
-group representation. Logical slot IDs and occurrence IDs are UUID-backed opaque values generated
-once. Shared occurrences use exactly the same slot set; each occurrence maps those slots to its
-own concrete Step IDs.
+The `steps` object stores optional per-Step presentation. An ordinary Step presentation may refer
+to one declared group ID; App and Trigger cannot. A group may be empty. Group Manager owns group
+identity and appearance, while Step Appearance assigns or unassigns one Step. Creating a group does
+not implicitly assign the selected Step. Deleting a group removes only the definition and its Step
+assignments; every functional Step and link remains untouched.
 
-Each occurrence is a non-empty connected region in one Trigger flow with one entry derived from the
-flat links. Occurrences remain inside their parent region, cannot overlap siblings, and cannot form
-parent cycles. Creator selects either end of one ancestor/descendant path, so reverse selection and
-secondary routes work while sibling boundaries on different paths are rejected explicitly. Valid
-metadata may represent a complete divergent region. A collapsed group renders every exact edge that
-leaves its region; opening it renders every member and boundary exit.
+Creator derives one region for each connected component of Steps assigned to the same group. One
+group may therefore render as multiple disconnected regions without persisted occurrences,
+members, parentage, geometry, or camera state. Structural edits never propagate between regions and
+new Steps never inherit a group implicitly. Continuous pan and zoom change presentation detail by
+scale rather than opening or collapsing a second graph. Large ungrouped branches may receive
+deterministic temporary regions; those regions are not metadata.
 
-Shared occurrences have equal logical slots and equivalent Step/route topology. Structural edits on
-primary or secondary outcomes preserve those slots. Detaching or deleting a parent occurrence
-reparents nested groups, and group deletion remains metadata-only.
+The continuous-world contract replaces scaling a complete DOM graph: zooming into a region reveals
+its recursively indexed children at stable coordinates in the same world. An aggregate is not a
+collapse control. The Creator server owns a derived scene index; viewport requests return bounded
+visible stations and rails. Native WebGL2 draws geometry, with a bounded DOM overlay for labels,
+keyboard focus, and selection. The previous all-card renderer is not retained as a fallback.
+Unsupported WebGL2 reports a visible capability error.
+Automatic corridors occupy compact outer footprints so nearby junctions and terminals remain
+readable. Membership edits and deletion retain a surviving selection as the navigation target.
+Appearance-only edits do not move the camera. Station labels take priority over route captions.
+Invisible spatial-index containers preserve one affine layout transform instead of independently
+insetting child rows. This keeps a final Step and its terminal on the same horizontal lane.
+Step and Group metadata share optional `shape` (rectangle, ellipse, triangle, diamond), `aspect`
+(width / height from 0.5 to 4), and `roundness` (0 to 50 percent of the shorter rectangle side).
+Defaults remain implicit: rectangle, 2.625, and 0. Glyphs fit the same bounded station envelope;
+expanded group boundaries still enclose their contents. Fill, outline, port intersections, and
+pointer hits use the same bounded contour; small shapes retain external accessible labels.
+Status marks fit an inscribed content rectangle, including narrow shapes, rather than using fixed
+width decoration that can escape their outline.
+The latest user navigation wins over delayed scene reads or queued edit reveals. Group-focus
+aliases and visible occurrence identities occupy disjoint namespaces; scene identities are opaque
+and never become persisted Group IDs.
 
-Opening a group adds one semantic-zoom level. Groups can nest without a depth-specific execution
-model because every contained Step already exists flat in `railix.project.json`. Deleting a group
-preserves all functional Steps and reparents nested groups. Editing a Step shared by multiple
-occurrences requires one explicit action:
+One functional JSON remains the source of truth. Spatial indexes, recursive regions, layout,
+camera, and scene caches are rebuilt, not persisted. Only user-authored presentation warrants the
+optional second JSON. Compiler and built application remain unaware of both scene and metadata.
+`GET /api/editor?node=<id>` returns full configuration only for App, the selected Step, its
+predecessor and its owning Trigger, plus shallow connection targets and canonical node indexes.
+Group definitions use `q` and `offset` pagination (64 results plus an explicitly selected Group).
+The browser retains this neighborhood and unsaved drafts, not every visited Step. The server owns
+flow membership, global usage counts and Group occurrence counts. Deleting a flow expands its
+Trigger ID into canonical stable-ID removals on the server; deleting a Group unassigns all members,
+including unloaded Steps. The editor saves changed entries through revision-checked
+`PATCH /api/project` and `PATCH /api/creator`. Nodes and groups are keyed by stable ID; links are
+keyed by source port with all of that port's targets retained. Removing an entry uses JSON null.
+An edit contains `revision` and `changes`; successful responses contain revision, workspace and
+application facts, not the documents. The original compiler and metadata validators still own
+acceptance, and assembled documents retain the source-size limit. Explicit whole-document import
+uses POST; it is not a fallback for failed edits. Stale edits fail without overwriting accepted work.
+Queued edits are compared with separately acknowledged functional and presentation snapshots, so
+an older save cannot swallow a newer reversal or discard a rejected draft. There is no edit log or
+new persistent format. Reads wait for the current write acknowledgement and reject an intervening
+write before replacing the editing neighborhood. Invalid JSON drafts survive unrelated navigation
+and saves. Whole-document GET remains an explicit interchange boundary, not browser startup.
 
-```text
-Update all
-Detach this
-Create variant
-Cancel
-```
+One diagram combines pending build changes, Example paths and execution metrics without view modes
+or discovery prompts. Example selection lives beside its Trigger definition and survives navigation
+between the App and downstream Steps. Trigger summaries retain their Example count beside a compact
+run count; full sampled timing and error counters remain available in the Inspector and hover text.
+Collapsed Groups and automatic regions have the same station size
+as ordinary Steps; expanded contents keep their derived world geometry. Example coverage comes
+from the built application's completed suite and selected trace, never simulated traffic.
+`GET /api/scene/observations?revision=...` accepts the viewport and an optional `example` ID and
+combines the captured running application's coverage, selected Example summary and metric snapshot. Scene
+revision, activated artifact and PID must agree; activation failure or replacement cannot attach
+old observations to a new graph. Responses contain bounded counts and route reach information,
+never production payloads or Example contexts. Two admitted response drains bound concurrent
+aggregation; the browser cancels obsolete reads and polls once per completed read plus one second.
+Pending or unavailable capabilities omit only their fields; malformed successful responses fail
+closed rather than inventing zero measurements. Hidden pages stop scene observation reads.
+Unchanged observations do not redraw the world or rebuild the selected Example preview.
+Picker updates deferred while the user interacts are retried by the existing poll after interaction,
+not by another timer or a full Inspector redraw. Runtime metrics are disclosed on demand; the
+per-Step metrics build setting remains immediately available.
+Motion uses fresh measured counter deltas, a logarithmically bounded rail density, and at most
+30 animated draws per second. Animation-only draws reuse the vertex buffer and labels, updating
+one shader uniform; no per-request object or execution path is added. A three-second freshness
+window prevents stalled polling from implying continuing traffic. Zero/unavailable rates, hidden
+pages, reduced motion, graphics-context loss and disposal stop motion. Selected Example paths
+remain independent of animation and sampled timing heat.
+On shared trunks, inactive rails are painted before active rails and the selected Example is
+painted last, so another branch cannot erase its path. This is paint priority, not an aggregate
+trunk counter or a per-request particle model.
+The selected Example's values appear beside source and target fields and chooser rows, never as
+a merged Example value. Writable fields distinguish before and after; missing is not null, false,
+zero, empty or unreached. Intermediate program results and errors remain available without duplicate
+Built example/output blocks. Inspector visibility is ephemeral; closing it preserves selection,
+camera and drafts, and Escape dismisses an open field chooser before the Inspector.
+The selected Example summary is read before coverage, matching the application's publication order;
+its reached Steps cannot precede the corresponding coverage bits. Scene and observation responses
+are capped at 2 MiB. Application response readers enforce a 30-second deadline over headers and
+the complete bounded body, cancel timed-out reads, and release forwarding admission on every exit.
+Region counters sum contained Step series without adding flow totals again. Disabled metrics,
+zero executions and absent duration samples are different states. Heat compares sampled mean
+duration within the visible scene; sampled averages are not percentiles and latency alone does not
+prove a bottleneck. Connection ingress is available only where the one-parent graph and enabled
+destination metrics establish it; terminal outcomes are not inferred. Connection width uses exact
+counter differences between two current-PID, current-viewport snapshots, never a retained Example path
+as continuing traffic. Portable icons are deduplicated in each visible scene, never repeated per node.
 
-Structural insertion or deletion under `Update all` creates or removes the corresponding concrete
-flat Step in every occurrence while preserving logical slots and ordinary project links.
+Examples enter at Trigger output and use ordinary compiled routing, handlers and metrics. The
+generator does not skip measurement based on the test flag. Optional tracing adds observation,
+not a second Example engine. The runtime test flag remains available for user-authored conditions.
+
+Format 2 is canonical. Valid format-1 occurrence metadata is accepted only at ingress and rewritten
+to format 2. When legacy groups overlap, the deepest valid occurrence supplies a Step's group.
+Invalid legacy source remains unchanged and the same functional graph opens flat. There is no
+persisted occurrence, logical slot, `members`, `instances`, `global` flag, live link, shared-edit
+propagation, or compiler group representation.
 
 ### Ownership Boundaries
 
@@ -273,8 +354,10 @@ explicit Example context captured immediately before that Step plus the normal p
 result; it never samples production traffic or changes application execution semantics. Observation
 backpressure or storage failure stops trace recording, never the Flow. The Creator server relays
 application-owned Example inventory and projections through at most four transient 16 MiB buffers;
-it closes each application read before sending the response and never parses, persists, or caches
-it. The application also aggregates all real cases for one selected deployed node so the browser
+these transparent relays finish each application read before sending the response and never parse,
+persist, or cache it. Separately, two bounded scene-observation requests may parse the application's
+coverage, selected route summary, or metric snapshot to aggregate visible regions. They never read
+Example contexts or production payloads. The application also aggregates all real cases for one selected deployed node so the browser
 can derive union field choices and compatibility without replaying Examples or decoding trace
 events. Its browser parses and temporarily caches only the current deployment's responses needed
 for display.
@@ -310,10 +393,11 @@ restarting the application. Creator shows the project path, exact child launch p
 child PID, graph counts, and last successful build time.
 
 The current Creator authors every declared route of fixed- or authored-outcome ordinary control
-Steps. Unscoped layout follows deterministic declared-outcome depth-first order through an explicit
-traversal stack, so nesting depth does not consume the JavaScript call stack. All add, edit, delete,
-grouping, and appearance controls live in the Inspector rather than graph nodes. Diagnostics and
-malformed route states appear on their owning node, outcome, or group.
+Steps. Layout follows deterministic declared-outcome depth-first order through an explicit
+traversal stack, so nesting depth does not consume the JavaScript call stack. One ephemeral camera
+provides continuous pan, cursor-anchored zoom, Fit, group focus, and scale-based detail. All add,
+edit, delete, grouping, and appearance controls live in the Inspector rather than graph nodes.
+Diagnostics and malformed route states appear on their owning node, outcome, or group.
 
 ### CLI Trigger
 
@@ -354,6 +438,10 @@ debugging remain roadmap work. Current examples never sample production traffic.
 - Creator metadata never enters executable JSON or dependency selection.
 - Missing or corrupt Creator metadata never changes functional behavior.
 - Group deletion never deletes functional Steps.
+- Each ordinary Step has at most one optional visual group assignment.
+- Group regions, automatic regions, geometry, camera, and zoom level are derived and never
+  persisted.
+- Functional edits never propagate through Creator groups or inherit membership implicitly.
 - IDs are stable and have no ordering semantics.
 - Every declared outcome selects at most one successor.
 - Filter selects exactly one explicit `match` or `otherwise` successor.
@@ -376,8 +464,10 @@ metadata is incompatible. The cost is that reusable/global groups do not yet cro
 Triggers outside the Step catalog, automatic heaviness or kind detection, a dedicated kind or
 execution engine for unary Steps, hidden coercion, multiple deployable
 applications per project, compiler-expanded reusable-flow definitions, global live blueprint
-links, timestamps or counters as identity, running handlers during compilation, rebuilding with
-`jpackage` after every edit, and TypeMap's failed-conversion-to-null semantics are rejected.
+links, persisted group occurrences or geometry, group-driven shared edit propagation, collapse as a
+second graph state, timestamps or counters as identity, running handlers during compilation,
+rebuilding with `jpackage` after every edit, and TypeMap's failed-conversion-to-null semantics are
+rejected.
 
 ## Acceptance Checkpoint
 
@@ -392,8 +482,9 @@ The mapped Lowercase invocation is an ordinary graph node. Its receive reads
 End. The active control checkpoint additionally proves ordinary Filter, Choice, and Switch
 definitions, generic ordered OR/AND matcher groups, generic authored candidate outcomes, explicit
 flat outcome links, deterministic branch layout, route-specific insertion and deletion,
-branch-aware semantic zoom with exact boundary exits, rolling-built example execution and previews,
-preserved shared groups with occurrence-local route IDs, and separate desktop/mobile proof.
+continuous pan/zoom/Fit with scale-based detail, metadata-only Group Manager, derived disconnected
+group regions, deterministic temporary branch regions, rolling-built example execution and
+previews, and separate desktop/mobile proof.
 
 ## Supersedes
 
