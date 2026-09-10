@@ -53,7 +53,8 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                 .doesNotContain("CLI Trigger", "Field Manipulation");
         assertThat(page.locator(".app-node").count()).isEqualTo(1);
         assertThat(page.locator(".graph-stage .node button").count()).isZero();
-        assertThat(page.locator("#inspector").textContent()).contains("Add Trigger");
+        assertThat(page.locator("#selection-dock").textContent()).contains("Add Trigger");
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
         assertThat(page.locator("#delete-step").count()).isZero();
     }
 
@@ -82,11 +83,11 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
-    void appInspectorShowsTruthfulWorkspaceFacts() {
-        openInspectorSection("Workspace and build");
+    void buildStatusShowsTruthfulWorkspaceFacts() {
+        page.locator(".build-indicator").click();
 
         assertThat(page.locator("#project-path").isVisible()).isTrue();
-        assertThat(page.locator("#inspector").textContent()).contains(
+        assertThat(page.locator("#application-status").textContent()).contains(
                 directory.resolve("project.json").toAbsolutePath().normalize().toString(),
                 "0 flows",
                 "1 step",
@@ -95,8 +96,8 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
-    void appInspectorShowsTheRunningBuildPathAndPid() {
-        openInspectorSection("Workspace and build");
+    void buildStatusShowsTheRunningBuildPathAndPid() {
+        page.locator(".build-indicator").click();
 
         assertThat(page.locator("#build-path").isVisible()).isTrue();
         assertThat(page.locator("#application-pid").isVisible()).isTrue();
@@ -398,6 +399,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
     @Test
     void queuedRollingBuildSkipsASupersededProjectSnapshot() {
+        page.locator("#open-inspector").click();
         delayFirstProjectWriteAndRecordIds();
         page.locator("#project-id").fill("first-snapshot");
         page.locator("#project-id").press("Tab");
@@ -429,6 +431,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
     @Test
     void queuedEditCanRestoreAValueAfterAnOlderSaveIsAcknowledged() {
+        page.locator("#open-inspector").click();
         final String original = page.locator("#project-id").inputValue();
         delayFirstProjectWriteAndRecordIds();
         page.locator("#project-id").fill("temporary-name");
@@ -476,6 +479,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
     @Test
     void staleEditorPreservesItsDraftWithoutOverwritingTheOtherEditor() {
+        page.locator("#open-inspector").click();
         page.evaluate("""
                 async () => {
                   const project = (await (await fetch('/api/project')).json()).project;
@@ -498,6 +502,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
     @Test
     void metadataSaveDoesNotDiscardARejectedFunctionalDraft() {
+        page.locator("#open-inspector").click();
         final String original = page.locator("#project-id").inputValue();
         page.locator("#project-id").fill("Invalid Name");
         page.locator("#project-id").press("Tab");
@@ -526,6 +531,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         creator = CreatorServer.start(0, directory.resolve("project.json"), directory.resolve("railix-home"));
         page.navigate(creator.baseUri().toString());
         waitForText("#build-state", "Built");
+        page.locator("#open-inspector").click();
         assertThat(page.locator("#inspector").textContent()).contains("CREATOR_JSON_INVALID");
 
         page.locator("#project-id").fill("functional-edit");
@@ -538,6 +544,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
     @Test
     void metadataFailureDoesNotForgetAnAcceptedFunctionalSave() {
+        page.locator("#open-inspector").click();
         page.evaluate("""
                 () => {
                   state.creator.steps.unknown = {name: 'Invalid reference'};
@@ -586,6 +593,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
     @Test
     void metadataDebounceCannotDropAnUnsentFunctionalEdit() {
+        page.locator("#open-inspector").click();
         page.evaluate("""
                 () => {
                   const original = window.fetch.bind(window);
@@ -2158,10 +2166,10 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
-    void applicationInspectorRefreshesAutomaticExampleTraceStorage() {
+    void buildStatusRefreshesAutomaticExampleTraceStorage() {
         addTrigger();
         selectWorldNode("app");
-        openInspectorSection("Workspace and build");
+        page.locator(".build-indicator").click();
         waitForText("#example-suite-state", "Completed");
         page.waitForFunction("""
                 () => document.querySelector('#example-trace-storage')?.textContent !== '0 B'
@@ -2232,7 +2240,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         waitForCoverage("matched", "selected");
 
         selectWorldNode("app");
-        openInspectorSection("Workspace and build");
+        page.locator(".build-indicator").click();
         page.locator("#zoom-fit").click();
         awaitScene();
         waitForCoverage("matched", "selected");
@@ -3325,13 +3333,15 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
     }
 
     @Test
-    void clickingARegionLabelOpensTheFocusedGroupManager() {
+    void selectedRegionOffersFocusedGroupManagement() {
         createLowercaseJourney();
         final String group = createGroup(stepIds().get(0));
         page.locator("#close-group-manager").click();
+        page.locator("#close-inspector").click();
         page.locator("[data-region-group]").waitFor();
 
         page.locator("[data-region-group='" + group + "']").click();
+        page.locator("[data-manage-region]").click();
 
         assertThat(page.locator(".manager-heading").textContent()).contains("Group Manager");
         assertThat(page.locator("[data-manage-group='" + group + "']").getAttribute("class"))
@@ -3339,16 +3349,17 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
     }
 
     @Test
-    void clickingADisconnectedRegionLabelFocusesOnlyThatRegion() {
+    void doubleClickingADisconnectedRegionLabelFocusesOnlyThatRegion() {
         openProject(choiceProject());
         createGroup("matched", "otherwise");
         page.locator("#close-group-manager").click();
+        page.locator("#close-inspector").click();
         page.locator("[data-region-group]").nth(1).waitFor();
         final String before = canvasStyle();
         final String selected = page.locator("[data-group-region-label]").first()
                 .getAttribute("data-group-region-label");
 
-        page.locator("[data-group-region-label]").first().click();
+        page.locator("[data-group-region-label]").first().dblclick();
         waitForCanvasChange(before);
 
         page.waitForFunction("""
@@ -3526,6 +3537,7 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
         final Locator selected = page.locator("#world-labels [data-node-id='step-48']");
         selected.waitFor();
         selected.click();
+        page.locator("#open-inspector").click();
         waitForText(".inspector-heading h2", "Field Manipulation");
         awaitScene();
 
@@ -5044,6 +5056,10 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     @Test
     void automaticExampleRunUsesTheBuiltChildAndShowsTheResultContext() {
         createResultJourney();
+        assertThat(page.evaluate("""
+                async () => (await (await fetch('/api/project')).json()).project.nodes
+                  .find(node => node.inputs?.field?.[1] === 'result').inputs.value[0].inputs.source
+                """)).isEqualTo(List.of("context", "payload", "text"));
         selectTrigger();
         addManipulationAfterSelected();
         choosePath("field", "payload", "text");
@@ -5166,6 +5182,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     @Test
     @Tag("responsive")
     void inspectorFitsDesktopAndMobileViewport() {
+        page.locator("#open-inspector").click();
         final double viewport = ((Number) page.evaluate("window.innerWidth")).doubleValue();
         final var box = page.locator("#inspector").boundingBox();
 
@@ -5728,9 +5745,11 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void selectWorldNode(final String id) {
+        if (page.locator("#inspector").isVisible()) page.locator("#close-inspector").click();
         page.evaluate("id => void state.world.focus(id)", id);
         awaitScene();
         selectWorldNode(page.locator("[data-select-node='" + id + "']"));
+        if (!page.locator("#inspector").isVisible()) page.locator("#open-inspector").click();
     }
 
     private void selectWorldNode(final Locator target) {
@@ -5778,7 +5797,8 @@ abstract class RailixCreatorBrowserSupport {
             } catch (final RuntimeException snapshotFailure) {
                 timeout.addSuppressed(snapshotFailure);
             }
-            throw new AssertionError("Editor selection timed out for '" + id + "': " + diagnostic, timeout);
+            throw new AssertionError("Editor selection timed out for '" + id + "': " + diagnostic
+                    + "; browser errors: " + pageErrors, timeout);
         }
     }
 
@@ -5961,6 +5981,7 @@ abstract class RailixCreatorBrowserSupport {
         page.locator("#add-trigger").click();
         page.locator("#step-search").fill("cli");
         page.locator("[data-add-step='railix.trigger.cli']").click();
+        if (!page.locator("#inspector").isVisible()) page.locator("#open-inspector").click();
     }
 
     void addFilterAfterTrigger() {
@@ -6180,6 +6201,7 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void selectTrigger() {
+        if (page.locator("#inspector").isVisible()) page.locator("#close-inspector").click();
         page.locator("#zoom-fit").click();
         awaitScene();
         final String id = String.valueOf(page.evaluate(
@@ -6189,6 +6211,7 @@ abstract class RailixCreatorBrowserSupport {
             selectWorldNode(id);
         } else {
             selectWorldNode(trigger);
+            page.locator("#open-inspector").click();
         }
     }
 
@@ -6233,10 +6256,12 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void openInspectorTab(final String mode) {
+        if (!page.locator("#inspector").isVisible()) page.locator("#open-inspector").click();
         page.locator("[data-inspector-mode='" + mode + "']").click();
     }
 
     void openInspectorSection(final String summary) {
+        if (!page.locator("#inspector").isVisible()) page.locator("#open-inspector").click();
         final Locator section = page.locator("#inspector details:has(> summary:text-is('" + summary + "'))");
         section.waitFor();
         if (section.getAttribute("open") == null) {
@@ -6329,6 +6354,7 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void awaitScene() {
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving !== 'true'");
         page.evaluate("""
                 async () => {
                   await state.world.refresh();
@@ -6337,6 +6363,7 @@ abstract class RailixCreatorBrowserSupport {
                 """);
         page.waitForFunction("""
                 () => state.world?.scene?.nodes.length > 0
+                  && document.querySelector('#graph').dataset.cameraMoving !== 'true'
                   && document.querySelector('#graph').dataset.sceneRevision === String(state.world.scene.revision)
                   && document.querySelectorAll('#world-labels > *').length > 0
                 """);

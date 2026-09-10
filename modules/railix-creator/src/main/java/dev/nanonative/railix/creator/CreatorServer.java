@@ -1299,6 +1299,9 @@ public final class CreatorServer implements AutoCloseable {
             case "/app.css" -> "app.css";
             case "/app.js" -> "app.js";
             case "/world.js" -> "world.js";
+            case "/vendor/pixi-8.20.1.min.js" -> "vendor/pixi-8.20.1.min.js";
+            case "/vendor/pixi-csp-8.20.1.min.js" -> "vendor/pixi-csp-8.20.1.min.js";
+            case "/vendor/PIXI-LICENSE.txt" -> "vendor/PIXI-LICENSE.txt";
             default -> "";
         };
         if (file.isEmpty()) {
@@ -1314,7 +1317,7 @@ public final class CreatorServer implements AutoCloseable {
                             ? "text/html; charset=utf-8"
                             : file.endsWith(".css")
                             ? "text/css; charset=utf-8"
-                            : "text/javascript; charset=utf-8",
+                            : file.endsWith(".txt") ? "text/plain; charset=utf-8" : "text/javascript; charset=utf-8",
                     stream.readAllBytes()
             );
         }

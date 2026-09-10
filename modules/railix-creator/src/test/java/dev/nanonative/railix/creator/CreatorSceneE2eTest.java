@@ -255,6 +255,54 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
         }
     }
 
+    @Test
+    void groupedChainBeforeBranchingKeepsItsTriggerOnTheCollapsedGroupsConnectionAxis() throws Exception {
+        final Path project = groupedBranches(4);
+        final String corridorNodes = IntStream.range(0, 12).mapToObj(index ->
+                "{\"id\":\"lane-" + index + "\",\"use\":\"railix.field-manipulation\",\"inputs\":{}},")
+                .collect(java.util.stream.Collectors.joining());
+        final String corridorLinks = IntStream.range(0, 12).mapToObj(index ->
+                "{\"from\":\"lane-" + index + ".next\",\"to\":\""
+                        + (index == 11 ? "route" : "lane-" + (index + 1)) + "\"},")
+                .collect(java.util.stream.Collectors.joining());
+        final String source = Files.readString(project)
+                .replace("\"nodes\":[", "\"nodes\":[" + corridorNodes)
+                .replace("\"links\":[", "\"links\":[" + corridorLinks)
+                .replace("{\"id\":\"route\"", "{\"id\":\"normalize\",\"use\":\"railix.field-manipulation\",\"inputs\":{}},"
+                        + "{\"id\":\"guard\",\"use\":\"railix.choice\",\"inputs\":{}},"
+                        + "{\"id\":\"limit\",\"use\":\"railix.choice\",\"inputs\":{}},"
+                        + "{\"id\":\"disabled\",\"use\":\"railix.field-manipulation\",\"inputs\":{}},"
+                        + "{\"id\":\"rejected\",\"use\":\"railix.field-manipulation\",\"inputs\":{}},"
+                        + "{\"id\":\"route\"")
+                .replace("{\"from\":\"command.next\",\"to\":\"route\"}",
+                        "{\"from\":\"command.next\",\"to\":\"normalize\"},"
+                                + "{\"from\":\"normalize.next\",\"to\":\"guard\"},"
+                                + "{\"from\":\"guard.match\",\"to\":\"limit\"},"
+                                + "{\"from\":\"guard.otherwise\",\"to\":\"disabled\"},"
+                                + "{\"from\":\"limit.match\",\"to\":\"lane-0\"},"
+                                + "{\"from\":\"limit.otherwise\",\"to\":\"rejected\"},"
+                                + "{\"from\":\"disabled.next\",\"to\":\"end\"},"
+                                + "{\"from\":\"rejected.next\",\"to\":\"end\"}");
+        Files.writeString(project, source);
+        Files.writeString(directory.resolve("railix.creator.json"), """
+                {"format":2,"groups":[{"id":"normalization"},{"id":"routing"},{"id":"reply"}],"steps":{
+                  "normalize":{"group":"normalization"},
+                  "route":{"group":"routing"},
+                  "disabled":{"group":"reply"},"rejected":{"group":"reply"},
+                  "output-0":{"group":"reply"},"output-1":{"group":"reply"},
+                  "output-2":{"group":"reply"},"output-3":{"group":"reply"}
+                }}
+                """);
+        try (CreatorServer creator = start(project)) {
+            final RailixValue.ObjectValue scene = object(request(creator.baseUri(), "GET",
+                    "/api/scene?x=-100&y=-100&width=2000&height=1000&scale=0.1", "").body());
+            final RailixValue.ObjectValue trigger = node(scene, "command");
+            final RailixValue.ObjectValue group = node(scene, "group-region:normalization:normalize");
+
+            assertThat(group.values().get("expanded")).isEqualTo(RailixValue.bool(false));
+            assertThat(centerY(trigger)).isCloseTo(centerY(group), org.assertj.core.data.Offset.offset(0.000001));
+        }
+    }
 
     @Test
     void partialBranchGroupDoesNotEncloseTheUngroupedArm() throws Exception {
@@ -635,6 +683,9 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
         return ((RailixValue.NumberValue) node.values().get(key)).value().doubleValue();
     }
 
+    private static double centerY(final RailixValue.ObjectValue node) {
+        return decimal(node, "y") + decimal(node, "height") / 2;
+    }
 
     private static double point(final RailixValue.ObjectValue link, final int index, final int axis) {
         return ((RailixValue.NumberValue) ((RailixValue.ArrayValue) array(link, "points").get(index))
