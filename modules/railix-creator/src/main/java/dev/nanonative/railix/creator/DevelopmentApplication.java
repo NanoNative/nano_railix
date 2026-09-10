@@ -2,6 +2,7 @@ package dev.nanonative.railix.creator;
 
 import dev.nanonative.railix.core.project.CompileResult;
 import dev.nanonative.railix.core.value.RailixData;
+import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 
 import java.io.ByteArrayOutputStream;
@@ -30,6 +31,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** Creator-owned lifecycle handle for one application-owned development JVM. */
 final class DevelopmentApplication implements AutoCloseable {
@@ -54,6 +56,8 @@ final class DevelopmentApplication implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Object requestLock = new Object();
     private final Object closeLock = new Object();
+    private final ReentrantLock catalogLock = new ReentrantLock();
+    private Response metricCatalog;
     private final Map<Long, ProcessHandle> ownedProcesses = new LinkedHashMap<>();
     private boolean cleanupComplete;
     private boolean drainAttempted;
@@ -164,8 +168,56 @@ final class DevelopmentApplication implements AutoCloseable {
         return request(getMessage("/v1/metrics/nodes/" + URLEncoder.encode(node, StandardCharsets.UTF_8)));
     }
 
-    ObservationResponse metricSnapshot() throws IOException {
-        return observation("/v1/metrics", "Metric");
+    Response metricCatalog() throws IOException {
+        return metricCatalog(System.nanoTime() + REQUEST_TIMEOUT.toNanos());
+    }
+
+    Response metricCatalog(final long deadline) throws IOException {
+        try {
+            if (!catalogLock.tryLock(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
+                return new Response(503, "{\"status\":\"unavailable\",\"reason\":\"catalog-timeout\"}");
+            }
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return new Response(409, "{\"status\":\"cancelled\"}");
+        }
+        try {
+            if (metricCatalog != null) return metricCatalog;
+            final long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) return new Response(503, "{\"status\":\"unavailable\",\"reason\":\"catalog-timeout\"}");
+            final Response response = request(getMessage("/v1/metrics/catalog", Duration.ofNanos(remaining)));
+            if (response.status() == 200) {
+                final RailixJson.Result parsed = RailixJson.parse(response.body());
+                if (!(parsed instanceof RailixJson.Parsed json)
+                        || !(json.value() instanceof RailixValue.ObjectValue document)
+                        || !RailixValue.number(process.pid()).equals(document.values().get("application_pid"))
+                        || !(document.values().get("metrics") instanceof RailixValue.ObjectValue definitions)) {
+                    throw new IOException("Metric catalog does not identify the captured application.");
+                }
+                for (final var entry : definitions.values().entrySet()) {
+                    if (entry.getKey().isBlank()
+                            || !(entry.getValue() instanceof RailixValue.ObjectValue definition)
+                            || !(definition.values().get("aggregation") instanceof RailixValue.StringValue aggregation)
+                            || !java.util.Set.of("sum", "max", "none").contains(aggregation.value())) {
+                        throw new IOException("Metric definition has an invalid identifier or aggregation.");
+                    }
+                }
+                metricCatalog = response;
+            }
+            return response;
+        } finally {
+            catalogLock.unlock();
+        }
+    }
+
+    ObservationResponse observationQuery(final String read, final RailixValue.ObjectValue query,
+                                         final long deadline) throws IOException {
+        return observation(HttpRequest.newBuilder(baseUri.resolve("/v1/" + read + "/query"))
+                .header("Authorization", "Bearer " + token)
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofNanos(Math.max(1, deadline - System.nanoTime())))
+                .POST(HttpRequest.BodyPublishers.ofString(RailixJson.write(query)))
+                .build(), read);
     }
 
     ObservationResponse examples(final String path) throws IOException {
@@ -173,11 +225,15 @@ final class DevelopmentApplication implements AutoCloseable {
     }
 
     private ObservationResponse observation(final String path, final String subject) throws IOException {
+        return observation(getMessage(path), subject);
+    }
+
+    private ObservationResponse observation(final HttpRequest request, final String subject) throws IOException {
         if (!acquire()) {
             return null;
         }
         try {
-            return readResponse(getMessage(path), OBSERVATION_RESPONSE_LIMIT, "Application " + subject);
+            return readResponse(request, OBSERVATION_RESPONSE_LIMIT, "Application " + subject);
         } catch (final InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IOException("Application " + subject + " observation was interrupted.", exception);
@@ -202,9 +258,13 @@ final class DevelopmentApplication implements AutoCloseable {
     }
 
     private HttpRequest getMessage(final String path) {
+        return getMessage(path, REQUEST_TIMEOUT);
+    }
+
+    private HttpRequest getMessage(final String path, final Duration timeout) {
         return HttpRequest.newBuilder(baseUri.resolve(path))
                 .header("Authorization", "Bearer " + token)
-                .timeout(REQUEST_TIMEOUT)
+                .timeout(timeout)
                 .GET()
                 .build();
     }
@@ -216,15 +276,16 @@ final class DevelopmentApplication implements AutoCloseable {
         }
         final CompletableFuture<HttpResponse<byte[]>> pending = client.sendAsync(
                 request, HttpResponse.BodyHandlers.limiting(HttpResponse.BodyHandlers.ofByteArray(), limit));
+        final Duration timeout = request.timeout().orElse(REQUEST_TIMEOUT);
         try {
             // HttpRequest.timeout ends after headers; this deadline also covers the bounded body.
-            final HttpResponse<byte[]> response = pending.get(REQUEST_TIMEOUT.toNanos(), TimeUnit.NANOSECONDS);
+            final HttpResponse<byte[]> response = pending.get(timeout.toNanos(), TimeUnit.NANOSECONDS);
             return new ObservationResponse(response.statusCode(),
                     response.headers().firstValue("Content-Type").orElse("application/json; charset=utf-8"),
                     response.body());
         } catch (final ExecutionException | TimeoutException failure) {
             final String reason = failure instanceof TimeoutException
-                    ? "timed out after " + REQUEST_TIMEOUT.toMillis() + " ms."
+                    ? "timed out after " + timeout.toMillis() + " ms."
                     : "was incomplete or exceeded " + limit + " bytes.";
             return new ObservationResponse(502, "application/json; charset=utf-8",
                     ("{\"message\":\"" + subject + " response " + reason + "\","

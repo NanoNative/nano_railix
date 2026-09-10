@@ -8,14 +8,11 @@ import dev.nanonative.railix.core.value.RailixValue;
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Base64;
-import java.util.BitSet;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HexFormat;
@@ -24,7 +21,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
-import java.util.function.BiConsumer;
 
 /**
  * Immutable, derived Creator geometry, absent from compiled applications and project files.
@@ -34,10 +30,7 @@ import java.util.function.BiConsumer;
 final class CreatorScene {
     static final int MAX_NODES = 2048;
     static final int MAX_SEGMENTS = 4096;
-    private static final int MAX_ROUTE_VISITS = 16_384;
     private static final Set<String> VIEW_PARAMETERS = Set.of("x", "y", "width", "height", "scale", "focus");
-    private static final List<String> COUNTERS = List.of(
-            "executions", "errors", "cancelled", "duration_nanos_total", "duration_samples");
     private static final double NODE_WIDTH = 168;
     private static final double NODE_HEIGHT = 64;
     private static final double COLUMN = 248;
@@ -51,7 +44,6 @@ final class CreatorScene {
     private final Routes routes;
     private final List<Part> leaves;
     private final Map<String, RailixValue> icons;
-    private final int nodeCount;
     private final Map<String, Part> identities = new HashMap<>();
 
     CreatorScene(final String source, final RailixValue.ObjectValue metadata, final StepCatalog catalog) {
@@ -64,6 +56,7 @@ final class CreatorScene {
         final Map<String, RailixValue> groups = new HashMap<>();
         array(metadata, "groups").forEach(value -> groups.put(text(object(value), "id"), value));
         final Map<String, Part> nodes = new LinkedHashMap<>();
+        int metricIndex = 0;
         for (final RailixValue value : array(project, "nodes")) {
             final Map<String, RailixValue> node = object(value);
             final String id = text(node, "id");
@@ -80,11 +73,18 @@ final class CreatorScene {
             final Part part = new Part(id, kind, name, use, text(style, "group"), style, List.of());
             part.node = nodes.size();
             part.metrics = !RailixValue.bool(false).equals(node.get("metrics"));
+            if (!"app".equals(kind)) {
+                part.members = new int[]{part.node, part.node};
+                if (part.metrics) {
+                    part.metricMembers = new int[]{metricIndex, metricIndex++};
+                } else {
+                    part.disabled = 1;
+                }
+            }
             part.exampleCount = node.get("examples") instanceof RailixValue.ArrayValue examples
                     ? examples.values().size() : 0;
             nodes.put(id, part);
         }
-        nodeCount = nodes.size();
         final List<Route> edges = new ArrayList<>();
         for (final RailixValue value : array(project, "links")) {
             final Map<String, RailixValue> link = object(value);
@@ -144,7 +144,8 @@ final class CreatorScene {
             }
             flow++;
         }
-        root = container("index", "world", "Application", "", Map.of(), world);
+        root = container("index", "world", "Application", "", Map.of(),
+                world.size() <= 8 ? world : List.of(app, hierarchy(world.subList(1, world.size()), "region:world", true)));
         int sequence = 0;
         final ArrayDeque<Part> pending = new ArrayDeque<>();
         pending.add(root);
@@ -182,6 +183,11 @@ final class CreatorScene {
             final Part part = hierarchy.get(index);
             if (!part.children.isEmpty()) {
                 part.last = part.children.getLast().last;
+                for (final Part child : part.children) {
+                    part.members = union(part.members, child.members);
+                    part.metricMembers = union(part.metricMembers, child.metricMembers);
+                    part.disabled += child.disabled;
+                }
             }
         }
         final Map<String, Part> groupFocus = new java.util.TreeMap<>();
@@ -199,11 +205,17 @@ final class CreatorScene {
 
     /** Returns a bounded viewport projection; an omitted viewport fits the world or requested identity. */
     RailixValue.ObjectValue view(final String query) {
-        return view(parameters(query, VIEW_PARAMETERS), (id, edge) -> {});
+        return view(parameters(query, VIEW_PARAMETERS), new LinkedHashMap<>());
     }
 
     private RailixValue.ObjectValue view(final Map<String, String> parameters,
-                                        final BiConsumer<String, Route> observe) {
+                                        final Map<String, Connection> connections) {
+        return view(parameters, connections, MAX_NODES);
+    }
+
+    private RailixValue.ObjectValue view(final Map<String, String> parameters,
+                                        final Map<String, Connection> connections, final int budget) {
+        connections.clear();
         if (parameters.containsKey("focus") && parameters.get("focus").isBlank()) {
             throw new IllegalArgumentException("Scene focus must identify a Step or region.");
         }
@@ -239,7 +251,7 @@ final class CreatorScene {
             }
             final boolean expand = expands(part, scale, focused);
             final boolean boundary = expand && !part.group.isEmpty();
-            if (expand && values.size() + pending.size() + part.children.size() + (boundary ? 1 : 0) <= MAX_NODES) {
+            if (expand && values.size() + pending.size() + part.children.size() + (boundary ? 1 : 0) <= budget) {
                 if (boundary) {
                     values.add(part.value(true));
                 }
@@ -253,17 +265,10 @@ final class CreatorScene {
             }
         }
         constrained.sort(Comparator.comparingInt(part -> part.first));
-        final List<RailixValue> links = new ArrayList<>();
         if (routes != null) {
             final ArrayDeque<Routes> routeQueue = new ArrayDeque<>();
-            final Set<String> emitted = new java.util.HashSet<>();
             routeQueue.add(routes);
-            int visited = 0;
             while (!routeQueue.isEmpty()) {
-                if (++visited > MAX_ROUTE_VISITS || links.size() * 3 + 3 > MAX_SEGMENTS) {
-                    limited = true;
-                    break;
-                }
                 final Routes next = routeQueue.removeLast();
                 if (!next.box.intersects(viewport)) {
                     continue;
@@ -272,22 +277,21 @@ final class CreatorScene {
                 if (enclosing.last >= next.last) {
                     continue;
                 }
-                if (next.edge == null) {
+                final Part start = representative(leaves.get(next.fromFirst), scale, focused, constrained);
+                final Part end = representative(leaves.get(next.toFirst), scale, focused, constrained);
+                if (start.last < next.fromLast || end.last < next.toLast) {
                     routeQueue.addLast(next.right);
                     routeQueue.addLast(next.left);
                     continue;
                 }
-                final Route edge = next.edge;
-                final Part start = representative(edge.from, scale, focused, constrained);
-                final Part end = representative(edge.to, scale, focused, constrained);
                 if (start == end || !start.box.union(end.box).intersects(viewport)) {
                     continue;
                 }
-                final String id = start.id + "." + edge.outcome + ">" + end.id;
-                if (emitted.add(id)) {
-                    links.add(edge.value(id, start, end));
+                connections.computeIfAbsent(start.id + ">" + end.id, ignored -> new Connection(start, end, next.outcome))
+                        .add(next);
+                if (connections.size() * 3 > MAX_SEGMENTS) {
+                    return view(parameters, connections, Math.max(1, budget / 2));
                 }
-                observe.accept(id, edge);
             }
         }
         final Map<String, RailixValue> response = new LinkedHashMap<>();
@@ -306,8 +310,8 @@ final class CreatorScene {
             }
         }
         response.put("icons", RailixValue.object(visibleIcons));
-        response.put("links", RailixValue.array(links));
-        response.put("limited", RailixValue.bool(limited));
+        response.put("links", RailixValue.array(connections.values().stream().<RailixValue>map(Connection::value).toList()));
+        response.put("limited", RailixValue.bool(limited || budget < MAX_NODES));
         return RailixValue.object(response);
     }
 
@@ -316,7 +320,7 @@ final class CreatorScene {
             throw new IllegalArgumentException("Scene observation query exceeds 8192 characters.");
         }
         final Set<String> allowed = new java.util.HashSet<>(VIEW_PARAMETERS);
-        allowed.addAll(Set.of("revision", "example"));
+        allowed.addAll(Set.of("revision", "example", "metrics"));
         final Map<String, String> parameters = parameters(query, allowed);
         if (!parameters.getOrDefault("revision", "").matches("[0-9a-f]{64}")) {
             throw new IllegalArgumentException("Scene observations require the current scene revision.");
@@ -325,6 +329,13 @@ final class CreatorScene {
                 && !parameters.get("example").matches("[a-z][a-z0-9-]{0,63}:[0-9]{1,10}")) {
             throw new IllegalArgumentException("An Example selection requires a compiled Example ID.");
         }
+        if (parameters.containsKey("metrics")) {
+            final String[] metrics = parameters.get("metrics").split(",", -1);
+            if (java.util.Arrays.stream(metrics).anyMatch(String::isBlank)
+                    || java.util.Arrays.stream(metrics).distinct().count() != metrics.length) {
+                throw new IllegalArgumentException("Metric selection requires distinct non-blank identifiers.");
+            }
+        }
         return parameters;
     }
 
@@ -332,149 +343,264 @@ final class CreatorScene {
         return revision.equals(expected);
     }
 
-    RailixValue.ObjectValue observationView(final Map<String, String> parameters) {
-        if (parameters.containsKey("example")) {
-            exampleTrigger(parameters.get("example"));
-        }
-        return view(viewParameters(parameters), (id, edge) -> {});
+    Observation observationView(final Map<String, String> parameters) {
+        if (parameters.containsKey("example")) exampleTrigger(parameters.get("example"));
+        final Map<String, Connection> connections = new LinkedHashMap<>();
+        return new Observation(view(viewParameters(parameters), connections), List.copyOf(connections.values()),
+                parameters.get("example"), parameters.containsKey("metrics")
+                ? List.of(parameters.get("metrics").split(",")) : List.of());
     }
 
-    /** Aggregates one application-owned observation snapshot without changing scene geometry. */
-    RailixValue.ObjectValue observations(final Map<String, String> parameters,
-                                        final RailixValue.ObjectValue projection,
-                                        final Map<String, RailixValue.ObjectValue> documents,
-                                        final long applicationRevision, final long applicationPid) throws IOException {
-        final boolean hasMetrics = documents.containsKey("metrics");
-        final boolean hasCoverage = documents.containsKey("coverage");
-        final boolean hasSelection = documents.containsKey("example");
-        final BitSet covered = hasCoverage ? coverage(documents.get("coverage")) : new BitSet();
-        final BitSet selected = new BitSet(nodeCount);
-        if (hasSelection) {
-            for (final RailixValue value : observedArray(documents.get("example"), "nodes", nodeCount)) {
-                final long node = observedNumber(value);
-                if (node >= nodeCount || selected.get((int) node)) {
-                    throw new IOException("Application Example summary contains an invalid node index.");
-                }
-                selected.set((int) node);
-            }
-            selected.set(exampleTrigger(parameters.get("example")).node);
+    /** One viewport's bounded queries and aggregate responses; never retains a full application snapshot. */
+    final class Observation {
+        private final RailixValue.ObjectValue projection;
+        private final List<Connection> connections;
+        private final String example;
+        private final List<String> selectedMetrics;
+        private Map<String, RailixValue> metricDefinitions = Map.of();
+        private long observedAt;
+        private long elapsedNanos;
+        private final Map<String, Map<String, RailixValue>> metrics = new HashMap<>();
+        private final Map<String, Map<String, RailixValue>> examples = new HashMap<>();
+        private boolean metricsAvailable = true;
+        private boolean examplesAvailable = true;
+        private boolean selectionAvailable = true;
+        private long coverageRevision = -1;
+
+        private Observation(final RailixValue.ObjectValue projection, final List<Connection> connections,
+                            final String example, final List<String> selectedMetrics) {
+            this.projection = projection;
+            this.connections = connections;
+            this.example = example;
+            this.selectedMetrics = selectedMetrics;
         }
-        final RailixValue.ObjectValue metrics = hasMetrics ? documents.get("metrics") : RailixValue.object(Map.of());
-        final RailixValue.ObjectValue applicationMetrics = hasMetrics
-                ? observedCounters(observedObject(metrics.values().get("application")).values().get("metrics"))
-                : RailixValue.object(Map.of());
-        final Map<String, RailixValue.ObjectValue> steps = hasMetrics ? metricSeries(metrics, "steps") : Map.of();
-        final Map<String, RailixValue.ObjectValue> flows = hasMetrics ? metricSeries(metrics, "flows") : Map.of();
-        if (hasMetrics) {
-            for (final Part part : leaves) {
-                final boolean executable = part.node >= 0 && !"app".equals(part.kind);
-                if (executable && part.metrics && !steps.containsKey(part.id)) {
-                    throw new IOException("Application metrics omit an enabled Step.");
-                }
-                if ("trigger".equals(part.kind) && !flows.containsKey(part.id)) {
-                    throw new IOException("Application metrics omit a flow.");
-                }
-            }
+
+        void metricDefinitions(final RailixValue.ObjectValue catalog) throws IOException {
+            metricDefinitions = observedObject(catalog.values().get("metrics")).values();
         }
-        final Map<String, Map<String, RailixValue>> connections = new HashMap<>();
-        final RailixValue.ObjectValue visible = !hasMetrics && !hasSelection ? projection
-                : view(viewParameters(parameters), (id, edge) -> {
-                    final boolean first = !connections.containsKey(id);
-                    final Map<String, RailixValue> entry = connections.computeIfAbsent(id,
-                            ignored -> new LinkedHashMap<>(Map.of("id", RailixValue.string(id))));
-                    if (hasSelection) {
-                        final String selection = edge.from.node < 0 || edge.to.node < 0
-                                || "app".equals(edge.from.kind) || "app".equals(edge.to.kind)
-                                ? "unknown" : selected.get(edge.from.node) && selected.get(edge.to.node)
-                                ? "reached" : "unreached";
-                        final String previous = text(entry, "selection");
-                        entry.put("selection", RailixValue.string("reached".equals(previous) || "reached".equals(selection)
-                                ? "reached" : "unknown".equals(previous) || "unknown".equals(selection)
-                                ? "unknown" : "unreached"));
-                    }
-                    if (hasMetrics) {
-                        if (edge.to.node < 0 || !edge.to.metrics) {
-                            entry.remove("executions");
-                        } else if (first || entry.containsKey("executions")) {
-                            // One-parent graph: each original destination counts this connection's ingress, not region work.
-                            final BigDecimal ingress = ((RailixValue.NumberValue) steps.get(edge.to.id)
-                                    .values().get("executions")).value();
-                            final BigDecimal previous = entry.get("executions") instanceof RailixValue.NumberValue count
-                                    ? count.value() : BigDecimal.ZERO;
-                            entry.put("executions", RailixValue.number(previous.add(ingress)));
-                        }
-                    }
-                });
-        final List<RailixValue> nodes = new ArrayList<>();
-        for (final RailixValue value : array(visible, "nodes")) {
-            final Part part = identities.get(text(object(value), "id"));
-            final int[] counts = new int[3];
-            final BigInteger[] totals = new BigInteger[hasMetrics ? COUNTERS.size() : 0];
-            java.util.Arrays.fill(totals, BigInteger.ZERO);
-            // Visible regions form a disjoint frontier; no project-sized prefix tables are needed.
-            for (int index = part.first; index <= part.last; index++) {
-                final Part leaf = leaves.get(index);
-                if (leaf.node < 0 || "app".equals(leaf.kind)) continue;
-                if (!leaf.metrics) counts[0]++;
-                if (covered.get(leaf.node)) counts[1]++;
-                if (selected.get(leaf.node)) counts[2]++;
-                if (hasMetrics && leaf.metrics) {
-                    final RailixValue.ObjectValue series = steps.get(leaf.id);
-                    for (int counter = 0; counter < totals.length; counter++) {
-                        totals[counter] = totals[counter].add(((RailixValue.NumberValue)
-                                series.values().get(COUNTERS.get(counter))).value().toBigInteger());
-                    }
-                }
-            }
-            final Map<String, RailixValue> entry = new LinkedHashMap<>();
-            entry.put("id", RailixValue.string(part.id));
-            entry.put("count", RailixValue.number(part.count));
-            entry.put("disabled_count", RailixValue.number(counts[0]));
-            if (hasCoverage) {
-                entry.put("covered_count", RailixValue.number(counts[1]));
-            }
-            if (hasSelection) {
-                entry.put("selected_count", RailixValue.number(counts[2]));
-            }
-            if (hasMetrics) {
-                final RailixValue.ObjectValue series = switch (part.kind) {
-                    case "app" -> applicationMetrics;
-                    case "trigger" -> flows.get(part.id);
-                    default -> RailixValue.object(Map.of());
+
+        Iterable<RailixValue.ObjectValue> queries(final String read) {
+            final boolean metric = read.equals("metrics");
+            final List<Scope> scopes = new ArrayList<>();
+            int index = 0;
+            for (final RailixValue value : array(projection, "nodes")) {
+                final Part part = identities.get(text(object(value), "id"));
+                final String id = "n" + index++;
+                final String kind = !metric ? "groups" : switch (part.kind) {
+                    case "app" -> "application";
+                    case "trigger" -> "flows";
+                    default -> "steps";
                 };
-                for (int counter = 0; counter < COUNTERS.size(); counter++) {
-                    final String name = COUNTERS.get(counter);
-                    entry.put(name, series.values().isEmpty()
-                            ? RailixValue.number(new BigDecimal(totals[counter]))
-                            : series.values().get(name));
+                scopes.add(new Scope(id, kind, metric ? part.metricMembers : part.members, part.id));
+            }
+            for (index = 0; index < connections.size(); index++) {
+                final Connection connection = connections.get(index);
+                if (!metric || !connection.unknownMetrics) {
+                    scopes.add(new Scope("l" + index, metric ? "steps" : "groups",
+                            metric ? connection.metricMembers : connection.members, ""));
                 }
             }
-            nodes.add(RailixValue.object(entry));
+            return () -> new java.util.Iterator<>() {
+                private int scope;
+                private int offset;
+                private int position = -1;
+                private boolean first = true;
+
+                public boolean hasNext() {
+                    return first || scope < scopes.size();
+                }
+
+                public RailixValue.ObjectValue next() {
+                    if (!hasNext()) throw new NoSuchElementException();
+                    first = false;
+                    final Map<String, RailixValue> body = new LinkedHashMap<>();
+                    if (metric && !selectedMetrics.isEmpty()) body.put("metrics", RailixValue.array(selectedMetrics.stream()
+                            .<RailixValue>map(RailixValue::string).toList()));
+                    final Map<String, Map<String, RailixValue>> categories = new LinkedHashMap<>();
+                    if (!metric && example != null) body.put("example", RailixValue.string(example));
+                    int groups = 0;
+                    int ranges = 0;
+                    int members = 0;
+                    while (scope < scopes.size() && groups < 4096 && ranges < 4096 && members < 1_048_576) {
+                        final Scope current = scopes.get(scope);
+                        if (current.kind.equals("application")) {
+                            body.put("application", RailixValue.string(current.id));
+                            scope++;
+                        } else if (current.kind.equals("flows")) {
+                            categories.computeIfAbsent("flows", ignored -> new LinkedHashMap<>())
+                                    .put(current.id, RailixValue.string(current.flow));
+                            scope++;
+                        } else {
+                            final List<RailixValue> intervals = new ArrayList<>();
+                            while (offset < current.members.length && ranges < 4096 && members < 1_048_576) {
+                                if (position < 0) position = current.members[offset];
+                                final int end = (int) Math.min(current.members[offset + 1],
+                                        (long) position + 1_048_576 - members - 1);
+                                intervals.add(RailixValue.array(List.of(RailixValue.number(position), RailixValue.number(end))));
+                                members += end - position + 1;
+                                ranges++;
+                                if (end == current.members[offset + 1]) {
+                                    offset += 2;
+                                    position = -1;
+                                } else {
+                                    position = end + 1;
+                                }
+                            }
+                            categories.computeIfAbsent(current.kind, ignored -> new LinkedHashMap<>())
+                                    .put(current.id, RailixValue.array(intervals));
+                            if (offset == current.members.length) {
+                                scope++;
+                                offset = 0;
+                            }
+                        }
+                        groups++;
+                    }
+                    categories.forEach((kind, values) -> body.put(kind, RailixValue.object(values)));
+                    for (final String kind : metric ? List.of("steps", "flows") : List.of("groups")) {
+                        body.putIfAbsent(kind, RailixValue.object(Map.of()));
+                    }
+                    return RailixValue.object(body);
+                }
+            };
         }
-        if (RailixValue.bool(true).equals(visible.values().get("limited"))) {
-            // A capped traversal cannot prove that every represented ingress edge contributed.
-            connections.values().forEach(entry -> entry.remove("executions"));
+
+        void unavailable(final String read) {
+            if (read.equals("metrics")) {
+                metricsAvailable = false;
+                metrics.clear();
+            } else {
+                examplesAvailable = false;
+                examples.clear();
+            }
         }
-        final List<RailixValue> links = array(visible, "links").stream().<RailixValue>map(value -> {
-            final String id = text(object(value), "id");
-            return RailixValue.object(connections.getOrDefault(id, Map.of("id", RailixValue.string(id))));
-        }).toList();
-        final Map<String, RailixValue> response = new LinkedHashMap<>();
-        response.put("revision", RailixValue.string(revision));
-        response.put("application_revision", RailixValue.number(applicationRevision));
-        response.put("application_pid", RailixValue.number(applicationPid));
-        response.put("limited", visible.values().get("limited"));
-        response.put("nodes", RailixValue.array(nodes));
-        response.put("links", RailixValue.array(links));
-        if (hasSelection) {
-            response.put("example", RailixValue.string(parameters.get("example")));
+
+        boolean accept(final String read, final RailixValue.ObjectValue query,
+                       final RailixValue.ObjectValue document) throws IOException {
+            final boolean metric = read.equals("metrics");
+            final Map<String, RailixValue> expected = new HashMap<>();
+            for (final String kind : List.of("steps", "flows", "groups")) {
+                expected.putAll(object(query.values().get(kind)));
+            }
+            if (query.values().get("application") instanceof RailixValue.StringValue id) {
+                expected.put(id.value(), RailixValue.nullValue());
+            }
+            final Map<String, RailixValue> groups = observedObject(document.values().get("groups")).values();
+            if (!groups.keySet().equals(expected.keySet())) {
+                throw new IOException("Application observation groups do not match the viewport query.");
+            }
+            final boolean selected = !metric && document.values().containsKey("example");
+            if (metric) {
+                observedAt = Math.max(observedAt, observedNumber(document.values().get("observed_at")));
+                elapsedNanos = Math.max(elapsedNanos, observedNumber(document.values().get("elapsed_nanos")));
+                for (final var group : groups.entrySet()) {
+                    final Map<String, RailixValue> totals = metrics.computeIfAbsent(group.getKey(), ignored -> new LinkedHashMap<>());
+                    for (final var reading : observedObject(group.getValue()).values().entrySet()) {
+                        final RailixValue definition = metricDefinitions.get(reading.getKey());
+                        if (definition == null || !selectedMetrics.isEmpty() && !selectedMetrics.contains(reading.getKey())
+                                || !(reading.getValue() instanceof RailixValue.NumberValue number)) {
+                            throw new IOException("Application returned an undefined, unrequested or nonnumeric metric.");
+                        }
+                        final RailixValue previous = totals.get(reading.getKey());
+                        if (previous == null) {
+                            totals.put(reading.getKey(), reading.getValue());
+                            continue;
+                        }
+                        final BigDecimal before = ((RailixValue.NumberValue) previous).value();
+                        final String aggregation = text(object(definition), "aggregation");
+                        totals.put(reading.getKey(), RailixValue.number(switch (aggregation) {
+                            case "sum" -> before.add(number.value());
+                            case "max" -> before.max(number.value());
+                            default -> throw new IOException("A nonaggregatable metric spans multiple query batches.");
+                        }));
+                    }
+                }
+                return metricsAvailable;
+            }
+            final long current = observedNumber(document.values().get("revision"));
+            if (coverageRevision >= 0 && coverageRevision != current) unavailable(read);
+            coverageRevision = current;
+            if (selected && (example == null || !RailixValue.string(example).equals(document.values().get("example")))) {
+                throw new IOException("Application observation does not match the selected Example.");
+            }
+            selectionAvailable &= selected;
+            for (final var group : groups.entrySet()) {
+                final Map<String, RailixValue> counters = observedObject(group.getValue()).values();
+                final List<String> fields = selected ? List.of("covered_count", "selected_count") : List.of("covered_count");
+                long count = 0;
+                for (final RailixValue interval : ((RailixValue.ArrayValue) expected.get(group.getKey())).values()) {
+                    final List<RailixValue> bounds = ((RailixValue.ArrayValue) interval).values();
+                    count += observedNumber(bounds.getLast()) - observedNumber(bounds.getFirst()) + 1;
+                }
+                for (final String field : fields) {
+                    final long value = observedNumber(counters.get(field));
+                    if (value > count) {
+                        throw new IOException("Application observation count exceeds the requested membership.");
+                    }
+                    if (examplesAvailable) {
+                        final Map<String, RailixValue> totals = examples
+                                .computeIfAbsent(group.getKey(), ignored -> new LinkedHashMap<>());
+                        final long previous = totals.containsKey(field) ? observedNumber(totals.get(field)) : 0;
+                        totals.put(field, RailixValue.number(value > Long.MAX_VALUE - previous ? Long.MAX_VALUE : previous + value));
+                    }
+                }
+                if (selected && observedNumber(counters.get("selected_count")) > observedNumber(counters.get("covered_count"))) {
+                    throw new IOException("Selected Example membership exceeds application coverage.");
+                }
+            }
+            return examplesAvailable;
         }
-        if (hasCoverage) {
-            response.put("coverage_revision", RailixValue.number(
-                    observedNumber(documents.get("coverage").values().get("revision"))));
+
+        RailixValue.ObjectValue response(final long applicationRevision, final long applicationPid) {
+            final List<RailixValue> nodes = new ArrayList<>();
+            int index = 0;
+            for (final RailixValue value : array(projection, "nodes")) {
+                final Part part = identities.get(text(object(value), "id"));
+                final String key = "n" + index++;
+                final Map<String, RailixValue> entry = new LinkedHashMap<>();
+                entry.put("id", RailixValue.string(part.id));
+                entry.put("count", RailixValue.number(part.count));
+                entry.put("disabled_count", RailixValue.number(part.disabled));
+                if (metricsAvailable) entry.put("metrics", RailixValue.object(metrics.get(key)));
+                if (examplesAvailable) {
+                    entry.put("covered_count", examples.get(key).get("covered_count"));
+                    if (selectionAvailable) entry.put("selected_count", examples.get(key).get("selected_count"));
+                }
+                nodes.add(RailixValue.object(entry));
+            }
+            final List<RailixValue> links = new ArrayList<>();
+            for (index = 0; index < connections.size(); index++) {
+                final Connection connection = connections.get(index);
+                final String key = "l" + index;
+                final Map<String, RailixValue> entry = new LinkedHashMap<>();
+                entry.put("id", RailixValue.string(connection.id()));
+                if (metricsAvailable && !connection.unknownMetrics) entry.put("metrics", RailixValue.object(metrics.get(key)));
+                if (examplesAvailable && selectionAvailable) {
+                    final boolean reached = !RailixValue.number(0).equals(examples.get(key).get("selected_count"));
+                    entry.put("selection", RailixValue.string(reached ? "reached"
+                            : connection.unknownSelection ? "unknown" : "unreached"));
+                }
+                links.add(RailixValue.object(entry));
+            }
+            final Map<String, RailixValue> response = new LinkedHashMap<>();
+            response.put("revision", RailixValue.string(revision));
+            response.put("application_revision", RailixValue.number(applicationRevision));
+            response.put("application_pid", RailixValue.number(applicationPid));
+            if (metricsAvailable) {
+                response.put("observed_at", RailixValue.number(observedAt));
+                response.put("elapsed_nanos", RailixValue.number(elapsedNanos));
+            }
+            response.put("limited", projection.values().get("limited"));
+            response.put("nodes", RailixValue.array(nodes));
+            response.put("links", RailixValue.array(links));
+            if (examplesAvailable) {
+                response.put("coverage_revision", RailixValue.number(coverageRevision));
+                if (selectionAvailable) response.put("example", RailixValue.string(example));
+            }
+            return RailixValue.object(response);
         }
-        return RailixValue.object(response);
     }
+
+    private record Scope(String id, String kind, int[] members, String flow) {}
 
     private static Map<String, String> viewParameters(final Map<String, String> parameters) {
         final Map<String, String> view = new HashMap<>(parameters);
@@ -493,62 +619,12 @@ final class CreatorScene {
         return trigger;
     }
 
-    private BitSet coverage(final RailixValue.ObjectValue document) throws IOException {
-        if (!(document.values().get("coverage_bits") instanceof RailixValue.StringValue encoded)
-                || encoded.value().length() > ((nodeCount + 7) / 8 + 2) / 3 * 4) {
-            throw new IOException("Application coverage bitmap exceeds the scene node count.");
-        }
-        final BitSet bits;
-        try {
-            bits = BitSet.valueOf(Base64.getDecoder().decode(encoded.value()));
-        } catch (final IllegalArgumentException failure) {
-            throw new IOException("Application coverage bitmap is invalid.", failure);
-        }
-        if (bits.length() > nodeCount || bits.cardinality() != observedNumber(document.values().get("covered_steps"))) {
-            throw new IOException("Application coverage bitmap does not match its count or scene.");
-        }
-        return bits;
-    }
-
-    private Map<String, RailixValue.ObjectValue> metricSeries(final RailixValue.ObjectValue metrics,
-                                                            final String name) throws IOException {
-        final Map<String, RailixValue.ObjectValue> series = new HashMap<>();
-        for (final RailixValue value : observedArray(metrics, name, nodeCount)) {
-            final RailixValue.ObjectValue entry = observedObject(value);
-            if (!(entry.values().get("id") instanceof RailixValue.StringValue id)) {
-                throw new IOException("Application metric series has no identifier.");
-            }
-            final Part part = identities.get(id.value());
-            if (part == null || part.node < 0 || "app".equals(part.kind)
-                    || ("flows".equals(name) ? !"trigger".equals(part.kind) : !part.metrics)
-                    || series.putIfAbsent(id.value(), observedCounters(entry.values().get("metrics"))) != null) {
-                throw new IOException("Application metric series does not match the scene.");
-            }
-        }
-        return series;
-    }
-
-    private static RailixValue.ObjectValue observedCounters(final RailixValue value) throws IOException {
-        final RailixValue.ObjectValue counters = observedObject(value);
-        for (final String counter : COUNTERS) {
-            observedNumber(counters.values().get(counter));
-        }
-        return counters;
-    }
 
     private static RailixValue.ObjectValue observedObject(final RailixValue value) throws IOException {
         if (!(value instanceof RailixValue.ObjectValue object)) {
             throw new IOException("Application observation must contain an object.");
         }
         return object;
-    }
-
-    private static List<RailixValue> observedArray(final RailixValue.ObjectValue value, final String name,
-                                                  final int limit) throws IOException {
-        if (!(value.values().get(name) instanceof RailixValue.ArrayValue array) || array.values().size() > limit) {
-            throw new IOException("Application observation array is missing or exceeds the scene node count.");
-        }
-        return array.values();
     }
 
     private static long observedNumber(final RailixValue value) throws IOException {
@@ -878,6 +954,9 @@ final class CreatorScene {
         private int last;
         private int count;
         private int node = -1;
+        private int[] members = new int[0];
+        private int[] metricMembers = new int[0];
+        private int disabled;
         private boolean metrics;
         private int exampleCount;
         private String iconRef = "";
@@ -923,6 +1002,29 @@ final class CreatorScene {
         }
     }
 
+    /** Sorted inclusive intervals keep static membership compact even when project order differs from layout. */
+    private static int[] union(final int[] first, final int[] second) {
+        if (first.length == 0) return second;
+        if (second.length == 0) return first;
+        final int[] merged = new int[first.length + second.length];
+        int left = 0;
+        int right = 0;
+        int size = 0;
+        while (left < first.length || right < second.length) {
+            final boolean takeLeft = right == second.length || left < first.length && first[left] <= second[right];
+            final int start = takeLeft ? first[left] : second[right];
+            final int end = takeLeft ? first[left + 1] : second[right + 1];
+            if (takeLeft) left += 2; else right += 2;
+            if (size > 0 && (long) start <= (long) merged[size - 1] + 1) {
+                merged[size - 1] = Math.max(merged[size - 1], end);
+            } else {
+                merged[size++] = start;
+                merged[size++] = end;
+            }
+        }
+        return java.util.Arrays.copyOf(merged, size);
+    }
+
     private record Route(String id, Part from, Part to, String outcome) {
         RailixValue.ObjectValue value(final String identity, final Part start, final Part end) {
             final double startX = start.box.x + start.box.width / 2;
@@ -961,14 +1063,54 @@ final class CreatorScene {
         }
     }
 
+    private static final class Connection {
+        private final Part from;
+        private final Part to;
+        private String outcome;
+        private int[] members = new int[0];
+        private int[] metricMembers = new int[0];
+        private boolean unknownMetrics;
+        private boolean unknownSelection;
+
+        private Connection(final Part from, final Part to, final String outcome) {
+            this.from = from;
+            this.to = to;
+            this.outcome = outcome;
+        }
+
+        private void add(final Routes routes) {
+            if (!outcome.equals(routes.outcome)) outcome = "";
+            members = union(members, routes.members);
+            metricMembers = union(metricMembers, routes.metricMembers);
+            unknownMetrics |= routes.unknownMetrics;
+            unknownSelection |= routes.unknownSelection;
+        }
+
+        private String id() {
+            return from.id + "." + outcome + ">" + to.id;
+        }
+
+        private RailixValue.ObjectValue value() {
+            return new Route(id(), from, to, outcome).value(id(), from, to);
+        }
+    }
+
     /** Bounding-volume route index also prunes whole batches internal to a collapsed region. */
     private static final class Routes {
-        private final Route edge;
         private final Routes left;
         private final Routes right;
         private final Box box;
         private final int first;
         private final int last;
+        private final int fromFirst;
+        private final int fromLast;
+        private final int toFirst;
+        private final int toLast;
+        private final String outcome;
+        private final int[] members;
+        private final int[] metricMembers;
+        private final boolean unknownMetrics;
+        private final boolean unknownSelection;
 
         private Routes(final List<Route> edges) {
             this(sorted(edges), 0, edges.size());
@@ -976,27 +1118,44 @@ final class CreatorScene {
 
         private Routes(final List<Route> edges, final int start, final int end) {
             if (end - start == 1) {
-                edge = edges.get(start);
+                final Route edge = edges.get(start);
                 left = null;
                 right = null;
                 box = edge.bounds();
                 first = Math.min(edge.from.first, edge.to.first);
                 last = Math.max(edge.from.last, edge.to.last);
+                fromFirst = edge.from.first;
+                fromLast = edge.from.last;
+                toFirst = edge.to.first;
+                toLast = edge.to.last;
+                outcome = edge.outcome;
+                metricMembers = edge.to.metricMembers;
+                unknownMetrics = edge.to.node < 0 || !edge.to.metrics;
+                unknownSelection = edge.from.node < 0 || edge.to.node < 0 || "app".equals(edge.from.kind);
+                members = unknownSelection ? new int[0] : edge.to.members;
             } else {
-                edge = null;
                 final int middle = (start + end) >>> 1;
                 left = new Routes(edges, start, middle);
                 right = new Routes(edges, middle, end);
                 box = left.box.union(right.box);
                 first = Math.min(left.first, right.first);
                 last = Math.max(left.last, right.last);
+                fromFirst = Math.min(left.fromFirst, right.fromFirst);
+                fromLast = Math.max(left.fromLast, right.fromLast);
+                toFirst = Math.min(left.toFirst, right.toFirst);
+                toLast = Math.max(left.toLast, right.toLast);
+                outcome = left.outcome.equals(right.outcome) ? left.outcome : "";
+                members = union(left.members, right.members);
+                metricMembers = union(left.metricMembers, right.metricMembers);
+                unknownMetrics = left.unknownMetrics || right.unknownMetrics;
+                unknownSelection = left.unknownSelection || right.unknownSelection;
             }
         }
 
         private static List<Route> sorted(final List<Route> edges) {
             final List<Route> sorted = new ArrayList<>(edges);
-            sorted.sort(Comparator.comparingInt((Route route) -> Math.min(route.from.first, route.to.first))
-                    .thenComparing(Route::id));
+            sorted.sort(Comparator.comparingInt((Route route) -> route.from.first)
+                    .thenComparingInt(route -> route.to.first).thenComparing(Route::id));
             return sorted;
         }
     }

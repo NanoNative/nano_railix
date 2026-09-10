@@ -1,6 +1,8 @@
 package dev.nanonative.railix.creator;
 
 import dev.nanonative.railix.core.value.RailixValue;
+import dev.nanonative.railix.core.value.RailixJson;
+import dev.nanonative.railix.stdlib.StandardLibrary;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -253,6 +255,7 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
         }
     }
 
+
     @Test
     void partialBranchGroupDoesNotEncloseTheUngroupedArm() throws Exception {
         final Path project = directory.resolve("railix.project.json");
@@ -333,8 +336,95 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
+    void denseOverviewKeepsEveryDisplayedStationConnected() throws Exception {
+        final RailixValue.ObjectValue viewport = scene("?x=-1000&y=-1000&width=10000000&height=10000000&scale=100000000");
+        assertConnected(viewport);
+    }
+
+    private static void assertConnected(final RailixValue.ObjectValue viewport) {
+        final var reached = new java.util.HashSet<String>();
+        nodes(viewport).stream().filter(node -> string(node, "kind").equals("app"))
+                .forEach(node -> reached.add(string(node, "id")));
+        boolean changed;
+        do {
+            changed = false;
+            for (final RailixValue value : array(viewport, "links")) {
+                final var link = (RailixValue.ObjectValue) value;
+                if (reached.contains(string(link, "from"))) changed |= reached.add(string(link, "to"));
+            }
+        } while (changed);
+        assertThat(nodes(viewport).stream()
+                .filter(node -> !RailixValue.bool(true).equals(node.values().get("expanded")))
+                .map(node -> string(node, "id"))).allMatch(reached::contains);
+    }
+
+    @Test
+    @Timeout(120)
+    void wideBranchesCoarsenWithoutOmittingAnyStationOrConnection() throws Exception {
+        final int count = 5000;
+        final CreatorScene indexed = new CreatorScene(Files.readString(groupedBranches(count)),
+                object("{\"format\":2,\"groups\":[],\"steps\":{}}"), StandardLibrary.catalog());
+        for (final String query : List.of("", "x=-1000&y=-1000&width=10000000&height=10000000&scale=100000000")) {
+            final RailixValue.ObjectValue visible = indexed.view(query);
+            assertConnected(visible);
+            assertThat(nodes(visible).stream().filter(node -> !RailixValue.bool(true).equals(node.values().get("expanded")))
+                    .mapToLong(node -> number(node, "count")).sum()).isEqualTo(count + 3);
+            assertThat(array(visible, "links").size() * 3).isLessThanOrEqualTo(CreatorScene.MAX_SEGMENTS);
+            assertThat(nodes(visible)).hasSizeLessThanOrEqualTo(CreatorScene.MAX_NODES);
+        }
+    }
+
+    @Test
     void repeatedViewportQueriesAreDeterministic() throws Exception {
         assertThat(scene("?focus=step-1100&scale=2")).isEqualTo(scene("?focus=step-1100&scale=2"));
+    }
+
+    @Test
+    @Timeout(180)
+    void largeDerivedSceneKeepsViewportAndObservationQueriesCompact() {
+        final int count = Integer.getInteger("railix.scene.scale", 20_000);
+        final long started = System.nanoTime();
+        final CreatorScene indexed = new CreatorScene(chain(count), object("{\"format\":2,\"groups\":[],\"steps\":{}}"),
+                StandardLibrary.catalog());
+        final long indexedAt = System.nanoTime();
+        final var times = new java.util.ArrayList<Long>();
+        int queryBytes = 0;
+        for (int iteration = 0; iteration < 23; iteration++) {
+            final long before = System.nanoTime();
+            final RailixValue.ObjectValue visible = indexed.view("");
+            assertThat(nodes(visible).stream().filter(node -> !RailixValue.bool(true).equals(node.values().get("expanded")))
+                    .mapToLong(node -> number(node, "count")).sum()).isEqualTo(count + 2);
+            assertThat(nodes(visible)).hasSizeLessThan(30);
+            final var parameters = CreatorScene.observationParameters("revision=" + string(visible, "revision") + "&example=command:0");
+            final var observation = indexed.observationView(parameters);
+            queryBytes = 0;
+            for (final String read : List.of("metrics", "examples")) {
+                for (final RailixValue.ObjectValue query : observation.queries(read)) {
+                    final int bytes = RailixJson.write(query).getBytes(StandardCharsets.UTF_8).length;
+                    assertThat(bytes).isLessThan(1_048_576);
+                    long members = 0;
+                    for (final String kind : List.of("steps", "groups")) {
+                        if (query.values().get(kind) instanceof RailixValue.ObjectValue groups) {
+                            for (final RailixValue group : groups.values().values()) {
+                                for (final RailixValue range : ((RailixValue.ArrayValue) group).values()) {
+                                    final var interval = ((RailixValue.ArrayValue) range).values();
+                                    members += ((RailixValue.NumberValue) interval.getLast()).value().longValueExact()
+                                            - ((RailixValue.NumberValue) interval.getFirst()).value().longValueExact() + 1;
+                                }
+                            }
+                        }
+                    }
+                    assertThat(members).isLessThanOrEqualTo(1_048_576);
+                    queryBytes += bytes;
+                }
+            }
+            if (iteration >= 3) times.add(System.nanoTime() - before);
+        }
+        times.sort(Long::compareTo);
+        assertThat(queryBytes).isLessThan(4096);
+        System.out.printf(java.util.Locale.ROOT,
+                "RAILIX_SCENE_SCALE advisory=true steps=%d index_ms=%.3f viewport_query_p95_ms=%.3f query_bytes=%d%n",
+                count, (indexedAt - started) / 1_000_000.0, times.get(18) / 1_000_000.0, queryBytes);
     }
 
     @ParameterizedTest
@@ -544,6 +634,7 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
     private static double decimal(final RailixValue.ObjectValue node, final String key) {
         return ((RailixValue.NumberValue) node.values().get(key)).value().doubleValue();
     }
+
 
     private static double point(final RailixValue.ObjectValue link, final int index, final int axis) {
         return ((RailixValue.NumberValue) ((RailixValue.ArrayValue) array(link, "points").get(index))

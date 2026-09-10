@@ -1726,6 +1726,29 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
                 assertThat(saturated.statusCode()).isEqualTo(503);
                 assertThat(saturated.body())
                         .isEqualTo("{\"reason\":\"saturated\",\"status\":\"unavailable\"}");
+                assertThat(request(
+                        creator.baseUri(),
+                        "GET",
+                        "/api/examples/steps/0",
+                        ""
+                ).statusCode()).isEqualTo(503);
+            }
+        }
+    }
+
+    @Test
+    void creatorServesBoundedExampleSnapshotsWhileSlowClientsHoldViews() throws Exception {
+        final Path project = directory.resolve("snapshot-while-views-buffered.json");
+        Files.writeString(project, largeExample("snapshots"), StandardCharsets.UTF_8);
+
+        try (CreatorServer creator = start(project)) {
+            awaitExample(creator, "snapshots");
+            try (OpenExampleViews views = OpenExampleViews.open(
+                    creator.baseUri(),
+                    CreatorServer.MAX_CONCURRENT_EXAMPLE_RESPONSES
+            )) {
+                assertThat(request(creator.baseUri(), "GET", "/api/examples/status", "").statusCode()).isEqualTo(200);
+                assertThat(request(creator.baseUri(), "GET", "/api/examples/command:0", "").statusCode()).isEqualTo(200);
             }
         }
     }

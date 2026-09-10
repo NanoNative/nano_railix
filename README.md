@@ -230,6 +230,8 @@ requires its per-process bearer token on every route:
 - `GET /v1/examples` returns the bounded full Example inventory and union coverage on demand.
 - `GET /v1/examples/status` returns compact suite progress and its revision.
 - `GET /v1/examples/coverage` returns the union coverage bitmap for one suite revision.
+- `POST /v1/examples/query` returns coverage and optional selected-Example membership counts
+  for requested inclusive ranges of canonical project node ordinals, without replaying traces.
 - `GET /v1/examples/{id}` returns one Example's current application-owned status.
 - `GET /v1/examples/{id}/view` returns one completed Example summary as ready-to-display JSON.
 - `GET /v1/examples/{id}/steps/{node}` returns one selected Step projection as ready-to-display JSON.
@@ -237,7 +239,12 @@ requires its per-process bearer token on every route:
   when reached, that selected Step projection as one bounded ready-to-display response. It returns
   `413 EXAMPLE_STEP_REPLAY_TOO_LARGE` before replay when completed source traces exceed 64 MiB.
 - `GET /v1/metrics`, `/v1/metrics/application`, and `/v1/metrics/nodes/{id}` stream JSON metrics.
+- `GET /v1/metrics/catalog` describes metric IDs, labels, units, kinds, scopes, aggregation and sampling.
 - `GET /v1/metrics/prometheus` and `/v1/metrics/influx` stream standard text formats.
+- `POST /v1/metrics/query` aggregates requested inclusive ranges of metrics-enabled Step
+  ordinals (the order of the full metric export), named flows, an optional application total,
+  and an optional process group. `metrics` selects metric IDs; omitted means all, `[]` means none.
+  These are read-only queries, not executions or changes to metric settings.
 - `POST /v1/run/{trigger}` admits one explicit untraced development invocation.
 - `POST /v1/trace/{trigger}` admits one explicit traced development invocation with a caller-owned
   trace ID; `DELETE /v1/traces/{id}` requests its cancellation.
@@ -247,6 +254,42 @@ before the separate 32-run or 16-trace admission budget is acquired. At most 48 
 with a valid token can be held. Missing or invalid tokens have an independent four-body budget, so
 they cannot consume authenticated admission. Excess or expired incomplete connections are closed
 without executing a Flow.
+
+Scoped queries share the authenticated body deadline and their existing two-reader admission.
+Each query allows at most 4,096 groups, 1,048,576 range-member visits, and a 1 MiB request/response.
+Creator batches larger selections; these are per-read resource budgets, not project-size limits.
+For example, the metric query
+`{"steps":{"region":[[0,9]]},"flows":{},"application":"app"}` returns two counter groups.
+The Example query `{"groups":{"region":[[1,10]]},"example":"command:0"}` returns the same
+named group's coverage and, once available, selected membership. These ordinal domains differ:
+Example ordinals include every functional node; metric ordinals exclude the App and disabled Steps.
+All queries are tied to the captured artifact and PID. Creator discards Example aggregates if their
+suite revision changes between batches, and applies one 30-second deadline to the complete poll.
+Metric aggregation reads the requested counters; an explicitly requested application total still
+scans all flow counters. Example reads snapshot the union bitmap and use immutable reached intervals
+per completed case. These observations add no counters or hooks to production execution.
+
+Metric values and presentation are separate. The application owns the catalog and cumulative
+measurements; Creator caches the catalog per child application and relays bounded selections.
+The Inspector renders available catalog entries by unit, not a metric-name whitelist. Scene
+observations carry values under `metrics`, separate from node IDs and Example coverage. Creator
+combines query batches using each definition's `sum` or `max`; nonaggregatable values stay separate.
+Absent measurements are omitted, not fabricated as zero. Timing definitions identify their sample
+counter, so an unsampled duration is displayed as unavailable.
+
+Metric queries include `steps` and `flows` objects, empty when unused. For example,
+`{"steps":{"region":[[0,9]]},"flows":{},"metrics":["executions","duration_nanos_max"]}`
+returns only those two measurements.
+`{"steps":{},"flows":{},"process":"runtime","metrics":["heap_used_bytes"]}`
+requests process memory without scanning Steps. Responses identify the application PID and include
+UTC `observed_at` plus monotonic `elapsed_nanos`; the frontend derives rates from counter/time deltas.
+Concurrent counters are observations, not an atomic transaction across every Step or query batch.
+Existing JSON, Prometheus and Influx names and units remain unchanged.
+
+New charts, rates or averages over existing measurements require only frontend changes. A genuinely
+new measurement still needs application instrumentation. Custom instrumentation, historical time
+windows and environment-specific capability selection remain roadmap work; no formula engine,
+metric database, additional dependency or per-request allocation is introduced here.
 
 Automatic Examples do not call the HTTP run or trace routes. The application invokes its generated
 Flow entrypoint directly and stores the bounded trace itself. Creator exposes read-only
@@ -345,7 +388,8 @@ are metadata only and never change the compiled application or layout positions.
 Local project files and assembled edits are not limited by the 1 MiB HTTP request budget.
 Compilation still materializes the complete project and generated sources. Individual lowered
 Step plans retain a 32,768-character bound, and the development Example manifest retains a 4 MiB
-bound. Full metric snapshots are still ingested before viewport aggregation. Removing the old
+bound. Viewport observations use scoped application queries instead of full metric snapshots.
+Scene detail coarsens instead of truncating connections at a traversal cutoff. Removing the old
 node ceiling is not a claim that million-Step applications are supported. See
 [checkpoint 5.3](ROADMAP.md#5-flow-control-groups-and-flat-compilation) for verification evidence.
 Camera position, zoom level, automatic regions, and group bounds are never persisted.

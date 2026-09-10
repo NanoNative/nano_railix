@@ -23,6 +23,7 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.BitSet;
 import java.util.Collections;
@@ -233,6 +234,94 @@ final class ExampleSuite implements AutoCloseable {
     synchronized Optional<RailixValue.ObjectValue> example(final String id) {
         final ExampleCase example = casesById.get(id);
         return example == null ? Optional.empty() : Optional.of(exampleValue(example));
+    }
+
+    Optional<RailixValue.ObjectValue> query(final RailixValue.ObjectValue query) throws ProjectionUnavailable {
+        DevelopmentRuntime.queryFields(query, Set.of("groups", "example"));
+        final Map<String, int[]> requested = DevelopmentRuntime.queryRanges(query.values().get("groups"), nodeCount);
+        final String id = query.values().containsKey("example")
+                ? DevelopmentRuntime.queryIdentifier(query.values().get("example")) : null;
+        final ExampleCase example = id == null ? null : casesById.get(id);
+        if (id != null && example == null) {
+            return Optional.empty();
+        }
+        final long[] covered;
+        final int[] selected;
+        final long snapshotRevision;
+        synchronized (this) {
+            if (closed.get()) {
+                throw new ProjectionUnavailable("closed");
+            }
+            covered = coverage.toLongArray();
+            selected = example == null ? null : example.reached;
+            snapshotRevision = revision;
+        }
+        final Map<String, RailixValue> groups = new LinkedHashMap<>();
+        requested.forEach((group, ranges) -> {
+            final Map<String, RailixValue> counts = new LinkedHashMap<>();
+            counts.put("covered_count", RailixValue.number(count(covered, ranges)));
+            if (selected != null) {
+                counts.put("selected_count", RailixValue.number(count(selected, ranges)));
+            }
+            groups.put(group, RailixValue.object(counts));
+        });
+        final Map<String, RailixValue> response = new LinkedHashMap<>();
+        response.put("application_pid", RailixValue.number(ProcessHandle.current().pid()));
+        response.put("revision", RailixValue.number(snapshotRevision));
+        response.put("groups", RailixValue.object(groups));
+        if (selected != null) {
+            response.put("example", RailixValue.string(id));
+        }
+        return Optional.of(RailixValue.object(response));
+    }
+
+    private static long count(final long[] words, final int[] ranges) {
+        long count = 0;
+        for (int offset = 0; offset < ranges.length; offset += 2) {
+            final int first = ranges[offset] >>> 6;
+            final int last = ranges[offset + 1] >>> 6;
+            final int end = Math.min(last, words.length - 1);
+            for (int index = first; index <= end; index++) {
+                long word = words[index];
+                if (index == first) {
+                    word &= -1L << (ranges[offset] & 63);
+                }
+                if (index == last) {
+                    word &= -1L >>> (63 - (ranges[offset + 1] & 63));
+                }
+                count += Long.bitCount(word);
+            }
+        }
+        return count;
+    }
+
+    private static long count(final int[] reached, final int[] ranges) {
+        long count = 0;
+        for (int offset = 0; offset < ranges.length; offset += 2) {
+            final int found = Arrays.binarySearch(reached, ranges[offset]);
+            final int first = (found < 0 ? -found - 1 : found) & ~1;
+            for (int index = first; index < reached.length && reached[index] <= ranges[offset + 1]; index += 2) {
+                count += (long) Math.min(reached[index + 1], ranges[offset + 1])
+                        - Math.max(reached[index], ranges[offset]) + 1;
+            }
+        }
+        return count;
+    }
+
+    private static int[] ranges(final BitSet coverage) {
+        int size = 0;
+        for (int start = coverage.nextSetBit(0); start >= 0; start = coverage.nextSetBit(coverage.nextClearBit(start))) {
+            size += 2;
+        }
+        final int[] ranges = new int[size];
+        int offset = 0;
+        for (int start = coverage.nextSetBit(0); start >= 0;) {
+            final int end = coverage.nextClearBit(start);
+            ranges[offset++] = start;
+            ranges[offset++] = end - 1;
+            start = coverage.nextSetBit(end);
+        }
+        return ranges;
     }
 
     boolean containsNode(final int node) {
@@ -992,10 +1081,12 @@ final class ExampleSuite implements AutoCloseable {
                 }
                 example.finished = true;
                 example.status = status;
-                if (example.coverage == null && example.triggerIndex >= 0 && example.triggerIndex < nodeCount) {
+                if (example.coverage == null) {
                     coverage.set(example.triggerIndex);
-                } else if (example.coverage != null) {
+                    example.reached = new int[]{example.triggerIndex, example.triggerIndex};
+                } else {
                     coverage.or(example.coverage);
+                    example.reached = ranges(example.coverage);
                 }
                 example.coverage = null;
                 example.context = null;
@@ -1335,6 +1426,8 @@ final class ExampleSuite implements AutoCloseable {
         private Path trace;
         private final int triggerIndex;
         private BitSet coverage;
+        // Immutable inclusive interval pairs, published with the suite revision.
+        private int[] reached;
         private String status = "queued";
         private String message = "";
         private int events;

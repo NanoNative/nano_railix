@@ -513,6 +513,9 @@ public final class CreatorServer implements AutoCloseable {
         if ("/api/metrics".equals(path)) {
             return metrics(exchange, "");
         }
+        if ("/api/metrics/catalog".equals(path)) {
+            return metrics(exchange, "");
+        }
         if (path.startsWith("/api/metrics/nodes/")) {
             final String node = path.substring("/api/metrics/nodes/".length());
             return node.isBlank()
@@ -588,46 +591,55 @@ public final class CreatorServer implements AutoCloseable {
             if (!snapshot.observesRevision(parameters.get("revision"))) {
                 return json(409, RailixValue.object(Map.of("status", RailixValue.string("scene-revision-conflict"))));
             }
-            final RailixValue.ObjectValue projection = snapshot.observationView(parameters);
-            final Map<String, RailixValue.ObjectValue> documents = new LinkedHashMap<>();
+            final CreatorScene.Observation projection = snapshot.observationView(parameters);
             try {
                 if (!forwarding.tryAcquire()) {
                     return unavailable("saturated");
                 }
                 try {
-                    final List<String> reads = parameters.containsKey("example")
-                            ? List.of("metrics", "example", "coverage") : List.of("metrics", "coverage");
-                    for (final String read : reads) {
-                        final DevelopmentApplication.ObservationResponse response = switch (read) {
-                            case "metrics" -> deployed.metricSnapshot();
-                            case "coverage" -> deployed.examples("coverage");
-                            default -> deployed.examples(parameters.get("example") + "/view");
-                        };
-                        if (!sceneObservationCurrent(deployed, functionalRevision, presentationRevision) || response == null) {
-                            return unavailable("application");
+                    final long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+                    for (final String read : List.of("metrics", "examples")) {
+                        if (read.equals("metrics")) {
+                            final DevelopmentApplication.Response catalog = deployed.metricCatalog(deadline);
+                            if (!sceneObservationCurrent(deployed, functionalRevision, presentationRevision)) {
+                                return unavailable("application");
+                            }
+                            if (catalog.status() != 200) {
+                                projection.unavailable(read);
+                                continue;
+                            }
+                            projection.metricDefinitions((RailixValue.ObjectValue)
+                                    ((RailixJson.Parsed) RailixJson.parse(catalog.body())).value());
                         }
-                        if (response.status() == 202 || response.status() == 503) {
-                            continue;
+                        for (final RailixValue.ObjectValue query : projection.queries(read)) {
+                            if (System.nanoTime() >= deadline) return unavailable("observation-timeout");
+                            final DevelopmentApplication.ObservationResponse response = deployed.observationQuery(read, query, deadline);
+                            if (!sceneObservationCurrent(deployed, functionalRevision, presentationRevision) || response == null) {
+                                return unavailable("application");
+                            }
+                            if (response.status() == 202 || response.status() == 503) {
+                                projection.unavailable(read);
+                                break;
+                            }
+                            if (response.status() != 200) {
+                                return json(response.status(), RailixValue.object(Map.of(
+                                        "status", RailixValue.string("application-observation-failed"),
+                                        "reason", RailixValue.string(read)
+                                )));
+                            }
+                            final RailixJson.Result parsed = RailixJson.parse(utf8(response.body()));
+                            if (!(parsed instanceof RailixJson.Parsed json)
+                                    || !(json.value() instanceof RailixValue.ObjectValue document)
+                                    || !RailixValue.number(pid).equals(document.values().get("application_pid"))) {
+                                throw new IOException("Application observation does not identify the captured application.");
+                            }
+                            if (!projection.accept(read, query, document)) break;
                         }
-                        if (response.status() != 200) {
-                            return json(response.status(), RailixValue.object(Map.of(
-                                    "status", RailixValue.string("application-observation-failed"),
-                                    "reason", RailixValue.string(read)
-                            )));
-                        }
-                        final RailixJson.Result parsed = RailixJson.parse(utf8(response.body()));
-                        if (!(parsed instanceof RailixJson.Parsed json)
-                                || !(json.value() instanceof RailixValue.ObjectValue document)
-                                || !RailixValue.number(pid).equals(document.values().get("application_pid"))) {
-                            throw new IOException("Application observation does not identify the captured application.");
-                        }
-                        documents.put(read, document);
                     }
                 } finally {
                     forwarding.release();
                 }
-                final RailixValue.ObjectValue observation = snapshot.observations(
-                        parameters, projection, documents, functionalRevision, pid);
+                final RailixValue.ObjectValue observation = projection.response(functionalRevision, pid);
                 final String body = RailixJson.write(observation, MAX_SCENE_BYTES).orElse(null);
                 if (!sceneObservationCurrent(deployed, functionalRevision, presentationRevision)) {
                     return unavailable("application");
@@ -1097,7 +1109,8 @@ public final class CreatorServer implements AutoCloseable {
             synchronized (applicationLock) {
                 deployed = application;
             }
-            final DevelopmentApplication.Response response = node.isEmpty()
+            final DevelopmentApplication.Response response = "/api/metrics/catalog".equals(exchange.getRequestURI().getPath())
+                    ? deployed.metricCatalog() : node.isEmpty()
                     ? deployed.metrics()
                     : deployed.metrics(node);
             synchronized (applicationLock) {
@@ -1110,6 +1123,11 @@ public final class CreatorServer implements AutoCloseable {
                     "application/json; charset=utf-8",
                     response.body().getBytes(StandardCharsets.UTF_8)
             );
+        } catch (final IOException failure) {
+            return json(502, RailixValue.object(Map.of(
+                    "status", RailixValue.string("invalid-application-metrics"),
+                    "message", RailixValue.string(failure.getMessage())
+            )));
         } finally {
             forwarding.release();
         }
@@ -1125,7 +1143,8 @@ public final class CreatorServer implements AutoCloseable {
         if (!forwarding.tryAcquire()) {
             return unavailable("saturated");
         }
-        if (!exampleResponses.tryAcquire()) {
+        final boolean boundedSnapshot = boundedExampleSnapshot(path);
+        if (!boundedSnapshot && !exampleResponses.tryAcquire()) {
             forwarding.release();
             return unavailable("saturated");
         }
@@ -1167,8 +1186,16 @@ public final class CreatorServer implements AutoCloseable {
             exchange.getResponseBody().write(response.body());
             return Response.committedResponse();
         } finally {
-            exampleResponses.release();
+            if (!boundedSnapshot) {
+                exampleResponses.release();
+            }
         }
+    }
+
+    private static boolean boundedExampleSnapshot(final String path) {
+        return "status".equals(path)
+                || (!path.isBlank() && !"coverage".equals(path)
+                && !path.startsWith("steps/") && !path.endsWith("/view") && !path.contains("/steps/"));
     }
 
     private static Response unavailable(final String reason) {

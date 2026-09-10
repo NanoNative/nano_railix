@@ -1,6 +1,6 @@
 # Railix II Roadmap
 
-Updated: 2026-09-08
+Updated: 2026-09-10
 
 ## Product Goal
 
@@ -76,15 +76,15 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   September 7 checkpoint, not a new certification of the scaling work below.
 - Current technical delivery: **Compiler and observation scaling; 3/3 scoped gates verified
   (100%; 0% left), locally accepted 2026-09-08. No renderer replacement is included.**
-- Next scaling work: streamed project/source processing and scoped observation ingestion before
-  a renderer-library decision. Feature work remains **5.6 Merge/fan-in, then Split and bounded Loop**.
+- Scoped observation ingestion is complete. Streamed project/source processing remains open.
+  Feature work remains **5.6 Merge/fan-in, then Split and bounded Loop**.
 - Core/base certification checkpoint: **Complete, 6/6 gates (100%; 0% left)**
 - Feature roadmap: **resumed after the 2026-08-13 core/base clean gate passed**
 - Retained incomplete item: **3. Primitive Contract And Standard Library, 4/6 complete
   (67%); 33% left**
 - Retained incomplete item: **6. Live Runtime, Operations, Bounded Work, And Permissions,
   1/6 complete (17%); 83% left**
-- Latest local acceptance: **Compiler and observation scaling (2026-09-08)**
+- Latest technical verification: **Generic Metric Contract (2026-09-10)**.
 
 Completion percentages count accepted checkpoints, not lines written. A roadmap item reaches 100%
 only after its public acceptance gate, coverage report, complexity audit, stability checks,
@@ -491,6 +491,101 @@ incremental metric ingestion; and hierarchical route aggregation instead of trav
 The current 32,768-character per-Step lowering and 4 MiB Example-manifest bounds remain explicit.
 Hardware-limited project capacity is the target, not a claim established by the 16,385-Step proof.
 PixiJS or another renderer is not part of this delivery.
+
+### UI Data-Path Readiness
+
+Status: **Complete, 3/3 scoped gates verified (100%; 0% left), locally accepted 2026-09-08.**
+
+Acceptance gates:
+
+1. Complete hierarchical connections, including dense chain and wide-branch views. View budgets
+   coarsen detail instead of truncating connectivity; no project node ceiling is introduced.
+2. Scoped application-owned metric and Example membership queries, with bounded batching,
+   independent capability availability, artifact/PID checks, deadlines, and no production hooks.
+3. Real HTTP, browser, generated-artifact and resource verification; advisory large-scene evidence;
+   review and documentation of remaining capacity limits before renderer work.
+
+The 1.1-million-Step chain scene measurement indexed in 5.04 seconds and prepared overview plus
+queries at 0.57 ms p95, with 325 bytes across its query bodies. This exercises derived scene
+preparation, not million-Step compilation, browser rendering, or request throughput. Real 6,002-node
+application observation polls measured 39.44 ms p95 without a selected Example and 35.07 ms with one.
+Timings are advisory, not build gates. The 6,003-node desktop browser probe measured 1.26 ms p95
+viewport responses and 0.30 ms p95 CPU WebGL submission, with at most six visible glyphs and
+24 label DOM elements. This is not a GPU-completion or leak-freedom claim.
+
+Verification and review:
+
+- `./mvnw clean verify -Drailix.test.forks=2` ran 2,881 cases in 56:53: 2,431 non-browser,
+  403 desktop, 42 package/soak, and five mobile cases. It found two browser failures, so that
+  invocation is recorded as failed, not relabeled green after corrections.
+- A controlled real-response browser regression reproduced an older camera focus hiding a newly
+  added Step. Directly requesting the new focus replaces the refresh-then-focus sequence and
+  removes its unused camera-version accessor. The other failing test clicked a separate text label
+  instead of empty space outside a shape; its corrected probe checks that distinction and waits
+  for selection handling to settle.
+- The final source was verified in an isolated build directory, checked against the workspace before
+  cleanup. Complete Inspector, World and Data Workbench suites passed all 137 desktop cases;
+  the added many-flow compilation/scene case also passed (138 Creator cases, 13:04). All five
+  responsive cases plus the focus regression passed at 320 pixels (six mobile cases, 1:38).
+  These reruns used `./mvnw -pl modules/railix-creator -am test -Dtest=...` with the upstream
+  `StepContractJsonE2eTest` and `PrimitiveStepsCreatorProjectE2eTest` smoke suites and
+  `-Djacoco.skip=true`; mobile set `-Drailix.browser.viewport.width=320`.
+- Final workspace `package` plus `jacoco:report-aggregate@coverage-aggregate` passed with the two
+  upstream smoke suites and `GeneratedApplicationE2eTest#manyFlowSceneKeepsItsAppAndFocusedTriggerAccessible`.
+  The rebuilt native launcher then passed all 35 `RailixPackageIT` cases. Full-suite Java execution
+  data was preserved before focused reruns: aggregate coverage is **95.53% lines / 90.82% branches**
+  (10,598/11,094 lines; 5,590/6,155 branches). These are Java, not JavaScript, coverage figures.
+- Final process inspection found no test JVMs or Playwright workers. The existing user review
+  Creator and child were preserved. The temporary verification directory was removed.
+
+The production delta is **407 net lines in seven existing files**, with no new production files,
+modules, dependencies, Step-definition options, or production-runtime hooks. Static scene membership
+and completed Example reach intervals replace repeated whole-observation ingestion and trace replay.
+The runtime query changes received a separate runtime-agent review; the complete diff was reviewed
+again after the browser corrections.
+
+This closes the pre-renderer data-path checkpoint, not million-Step application certification.
+Streamed compilation, incremental structural indexing, chunked Example manifests and indexed trace
+detail remain listed above. Explicit application metric totals still scan flow counters; Example
+queries snapshot the union bitmap. Full CI duration was measured, not reduced by this checkpoint.
+No renderer migration, commit or push is included in this delivery.
+
+### Generic Metric Contract
+
+Status: **Implemented; shared HTTP/browser contract verified in both branch variants.**
+
+The application describes metrics once through `/v1/metrics/catalog`. Bounded queries select
+metric IDs and application/flow/Step/process scopes. Creator relays the definitions, aggregates
+by their declared operation, and keeps metric values separate from scene/Example fields.
+The Inspector renders available descriptors; rates and averages remain frontend calculations.
+New presentation of existing measurements needs neither a Creator Java change nor an app rebuild.
+New instrumentation, custom metrics and historical windows are not claimed by this delivery.
+
+Review removed per-metric full-counter reads in grouped queries, retained direct atomic slot
+reads, and corrected invalid-catalog handling to HTTP 502 without caching the invalid response.
+No Step-definition change, new dependency, production module or recording hook was added.
+Existing JSON/Prometheus/Influx fields and units remain stable. Explicit application totals
+still scan flow counters; observations are not transactionally atomic across Steps or batches.
+
+Verification on September 10 used Maven with at most two concurrent test forks:
+- Shared integration: 379 Creator/runtime cases plus 8 core and 72 standard-library cases,
+  all passed in 4:53. Includes the full 280-case generated-runtime suite, 44 scene-observation
+  cases, 30 metric-contract cases, four metric browser cases and 21 upstream failure/deadline cases.
+- Isolated base branch: 194 Creator cases plus the same 80 upstream cases, all passed in 6:24.
+  Includes full Workspace and World browser suites, scene and metric-contract suites.
+- Final catalog-boundary regression: 55 Creator cases plus the same 80 upstream cases passed
+  separately in each variant (base 1:37; factory UI including native packaging 1:49).
+  Includes seven rejected/recoverable catalog cases, 44 scene-observation cases and four
+  metric Inspector/cache browser cases. Descriptor validation runs once before caching,
+  not again on every scene poll.
+- The 20,000-Step derived-scene check measured 0.173 ms p95 viewport/query preparation;
+  real 6,002-node observation polls measured 39.571/37.621 ms p95 without/with an Example.
+  These advisory measurements do not certify million-Step compilation, request throughput or leaks.
+
+The factory renderer, vendor assets, HUD and machine appearance remain a separate dependent
+`feature/factory-ui` branch. The shared contract belongs to `feature/production-observability`.
+No fresh full-suite coverage claim replaces the previously dated coverage evidence. Item 6
+and the overall accepted roadmap count remain unchanged; this is not platform completion.
 
 ### Current Evidence
 

@@ -72,6 +72,7 @@ const state = {
   applicationPollTimer: 0,
   applicationRefreshing: false,
   metrics: null,
+  metricCatalog: null,
   metricsNode: "",
   metricsController: null,
   metricsPollTimer: 0,
@@ -396,7 +397,8 @@ function worldAppearance(item) {
       : Number(observation.covered_count) > 0 ? "covered" : Number(observation.count) > 0 ? "uncovered" : ""
     : state.worldSelected.has(item.id) ? "selected"
     : state.worldCovered.has(item.id) ? "covered" : "";
-  const live = item.kind !== "end" && observation && Object.hasOwn(observation, "executions") ? observation : null;
+  const live = item.kind !== "end" && observation?.metrics && Object.hasOwn(observation.metrics, "executions")
+    ? observation.metrics : null;
   const sampled = live && metricNumber(live.duration_samples) > 0;
   const mean = sampled ? metricNumber(live.duration_nanos_total) / metricNumber(live.duration_samples) : 0;
   const heat = sampled ? Math.log1p(mean) / Math.log1p(Math.max(1, state.observations.maxMean)) : 0;
@@ -404,7 +406,7 @@ function worldAppearance(item) {
     && Number(observation.disabled_count) === Number(observation.count) ? "disabled"
     : live ? metricNumber(live.executions) > 0 ? "active" : "idle" : "";
   const detail = activity === "disabled" ? "Metrics off"
-    : live ? `${formatInteger(live.executions)} executions${live.rate === undefined ? "" : ` · ${formatRate(live.rate)}/s`}${sampled ? ` · ${formatNanos(mean)} sampled` : ""}`
+    : live ? `${formatInteger(live.executions)} executions${observation.rate === undefined ? "" : ` · ${formatRate(observation.rate)}/s`}${sampled ? ` · ${formatNanos(mean)} sampled` : ""}`
     : observation && Object.hasOwn(observation, "covered_count") && item.kind === "region"
       ? `${observation.covered_count}/${observation.count} reached${Number(observation.selected_count) ? ` · ${observation.selected_count} selected` : ""}` : "";
   return {
@@ -414,7 +416,7 @@ function worldAppearance(item) {
     error: issues.length > 0 || Boolean(live && metricNumber(live.errors) > 0),
     coverage,
     activity,
-    meter: live?.rate > 0 ? Math.log1p(live.rate) / Math.log1p(Math.max(1, state.observations.maxRate)) : 0,
+    meter: observation?.rate > 0 ? Math.log1p(observation.rate) / Math.log1p(Math.max(1, state.observations.maxRate)) : 0,
     heat: sampled ? heat : undefined,
     color: presentation.color || item.color,
     shape: presentation.shape || item.shape || "rectangle",
@@ -496,31 +498,32 @@ async function refreshWorldObservations() {
     const links = new Map(value.links.map(link => [link.id, link]));
     const previous = currentWorldObservations();
     const observedAt = performance.now();
-    const elapsed = previous ? (observedAt - previous.observedAt) / 1000 : 0;
+    const elapsed = previous?.elapsed_nanos !== undefined && value.elapsed_nanos !== undefined
+      ? Number(BigInt(numberText(value.elapsed_nanos)) - BigInt(numberText(previous.elapsed_nanos))) / 1e9 : 0;
     let maxMean = 0;
     let maxRate = 0;
     for (const [current, before] of [[nodes, previous?.nodes], [links, previous?.links]]) {
       if (elapsed <= 0) continue;
       for (const [id, item] of current) {
         const prior = before.get(id);
-        if (!Object.hasOwn(item, "executions") || !prior || !Object.hasOwn(prior, "executions")) continue;
-        const delta = BigInt(numberText(item.executions)) - BigInt(numberText(prior.executions));
+        if (item.metrics?.executions === undefined || prior?.metrics?.executions === undefined) continue;
+        const delta = BigInt(numberText(item.metrics.executions)) - BigInt(numberText(prior.metrics.executions));
         if (delta >= 0n) item.rate = Number(delta) / elapsed;
       }
     }
     for (const node of nodes.values()) {
       maxRate = Math.max(maxRate, node.rate || 0);
-      if (metricNumber(node.duration_samples) > 0) maxMean = Math.max(maxMean,
-        metricNumber(node.duration_nanos_total) / metricNumber(node.duration_samples));
+      if (metricNumber(node.metrics?.duration_samples) > 0) maxMean = Math.max(maxMean,
+        metricNumber(node.metrics.duration_nanos_total) / metricNumber(node.metrics.duration_samples));
     }
     repaint = !previous || [[nodes, previous.nodes], [links, previous.links]].some(([current, before]) =>
       current.size !== before.size || [...current].some(([id, item]) => {
         const prior = before.get(id);
         return !prior || Object.keys(item).length !== Object.keys(prior).length
-          || Object.keys(item).some(key => numberText(item[key]) !== numberText(prior[key]));
+          || Object.keys(item).some(key => JSON.stringify(item[key]) !== JSON.stringify(prior[key]));
       }));
     state.observations = { ...value, requestedExample: example, query, nodes, links, maxMean, maxRate, observedAt };
-    const metricsAvailable = value.nodes.some(node => Object.hasOwn(node, "executions"));
+    const metricsAvailable = value.nodes.some(node => Object.hasOwn(node, "metrics"));
     const examplesAvailable = Object.hasOwn(value, "coverage_revision");
     status.hidden = false;
     status.textContent = metricsAvailable && examplesAvailable ? "Observations connected"
@@ -3449,13 +3452,21 @@ async function refreshMetrics() {
       throw new Error("Runtime metrics are unavailable.");
     }
     const metrics = parseExact(await response.text());
+    let catalog = state.metricCatalog;
+    if (Number(catalog?.application_pid) !== Number(application.pid) || catalog?.fingerprint !== application.fingerprint) {
+      const response = await fetch("/api/metrics/catalog", { cache: "no-store", signal: controller.signal });
+      if (!response.ok) throw new Error("Metric definitions are unavailable.");
+      catalog = parseExact(await response.text());
+    }
     if (state.metricsController !== controller
         || metricTarget() !== target
         || !currentApplication(application)
-        || Number(metrics.application_pid) !== Number(application.pid)) {
+        || Number(metrics.application_pid) !== Number(application.pid)
+        || Number(catalog.application_pid) !== Number(application.pid)) {
       return;
     }
     state.metrics = metrics;
+    state.metricCatalog = { ...catalog, fingerprint: application.fingerprint };
     state.metricsNode = target;
   } catch (_error) {
     if (state.metricsController !== controller) {
@@ -3485,26 +3496,11 @@ function metricsPanel() {
   if (!target || state.metricsNode !== target || !plainObject(state.metrics)) {
     return "";
   }
-  if (target === "app") {
-    const application = state.metrics.application?.metrics || {};
-    const process = state.metrics.process || {};
-    return metricFacts("Runtime metrics", [
-      ["Uptime", formatMillis(process.uptime_millis)],
-      ["Executions", formatInteger(application.executions)],
-      ["Errors", formatInteger(application.errors)],
-      ["Cancelled", formatInteger(application.cancelled)],
-      ["In flight", formatInteger(application.in_flight)],
-      ["Heap", process.heap_used_bytes === undefined ? null
-        : `${formatBytes(process.heap_used_bytes)} / ${formatBytes(process.heap_committed_bytes)}`],
-      ["CPU", process.process_cpu_load_ppm === undefined
-        ? null : formatPercentPpm(process.process_cpu_load_ppm)],
-      ["Threads", process.live_threads === undefined ? null
-        : `${formatInteger(process.live_threads)} / ${formatInteger(process.peak_threads)} peak`],
-      ["GC", process.gc_collections === undefined ? null
-        : `${formatInteger(process.gc_collections)} / ${formatMillis(process.gc_millis)}`],
-      ["Metric counters", formatBytes(state.metrics.metric_counter_bytes)]
-    ]);
-  }
+  if (target === "app") return metricFacts("Runtime metrics", [
+    ...metricRows(state.metrics.application?.metrics),
+    ...metricRows(state.metrics.process),
+    ...metricRows(state.metrics)
+  ]);
   const steps = Array.isArray(state.metrics.steps) ? state.metrics.steps : [];
   const flows = Array.isArray(state.metrics.flows) ? state.metrics.flows : [];
   const step = steps.find(candidate => candidate.id === target)?.metrics;
@@ -3514,33 +3510,39 @@ function metricsPanel() {
   }
   const rows = [];
   if (step) {
+    rows.push(...metricRows(step, flow ? "Step" : ""));
     rows.push(
-      [flow ? "Step executions" : "Executions", formatInteger(step.executions)],
-      [flow ? "Step errors" : "Errors", formatInteger(step.errors)],
-      [flow ? "Step cancelled" : "Cancelled", formatInteger(step.cancelled)],
-      [flow ? "Step in flight" : "In flight",
-        step.in_flight === undefined ? null : formatInteger(step.in_flight)],
-      [flow ? "Step sampled average" : "Sampled average", averageNanos(step)],
-      [flow ? "Step sampled maximum" : "Sampled maximum", metricNumber(step.duration_samples) ? formatNanos(step.duration_nanos_max) : "No sample"]
+      [flow ? "Step sampled average" : "Sampled average", averageNanos(step)]
     );
   }
   if (flow) {
+    rows.push(...metricRows(flow, "Flow"));
     rows.push(
-      ["Flow executions", formatInteger(flow.executions)],
-      ["Flow errors", formatInteger(flow.errors)],
-      ["Flow cancelled", formatInteger(flow.cancelled)],
-      ["Flow in flight", formatInteger(flow.in_flight)],
-      ["Flow average", averageNanos(flow)],
-      ["Flow maximum", metricNumber(flow.duration_samples) ? formatNanos(flow.duration_nanos_max) : "No sample"]
+      ["Flow average", averageNanos(flow)]
     );
   }
   return metricFacts("Step metrics", rows);
 }
 
+function metricRows(values, prefix = "") {
+  const definitions = state.metricCatalog?.metrics || {};
+  return Object.entries(values || {}).filter(([id]) => Object.hasOwn(definitions, id)).map(([id, value]) => {
+    const definition = definitions[id];
+    const label = definition.label || id;
+    const formatted = definition.sample_count && !metricNumber(values[definition.sample_count]) ? "No sample"
+      : definition.unit === "bytes" ? formatBytes(value)
+      : definition.unit === "ns" ? formatNanos(value)
+      : definition.unit === "ms" ? formatMillis(value)
+      : definition.unit === "ppm" ? formatPercentPpm(value)
+      : definition.unit === "count" ? formatInteger(value) : `${numberText(value)} ${definition.unit || ""}`.trim();
+    return [prefix ? `${prefix} ${label[0].toLowerCase()}${label.slice(1)}` : label, formatted, id];
+  });
+}
+
 function metricFacts(title, rows) {
   const facts = rows
     .filter(([_label, value]) => value !== null && value !== undefined)
-    .map(([label, value]) => `<div><dt>${html(label)}</dt><dd>${html(value)}</dd></div>`)
+    .map(([label, value, id]) => `<div${id ? ` data-metric-id="${html(id)}"` : ""}><dt>${html(label)}</dt><dd>${html(value)}</dd></div>`)
     .join("");
   return `<section class="inspector-section facts runtime-metrics">
     <div class="section-heading"><strong>${html(title)}</strong><span>Connected</span></div>

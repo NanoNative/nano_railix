@@ -32,6 +32,7 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -76,6 +77,21 @@ final class GeneratedApplicationE2eTest {
         final TriggerScale scale = triggerScale(513);
         final Path project = project(directory.resolve("many-triggers"), scale.source());
         assertThat(productionArtifact(project, scale.source(), scale.catalog()).jar()).isRegularFile();
+    }
+
+    @Test
+    void manyFlowSceneKeepsItsAppAndFocusedTriggerAccessible() {
+        final TriggerScale scale = triggerScale(32);
+        assertThat(ProjectCompiler.compileApplication(scale.source(), scale.catalog())).isInstanceOf(CompileResult.Compiled.class);
+        final CreatorScene scene = new CreatorScene(scale.source(), RailixValue.object(Map.of(
+                "format", RailixValue.number(2), "groups", RailixValue.array(List.of()), "steps", RailixValue.object(Map.of())
+        )), scale.catalog());
+        final var overview = ((RailixValue.ArrayValue) scene.view("").values().get("nodes")).values();
+        assertThat(overview).hasSizeLessThan(33).anySatisfy(value -> assertThat(
+                ((RailixValue.ObjectValue) value).values().get("id")).isEqualTo(RailixValue.string("app")));
+        final var focused = ((RailixValue.ArrayValue) scene.view("focus=trigger-31").values().get("nodes")).values();
+        assertThat(focused).anySatisfy(value -> assertThat(((RailixValue.ObjectValue) value).values().get("id"))
+                .isEqualTo(RailixValue.string("trigger-31")));
     }
 
     @Test

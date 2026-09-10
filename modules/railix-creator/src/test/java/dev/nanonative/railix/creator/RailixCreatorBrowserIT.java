@@ -110,8 +110,42 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         page.locator(".runtime-metrics").waitFor();
 
         assertThat(page.locator(".runtime-metrics").textContent())
-                .contains("Runtime metrics", "Connected", "Uptime", "Heap", "Metric counters")
+                .contains("Runtime metrics", "Connected", "Process uptime", "Heap", "Metric counter storage")
                 .doesNotContain("Refresh");
+    }
+
+    @Test
+    void inspectorRendersAvailableMetricDefinitionsWithoutAFrontendFieldList() {
+        openInspectorSection("Runtime metrics");
+        page.locator(".runtime-metrics").waitFor();
+        final Map<?, ?> result = (Map<?, ?>) page.evaluate("""
+                async () => {
+                  const catalog = await (await fetch('/api/metrics/catalog')).json();
+                  const data = await (await fetch('/api/metrics')).json();
+                  const defined = Object.keys(catalog.metrics).filter(id =>
+                    Object.hasOwn(data.process, id) || Object.hasOwn(data.application.metrics, id)
+                    || Object.hasOwn(data, id));
+                  return {defined, rendered: [...document.querySelectorAll('[data-metric-id]')].map(row=>row.dataset.metricId)};
+                }
+                """);
+
+        assertThat((List<?>) result.get("defined")).isNotEmpty();
+        assertThat((List<String>) result.get("rendered")).containsAll((List<String>) result.get("defined"));
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void metricCatalogLoadsOnceWhileMetricValuesKeepUpdating() {
+        openInspectorSection("Runtime metrics");
+        page.locator(".runtime-metrics").waitFor();
+        final List<String> reads = new ArrayList<>();
+        page.onRequest(request -> {
+            if (request.url().contains("/api/metrics")) reads.add(request.url());
+        });
+        page.waitForCondition(() -> reads.stream().filter(url -> url.endsWith("/api/metrics")).count() >= 2);
+
+        assertThat(reads).noneMatch(url -> url.contains("/api/metrics/catalog"));
+        assertThat(pageErrors).isEmpty();
     }
 
     @Test
@@ -169,8 +203,8 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         page.locator(".runtime-metrics").waitFor();
 
         assertThat(page.locator(".runtime-metrics").textContent())
-                .contains("Step sampled average", "Step sampled maximum")
-                .doesNotContain("Step in flight");
+                .contains("Step sampled average", "Step duration maximum", "No sample")
+                .doesNotContain("Step in-flight runs");
     }
 
     @Test

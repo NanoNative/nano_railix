@@ -363,6 +363,31 @@ final class DevelopmentMetricsContractTest {
     }
 
     @Test
+    void catalogUsesTheSameDurationDescriptorsAsJsonAndTextExports() throws Exception {
+        final DevelopmentRuntime.Metrics metrics = metrics();
+        metrics.finishStep(1, metrics.startStep(1), 0, null);
+        final ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        metrics.writeCatalogJson(output);
+
+        final RailixJson.Result parsed = RailixJson.parse(output.toString(StandardCharsets.UTF_8));
+        assertThat(parsed).isInstanceOf(RailixJson.Parsed.class);
+        final RailixValue.ObjectValue catalog = (RailixValue.ObjectValue) ((RailixJson.Parsed) parsed).value();
+        final RailixValue.ObjectValue descriptors = (RailixValue.ObjectValue) catalog.values().get("metrics");
+        final RailixValue.ObjectValue maximum = (RailixValue.ObjectValue) descriptors.values().get("duration_nanos_max");
+        final RailixValue.ObjectValue total = (RailixValue.ObjectValue) descriptors.values().get("duration_nanos_total");
+        assertThat(maximum.values()).containsEntry("aggregation", RailixValue.string("max"));
+        assertThat(((RailixValue.ArrayValue) maximum.values().get("scopes")).values()).contains(
+                RailixValue.string("application"), RailixValue.string("flow"), RailixValue.string("step")
+        );
+        assertThat(total.values()).containsKey("sampling");
+        assertThat(total.values()).containsEntry("sample_count", RailixValue.string("duration_samples"));
+        assertThat(maximum.values()).containsEntry("sample_count", RailixValue.string("duration_samples"));
+        assertThat(prometheus(metrics)).contains("railix_step_duration_seconds_max");
+        assertThat(influx(metrics)).contains("duration_nanos_max=");
+    }
+
+    @Test
     void prometheusExportUsesCountersGaugesAndBoundedIdentityLabels() {
         final DevelopmentRuntime.Metrics metrics = metrics();
         metrics.finishStep(1, metrics.startStep(1), 0, null);

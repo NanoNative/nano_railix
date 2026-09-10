@@ -300,6 +300,32 @@ final class ThirdPartyStepBundleE2eTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"{", "[]", "{}", "{\"application_pid\":0,\"metrics\":{}}",
+            "{\"application_pid\":{pid},\"metrics\":{\"reading\":0}}",
+            "{\"application_pid\":{pid},\"metrics\":{\"reading\":{\"aggregation\":\"average\"}}}",
+            "{\"application_pid\":{pid},\"metrics\":{\"\":{\"aggregation\":\"sum\"}}}"})
+    void malformedMetricCatalogIsRejectedAndNotCached(final String body) throws Exception {
+        try (ServerSocket upstream = new ServerSocket(0, 8, InetAddress.getLoopbackAddress())) {
+            final Bundle bundle = interferingBundle("cataloginvalid", "http:" + upstream.getLocalPort());
+            final Workspace workspace = workspace(List.of(bundle));
+            try (CreatorServer creator = CreatorServer.start(0, project(directory, bundle.definition().id()), workspace.railixHome());
+                 HttpClient client = HttpClient.newHttpClient()) {
+                final long pid = CreatorServerE2eSupport.number(CreatorServerE2eSupport.application(creator.baseUri()), "pid");
+                final var pending = observationRequest(client, creator, "/api/metrics/catalog");
+                try (Socket socket = observationConnection(upstream)) {
+                    observationReply(socket, 200, body.replace("{pid}", Long.toString(pid)));
+                }
+                final HttpResponse<byte[]> response = pending.get(5, TimeUnit.SECONDS);
+                assertThat(response.statusCode()).isEqualTo(502);
+                assertThat(new String(response.body(), StandardCharsets.UTF_8)).contains("invalid-application-metrics");
+                primeMetricCatalog(client, creator, upstream, pid);
+                assertThat(CreatorServerE2eSupport.request(creator.baseUri(), "GET", "/api/metrics/catalog", "")
+                        .statusCode()).isEqualTo(200);
+            }
+        }
+    }
+
     @Test
     void stalledObservationBodiesTimeOutAndReleaseBothScenePermits() throws Exception {
         try (ServerSocket upstream = new ServerSocket(0, 8, InetAddress.getLoopbackAddress())) {
@@ -312,6 +338,7 @@ final class ThirdPartyStepBundleE2eTest {
                 final String revision = CreatorServerE2eSupport.string(CreatorServerE2eSupport.object(
                         CreatorServerE2eSupport.request(creator.baseUri(), "GET", "/api/scene", "").body()), "revision");
                 final String path = "/api/scene/observations?revision=" + revision;
+                primeMetricCatalog(client, creator, upstream, pid);
                 final var first = observationRequest(client, creator, path);
                 final var second = observationRequest(client, creator, path);
                 try (Socket firstBody = observationConnection(upstream);
@@ -339,20 +366,12 @@ final class ThirdPartyStepBundleE2eTest {
 
                 final var recoveredFirst = observationRequest(client, creator, path);
                 final var recoveredSecond = observationRequest(client, creator, path);
-                try (Socket firstBody = observationConnection(upstream);
-                     Socket secondBody = observationConnection(upstream)) {
-                    final String counters = "{\"executions\":0,\"errors\":0,\"cancelled\":0,"
-                            + "\"duration_samples\":0,\"duration_nanos_total\":0}";
-                    final String metrics = "{\"application_pid\":" + pid + ",\"application\":{\"metrics\":" + counters
-                            + "},\"flows\":[{\"id\":\"command\",\"metrics\":" + counters
-                            + "}],\"steps\":[{\"id\":\"command\",\"metrics\":" + counters
-                            + "},{\"id\":\"external\",\"metrics\":" + counters + "}]}";
-                    for (final Socket socket : List.of(firstBody, secondBody)) {
-                        socket.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
-                                + metrics.length() + "\r\nConnection: close\r\n\r\n" + metrics)
-                                .getBytes(StandardCharsets.US_ASCII));
-                        socket.getOutputStream().flush();
-                    }
+                final var firstQuery = new java.util.concurrent.atomic.AtomicReference<RailixValue.ObjectValue>();
+                final var secondQuery = new java.util.concurrent.atomic.AtomicReference<RailixValue.ObjectValue>();
+                try (Socket firstBody = observationConnection(upstream, firstQuery::set);
+                     Socket secondBody = observationConnection(upstream, secondQuery::set)) {
+                    observationReply(firstBody, 200, sceneObservationDocument("metrics", pid, firstQuery.get(), false));
+                    observationReply(secondBody, 200, sceneObservationDocument("metrics", pid, secondQuery.get(), false));
                     for (int index = 0; index < 2; index++) {
                         try (Socket coverage = observationConnection(upstream)) {
                             observationReply(coverage, 503, "{\"status\":\"unavailable\"}");
@@ -374,11 +393,11 @@ final class ThirdPartyStepBundleE2eTest {
 
     @ParameterizedTest
     @CsvSource({
-            "200,200,200", "200,202,503", "200,503,200", "202,200,200",
-            "503,200,503", "503,503,503", "200,202,200", "200,200,503"
+            "200,200,true", "200,202,false", "200,503,false", "202,200,true",
+            "503,200,false", "503,503,false", "200,200,false", "503,200,true"
     })
     void sceneObservationCapabilitiesRemainIndependent(
-            final int metricsStatus, final int exampleStatus, final int coverageStatus
+            final int metricsStatus, final int exampleStatus, final boolean selected
     ) throws Exception {
         try (ServerSocket upstream = new ServerSocket(0, 8, InetAddress.getLoopbackAddress())) {
             final Bundle bundle = interferingBundle("observationavailability", "http:" + upstream.getLocalPort());
@@ -389,17 +408,19 @@ final class ThirdPartyStepBundleE2eTest {
             try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
                  HttpClient client = HttpClient.newHttpClient()) {
                 final long pid = CreatorServerE2eSupport.number(CreatorServerE2eSupport.application(creator.baseUri()), "pid");
+                primeMetricCatalog(client, creator, upstream, pid);
                 final String revision = CreatorServerE2eSupport.string(CreatorServerE2eSupport.object(
                         CreatorServerE2eSupport.request(creator.baseUri(), "GET", "/api/scene", "").body()), "revision");
                 final var pending = observationRequest(client, creator,
                         "/api/scene/observations?revision=" + revision + "&scale=100&example=command%3A0");
-                final List<String> reads = List.of("metrics", "example", "coverage");
-                final List<Integer> statuses = List.of(metricsStatus, exampleStatus, coverageStatus);
+                final List<String> reads = List.of("metrics", "examples");
+                final List<Integer> statuses = List.of(metricsStatus, exampleStatus);
                 for (int index = 0; index < reads.size(); index++) {
-                    try (Socket socket = observationConnection(upstream)) {
+                    final var query = new java.util.concurrent.atomic.AtomicReference<RailixValue.ObjectValue>();
+                    try (Socket socket = observationConnection(upstream, query::set)) {
                         final int status = statuses.get(index);
                         observationReply(socket, status, status == 200
-                                ? sceneObservationDocument(reads.get(index), pid) : "{\"status\":\"pending\"}");
+                                ? sceneObservationDocument(reads.get(index), pid, query.get(), selected) : "{\"status\":\"pending\"}");
                     }
                 }
                 final HttpResponse<byte[]> response = pending.get(5, TimeUnit.SECONDS);
@@ -407,26 +428,27 @@ final class ThirdPartyStepBundleE2eTest {
                 assertThat(response.statusCode()).as(body).isEqualTo(200);
                 final RailixValue.ObjectValue observed = CreatorServerE2eSupport.object(body);
                 assertThat(observed.values()).doesNotContainKeys("mode", "unvisited");
-                assertThat(observed.values().containsKey("coverage_revision")).isEqualTo(coverageStatus == 200);
-                assertThat(observed.values().containsKey("example")).isEqualTo(exampleStatus == 200);
+                assertThat(observed.values().containsKey("coverage_revision")).isEqualTo(exampleStatus == 200);
+                assertThat(observed.values().containsKey("example")).isEqualTo(exampleStatus == 200 && selected);
                 for (final RailixValue value : ((RailixValue.ArrayValue) observed.values().get("nodes")).values()) {
                     final RailixValue.ObjectValue node = (RailixValue.ObjectValue) value;
-                    assertThat(node.values().containsKey("executions")).isEqualTo(metricsStatus == 200);
-                    assertThat(node.values().containsKey("covered_count")).isEqualTo(coverageStatus == 200);
-                    assertThat(node.values().containsKey("selected_count")).isEqualTo(exampleStatus == 200);
+                    assertThat(node.values().containsKey("metrics")).isEqualTo(metricsStatus == 200);
+                    assertThat(node.values().containsKey("covered_count")).isEqualTo(exampleStatus == 200);
+                    assertThat(node.values().containsKey("selected_count")).isEqualTo(exampleStatus == 200 && selected);
                     if (CreatorServerE2eSupport.string(node, "id").equals("external")) {
                         assertThat(CreatorServerE2eSupport.number(node, "disabled_count")).isEqualTo(1);
                     }
                     if (metricsStatus == 200 && CreatorServerE2eSupport.string(node, "id").equals("app")) {
-                        assertThat(CreatorServerE2eSupport.number(node, "executions")).isEqualTo(7);
+                        assertThat(CreatorServerE2eSupport.number((RailixValue.ObjectValue)
+                                node.values().get("metrics"), "executions")).isEqualTo(7);
                     }
                 }
                 for (final RailixValue value : ((RailixValue.ArrayValue) observed.values().get("links")).values()) {
                     final RailixValue.ObjectValue link = (RailixValue.ObjectValue) value;
-                    assertThat(link.values().containsKey("selection")).isEqualTo(exampleStatus == 200);
+                    assertThat(link.values().containsKey("selection")).isEqualTo(exampleStatus == 200 && selected);
                     final String id = CreatorServerE2eSupport.string(link, "id");
                     if (id.equals("command.next>external") || id.contains(">end:")) {
-                        assertThat(link.values()).doesNotContainKey("executions");
+                        assertThat(link.values()).doesNotContainKey("metrics");
                     }
                 }
             }
@@ -434,7 +456,7 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"metrics", "example", "coverage", "pid", "application", "flow"})
+    @ValueSource(strings = {"metrics", "examples", "coverage", "pid", "application", "flow", "selection", "revision"})
     void malformedSuccessfulSceneObservationsRemainFailClosed(final String invalid) throws Exception {
         try (ServerSocket upstream = new ServerSocket(0, 8, InetAddress.getLoopbackAddress())) {
             final Bundle bundle = interferingBundle("observationinvalid", "http:" + upstream.getLocalPort());
@@ -445,30 +467,44 @@ final class ThirdPartyStepBundleE2eTest {
             try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
                  HttpClient client = HttpClient.newHttpClient()) {
                 final long pid = CreatorServerE2eSupport.number(CreatorServerE2eSupport.application(creator.baseUri()), "pid");
+                primeMetricCatalog(client, creator, upstream, pid);
                 final String revision = CreatorServerE2eSupport.string(CreatorServerE2eSupport.object(
                         CreatorServerE2eSupport.request(creator.baseUri(), "GET", "/api/scene", "").body()), "revision");
                 final var pending = observationRequest(client, creator,
                         "/api/scene/observations?revision=" + revision + "&example=command%3A0");
-                for (final String read : invalid.equals("pid") ? List.of("metrics") : List.of("metrics", "example", "coverage")) {
-                    try (Socket socket = observationConnection(upstream)) {
-                        final String document = invalid.equals(read)
-                                ? "{\"application_pid\":" + pid + "}"
-                                : sceneObservationDocument(read, invalid.equals("pid") ? pid + 1 : pid);
-                        if (read.equals("metrics") && Set.of("application", "flow").contains(invalid)) {
-                            final Map<String, RailixValue> fields = new LinkedHashMap<>(
-                                    CreatorServerE2eSupport.object(document).values());
-                            final RailixValue.ObjectValue emptyCounters = RailixValue.object(Map.of("metrics", RailixValue.object(Map.of())));
-                            if (invalid.equals("application")) {
-                                fields.put("application", emptyCounters);
-                            } else {
-                                fields.put("flows", RailixValue.array(List.of(RailixValue.object(Map.of(
-                                        "id", RailixValue.string("command"), "metrics", RailixValue.object(Map.of()))))));
+                for (final String read : List.of("metrics", "examples")) {
+                    final var query = new java.util.concurrent.atomic.AtomicReference<RailixValue.ObjectValue>();
+                    final boolean corrupt = read.equals("metrics") == Set.of("metrics", "pid", "application", "flow").contains(invalid);
+                    try (Socket socket = observationConnection(upstream, query::set)) {
+                        final Map<String, RailixValue> fields = new LinkedHashMap<>(CreatorServerE2eSupport.object(
+                                sceneObservationDocument(read, pid, query.get(), true)).values());
+                        if (corrupt) {
+                            switch (invalid) {
+                                case "pid" -> fields.put("application_pid", RailixValue.number(pid + 1));
+                                case "revision" -> fields.put("revision", RailixValue.number(-1));
+                                case "selection" -> fields.put("example", RailixValue.string("command:1"));
+                                case "application", "flow" -> {
+                                    final Map<String, RailixValue> groups = new LinkedHashMap<>(
+                                            ((RailixValue.ObjectValue) fields.get("groups")).values());
+                                    final String id = invalid.equals("application")
+                                            ? ((RailixValue.StringValue) query.get().values().get("application")).value()
+                                            : ((RailixValue.ObjectValue) query.get().values().get("flows")).values().keySet().iterator().next();
+                                    groups.put(id, RailixValue.object(Map.of("undefined_metric", RailixValue.number(1))));
+                                    fields.put("groups", RailixValue.object(groups));
+                                }
+                                case "coverage" -> {
+                                    final Map<String, RailixValue> groups = new LinkedHashMap<>(
+                                            ((RailixValue.ObjectValue) fields.get("groups")).values());
+                                    groups.put(groups.keySet().iterator().next(), RailixValue.object(Map.of(
+                                            "covered_count", RailixValue.number(Long.MAX_VALUE), "selected_count", RailixValue.number(0))));
+                                    fields.put("groups", RailixValue.object(groups));
+                                }
+                                default -> fields.remove("groups");
                             }
-                            observationReply(socket, 200, RailixJson.write(RailixValue.object(fields)));
-                        } else {
-                            observationReply(socket, 200, document);
                         }
+                        observationReply(socket, 200, RailixJson.write(RailixValue.object(fields)));
                     }
+                    if (corrupt) break;
                 }
                 final HttpResponse<byte[]> response = pending.get(5, TimeUnit.SECONDS);
                 final String body = new String(response.body(), StandardCharsets.UTF_8);
@@ -2409,16 +2445,61 @@ final class ThirdPartyStepBundleE2eTest {
                         .timeout(Duration.ofSeconds(45)).GET().build(), HttpResponse.BodyHandlers.ofByteArray());
     }
 
-    private static String sceneObservationDocument(final String read, final long pid) {
-        final String counters = "{\"executions\":7,\"errors\":0,\"cancelled\":0,"
-                + "\"duration_samples\":1,\"duration_nanos_total\":7}";
-        return "{\"application_pid\":" + pid + "," + switch (read) {
-            case "metrics" -> "\"application\":{\"metrics\":" + counters
-                    + "},\"flows\":[{\"id\":\"command\",\"metrics\":" + counters
-                    + "}],\"steps\":[{\"id\":\"command\",\"metrics\":" + counters + "}]}";
-            case "example" -> "\"nodes\":[2]}";
-            default -> "\"revision\":1,\"coverage_bits\":\"Bg==\",\"covered_steps\":2}";
-        };
+    private static void primeMetricCatalog(final HttpClient client, final CreatorServer creator,
+                                          final ServerSocket upstream, final long pid) throws Exception {
+        final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        new dev.nanonative.railix.development.DevelopmentRuntime.Metrics("catalog", new String[0], new String[0])
+                .writeCatalogJson(output);
+        final Map<String, RailixValue> catalog = new LinkedHashMap<>(CreatorServerE2eSupport.object(
+                output.toString(StandardCharsets.UTF_8)).values());
+        catalog.put("application_pid", RailixValue.number(pid));
+        final var request = observationRequest(client, creator, "/api/metrics/catalog");
+        try (Socket socket = observationConnection(upstream)) {
+            observationReply(socket, 200, RailixJson.write(RailixValue.object(catalog)));
+        }
+        assertThat(request.get(5, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+    }
+
+    private static String sceneObservationDocument(final String read, final long pid,
+                                                    final RailixValue.ObjectValue query, final boolean selected) {
+        final Map<String, RailixValue> groups = new LinkedHashMap<>();
+        if (read.equals("metrics")) {
+            final RailixValue counters = CreatorServerE2eSupport.object(
+                    "{\"executions\":7,\"errors\":0,\"cancelled\":0,\"duration_samples\":1,\"duration_nanos_total\":7}");
+            for (final String category : List.of("steps", "flows")) {
+                if (query.values().get(category) instanceof RailixValue.ObjectValue values) {
+                    values.values().keySet().forEach(id -> groups.put(id, counters));
+                }
+            }
+            if (query.values().get("application") instanceof RailixValue.StringValue id) groups.put(id.value(), counters);
+        } else {
+            final var requested = (RailixValue.ObjectValue) query.values().get("groups");
+            requested.values().forEach((id, ranges) -> {
+                long count = 0;
+                for (final RailixValue range : ((RailixValue.ArrayValue) ranges).values()) {
+                    final var bounds = ((RailixValue.ArrayValue) range).values();
+                    final long from = ((RailixValue.NumberValue) bounds.getFirst()).value().longValueExact();
+                    final long to = ((RailixValue.NumberValue) bounds.getLast()).value().longValueExact();
+                    count += Math.max(0, Math.min(2, to) - Math.max(1, from) + 1);
+                }
+                final Map<String, RailixValue> counts = new LinkedHashMap<>();
+                counts.put("covered_count", RailixValue.number(count));
+                if (selected) counts.put("selected_count", RailixValue.number(count));
+                groups.put(id, RailixValue.object(counts));
+            });
+        }
+        final Map<String, RailixValue> document = new LinkedHashMap<>();
+        document.put("application_pid", RailixValue.number(pid));
+        document.put("groups", RailixValue.object(groups));
+        if (read.equals("metrics")) {
+            document.put("observed_at", RailixValue.number(1));
+            document.put("elapsed_nanos", RailixValue.number(1));
+        }
+        if (!read.equals("metrics")) {
+            document.put("revision", RailixValue.number(1));
+            if (selected) document.put("example", RailixValue.string("command:0"));
+        }
+        return RailixJson.write(RailixValue.object(document));
     }
 
     private static void observationReply(final Socket socket, final int status, final String body) throws IOException {
@@ -2428,6 +2509,11 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     private static Socket observationConnection(final ServerSocket listener) throws IOException {
+        return observationConnection(listener, ignored -> {});
+    }
+
+    private static Socket observationConnection(final ServerSocket listener,
+                                               final java.util.function.Consumer<RailixValue.ObjectValue> query) throws IOException {
         listener.setSoTimeout(5000);
         final Socket socket = listener.accept();
         try {
@@ -2440,7 +2526,13 @@ final class ThirdPartyStepBundleE2eTest {
                 headers.write(next);
                 ending = (ending << 8) | next;
                 if (ending == 0x0d0a0d0a) {
-                    assertThat(headers.toString(StandardCharsets.US_ASCII)).contains("Authorization: Bearer ");
+                    final String header = headers.toString(StandardCharsets.US_ASCII);
+                    assertThat(header).contains("Authorization: Bearer ");
+                    final int length = header.lines().filter(line -> line.toLowerCase(java.util.Locale.ROOT).startsWith("content-length:"))
+                            .mapToInt(line -> Integer.parseInt(line.substring(line.indexOf(':') + 1).trim())).findFirst().orElse(0);
+                    final byte[] body = socket.getInputStream().readNBytes(length);
+                    assertThat(body).hasSize(length);
+                    query.accept(CreatorServerE2eSupport.object(length == 0 ? "{}" : new String(body, StandardCharsets.UTF_8)));
                     return socket;
                 }
             }

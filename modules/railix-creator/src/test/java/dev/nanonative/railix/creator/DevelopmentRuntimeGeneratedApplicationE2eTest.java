@@ -16,6 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import thirdparty.conformance.ChunkGateStepHandler;
 import thirdparty.conformance.DevelopmentRuntimeConformanceSteps;
@@ -38,6 +39,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.BitSet;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -977,7 +980,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     }
 
     @Test
-    void thirdExampleReadIsRejectedWhileTwoLargeResponsesAreBackpressured(
+    void boundedExampleSnapshotsRemainAvailableWhileTwoLargeResponsesAreBackpressured(
             @TempDir final Path workspace
     ) throws Exception {
         final DevelopmentRuntimeGeneratedProcess.Build projected = DevelopmentRuntimeGeneratedProcess.build(
@@ -995,8 +998,10 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                     assertThat(readHeaders(view.getInputStream())).startsWith("HTTP/1.1 200");
                     assertThat(request(
                             child, uri, TOKEN, "GET", "/v1/examples/status", "", null
-                    )).extracting(HttpResponse::statusCode, HttpResponse::body)
-                            .containsExactly(503, "{\"reason\":\"saturated\",\"status\":\"unavailable\"}");
+                    ).statusCode()).isEqualTo(200);
+                    assertThat(request(
+                            child, uri, TOKEN, "GET", "/v1/examples/command%3A0", "", null
+                    ).statusCode()).isEqualTo(200);
                 }
             }
 
@@ -1274,6 +1279,503 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
 
         assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
                 .containsExactly(404, "{\"status\":\"not-found\"}");
+    }
+
+    @Test
+    void metricCatalogDescribesTheCanonicalQueryAndExportFields() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/metrics/catalog", "", null
+        );
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue catalog = object(response.body());
+        final RailixValue.ObjectValue metrics = (RailixValue.ObjectValue) catalog.values().get("metrics");
+        final RailixValue.ObjectValue executions = (RailixValue.ObjectValue) metrics.values().get("executions");
+        final RailixValue.ObjectValue durationMaximum = (RailixValue.ObjectValue) metrics.values()
+                .get("duration_nanos_max");
+        final RailixValue.ObjectValue durationTotal = (RailixValue.ObjectValue) metrics.values()
+                .get("duration_nanos_total");
+        assertThat(number(catalog, "application_pid")).isEqualTo(shared.process().pid());
+        assertThat(executions.values())
+                .containsEntry("kind", RailixValue.string("counter"))
+                .containsEntry("aggregation", RailixValue.string("sum"));
+        assertThat(((RailixValue.ArrayValue) durationMaximum.values().get("scopes")).values())
+                .contains(RailixValue.string("application"), RailixValue.string("flow"), RailixValue.string("step"));
+        assertThat(durationMaximum.values())
+                .containsEntry("aggregation", RailixValue.string("max"));
+        assertThat(((RailixValue.ObjectValue) durationTotal.values().get("sampling")).values()).isNotEmpty();
+        assertThat(request(shared, sharedUri, TOKEN, "GET", "/v1/metrics/prometheus", "", null).body())
+                .contains("railix_flow_duration_seconds_max");
+        assertThat(request(shared, sharedUri, TOKEN, "GET", "/v1/metrics/influx", "", null).body())
+                .contains("duration_nanos_max=");
+    }
+
+    @Test
+    void metricQuerySelectsCanonicalColumnsAndPreservesMaximumsAndScopeAbsence() throws Exception {
+        awaitAutomaticExamples(shared, sharedUri);
+        final List<RailixValue.ObjectValue> steps = values(request(
+                shared, sharedUri, TOKEN, "GET", "/v1/metrics", "", null
+        ).body(), "steps");
+        final String query = """
+                {"steps":{"steps":[[0,%d]]},"flows":{"flow":"success"},"application":"application",
+                 "metrics":["executions","duration_nanos_max","in_flight"]}
+                """.formatted(steps.size() - 1);
+
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query", query, null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue result = object(response.body());
+        assertThat(result.values()).containsKeys("observed_at", "elapsed_nanos");
+        assertThat(number(result, "observed_at")).isPositive();
+        assertThat(number(result, "elapsed_nanos")).isGreaterThanOrEqualTo(0);
+        assertThat(queryGroup(response.body(), "steps").values())
+                .containsOnlyKeys("executions", "duration_nanos_max");
+        assertThat(number(queryGroup(response.body(), "steps"), "duration_nanos_max")).isEqualTo(steps.stream()
+                .map(step -> (RailixValue.ObjectValue) step.values().get("metrics"))
+                .mapToLong(metrics -> number(metrics, "duration_nanos_max"))
+                .max().orElseThrow());
+        assertThat(queryGroup(response.body(), "flow").values()).containsOnlyKeys(
+                "executions", "duration_nanos_max", "in_flight"
+        );
+        assertThat(queryGroup(response.body(), "application").values()).containsOnlyKeys(
+                "executions", "duration_nanos_max", "in_flight"
+        );
+    }
+
+    @Test
+    void metricQueryAggregatesDenseEnabledStepOrdinalsWithoutAddingFlowTotals() throws Exception {
+        awaitAutomaticExamples(shared, sharedUri);
+        final HttpResponse<String> snapshot = request(shared, sharedUri, TOKEN, "GET", "/v1/metrics", "", null);
+        assertThat(snapshot.statusCode()).isEqualTo(200);
+        final List<RailixValue.ObjectValue> steps = values(snapshot.body(), "steps");
+        assertThat(ids(snapshot.body(), "steps")).doesNotContain("details-step");
+        final String query = """
+                {"steps":{"all":[[0,%d]],"pair":[[0,0],[2,2]],"overlap":[[0,0],[2,2]],"empty":[]},
+                 "flows":{"trigger":"success"},"application":"app"}
+                """.formatted(steps.size() - 1);
+
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "POST", "/v1/metrics/query", query, null
+        );
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue result = object(response.body());
+        assertThat(result.values()).containsOnlyKeys("application_pid", "observed_at", "elapsed_nanos", "groups");
+        assertThat(number(result, "application_pid")).isEqualTo(shared.process().pid());
+        assertThat(((RailixValue.ObjectValue) result.values().get("groups")).values())
+                .containsOnlyKeys("all", "pair", "overlap", "empty", "trigger", "app");
+        assertQueryCounters(queryGroup(response.body(), "all"), steps);
+        assertQueryCounters(queryGroup(response.body(), "pair"), List.of(steps.getFirst(), steps.get(2)));
+        assertThat(queryGroup(response.body(), "overlap")).isEqualTo(queryGroup(response.body(), "pair"));
+        assertQueryCounters(queryGroup(response.body(), "empty"), List.of());
+        assertQueryCounters(queryGroup(response.body(), "trigger"), List.of(series(snapshot.body(), "flows", "success")));
+        assertQueryCounters(queryGroup(response.body(), "app"),
+                List.of((RailixValue.ObjectValue) object(snapshot.body()).values().get("application")));
+        assertThat(response.headers().firstValue("Cache-Control")).contains("no-store");
+        assertThat(response.headers().firstValue("Content-Type")).contains("application/json; charset=utf-8");
+        assertThat(response.body()).doesNotContain("process", "payload");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{", "[]", "null",
+            "{\"steps\":null,\"flows\":{}}",
+            "{\"steps\":{},\"flows\":[]}",
+            "{\"steps\":{},\"flows\":{},\"application\":null}",
+            "{\"steps\":{},\"flows\":{},\"application\":1}",
+            "{\"steps\":{},\"flows\":{},\"process\":null}",
+            "{\"steps\":{},\"flows\":{},\"process\":1}",
+            "{\"steps\":{},\"flows\":{},\"unknown\":true}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":null}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":\"executions\"}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":{}}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":[1]}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":[\" \"]}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":[\"unknown\"]}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":[\"executions\",\"executions\"]}",
+            "{\"steps\":{},\"flows\":{\"x\":null}}",
+            "{\"steps\":{},\"flows\":{\"x\":[\"success\"]}}",
+            "{\"steps\":{},\"flows\":{\"x\":\"unknown-flow\"}}",
+            "{\"steps\":{\"x\":[]},\"flows\":{\"x\":\"success\"}}",
+            "{\"steps\":{\"x\":[]},\"flows\":{},\"application\":\"x\"}",
+            "{\"steps\":{},\"flows\":{\"x\":\"success\"},\"application\":\"x\"}",
+            "{\"steps\":{\"x\":[]},\"flows\":{},\"process\":\"x\"}",
+            "{\"steps\":{},\"flows\":{\"x\":\"success\"},\"process\":\"x\"}",
+            "{\"steps\":{},\"flows\":{},\"application\":\"x\",\"process\":\"x\"}",
+            "{\"steps\":{\"x\":[],\"x\":[]},\"flows\":{}}",
+            "{\"steps\":{},\"steps\":{},\"flows\":{}}",
+            "{\"steps\":{\"x\":null},\"flows\":{}}",
+            "{\"steps\":{\"x\":{}},\"flows\":{}}",
+            "{\"steps\":{\"x\":[0,1]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0,1,2]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[null,1]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[\"0\",1]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0.5,1]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[-1,0]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[1,0]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[1,1],[0,0]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0,1],[1,2]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0,0],[0,0]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0,2147483647]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0,2147483648]]},\"flows\":{}}"
+    })
+    void metricQueryRejectsMalformedRangesFieldsAndDuplicateGroups(final String query) throws Exception {
+        final HttpResponse<String> first = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query", query, null);
+        final HttpResponse<String> repeated = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query", query, null);
+
+        assertThat(first.statusCode()).as(first.body()).isEqualTo(400);
+        assertThat(repeated.statusCode()).isEqualTo(400);
+        assertThat(repeated.body()).isEqualTo(first.body());
+        assertThat(object(first.body()).values()).doesNotContainKey("groups");
+    }
+
+    @Test
+    void metricQueryRejectsTheFirstOrdinalBeyondTheDenseStepTable() throws Exception {
+        final String snapshot = request(shared, sharedUri, TOKEN, "GET", "/v1/metrics", "", null).body();
+        final int outside = values(snapshot, "steps").size();
+
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query",
+                "{\"steps\":{\"outside\":[[" + outside + "," + outside + "]]},\"flows\":{}}", null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+    }
+
+    @Test
+    void metricQuerySupportsEmptySelectionsAndProcessOnlyGroups() throws Exception {
+        final HttpResponse<String> empty = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query",
+                "{\"steps\":{\"empty\":[]},\"flows\":{},\"metrics\":[]}", null);
+        final HttpResponse<String> process = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query",
+                "{\"steps\":{},\"flows\":{},\"process\":\"runtime\"}", null);
+
+        assertThat(empty.statusCode()).as(empty.body()).isEqualTo(200);
+        assertThat(queryGroup(empty.body(), "empty").values()).isEmpty();
+        assertThat(process.statusCode()).as(process.body()).isEqualTo(200);
+        assertThat(queryGroup(process.body(), "runtime").values())
+                .containsKey("uptime_millis")
+                .doesNotContainKeys("executions", "in_flight", "duration_nanos_total");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/v1/metrics/query", "/v1/examples/query"})
+    void scopedQueryReturnsEmptyGroupsWithoutAnImplicitApplicationAggregate(final String path) throws Exception {
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", path, emptyQuery(path), null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue result = object(response.body());
+        assertThat(number(result, "application_pid")).isEqualTo(shared.process().pid());
+        assertThat(((RailixValue.ObjectValue) result.values().get("groups")).values()).isEmpty();
+        assertThat(result.values()).doesNotContainKeys("application", "example", "steps", "flows", "coverage_bits");
+        assertThat(response.headers().firstValue("Cache-Control")).contains("no-store");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/v1/metrics/query", "/v1/examples/query"})
+    void scopedQueryRequiresBearerAuthorization(final String path) throws Exception {
+        final HttpResponse<String> response = request(shared, sharedUri, null, "POST", path, emptyQuery(path), null);
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(401, "{\"status\":\"unauthorized\"}");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "/v1/metrics/query,GET", "/v1/metrics/query,PUT", "/v1/metrics/query,DELETE",
+            "/v1/examples/query,GET", "/v1/examples/query,PUT", "/v1/examples/query,DELETE"
+    })
+    void scopedQueryRejectsMethodsOtherThanPost(final String path, final String method) throws Exception {
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, method, path, "", null);
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(405, "{\"status\":\"method-not-allowed\"}");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/v1/metrics/query", "/v1/examples/query"})
+    void scopedQueryEnforcesTheExactOneMebibyteBodyLimitAndRecovers(final String path) throws Exception {
+        final String query = emptyQuery(path);
+        final String maximum = query + " ".repeat(MAX_CONTEXT_BYTES - query.length());
+
+        assertThat(request(shared, sharedUri, TOKEN, "POST", path, maximum, null).statusCode()).isEqualTo(200);
+        assertThat(request(shared, sharedUri, TOKEN, "POST", path, maximum + " ", null).statusCode()).isEqualTo(413);
+        assertThat(request(shared, sharedUri, TOKEN, "POST", path, query, null).statusCode()).isEqualTo(200);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/v1/metrics/query", "/v1/examples/query"})
+    void scopedQueryLimitsTotalGroupsTo4096AndRecovers(final String path) throws Exception {
+        final String groups = java.util.stream.IntStream.range(0, 4096)
+                .mapToObj(index -> "\"g" + index + "\":[]")
+                .collect(java.util.stream.Collectors.joining(","));
+        final String prefix = path.equals("/v1/metrics/query") ? "{\"flows\":{},\"steps\":{" : "{\"groups\":{";
+        final HttpResponse<String> maximum = request(shared, sharedUri, TOKEN, "POST", path, prefix + groups + "}}", null);
+
+        assertThat(maximum.statusCode()).as(maximum.body()).isEqualTo(200);
+        assertThat(((RailixValue.ObjectValue) object(maximum.body()).values().get("groups")).values()).hasSize(4096);
+        final HttpResponse<String> excess = request(
+                shared, sharedUri, TOKEN, "POST", path, prefix + groups + ",\"extra\":[]}}", null
+        );
+        assertThat(excess.statusCode()).as(excess.body()).isEqualTo(400);
+        assertThat(request(shared, sharedUri, TOKEN, "POST", path, emptyQuery(path), null).statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void metricQueryCountsFlowAndApplicationGroupsTowardsTheSameLimit() throws Exception {
+        final String groups = java.util.stream.IntStream.range(0, 4095)
+                .mapToObj(index -> "\"g" + index + "\":[]")
+                .collect(java.util.stream.Collectors.joining(","));
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query",
+                "{\"steps\":{" + groups + "},\"flows\":{\"trigger\":\"success\"},\"application\":\"app\"}", null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+    }
+
+    @Test
+    void scopedQueryEnforcesTheExactRangeMemberWorkBudgetAcrossOverlappingGroups(@TempDir final Path workspace)
+            throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build candidate = DevelopmentRuntimeGeneratedProcess.build(
+                workspace, metricCardinalityProject(256), List.of(trigger("metrics", false), pass()),
+                DevelopmentRuntimeConformanceSteps.Pass.class
+        );
+        try (var child = started(candidate)) {
+            final URI uri = child.awaitReady();
+            awaitExamples(child, uri, 1, WAIT);
+            final String groups = java.util.stream.IntStream.range(0, 4096)
+                    .mapToObj(index -> "\"g" + index + "\":[[0,255]]")
+                    .collect(java.util.stream.Collectors.joining(","));
+            for (final String path : List.of("/v1/metrics/query", "/v1/examples/query")) {
+                final String prefix = path.equals("/v1/metrics/query") ? "{\"flows\":{},\"steps\":{" : "{\"groups\":{";
+                final String maximum = prefix + groups + "}}";
+                final HttpResponse<String> accepted = request(child, uri, TOKEN, "POST", path, maximum, null);
+                assertThat(accepted.statusCode()).as(accepted.body()).isEqualTo(200);
+                assertThat(((RailixValue.ObjectValue) object(accepted.body()).values().get("groups")).values()).hasSize(4096);
+
+                final String excess = maximum.replace("\"g0\":[[0,255]]", "\"g0\":[[0,256]]");
+                final HttpResponse<String> rejected = request(child, uri, TOKEN, "POST", path, excess, null);
+                assertThat(rejected.statusCode()).as(rejected.body()).isEqualTo(400);
+                assertThat(rejected.body()).contains("INVALID_QUERY", "Query ranges exceed the 1048576-member work limit.");
+                assertThat(request(child, uri, TOKEN, "POST", path, emptyQuery(path), null).statusCode()).isEqualTo(200);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/v1/metrics/query", "/v1/examples/query"})
+    void scopedQueryBodyDeadlineClosesIncompleteRequestsAndReleasesReaders(final String path) throws Exception {
+        try (Socket partial = partialRequest(sharedUri, path)) {
+            assertThat(request(shared, sharedUri, TOKEN, "POST", path, emptyQuery(path), null).statusCode()).isEqualTo(200);
+            assertThat(partial.getInputStream().read()).isEqualTo(-1);
+        }
+        assertThat(request(shared, sharedUri, TOKEN, "POST", path, emptyQuery(path), null).statusCode()).isEqualTo(200);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{", "[]", "null", "{\"groups\":null}", "{\"groups\":[]}",
+            "{\"groups\":{},\"example\":null}", "{\"groups\":{},\"example\":1}",
+            "{\"groups\":{},\"unknown\":true}", "{\"groups\":{},\"groups\":{}}",
+            "{\"groups\":{\"x\":[],\"x\":[]}}", "{\"groups\":{\"x\":null}}",
+            "{\"groups\":{\"x\":{}}}", "{\"groups\":{\"x\":[0,1]}}",
+            "{\"groups\":{\"x\":[[]]}}", "{\"groups\":{\"x\":[[0]]}}",
+            "{\"groups\":{\"x\":[[0,1,2]]}}", "{\"groups\":{\"x\":[[null,1]]}}",
+            "{\"groups\":{\"x\":[[\"0\",1]]}}", "{\"groups\":{\"x\":[[0,1.5]]}}",
+            "{\"groups\":{\"x\":[[-1,0]]}}", "{\"groups\":{\"x\":[[1,0]]}}",
+            "{\"groups\":{\"x\":[[1,1],[0,0]]}}", "{\"groups\":{\"x\":[[0,1],[1,2]]}}",
+            "{\"groups\":{\"x\":[[0,0],[0,0]]}}", "{\"groups\":{\"x\":[[0,2147483647]]}}",
+            "{\"groups\":{\"x\":[[0,2147483648]]}}"
+    })
+    void exampleQueryRejectsMalformedRangesFieldsAndDuplicateGroups(final String query) throws Exception {
+        final HttpResponse<String> first = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query", query, null);
+        final HttpResponse<String> repeated = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query", query, null);
+
+        assertThat(first.statusCode()).as(first.body()).isEqualTo(400);
+        assertThat(repeated.statusCode()).isEqualTo(400);
+        assertThat(repeated.body()).isEqualTo(first.body());
+        assertThat(object(first.body()).values()).doesNotContainKey("groups");
+    }
+
+    @Test
+    void exampleQueryRejectsTheFirstOrdinalBeyondTheCanonicalNodeTable() throws Exception {
+        final int outside = values(project(Path.of(".")), "nodes").size();
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query",
+                "{\"groups\":{\"outside\":[[" + outside + "," + outside + "]]}}", null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+    }
+
+    @Test
+    void exampleQueryDoesNotTurnAnUnknownSelectionIntoZeroMembership() throws Exception {
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query",
+                "{\"groups\":{\"all\":[[0,1]]},\"example\":\"missing:0\"}", null);
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(404, "{\"status\":\"not-found\"}");
+    }
+
+    @Test
+    void exampleQueryReturnsOnlyCoverageWhenNoSelectionWasRequested() throws Exception {
+        awaitAutomaticExamples(shared, sharedUri);
+        final RailixValue.ObjectValue coverage = object(request(
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/coverage", "", null
+        ).body());
+        final int last = values(project(Path.of(".")), "nodes").size() - 1;
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query",
+                "{\"groups\":{\"all\":[[0," + last + "]],\"empty\":[]}}", null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue result = object(response.body());
+        assertThat(result.values()).containsOnlyKeys("application_pid", "revision", "groups");
+        assertThat(number(result, "revision")).isEqualTo(number(coverage, "revision"));
+        assertThat(((RailixValue.ObjectValue) result.values().get("groups")).values()).containsOnlyKeys("all", "empty");
+        assertThat(queryGroup(response.body(), "all").values()).containsOnlyKeys("covered_count");
+        assertThat(queryGroup(response.body(), "empty").values()).containsOnlyKeys("covered_count");
+        assertThat(number(queryGroup(response.body(), "all"), "covered_count")).isEqualTo(number(coverage, "covered_steps"));
+        assertThat(number(queryGroup(response.body(), "empty"), "covered_count")).isZero();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"success:0,1,14", "details:0,2,15", "failed:0,4,16", "cancelled:0,5,17"})
+    void exampleQueryUsesCanonicalMembershipIncludingTriggersAndFailedSteps(
+            final String example, final int trigger, final int step
+    ) throws Exception {
+        awaitAutomaticExamples(shared, sharedUri);
+        final RailixValue.ObjectValue coverage = object(request(
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/coverage", "", null
+        ).body());
+        final BitSet covered = BitSet.valueOf(Base64.getDecoder().decode(string(coverage, "coverage_bits")));
+        final int last = values(project(Path.of(".")), "nodes").size() - 1;
+        final String query = """
+                {"groups":{"all":[[0,%d]],"trigger":[[%d,%d]],"step":[[%d,%d]],
+                 "pair":[[%d,%d],[%d,%d]],"empty":[],"app":[[0,0]]},"example":"%s"}
+                """.formatted(last, trigger, trigger, step, step, trigger, trigger, step, step, example);
+
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query", query, null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue result = object(response.body());
+        assertThat(result.values()).containsOnlyKeys("application_pid", "revision", "groups", "example");
+        assertThat(((RailixValue.ObjectValue) result.values().get("groups")).values())
+                .containsOnlyKeys("all", "trigger", "step", "pair", "empty", "app");
+        assertThat(number(result, "application_pid")).isEqualTo(shared.process().pid());
+        assertThat(number(result, "revision")).isEqualTo(number(coverage, "revision"));
+        assertThat(string(result, "example")).isEqualTo(example);
+        assertThat(number(queryGroup(response.body(), "all"), "covered_count")).isEqualTo(covered.cardinality());
+        assertThat(number(queryGroup(response.body(), "all"), "selected_count")).isEqualTo(2);
+        for (final String id : List.of("trigger", "step")) {
+            assertThat(queryGroup(response.body(), id).values()).containsOnlyKeys("covered_count", "selected_count");
+            assertThat(number(queryGroup(response.body(), id), "covered_count")).isEqualTo(1);
+            assertThat(number(queryGroup(response.body(), id), "selected_count")).isEqualTo(1);
+        }
+        assertThat(number(queryGroup(response.body(), "pair"), "selected_count")).isEqualTo(2);
+        for (final String id : List.of("empty", "app")) {
+            assertThat(number(queryGroup(response.body(), id), "covered_count")).isZero();
+            assertThat(number(queryGroup(response.body(), id), "selected_count")).isZero();
+        }
+        assertThat(response.body()).doesNotContain("coverage_bits", "initial_context", "result", "cases", "step_start");
+    }
+
+    @Test
+    void exampleQuerySeparatesUnionCoverageFromTheSelectedBranch(@TempDir final Path workspace) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build candidate = DevelopmentRuntimeGeneratedProcess.build(workspace, """
+                {"format":1,"id":"query-branches","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"match","payload":[],"context":{"payload":{"value":"allow"}}},
+                    {"name":"otherwise","payload":[],"context":{"payload":{"value":"deny"}}}
+                  ]},
+                  {"id":"choice","use":"railix.choice","inputs":{"conditions":[[{
+                    "option":"field","inputs":{"field":["context","payload","value"]},
+                    "when":{"transforms":[],"all":[[{"use":"value.equals","inputs":{"expected":"allow"}}]]}
+                  }]]}},
+                  {"id":"matched","use":"railix.field-manipulation","inputs":{}},
+                  {"id":"otherwise","use":"railix.field-manipulation","inputs":{}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},{"from":"command.next","to":"choice"},
+                  {"from":"choice.match","to":"matched"},{"from":"choice.otherwise","to":"otherwise"},
+                  {"from":"matched.next","to":"end"},{"from":"otherwise.next","to":"end"}
+                ]}
+                """, StandardLibrary.catalog());
+        try (var child = started(candidate)) {
+            final URI uri = child.awaitReady();
+            awaitExamples(child, uri, 2, WAIT);
+            for (int selection = 0; selection < 2; selection++) {
+                final HttpResponse<String> response = request(child, uri, TOKEN, "POST", "/v1/examples/query",
+                        "{\"groups\":{\"branches\":[[3,4]],\"matched\":[[3,3]],\"otherwise\":[[4,4]]},"
+                                + "\"example\":\"command:" + selection + "\"}", null);
+
+                assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+                assertThat(number(queryGroup(response.body(), "branches"), "covered_count")).isEqualTo(2);
+                assertThat(number(queryGroup(response.body(), "branches"), "selected_count")).isEqualTo(1);
+                assertThat(number(queryGroup(response.body(), "matched"), "selected_count")).isEqualTo(1 - selection);
+                assertThat(number(queryGroup(response.body(), "otherwise"), "selected_count")).isEqualTo(selection);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void exampleQueryOmitsPendingSelectionUntilCompleted(
+            final boolean running, @TempDir final Path workspace
+    ) throws Exception {
+        final Path gate = Files.createDirectories(workspace.resolve("gate"));
+        final DevelopmentRuntimeGeneratedProcess.Build candidate = DevelopmentRuntimeGeneratedProcess.build(
+                workspace, nonCooperativeExample(gate).replace("\"id\":\"gate\",\"use\":\"development.runtime.example-gate\",\"inputs\":{}",
+                        "\"id\":\"gate\",\"use\":\"development.runtime.example-gate\",\"inputs\":{\"ignore_interrupt\":false}"),
+                List.of(trigger("noncooperative", false), exampleGate()),
+                DevelopmentRuntimeConformanceSteps.Pass.class, ChunkGateStepHandler.class
+        );
+        try (var child = started(candidate)) {
+            final URI uri = child.awaitInactive();
+            final String query = "{\"groups\":{\"all\":[[0,2]]},\"example\":\"noncooperative:0\"}";
+            try {
+                if (running) {
+                    child.activate();
+                    awaitSignal(gate.resolve("case-1.started"), WAIT);
+                }
+                final HttpResponse<String> pending = request(child, uri, TOKEN, "POST", "/v1/examples/query", query, null);
+                assertThat(pending.statusCode()).as(pending.body()).isEqualTo(200);
+                assertThat(object(pending.body()).values()).doesNotContainKey("example");
+                assertThat(((RailixValue.ObjectValue) object(pending.body()).values().get("groups")).values())
+                        .containsOnlyKeys("all");
+                assertThat(queryGroup(pending.body(), "all").values()).containsOnlyKeys("covered_count");
+                assertThat(number(queryGroup(pending.body(), "all"), "covered_count")).isZero();
+
+                Files.writeString(gate.resolve("release"), "released");
+                if (!running) child.activate();
+                awaitExamples(child, uri, 1, WAIT);
+                final HttpResponse<String> completed = request(child, uri, TOKEN, "POST", "/v1/examples/query", query, null);
+                assertThat(completed.statusCode()).as(completed.body()).isEqualTo(200);
+                assertThat(string(object(completed.body()), "example")).isEqualTo("noncooperative:0");
+                assertThat(number(object(completed.body()), "revision")).isGreaterThan(number(object(pending.body()), "revision"));
+                assertThat(number(queryGroup(completed.body(), "all"), "covered_count")).isEqualTo(2);
+                assertThat(number(queryGroup(completed.body(), "all"), "selected_count")).isEqualTo(2);
+            } finally {
+                Files.writeString(gate.resolve("release"), "released");
+            }
+        }
+    }
+
+    @Test
+    void exampleQueryReadsFrozenMembershipWithoutReplayingOrReexecutingTheTrace(@TempDir final Path workspace)
+            throws Exception {
+        final Path marker = workspace.resolve("example.marker");
+        final DevelopmentRuntimeGeneratedProcess.Build candidate = markerBuild(workspace, marker);
+        try (var child = started(candidate)) {
+            final URI uri = child.awaitReady();
+            final String inventory = awaitExamples(child, uri, 1, WAIT);
+            Files.delete(runtimeDirectory(candidate, child).resolve("0.ndjson"));
+            for (int attempt = 0; attempt < 2; attempt++) {
+                final HttpResponse<String> response = request(child, uri, TOKEN, "POST", "/v1/examples/query",
+                        "{\"groups\":{\"all\":[[0,2]]},\"example\":\"marker:0\"}", null);
+                assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+                assertThat(number(object(response.body()), "revision")).isEqualTo(number(object(inventory), "revision"));
+                assertThat(number(queryGroup(response.body(), "all"), "selected_count")).isEqualTo(2);
+                assertThat(number(queryGroup(response.body(), "all"), "covered_count")).isEqualTo(2);
+            }
+            assertThat(Files.readString(marker)).isEqualTo("x");
+            assertThat(request(child, uri, TOKEN, "GET", "/v1/examples/marker%3A0/view", "", null).statusCode()).isEqualTo(404);
+        }
     }
 
     @Test
@@ -3896,6 +4398,32 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
 
     private static String string(final RailixValue.ObjectValue source, final String field) {
         return ((RailixValue.StringValue) source.values().get(field)).value();
+    }
+
+    private static String emptyQuery(final String path) {
+        return path.equals("/v1/metrics/query") ? "{\"steps\":{},\"flows\":{}}" : "{\"groups\":{}}";
+    }
+
+    private static RailixValue.ObjectValue queryGroup(final String source, final String id) {
+        return (RailixValue.ObjectValue) ((RailixValue.ObjectValue) object(source).values().get("groups"))
+                .values().get(id);
+    }
+
+    private static void assertQueryCounters(
+            final RailixValue.ObjectValue actual,
+            final List<RailixValue.ObjectValue> series
+    ) {
+        final List<String> counters = List.of(
+                "executions", "errors", "cancelled", "duration_nanos_total", "duration_nanos_max", "duration_samples"
+        );
+        assertThat(actual.values()).containsKeys(counters.toArray(String[]::new));
+        for (final String counter : counters) {
+            final java.util.stream.LongStream values = series.stream()
+                    .map(value -> (RailixValue.ObjectValue) value.values().get("metrics"))
+                    .mapToLong(value -> number(value, counter));
+            final long expected = counter.equals("duration_nanos_max") ? values.max().orElse(0) : values.sum();
+            assertThat(number(actual, counter)).as(counter).isEqualTo(expected);
+        }
     }
 
     private static long metric(

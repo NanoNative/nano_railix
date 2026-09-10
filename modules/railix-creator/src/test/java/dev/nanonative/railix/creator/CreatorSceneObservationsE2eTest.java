@@ -63,6 +63,10 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
         }
     }
 
+    private static long metricNumber(final RailixValue.ObjectValue entity, final String metric) {
+        return number((RailixValue.ObjectValue) entity.values().get("metrics"), metric);
+    }
+
     @Test
     void visibleIconsAreDeduplicatedAcrossStepsAndDisconnectedGroups() throws Exception {
         final Path project = directory.resolve("railix.project.json");
@@ -148,6 +152,69 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
+    void sceneMetricsKeepTheirOwnNamespaceAndIncludeUnlistedMeasurements() throws Exception {
+        final HttpResponse<String> response = observations(server.baseUri(), "scale=100", "");
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue step = entry(object(response.body()), "one");
+        assertThat(step.values()).containsKey("metrics").doesNotContainKey("executions");
+        final RailixValue.ObjectValue metrics = (RailixValue.ObjectValue) step.values().get("metrics");
+        assertThat(metrics.values()).containsKeys("executions", "duration_nanos_max")
+                .doesNotContainKey("in_flight");
+        assertThat(number(metrics, "duration_nanos_max")).isPositive();
+    }
+
+    @Test
+    void frontendCanSelectAMetricWithoutChangingOrRebuildingTheApplication() throws Exception {
+        final RailixValue.ObjectValue before = application(server.baseUri());
+        final HttpResponse<String> response = observations(server.baseUri(), "scale=100", "&metrics=duration_nanos_max");
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue step = entry(object(response.body()), "one");
+        final RailixValue.ObjectValue metrics = (RailixValue.ObjectValue) step.values().get("metrics");
+        assertThat(metrics.values()).containsOnlyKeys("duration_nanos_max");
+        assertThat(number(application(server.baseUri()), "pid")).isEqualTo(number(before, "pid"));
+        assertThat(application(server.baseUri()).values().get("fingerprint")).isEqualTo(before.values().get("fingerprint"));
+    }
+
+    @Test
+    void groupMaximumUsesTheLargestMemberNotTheirSum() throws Exception {
+        final RailixValue.ObjectValue detail = object(observations(server.baseUri(), "scale=100", "").body());
+        final RailixValue.ObjectValue group = entry(object(observations(server.baseUri(),
+                "focus=group:normalize&scale=0.000001", "").body()), "group-region:normalize:one");
+        final long maximum = List.of("one", "three").stream().mapToLong(id ->
+                number((RailixValue.ObjectValue) entry(detail, id).values().get("metrics"), "duration_nanos_max"))
+                .max().orElseThrow();
+
+        assertThat(number((RailixValue.ObjectValue) group.values().get("metrics"), "duration_nanos_max"))
+                .isEqualTo(maximum);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "does_not_exist", "executions,executions", "executions,,errors"})
+    void invalidMetricSelectionIsRejectedWithoutReplacingTheApplication(final String selection) throws Exception {
+        final long pid = number(application(server.baseUri()), "pid");
+        final HttpResponse<String> response = observations(server.baseUri(), "scale=100", "&metrics=" + selection);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+        assertThat(number(application(server.baseUri()), "pid")).isEqualTo(pid);
+    }
+
+    @Test
+    void metricCatalogIdentifiesTheApplicationWithoutRequiringAnyDiagramSelection() throws Exception {
+        final HttpResponse<String> response = request(server.baseUri(), "GET", "/api/metrics/catalog", "");
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue catalog = object(response.body());
+        assertThat(number(catalog, "application_pid")).isEqualTo(number(application(server.baseUri()), "pid"));
+        final RailixValue.ObjectValue maximum = (RailixValue.ObjectValue)
+                ((RailixValue.ObjectValue) catalog.values().get("metrics")).values().get("duration_nanos_max");
+        assertThat(string(maximum, "aggregation")).isEqualTo("max");
+        assertThat(string(maximum, "unit")).isEqualTo("ns");
+        assertThat(response.body()).doesNotContain("payload", "color", "viewport", "shape");
+    }
+
+    @Test
     void canonicalObservationsCombineMetricsCoverageAndSelectedTraceWithoutModes() throws Exception {
         final String viewport = "scale=100";
         final String revision = string(scene(server.baseUri(), viewport), "revision");
@@ -159,17 +226,17 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
         assertThat(observed.values()).containsKeys("coverage_revision", "example")
                 .doesNotContainKeys("mode", "unvisited");
         final RailixValue.ObjectValue step = entry(observed, "one");
-        assertThat(number(step, "executions")).isEqualTo(1);
+        assertThat(metricNumber(step, "executions")).isEqualTo(1);
         assertThat(number(step, "covered_count")).isEqualTo(1);
         assertThat(number(step, "selected_count")).isEqualTo(1);
         assertThat(entries(observed, "links")).anySatisfy(link -> {
             assertThat(string(link, "id")).isEqualTo("two.next>three");
             assertThat(string(link, "selection")).isEqualTo("reached");
-            assertThat(number(link, "executions")).isEqualTo(1);
+            assertThat(metricNumber(link, "executions")).isEqualTo(1);
         });
         assertThat(entries(observed, "links").stream().filter(link -> string(link, "id").equals("one.next>two")
                 || string(link, "id").contains(">end:")))
-                .allSatisfy(link -> assertThat(link.values()).doesNotContainKey("executions"));
+                .allSatisfy(link -> assertThat(link.values()).doesNotContainKey("metrics"));
     }
 
     @Test
@@ -249,11 +316,11 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
         final RailixValue.ObjectValue region = entry(object(response.body()), "group-region:normalize:one");
         assertThat(number(region, "count")).isEqualTo(3);
         assertThat(number(region, "disabled_count")).isEqualTo(1);
-        assertThat(number(region, "executions")).isEqualTo(2);
-        assertThat(number(region, "errors")).isZero();
-        assertThat(number(region, "cancelled")).isZero();
-        assertThat(number(region, "duration_samples")).isEqualTo(2);
-        assertThat(number(region, "duration_nanos_total")).isPositive();
+        assertThat(metricNumber(region, "executions")).isEqualTo(2);
+        assertThat(metricNumber(region, "errors")).isZero();
+        assertThat(metricNumber(region, "cancelled")).isZero();
+        assertThat(metricNumber(region, "duration_samples")).isEqualTo(2);
+        assertThat(metricNumber(region, "duration_nanos_total")).isPositive();
         assertThat(response.body()).doesNotContain("p95", "bottleneck", "payload");
     }
 
@@ -293,19 +360,19 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
         final RailixValue.ObjectValue observed = operationalObservations(source, StandardLibrary.catalog(), 1025, 200);
         final RailixValue.ObjectValue region = entry(observed, "group-region:normalize:one");
 
-        assertThat(number(region, "executions")).isEqualTo(2052);
-        assertThat(number(region, "errors")).isZero();
-        assertThat(number(region, "duration_samples")).isEqualTo(4);
-        assertThat(number(region, "duration_nanos_total")).isPositive();
+        assertThat(metricNumber(region, "executions")).isEqualTo(2052);
+        assertThat(metricNumber(region, "errors")).isZero();
+        assertThat(metricNumber(region, "duration_samples")).isEqualTo(4);
+        assertThat(metricNumber(region, "duration_nanos_total")).isPositive();
         assertThat(number(region, "disabled_count")).isEqualTo(1);
-        assertThat(number(entry(observed, "app"), "executions")).isEqualTo(1026);
-        assertThat(number(entry(observed, "command"), "executions")).isEqualTo(1026);
+        assertThat(metricNumber(entry(observed, "app"), "executions")).isEqualTo(1026);
+        assertThat(metricNumber(entry(observed, "command"), "executions")).isEqualTo(1026);
         assertThat(entries(observed, "links")).anySatisfy(link -> {
             assertThat(string(link, "id")).isEqualTo("command.next>group-region:normalize:one");
-            assertThat(number(link, "executions")).isEqualTo(1026);
+            assertThat(metricNumber(link, "executions")).isEqualTo(1026);
         });
         assertThat(entries(observed, "links").stream().filter(link -> string(link, "id").contains(">end:")))
-                .allSatisfy(link -> assertThat(link.values()).doesNotContainKey("executions"));
+                .allSatisfy(link -> assertThat(link.values()).doesNotContainKey("metrics"));
     }
 
     @Test
@@ -320,10 +387,10 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
 
         final RailixValue.ObjectValue region = entry(operationalObservations(source, catalog, 3, 500), "group-region:normalize:one");
 
-        assertThat(number(region, "executions")).isEqualTo(8);
-        assertThat(number(region, "errors")).isEqualTo(4);
-        assertThat(number(region, "cancelled")).isZero();
-        assertThat(number(region, "duration_samples")).isEqualTo(2);
+        assertThat(metricNumber(region, "executions")).isEqualTo(8);
+        assertThat(metricNumber(region, "errors")).isEqualTo(4);
+        assertThat(metricNumber(region, "cancelled")).isZero();
+        assertThat(metricNumber(region, "duration_samples")).isEqualTo(2);
     }
 
     @Test
@@ -431,8 +498,9 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
             assertThat(entries(observed, "nodes")).hasSizeLessThanOrEqualTo(2048);
             assertThat(entries(observed, "links")).hasSizeLessThanOrEqualTo(4096 / 3);
             assertThat(observed.values().get("limited")).isEqualTo(RailixValue.bool(true));
-            assertThat(entries(observed, "links").stream().filter(link -> link.values().containsKey("executions")).count())
-                    .as("Capped connections must not present partial execution totals").isZero();
+            assertThat(entries(observed, "links").stream().filter(link -> link.values().containsKey("metrics")))
+                    .isNotEmpty().allSatisfy(link -> assertThat(metricNumber(link, "executions"))
+                            .isEqualTo(string(link, "id").equals("app.start>command") ? 0 : 1));
             assertThat(response.body().getBytes(StandardCharsets.UTF_8).length).isLessThanOrEqualTo(2 * 1024 * 1024);
             if (selected) {
                 assertThat(entries(observed, "nodes")).allSatisfy(node -> {
@@ -557,9 +625,6 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
                 final HttpResponse<String> response = child.request(uri, token, "POST", "/v1/run/command", "{}", "false");
                 assertThat(response.statusCode()).as(response.body()).isEqualTo(expectedStatus);
             }
-            final HttpResponse<String> response = child.request(uri, token, "GET", "/v1/metrics", "", null);
-            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
-            final RailixValue.ObjectValue metrics = object(response.body());
             final CreatorScene scene = new CreatorScene(source, object("""
                     {"format":2,"groups":[{"id":"normalize"}],"steps":{
                       "one":{"group":"normalize"},"two":{"group":"normalize"},"three":{"group":"normalize"}
@@ -567,8 +632,21 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
                     """), catalog);
             final Map<String, String> parameters = CreatorScene.observationParameters("scale=0.000001&revision="
                     + string(scene.view(""), "revision"));
-            return scene.observations(parameters, scene.observationView(parameters), Map.of("metrics", metrics),
-                    0, number(metrics, "application_pid"));
+            final CreatorScene.Observation observation = scene.observationView(parameters);
+            final HttpResponse<String> descriptors = child.request(uri, token, "GET", "/v1/metrics/catalog", "", null);
+            assertThat(descriptors.statusCode()).as(descriptors.body()).isEqualTo(200);
+            observation.metricDefinitions(object(descriptors.body()));
+            long pid = 0;
+            for (final RailixValue.ObjectValue query : observation.queries("metrics")) {
+                final HttpResponse<String> response = child.request(uri, token, "POST", "/v1/metrics/query",
+                        RailixJson.write(query), null);
+                assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+                final RailixValue.ObjectValue document = object(response.body());
+                pid = number(document, "application_pid");
+                observation.accept("metrics", query, document);
+            }
+            observation.unavailable("examples");
+            return observation.response(0, pid);
         }
     }
 

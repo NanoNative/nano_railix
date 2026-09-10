@@ -294,17 +294,40 @@ Collapsed Groups and automatic regions have the same station size
 as ordinary Steps; expanded contents keep their derived world geometry. Example coverage comes
 from the built application's completed suite and selected trace, never simulated traffic.
 `GET /api/scene/observations?revision=...` accepts the viewport and an optional `example` ID and
-combines the captured running application's coverage, selected Example summary and metric snapshot. Scene
+combines the captured running application's scoped metric and Example-membership queries. Static
+membership is a derived interval index; neither view state nor groups enter the artifact. Queries
+aggregate in the application and return only requested groups. Creator batches fragmented or large
+memberships instead of downloading full metric series or replaying the selected trace. Scene
 revision, activated artifact and PID must agree; activation failure or replacement cannot attach
 old observations to a new graph. Responses contain bounded counts and route reach information,
 never production payloads or Example contexts. Two admitted response drains bound concurrent
 aggregation; the browser cancels obsolete reads and polls once per completed read plus one second.
+The complete upstream poll has a 30-second deadline. Example batches must share one suite revision;
+if that revision changes, coverage and selection are omitted for that poll rather than mixed.
 Pending or unavailable capabilities omit only their fields; malformed successful responses fail
 closed rather than inventing zero measurements. Hidden pages stop scene observation reads.
 Unchanged observations do not redraw the world or rebuild the selected Example preview.
 Picker updates deferred while the user interacts are retried by the existing poll after interaction,
 not by another timer or a full Inspector redraw. Runtime metrics are disclosed on demand; the
 per-Step metrics build setting remains immediately available.
+
+The built application owns one metric catalog (`GET /v1/metrics/catalog`). Definitions declare ID,
+label, unit, counter/gauge kind, supported scopes, sum/max/none aggregation and sampling dependencies.
+Creator caches that catalog per child and exposes it through `GET /api/metrics/catalog`; no
+metric-name whitelist belongs in the relay. `POST /v1/metrics/query` accepts an optional metric-ID
+selection and process group. Scene responses keep measurement values in a separate `metrics` object;
+batch reduction follows the definition, and unsupported or unavailable measurements stay absent.
+UTC observation time and monotonic elapsed time identify each read. The frontend owns formatting,
+counter deltas and derived rates/averages, not the producer or Creator Java backend. A new display
+of existing measurements requires no generated-artifact change. New instrumentation still does.
+Read-side descriptors do not change counter storage, generated Step calls or per-request recording.
+
+Revealing a newly added Step uses the existing focus request directly, superseding an unfinished
+older focus. It does not wait for an unrelated scene refresh or add a second camera-state mechanism.
+The route index aggregates connections between visible representatives and skips internal edges.
+If the connection budget would be exceeded, the frontier coarsens and is queried again: connections
+are never truncated at a traversal count. Multiple hidden outcomes sharing one visible connection
+are unlabeled until zoom reveals them. This changes presentation only, not routing or execution.
 Motion uses fresh measured counter deltas, a logarithmically bounded rail density, and at most
 30 animated draws per second. Animation-only draws reuse the vertex buffer and labels, updating
 one shader uniform; no per-request object or execution path is added. A three-second freshness
@@ -319,8 +342,8 @@ a merged Example value. Writable fields distinguish before and after; missing is
 zero, empty or unreached. Intermediate program results and errors remain available without duplicate
 Built example/output blocks. Inspector visibility is ephemeral; closing it preserves selection,
 camera and drafts, and Escape dismisses an open field chooser before the Inspector.
-The selected Example summary is read before coverage, matching the application's publication order;
-its reached Steps cannot precede the corresponding coverage bits. Scene and observation responses
+Selected membership and union coverage are captured together at one application-owned suite revision;
+reached Steps cannot precede the corresponding coverage bits. Scene and observation responses
 are capped at 2 MiB. Application response readers enforce a 30-second deadline over headers and
 the complete bounded body, cancel timed-out reads, and release forwarding admission on every exit.
 Region counters sum contained Step series without adding flow totals again. Disabled metrics,
@@ -420,7 +443,7 @@ project/build metadata, Example projection, live error, queue, and metrics into 
 selectable environment capabilities remains planned. Every omitted capability must contribute no
 route, class, dependency, or JDK module.
 
-Remote attachment, aggregate metrics, queue control, permissions, sharding, and production
+Remote attachment, time-window/custom metrics, queue control, permissions, sharding, and production
 debugging remain roadmap work. Current examples never sample production traffic.
 
 ## Invariants

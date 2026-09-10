@@ -37,6 +37,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -63,6 +64,9 @@ public final class DevelopmentRuntime {
     private static final int MAX_CONCURRENT_UNAUTHORIZED_BODIES = 4;
     private static final int MAX_CONCURRENT_METRICS = 2;
     private static final int MAX_CONCURRENT_EXAMPLE_READS = 2;
+    private static final int MAX_CONCURRENT_EXAMPLE_SNAPSHOTS = 4;
+    private static final int MAX_QUERY_GROUPS = 4_096;
+    private static final int MAX_QUERY_MEMBERS = 1_048_576;
     private static final int MAX_CONCURRENT_CANCELLATIONS = MAX_CONCURRENT_TRACES;
     private static final int MAX_TRACE_ID_LENGTH = 128;
     private static final int CANCELLATION_WAIT_MILLIS = 2_000;
@@ -74,6 +78,70 @@ public final class DevelopmentRuntime {
     private static final int PROCESS_WAIT_SECONDS = 1;
 
     private DevelopmentRuntime() {
+    }
+
+    static Map<String, RailixValue> queryObject(final RailixValue value) {
+        if (!(value instanceof RailixValue.ObjectValue object)) {
+            throw new IllegalArgumentException("Query groups must be objects.");
+        }
+        return object.values();
+    }
+
+    static String queryIdentifier(final RailixValue value) {
+        if (!(value instanceof RailixValue.StringValue string) || string.value().isBlank()) {
+            throw new IllegalArgumentException("Query identifiers must be non-blank strings.");
+        }
+        return string.value();
+    }
+
+    static void queryFields(final RailixValue.ObjectValue query, final Set<String> allowed) {
+        if (!allowed.containsAll(query.values().keySet())) {
+            throw new IllegalArgumentException("Query contains unsupported fields.");
+        }
+    }
+
+    static Map<String, int[]> queryRanges(final RailixValue value, final int bound) {
+        final Map<String, RailixValue> groups = queryObject(value);
+        if (groups.size() > MAX_QUERY_GROUPS) {
+            throw new IllegalArgumentException("Query exceeds the 4096-group limit.");
+        }
+        final Map<String, int[]> result = new LinkedHashMap<>();
+        long members = 0;
+        for (final var group : groups.entrySet()) {
+            if (group.getKey().isBlank() || !(group.getValue() instanceof RailixValue.ArrayValue ranges)) {
+                throw new IllegalArgumentException("Query range groups require non-blank identifiers and arrays.");
+            }
+            final int[] intervals = new int[ranges.values().size() * 2];
+            int offset = 0;
+            int previous = -1;
+            for (final RailixValue range : ranges.values()) {
+                if (!(range instanceof RailixValue.ArrayValue interval) || interval.values().size() != 2
+                        || !(interval.values().getFirst() instanceof RailixValue.NumberValue first)
+                        || !(interval.values().getLast() instanceof RailixValue.NumberValue last)) {
+                    throw new IllegalArgumentException("Query ranges must contain exactly two integer ordinals.");
+                }
+                final int start;
+                final int end;
+                try {
+                    start = first.value().intValueExact();
+                    end = last.value().intValueExact();
+                } catch (final ArithmeticException invalid) {
+                    throw new IllegalArgumentException("Query ranges must contain integer ordinals.", invalid);
+                }
+                if (start <= previous || end < start || end >= bound) {
+                    throw new IllegalArgumentException("Query ranges must be sorted, nonoverlapping, and within ordinal bounds.");
+                }
+                members += (long) end - start + 1;
+                if (members > MAX_QUERY_MEMBERS) {
+                    throw new IllegalArgumentException("Query ranges exceed the 1048576-member work limit.");
+                }
+                intervals[offset++] = start;
+                intervals[offset++] = end;
+                previous = end;
+            }
+            result.put(group.getKey(), intervals);
+        }
+        return result;
     }
 
     /** Development-only execution surface implemented by a generated observable application. */
@@ -540,7 +608,58 @@ public final class DevelopmentRuntime {
         private static final int STRIDE = 6;
         private static final long UNSAMPLED = Long.MIN_VALUE;
         private static final long STEP_SAMPLE_MASK = 1_023;
+        private static final String APPLICATION = "application";
+        private static final String FLOW = "flow";
+        private static final String STEP = "step";
+        private static final String PROCESS = "process";
+        private static final MetricDescriptor[] METRICS = {
+                new MetricDescriptor("executions", "Executions", "count", "counter", "sum", 0,
+                        "executions_total", false, 0, null, APPLICATION, FLOW, STEP),
+                new MetricDescriptor("errors", "Errors", "count", "counter", "sum", 1,
+                        "errors_total", false, 0, null, APPLICATION, FLOW, STEP),
+                new MetricDescriptor("cancelled", "Cancelled runs", "count", "counter", "sum", 2,
+                        "cancelled_total", false, 0, null, APPLICATION, FLOW, STEP),
+                new MetricDescriptor("in_flight", "In-flight runs", "count", "gauge", "sum", 3,
+                        "in_flight", false, 0, null, APPLICATION, FLOW),
+                new MetricDescriptor("duration_nanos_total", "Duration total", "ns", "counter", "sum", 4,
+                        "duration_seconds_sum", true, 1_024, "duration_samples", APPLICATION, FLOW, STEP),
+                new MetricDescriptor("duration_nanos_max", "Duration maximum", "ns", "gauge", "max", 5,
+                        "duration_seconds_max", true, 1_024, "duration_samples", APPLICATION, FLOW, STEP),
+                new MetricDescriptor("duration_samples", "Sampled durations", "count", "counter", "sum", 6,
+                        "duration_seconds_count", false, 1_024, null, APPLICATION, FLOW, STEP),
+                new MetricDescriptor("uptime_millis", "Process uptime", "ms", "gauge", "none", -1,
+                        "uptime_millis", false, 0, null, PROCESS),
+                new MetricDescriptor("heap_used_bytes", "Heap used", "bytes", "gauge", "none", -1,
+                        "heap_used_bytes", false, 0, null, PROCESS),
+                new MetricDescriptor("heap_committed_bytes", "Heap committed", "bytes", "gauge", "none", -1,
+                        "heap_committed_bytes", false, 0, null, PROCESS),
+                new MetricDescriptor("heap_max_bytes", "Heap maximum", "bytes", "gauge", "none", -1,
+                        "heap_max_bytes", false, 0, null, PROCESS),
+                new MetricDescriptor("non_heap_used_bytes", "Non-heap used", "bytes", "gauge", "none", -1,
+                        "non_heap_used_bytes", false, 0, null, PROCESS),
+                new MetricDescriptor("live_threads", "Live threads", "count", "gauge", "none", -1,
+                        "live_threads", false, 0, null, PROCESS),
+                new MetricDescriptor("peak_threads", "Peak threads", "count", "gauge", "none", -1,
+                        "peak_threads", false, 0, null, PROCESS),
+                new MetricDescriptor("process_cpu_nanos", "Process CPU time", "ns", "counter", "none", -1,
+                        "process_cpu_nanos", false, 0, null, PROCESS),
+                new MetricDescriptor("process_cpu_load_ppm", "Process CPU load", "ppm", "gauge", "none", -1,
+                        "process_cpu_load_ppm", false, 0, null, PROCESS),
+                new MetricDescriptor("system_cpu_load_ppm", "System CPU load", "ppm", "gauge", "none", -1,
+                        "system_cpu_load_ppm", false, 0, null, PROCESS),
+                new MetricDescriptor("gc_collections", "Garbage collections", "count", "counter", "none", -1,
+                        "gc_collections", false, 0, null, PROCESS),
+                new MetricDescriptor("gc_millis", "Garbage collection time", "ms", "counter", "none", -1,
+                        "gc_millis", false, 0, null, PROCESS),
+                new MetricDescriptor("metric_counter_bytes", "Metric counter storage", "bytes", "gauge", "none", -1,
+                        "metric_counter_bytes", false, 0, null, PROCESS),
+                new MetricDescriptor("metric_lookup_bytes", "Metric lookup storage", "bytes", "gauge", "none", -1,
+                        "metric_lookup_bytes", false, 0, null, PROCESS),
+                new MetricDescriptor("metric_primitive_bytes", "Metric primitive storage", "bytes", "gauge", "none", -1,
+                        "metric_primitive_bytes", false, 0, null, PROCESS)
+        };
         private final String project;
+        private final long startedNanos;
         private final String[] flows;
         private final String[] steps;
         private final AtomicLongArray flowCounters;
@@ -568,6 +687,7 @@ public final class DevelopmentRuntime {
                 throw new IllegalArgumentException("Metric project, flows, and Steps must be supplied.");
             }
             this.project = project;
+            startedNanos = System.nanoTime();
             this.flows = flows.clone();
             this.steps = steps.clone();
             flowCounters = new AtomicLongArray(flows.length * STRIDE);
@@ -647,6 +767,182 @@ public final class DevelopmentRuntime {
             return writeJson(destination, node, false);
         }
 
+        /**
+         * Streams the static metric descriptors used by snapshots, queries, and text exports.
+         *
+         * @param destination caller-owned output; flushed but not closed
+         * @return this metric store for chaining
+         * @throws IOException if the destination cannot accept the catalog
+         */
+        public Metrics writeCatalogJson(final OutputStream destination) throws IOException {
+            final Map<String, RailixValue> catalog = new LinkedHashMap<>();
+            for (final MetricDescriptor metric : METRICS) {
+                catalog.put(metric.id, metric.definition());
+            }
+            final BufferedWriter output = writer(destination);
+            output.append(RailixJson.write(RailixValue.object(Map.of(
+                    "application_pid", RailixValue.number(ProcessHandle.current().pid()),
+                    "metrics", RailixValue.object(catalog)
+            ))));
+            output.flush();
+            return this;
+        }
+
+        private RailixValue.ObjectValue query(final RailixValue.ObjectValue query) {
+            queryFields(query, Set.of("steps", "flows", "application", "process", "metrics"));
+            final Map<String, int[]> selectedSteps = queryRanges(query.values().get("steps"), steps.length);
+            final Map<String, RailixValue> requestedFlows = queryObject(query.values().get("flows"));
+            final String application = query.values().containsKey("application")
+                    ? queryIdentifier(query.values().get("application")) : null;
+            final String process = query.values().containsKey("process")
+                    ? queryIdentifier(query.values().get("process")) : null;
+            final List<MetricDescriptor> requestedMetrics = queryMetrics(query.values().get("metrics"));
+            if ((long) selectedSteps.size() + requestedFlows.size() + (application == null ? 0 : 1)
+                    + (process == null ? 0 : 1) > MAX_QUERY_GROUPS) {
+                throw new IllegalArgumentException("Query exceeds the 4096-group limit.");
+            }
+            final Map<String, Integer> selectedFlows = new LinkedHashMap<>();
+            for (final var group : requestedFlows.entrySet()) {
+                if (group.getKey().isBlank() || selectedSteps.containsKey(group.getKey())) {
+                    throw new IllegalArgumentException("Query group identifiers must be non-blank and unique across categories.");
+                }
+                final int index = flowIndex.find(queryIdentifier(group.getValue()), flows);
+                if (index < 0) {
+                    throw new IllegalArgumentException("Query references an unknown flow identifier.");
+                }
+                selectedFlows.put(group.getKey(), index);
+            }
+            if (application != null && (selectedSteps.containsKey(application) || selectedFlows.containsKey(application))) {
+                throw new IllegalArgumentException("Query group identifiers must be unique across categories.");
+            }
+            if (process != null && (selectedSteps.containsKey(process) || selectedFlows.containsKey(process)
+                    || process.equals(application))) {
+                throw new IllegalArgumentException("Query group identifiers must be unique across categories.");
+            }
+            final Map<String, RailixValue> groups = new LinkedHashMap<>();
+            selectedSteps.forEach((id, ranges) -> groups.put(id, selected(
+                    stepCounters, null, ranges, STEP, requestedMetrics
+            )));
+            selectedFlows.forEach((id, index) -> groups.put(id, selected(
+                    values(flowCounters, flowInFlight, index), FLOW, requestedMetrics
+            )));
+            if (application != null) {
+                groups.put(application, selected(flowCounters, flowInFlight, new int[]{0, flows.length - 1},
+                        APPLICATION, requestedMetrics));
+            }
+            if (process != null) {
+                groups.put(process, selected(processMeasurements(), PROCESS, requestedMetrics));
+            }
+            return RailixValue.object(Map.of(
+                    "application_pid", RailixValue.number(ProcessHandle.current().pid()),
+                    "observed_at", RailixValue.number(System.currentTimeMillis()),
+                    "elapsed_nanos", RailixValue.number(Math.max(0, System.nanoTime() - startedNanos)),
+                    "groups", RailixValue.object(groups)
+            ));
+        }
+
+        private RailixValue.ObjectValue selected(
+                final Values values,
+                final String scope,
+                final List<MetricDescriptor> requested
+        ) {
+            final Map<String, RailixValue> result = new LinkedHashMap<>();
+            for (final MetricDescriptor metric : METRICS) {
+                if ((requested == null || requested.contains(metric)) && metric.supports(scope) && metric.value >= 0) {
+                    result.put(metric.id, RailixValue.number(values.value(metric.value)));
+                }
+            }
+            return RailixValue.object(result);
+        }
+
+        private RailixValue.ObjectValue selected(
+                final AtomicLongArray counters,
+                final AtomicIntegerArray inFlight,
+                final int[] ranges,
+                final String scope,
+                final List<MetricDescriptor> requested
+        ) {
+            final Map<String, RailixValue> result = new LinkedHashMap<>();
+            for (final MetricDescriptor metric : METRICS) {
+                if ((requested != null && !requested.contains(metric)) || !metric.supports(scope) || metric.value < 0) {
+                    continue;
+                }
+                boolean observed = false;
+                long value = 0;
+                for (int range = 0; range < ranges.length; range += 2) {
+                    for (int index = ranges[range]; index <= ranges[range + 1]; index++) {
+                        final long current = counterValue(counters, inFlight, index, metric.value);
+                        value = observed ? metric.reduce(value, current) : current;
+                        observed = true;
+                    }
+                }
+                result.put(metric.id, RailixValue.number(value));
+            }
+            return RailixValue.object(result);
+        }
+
+        private static long counterValue(
+                final AtomicLongArray counters,
+                final AtomicIntegerArray inFlight,
+                final int index,
+                final int metric
+        ) {
+            final int offset = index * STRIDE;
+            return switch (metric) {
+                case 0 -> counters.get(offset + EXECUTIONS);
+                case 1 -> counters.get(offset + ERRORS);
+                case 2 -> counters.get(offset + CANCELLED);
+                case 3 -> inFlight.get(index);
+                case 4 -> counters.get(offset + DURATION_TOTAL);
+                case 5 -> counters.get(offset + DURATION_MAX);
+                case 6 -> counters.get(offset + DURATION_SAMPLES);
+                default -> throw new IllegalArgumentException("Unknown metric value index.");
+            };
+        }
+
+        private RailixValue.ObjectValue selected(
+                final RailixValue.ObjectValue values,
+                final String scope,
+                final List<MetricDescriptor> requested
+        ) {
+            final Map<String, RailixValue> result = new LinkedHashMap<>();
+            for (final MetricDescriptor metric : METRICS) {
+                final RailixValue value = values.values().get(metric.id);
+                if ((requested == null || requested.contains(metric)) && metric.supports(scope) && value != null) {
+                    result.put(metric.id, value);
+                }
+            }
+            return RailixValue.object(result);
+        }
+
+        private static List<MetricDescriptor> queryMetrics(final RailixValue value) {
+            if (value == null) {
+                return null;
+            }
+            if (!(value instanceof RailixValue.ArrayValue array)) {
+                throw new IllegalArgumentException("Query metrics must be an array of metric identifiers.");
+            }
+            final List<MetricDescriptor> result = new ArrayList<>();
+            for (final RailixValue entry : array.values()) {
+                final String id = queryIdentifier(entry);
+                final MetricDescriptor metric = metric(id);
+                if (metric == null || result.contains(metric)) {
+                    throw new IllegalArgumentException("Query metrics must be known, non-duplicate identifiers.");
+                }
+                result.add(metric);
+            }
+            return result;
+        }
+
+        private static MetricDescriptor metric(final String id) {
+            for (final MetricDescriptor metric : METRICS) {
+                if (metric.id.equals(id)) {
+                    return metric;
+                }
+            }
+            return null;
+        }
+
         private Metrics writeJson(
                 final OutputStream destination,
                 final String selected,
@@ -660,7 +956,7 @@ public final class DevelopmentRuntime {
             output.append("{\"application_pid\":")
                     .append(Long.toString(ProcessHandle.current().pid()))
                     .append(",\"application\":{\"metrics\":");
-            json(output, application);
+            json(output, application, APPLICATION);
             output.append("},\"flows\":[");
             boolean separator = false;
             if (all) {
@@ -669,7 +965,7 @@ public final class DevelopmentRuntime {
                             output,
                             separator,
                             flows[index],
-                            values(flowCounters, flowInFlight, index)
+                            values(flowCounters, flowInFlight, index), FLOW
                     );
                 }
             } else {
@@ -678,7 +974,7 @@ public final class DevelopmentRuntime {
                         output,
                         separator,
                         flows[index],
-                        values(flowCounters, flowInFlight, index)
+                        values(flowCounters, flowInFlight, index), FLOW
                 );
             }
             output.append("],\"metric_counter_bytes\":").append(Long.toString(counterBytes()))
@@ -691,7 +987,7 @@ public final class DevelopmentRuntime {
             separator = false;
             if (all) {
                 for (int index = 0; index < steps.length; index++) {
-                    separator = entity(output, separator, steps[index], values(stepCounters, index));
+                    separator = entity(output, separator, steps[index], values(stepCounters, index), STEP);
                 }
             } else {
                 final int index = stepIndex.find(selected, steps);
@@ -699,7 +995,7 @@ public final class DevelopmentRuntime {
                         output,
                         separator,
                         steps[index],
-                        values(stepCounters, index)
+                        values(stepCounters, index), STEP
                 );
             }
             output.append("]}");
@@ -714,30 +1010,28 @@ public final class DevelopmentRuntime {
             for (int index = 0; index < flows.length; index++) {
                 application = application.add(values(flowCounters, flowInFlight, index));
             }
-            prometheusTypes(output, "application", true);
-            prometheusTypes(output, "flow", true);
-            prometheusTypes(output, "step", false);
-            prometheus(output, "application", "project=\"" + prom(project) + "\"", application);
+            prometheusTypes(output, APPLICATION);
+            prometheusTypes(output, FLOW);
+            prometheusTypes(output, STEP);
+            prometheus(output, APPLICATION, "project=\"" + prom(project) + "\"", application);
             for (int index = 0; index < flows.length; index++) {
-                prometheus(output, "flow", "project=\"" + prom(project) + "\",flow=\""
+                prometheus(output, FLOW, "project=\"" + prom(project) + "\",flow=\""
                         + prom(flows[index]) + "\"", values(flowCounters, flowInFlight, index));
             }
             for (int index = 0; index < steps.length; index++) {
-                prometheus(output, "step", "project=\"" + prom(project) + "\",step=\""
+                prometheus(output, STEP, "project=\"" + prom(project) + "\",step=\""
                         + prom(steps[index]) + "\"", values(stepCounters, index));
             }
-            for (final Map.Entry<String, RailixValue> field : process().values().entrySet()) {
-                final RailixValue.NumberValue number = (RailixValue.NumberValue) field.getValue();
-                output.append("railix_process_").append(field.getKey()).append("{project=\"")
-                        .append(prom(project)).append("\"} ")
+            final RailixValue.ObjectValue process = processMeasurements();
+            for (final MetricDescriptor metric : METRICS) {
+                final RailixValue value = process.values().get(metric.id);
+                if (!metric.supports(PROCESS) || !(value instanceof RailixValue.NumberValue number)) {
+                    continue;
+                }
+                output.append("railix_").append(metric.id.startsWith("metric_") ? metric.id : "process_" + metric.id)
+                        .append("{project=\"").append(prom(project)).append("\"} ")
                         .append(number.value().toPlainString()).append('\n');
             }
-            output.append("railix_metric_counter_bytes{project=\"").append(prom(project)).append("\"} ")
-                    .append(Long.toString(counterBytes())).append('\n');
-            output.append("railix_metric_lookup_bytes{project=\"").append(prom(project)).append("\"} ")
-                    .append(Long.toString(lookupBytes())).append('\n');
-            output.append("railix_metric_primitive_bytes{project=\"").append(prom(project)).append("\"} ")
-                    .append(Long.toString(primitiveBytes())).append('\n');
             output.flush();
             return this;
         }
@@ -749,28 +1043,30 @@ public final class DevelopmentRuntime {
             for (int index = 0; index < flows.length; index++) {
                 application = application.add(values(flowCounters, flowInFlight, index));
             }
-            influx(output, "application", "project=" + influxTag(project), application);
+            influx(output, APPLICATION, "project=" + influxTag(project), application);
             for (int index = 0; index < flows.length; index++) {
-                influx(output, "flow", "project=" + influxTag(project) + ",flow="
+                influx(output, FLOW, "project=" + influxTag(project) + ",flow="
                         + influxTag(flows[index]), values(flowCounters, flowInFlight, index));
             }
             for (int index = 0; index < steps.length; index++) {
-                influx(output, "step", "project=" + influxTag(project) + ",step="
+                influx(output, STEP, "project=" + influxTag(project) + ",step="
                         + influxTag(steps[index]), values(stepCounters, index));
             }
             output.append("railix_process,project=").append(influxTag(project)).append(' ');
             boolean separator = false;
-            for (final Map.Entry<String, RailixValue> field : process().values().entrySet()) {
-                final RailixValue.NumberValue number = (RailixValue.NumberValue) field.getValue();
+            final RailixValue.ObjectValue process = processMeasurements();
+            for (final MetricDescriptor metric : METRICS) {
+                final RailixValue value = process.values().get(metric.id);
+                if (!metric.supports(PROCESS) || !(value instanceof RailixValue.NumberValue number)) {
+                    continue;
+                }
                 if (separator) {
                     output.append(',');
                 }
-                output.append(field.getKey()).append('=').append(number.value().toPlainString()).append('i');
+                output.append(metric.id).append('=').append(number.value().toPlainString()).append('i');
                 separator = true;
             }
-            output.append(",metric_counter_bytes=").append(Long.toString(counterBytes())).append('i')
-                    .append(",metric_lookup_bytes=").append(Long.toString(lookupBytes())).append('i')
-                    .append(",metric_primitive_bytes=").append(Long.toString(primitiveBytes())).append("i\n");
+            output.append('\n');
             output.flush();
             return this;
         }
@@ -886,7 +1182,8 @@ public final class DevelopmentRuntime {
                 final BufferedWriter output,
                 final boolean separator,
                 final String id,
-                final Values values
+                final Values values,
+                final String scope
         ) throws IOException {
             if (separator) {
                 output.append(',');
@@ -894,20 +1191,24 @@ public final class DevelopmentRuntime {
             output.append("{\"id\":");
             string(output, id);
             output.append(",\"metrics\":");
-            json(output, values);
+            json(output, values, scope);
             output.append('}');
             return true;
         }
 
-        private static void json(final BufferedWriter output, final Values values) throws IOException {
-            output.append("{\"cancelled\":").append(Long.toString(values.cancelled))
-                    .append(",\"duration_nanos_max\":").append(Long.toString(values.durationMax))
-                    .append(",\"duration_nanos_total\":").append(Long.toString(values.durationTotal))
-                    .append(",\"duration_samples\":").append(Long.toString(values.durationSamples))
-                    .append(",\"errors\":").append(Long.toString(values.errors))
-                    .append(",\"executions\":").append(Long.toString(values.executions));
-            if (values.inFlight >= 0) {
-                output.append(",\"in_flight\":").append(Long.toString(values.inFlight));
+        private static void json(final BufferedWriter output, final Values values, final String scope) throws IOException {
+            boolean separator = false;
+            output.append('{');
+            for (final MetricDescriptor metric : METRICS) {
+                if (metric.value < 0 || !metric.supports(scope)) {
+                    continue;
+                }
+                if (separator) {
+                    output.append(',');
+                }
+                output.append('"').append(metric.id).append("\":")
+                        .append(Long.toString(values.value(metric.value)));
+                separator = true;
             }
             output.append('}');
         }
@@ -929,23 +1230,23 @@ public final class DevelopmentRuntime {
             return counterBytes() + lookupBytes();
         }
 
-        private static RailixValue.ObjectValue process() {
+        private RailixValue.ObjectValue process() {
             final var runtime = ManagementFactory.getRuntimeMXBean();
             final var memory = ManagementFactory.getMemoryMXBean();
             final var threads = ManagementFactory.getThreadMXBean();
             final Map<String, RailixValue> values = new LinkedHashMap<>();
             values.put("uptime_millis", RailixValue.number(runtime.getUptime()));
-            values.put("heap_used_bytes", RailixValue.number(memory.getHeapMemoryUsage().getUsed()));
-            values.put("heap_committed_bytes", RailixValue.number(memory.getHeapMemoryUsage().getCommitted()));
-            values.put("heap_max_bytes", RailixValue.number(memory.getHeapMemoryUsage().getMax()));
-            values.put("non_heap_used_bytes", RailixValue.number(memory.getNonHeapMemoryUsage().getUsed()));
+            available(values, "heap_used_bytes", memory.getHeapMemoryUsage().getUsed());
+            available(values, "heap_committed_bytes", memory.getHeapMemoryUsage().getCommitted());
+            available(values, "heap_max_bytes", memory.getHeapMemoryUsage().getMax());
+            available(values, "non_heap_used_bytes", memory.getNonHeapMemoryUsage().getUsed());
             values.put("live_threads", RailixValue.number(threads.getThreadCount()));
             values.put("peak_threads", RailixValue.number(threads.getPeakThreadCount()));
             final com.sun.management.OperatingSystemMXBean system = ManagementFactory.getPlatformMXBean(
                     com.sun.management.OperatingSystemMXBean.class
             );
             if (system != null) {
-                values.put("process_cpu_nanos", RailixValue.number(system.getProcessCpuTime()));
+                available(values, "process_cpu_nanos", system.getProcessCpuTime());
                 final double processLoad = system.getProcessCpuLoad();
                 if (processLoad >= 0) {
                     values.put("process_cpu_load_ppm", RailixValue.number(
@@ -961,13 +1262,41 @@ public final class DevelopmentRuntime {
             }
             long collections = 0;
             long collectionMillis = 0;
+            boolean collectionCountAvailable = false;
+            boolean collectionTimeAvailable = false;
             for (final var collector : ManagementFactory.getGarbageCollectorMXBeans()) {
-                collections += Math.max(0, collector.getCollectionCount());
-                collectionMillis += Math.max(0, collector.getCollectionTime());
+                final long count = collector.getCollectionCount();
+                final long time = collector.getCollectionTime();
+                if (count >= 0) {
+                    collections += count;
+                    collectionCountAvailable = true;
+                }
+                if (time >= 0) {
+                    collectionMillis += time;
+                    collectionTimeAvailable = true;
+                }
             }
-            values.put("gc_collections", RailixValue.number(collections));
-            values.put("gc_millis", RailixValue.number(collectionMillis));
+            if (collectionCountAvailable) {
+                values.put("gc_collections", RailixValue.number(collections));
+            }
+            if (collectionTimeAvailable) {
+                values.put("gc_millis", RailixValue.number(collectionMillis));
+            }
             return RailixValue.object(values);
+        }
+
+        private RailixValue.ObjectValue processMeasurements() {
+            final Map<String, RailixValue> values = new LinkedHashMap<>(process().values());
+            values.put("metric_counter_bytes", RailixValue.number(counterBytes()));
+            values.put("metric_lookup_bytes", RailixValue.number(lookupBytes()));
+            values.put("metric_primitive_bytes", RailixValue.number(primitiveBytes()));
+            return RailixValue.object(values);
+        }
+
+        private static void available(final Map<String, RailixValue> values, final String id, final long value) {
+            if (value >= 0) {
+                values.put(id, RailixValue.number(value));
+            }
         }
 
         private static void prometheus(
@@ -976,39 +1305,24 @@ public final class DevelopmentRuntime {
                 final String labels,
                 final Values values
         ) throws IOException {
-            output.append("railix_").append(scope).append("_executions_total{").append(labels).append("} ")
-                    .append(Long.toString(values.executions)).append('\n');
-            output.append("railix_").append(scope).append("_errors_total{").append(labels).append("} ")
-                    .append(Long.toString(values.errors)).append('\n');
-            output.append("railix_").append(scope).append("_cancelled_total{").append(labels).append("} ")
-                    .append(Long.toString(values.cancelled)).append('\n');
-            if (values.inFlight >= 0) {
-                output.append("railix_").append(scope).append("_in_flight{").append(labels).append("} ")
-                        .append(Long.toString(values.inFlight)).append('\n');
+            for (final MetricDescriptor metric : METRICS) {
+                if (metric.value < 0 || !metric.supports(scope)) {
+                    continue;
+                }
+                output.append("railix_").append(scope).append('_').append(metric.prometheus)
+                        .append('{').append(labels).append("} ")
+                        .append(metric.seconds ? seconds(values.value(metric.value)) : Long.toString(values.value(metric.value)))
+                        .append('\n');
             }
-            output.append("railix_").append(scope).append("_duration_seconds_sum{").append(labels).append("} ")
-                    .append(seconds(values.durationTotal)).append('\n');
-            output.append("railix_").append(scope).append("_duration_seconds_max{").append(labels).append("} ")
-                    .append(seconds(values.durationMax)).append('\n');
-            output.append("railix_").append(scope).append("_duration_seconds_count{").append(labels).append("} ")
-                    .append(Long.toString(values.durationSamples)).append('\n');
         }
 
-        private static void prometheusTypes(
-                final BufferedWriter output,
-                final String scope,
-                final boolean inFlight
-        ) throws IOException {
-            output.append("# TYPE railix_").append(scope).append("_executions_total counter\n")
-                    .append("# TYPE railix_").append(scope).append("_errors_total counter\n")
-                    .append("# TYPE railix_").append(scope).append("_cancelled_total counter\n");
-            if (inFlight) {
-                output.append("# TYPE railix_").append(scope).append("_in_flight gauge\n");
+        private static void prometheusTypes(final BufferedWriter output, final String scope) throws IOException {
+            for (final MetricDescriptor metric : METRICS) {
+                if (metric.value >= 0 && metric.supports(scope)) {
+                    output.append("# TYPE railix_").append(scope).append('_').append(metric.prometheus)
+                            .append(' ').append(metric.kind).append('\n');
+                }
             }
-            output
-                    .append("# TYPE railix_").append(scope).append("_duration_seconds_sum counter\n")
-                    .append("# TYPE railix_").append(scope).append("_duration_seconds_max gauge\n")
-                    .append("# TYPE railix_").append(scope).append("_duration_seconds_count counter\n");
         }
 
         private static void influx(
@@ -1017,17 +1331,19 @@ public final class DevelopmentRuntime {
                 final String tags,
                 final Values values
         ) throws IOException {
-            output.append("railix_").append(scope).append(',').append(tags)
-                    .append(" executions=").append(Long.toString(values.executions)).append('i')
-                    .append(",errors=").append(Long.toString(values.errors)).append('i')
-                    .append(",cancelled=").append(Long.toString(values.cancelled)).append('i');
-            if (values.inFlight >= 0) {
-                output.append(",in_flight=").append(Long.toString(values.inFlight)).append('i');
+            output.append("railix_").append(scope).append(',').append(tags).append(' ');
+            boolean separator = false;
+            for (final MetricDescriptor metric : METRICS) {
+                if (metric.value < 0 || !metric.supports(scope)) {
+                    continue;
+                }
+                if (separator) {
+                    output.append(',');
+                }
+                output.append(metric.id).append('=').append(Long.toString(values.value(metric.value))).append('i');
+                separator = true;
             }
-            output
-                    .append(",duration_nanos_total=").append(Long.toString(values.durationTotal)).append('i')
-                    .append(",duration_nanos_max=").append(Long.toString(values.durationMax)).append('i')
-                    .append(",duration_samples=").append(Long.toString(values.durationSamples)).append("i\n");
+            output.append('\n');
         }
 
         private static String seconds(final long nanos) {
@@ -1041,6 +1357,58 @@ public final class DevelopmentRuntime {
         private static String influxTag(final String value) {
             return value.replace("\\", "\\\\").replace(" ", "\\ ")
                     .replace(",", "\\,").replace("=", "\\=");
+        }
+
+        private record MetricDescriptor(
+                String id,
+                String label,
+                String unit,
+                String kind,
+                String aggregation,
+                int value,
+                String prometheus,
+                boolean seconds,
+                int stepSamplingInterval,
+                String sampleCount,
+                String... scopes
+        ) {
+            private boolean supports(final String scope) {
+                for (final String candidate : scopes) {
+                    if (candidate.equals(scope)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            private RailixValue.ObjectValue definition() {
+                final List<RailixValue> scopeValues = Arrays.stream(scopes)
+                        .map(scope -> (RailixValue) RailixValue.string(scope)).toList();
+                final Map<String, RailixValue> definition = new LinkedHashMap<>();
+                definition.put("label", RailixValue.string(label));
+                definition.put("unit", RailixValue.string(unit));
+                definition.put("kind", RailixValue.string(kind));
+                definition.put("aggregation", RailixValue.string(aggregation));
+                definition.put("scopes", RailixValue.array(scopeValues));
+                if (stepSamplingInterval > 0) {
+                    definition.put("sampling", RailixValue.object(Map.of(
+                            STEP, RailixValue.number(stepSamplingInterval)
+                    )));
+                }
+                if (sampleCount != null) {
+                    definition.put("sample_count", RailixValue.string(sampleCount));
+                }
+                return RailixValue.object(definition);
+            }
+
+            private long reduce(final long left, final long right) {
+                return switch (aggregation) {
+                    case "sum" -> Values.saturated(left, right);
+                    case "max" -> Math.max(left, right);
+                    case "none" -> right;
+                    default -> throw new IllegalStateException("Unknown metric aggregation.");
+                };
+            }
         }
 
         private record Values(
@@ -1064,6 +1432,19 @@ public final class DevelopmentRuntime {
                         Math.max(durationMax, other.durationMax),
                         saturated(durationSamples, other.durationSamples)
                 );
+            }
+
+            private long value(final int index) {
+                return switch (index) {
+                    case 0 -> executions;
+                    case 1 -> errors;
+                    case 2 -> cancelled;
+                    case 3 -> inFlight;
+                    case 4 -> durationTotal;
+                    case 5 -> durationMax;
+                    case 6 -> durationSamples;
+                    default -> throw new IllegalArgumentException("Unknown metric value index.");
+                };
             }
 
             private static long saturated(final long left, final long right) {
@@ -1465,6 +1846,7 @@ public final class DevelopmentRuntime {
         private final Semaphore traceAdmission = new Semaphore(MAX_CONCURRENT_TRACES);
         private final Semaphore metricAdmission = new Semaphore(MAX_CONCURRENT_METRICS);
         private final Semaphore exampleAdmission = new Semaphore(MAX_CONCURRENT_EXAMPLE_READS);
+        private final Semaphore exampleSnapshots = new Semaphore(MAX_CONCURRENT_EXAMPLE_SNAPSHOTS);
         private final Semaphore cancellationAdmission = new Semaphore(MAX_CONCURRENT_CANCELLATIONS);
         private final AtomicReference<CountDownLatch> stepProjection = new AtomicReference<>();
         private final Map<String, ActiveTrace> activeTraces = new ConcurrentHashMap<>();
@@ -1607,6 +1989,10 @@ public final class DevelopmentRuntime {
 
         private void metrics(final HttpExchange exchange) throws IOException {
             try {
+                if ("/v1/metrics/query".equals(exchange.getRequestURI().getPath())) {
+                    query(exchange, true);
+                    return;
+                }
                 if (!authorized(exchange)) {
                     send(exchange, 401, RailixValue.object(Map.of(
                             "status", RailixValue.string("unauthorized")
@@ -1638,6 +2024,10 @@ public final class DevelopmentRuntime {
 
         private void examples(final HttpExchange exchange) throws IOException {
             try {
+                if ("/v1/examples/query".equals(exchange.getRequestURI().getPath())) {
+                    query(exchange, false);
+                    return;
+                }
                 if (!authorized(exchange)) {
                     send(exchange, 401, RailixValue.object(Map.of(
                             "status", RailixValue.string("unauthorized")
@@ -1650,7 +2040,10 @@ public final class DevelopmentRuntime {
                     )));
                     return;
                 }
-                if (!open.get() || !exampleAdmission.tryAcquire()) {
+                final String path = exchange.getRequestURI().getPath();
+                final boolean boundedSnapshot = boundedExampleSnapshot(path);
+                final Semaphore admission = boundedSnapshot ? exampleSnapshots : exampleAdmission;
+                if (!open.get() || !admission.tryAcquire()) {
                     send(exchange, 503, RailixValue.object(Map.of(
                             "status", RailixValue.string("unavailable"),
                             "reason", RailixValue.string(open.get() ? "saturated" : "closed")
@@ -1660,10 +2053,71 @@ public final class DevelopmentRuntime {
                 try {
                     sendExamples(exchange);
                 } finally {
-                    exampleAdmission.release();
+                    admission.release();
                 }
             } finally {
                 exchange.close();
+            }
+        }
+
+        private static boolean boundedExampleSnapshot(final String path) {
+            return "/v1/examples/status".equals(path)
+                    || (path.startsWith("/v1/examples/") && !path.endsWith("/view")
+                    && !path.contains("/steps/") && !"/v1/examples/coverage".equals(path));
+        }
+
+        private void query(final HttpExchange exchange, final boolean metrics) throws IOException {
+            if (!authorized(exchange)) {
+                if (admittedBody(exchange, unauthorizedBodyAdmission) != null) {
+                    send(exchange, 401, RailixValue.object(Map.of("status", RailixValue.string("unauthorized"))));
+                }
+                return;
+            }
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                send(exchange, 405, RailixValue.object(Map.of("status", RailixValue.string("method-not-allowed"))));
+                return;
+            }
+            final byte[] body = admittedBody(exchange, bodyAdmission);
+            if (body == null) {
+                return;
+            }
+            if (body.length > MAX_CONTEXT_BYTES) {
+                send(exchange, 413, problem("QUERY_TOO_LARGE", "Query exceeds the 1048576-byte limit.", ""));
+                return;
+            }
+            final Semaphore admission = metrics ? metricAdmission : exampleAdmission;
+            if (!open.get() || !admission.tryAcquire()) {
+                send(exchange, 503, RailixValue.object(Map.of(
+                        "status", RailixValue.string("unavailable"),
+                        "reason", RailixValue.string(open.get() ? "saturated" : "closed")
+                )));
+                return;
+            }
+            try {
+                final RailixData.Result normalized = RailixData.normalize(RailixData.Format.JSON, body);
+                if (!(normalized instanceof RailixData.Normalized data)
+                        || !(data.value() instanceof RailixValue.ObjectValue query)) {
+                    send(exchange, 400, problem("INVALID_QUERY", normalized instanceof RailixData.Invalid invalid
+                            ? invalid.message() : "Query must be an object.", ""));
+                    return;
+                }
+                final Optional<RailixValue.ObjectValue> response = metrics
+                        ? Optional.of(application.metrics().query(query)) : examples.query(query);
+                if (response.isEmpty()) {
+                    send(exchange, 404, RailixValue.object(Map.of("status", RailixValue.string("not-found"))));
+                } else {
+                    send(exchange, 200, response.orElseThrow(), MAX_CONTEXT_BYTES,
+                            "QUERY_RESPONSE_TOO_LARGE", "Query response exceeds the 1048576-byte limit.");
+                }
+            } catch (final IllegalArgumentException invalid) {
+                send(exchange, 400, problem("INVALID_QUERY", invalid.getMessage(), ""));
+            } catch (final ExampleSuite.ProjectionUnavailable unavailable) {
+                send(exchange, 503, RailixValue.object(Map.of(
+                        "status", RailixValue.string("unavailable"),
+                        "reason", RailixValue.string(unavailable.reason())
+                )));
+            } finally {
+                admission.release();
             }
         }
 
@@ -1827,7 +2281,8 @@ public final class DevelopmentRuntime {
             final String path = exchange.getRequestURI().getPath();
             final String contentType;
             String node = null;
-            if ("/v1/metrics".equals(path) || "/v1/metrics/application".equals(path)
+            if ("/v1/metrics".equals(path) || "/v1/metrics/catalog".equals(path)
+                    || "/v1/metrics/application".equals(path)
                     || path.startsWith("/v1/metrics/nodes/")) {
                 contentType = "application/json; charset=utf-8";
             } else if ("/v1/metrics/prometheus".equals(path)) {
@@ -1855,6 +2310,8 @@ public final class DevelopmentRuntime {
             try (var output = new BufferedOutputStream(exchange.getResponseBody(), 16_384)) {
                 if ("/v1/metrics".equals(path)) {
                     metrics.writeJson(output);
+                } else if ("/v1/metrics/catalog".equals(path)) {
+                    metrics.writeCatalogJson(output);
                 } else if ("/v1/metrics/application".equals(path)) {
                     metrics.writeApplicationJson(output);
                 } else if (path.startsWith("/v1/metrics/nodes/")) {
