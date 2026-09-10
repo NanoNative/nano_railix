@@ -20,6 +20,375 @@ import static org.assertj.core.api.Assertions.assertThat;
 final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     @Tag("responsive")
+    void buildDetailsDoNotReplaceTheSelectedStationOrOpenItsInspector() {
+        openProject(fourStepProject());
+        selectWorldNode("one");
+        page.locator("#close-inspector").click();
+        page.locator(".build-indicator").click();
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        assertThat(page.locator("#selection-dock").getAttribute("data-selection")).isEqualTo("one");
+        assertThat(page.locator("#application-status").isVisible()).isTrue();
+        assertThat(page.locator("#application-status #build-path").textContent()).isNotBlank();
+        page.keyboard().press("Escape");
+        assertThat(page.locator("#application-status").isVisible()).isFalse();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    void closingBuildDetailsKeepsAnAlreadyOpenInspectorAndItsSelection() {
+        openProject(fourStepProject());
+        selectWorldNode("one");
+        page.locator(".build-indicator").click();
+        page.keyboard().press("Escape");
+        assertThat(page.locator("#application-status").isVisible()).isFalse();
+        assertThat(page.locator("#inspector").isVisible()).isTrue();
+        assertThat(page.locator("#selection-dock").getAttribute("data-selection")).isEqualTo("one");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void configureIsTheOnlyGeneralInspectorActionOnTheStationDock() {
+        openProject(fourStepProject());
+        page.locator("[data-world-id=one]").click();
+        assertThat(page.locator(".brand").evaluate("element => element.tagName")).isNotEqualTo("BUTTON");
+        assertThat(page.locator("#selection-dock [data-open-panel]").count()).isZero();
+        page.locator("#open-inspector").click();
+        assertThat(page.locator("#inspector").isVisible()).isTrue();
+        assertThat(page.locator("[data-inspector-mode=appearance]").isVisible()).isTrue();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    void factoryHudControlsDoNotOverlapOrOpenTheWrongAction() {
+        final var build = page.locator(".build-indicator").boundingBox();
+        final var zoom = page.locator(".canvas-tools").boundingBox();
+        assertThat(build.x + build.width <= zoom.x || zoom.x + zoom.width <= build.x
+                || build.y + build.height <= zoom.y || zoom.y + zoom.height <= build.y).isTrue();
+        page.locator("#zoom-fit").click();
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        page.locator(".build-indicator").click();
+        page.locator("#application-status #workspace-details").waitFor();
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    void exampleChooserIsAtItsTriggerAndKeyboardInputDoesNotPanTheWorld() {
+        openProject(choiceProject());
+        selectTrigger();
+        page.locator("#close-inspector").click();
+        page.locator("#dock-focus").click();
+        page.waitForFunction("() => Number(new URLSearchParams(state.world.query).get('scale')) >= 1");
+        awaitScene();
+        page.locator("#trigger-example:not([hidden]) #dock-example").waitFor();
+        final String camera = (String) page.evaluate("() => state.world.query");
+        final var before = page.locator("[data-world-id='command'] .world-symbol").boundingBox();
+        page.locator("#dock-example").focus();
+        page.locator("#dock-example").press("ArrowLeft");
+        page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+        assertThat(page.evaluate("() => state.world.query")).isEqualTo(camera);
+        page.locator("#dock-example").selectOption("1");
+        final var panel = page.locator("#trigger-example").boundingBox();
+        final var trigger = page.locator("[data-world-id='command'] .world-symbol").boundingBox();
+        assertThat(trigger.x).isEqualTo(before.x);
+        assertThat(panel.y + panel.height).isLessThan(trigger.y);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void startupFailureIsVisibleWithoutOpeningTheInspector() {
+        page.navigate(creator.baseUri().resolve("/?unauthorized") + "#token=invalid");
+        waitForText("#build-state", "Unavailable");
+        assertThat(page.locator("#world-error").isVisible()).isTrue();
+        assertThat(page.locator("#world-error").textContent()).contains("Creator could not open the project");
+        assertThat(page.locator("#selection-dock").isVisible()).isFalse();
+    }
+
+    @Test
+    @Tag("responsive")
+    void theDockShowsRealInputAndOutputWithoutOpeningTheInspector() {
+        addGraphPrimitive("\"RAILIX\"", "lowercase", "text.lowercase");
+        page.locator("[data-input-name='target'] [data-path-value='after']").waitFor();
+        page.locator("#close-inspector").click();
+        assertThat(page.locator("[data-dock-value='input'] output").textContent()).isEqualTo("\"RAILIX\"");
+        assertThat(page.locator("[data-dock-value='output'] output").textContent()).isEqualTo("\"railix\"");
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void switchingTheDockExampleReadsItsRecordedRouteWithoutBuildingOrExecuting() throws Exception {
+        openProject(choiceProject());
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+        page.locator("#close-inspector").click();
+        final String before = Files.readString(directory.resolve("project.json"));
+        final String pid = applicationPid();
+        final List<String> writes = new ArrayList<>();
+        page.onRequest(request -> {
+            if (!List.of("GET", "HEAD").contains(request.method())) writes.add(request.method() + " " + request.url());
+        });
+        page.locator("#dock-example").focus();
+        page.locator("#dock-example").selectOption("1");
+        page.waitForFunction("() => document.querySelector('#dock-example')?.selectedOptions[0]?.textContent === 'otherwise' && state.application.example?.name === 'otherwise'");
+        assertThat(page.evaluate("() => document.activeElement?.id")).isEqualTo("dock-example");
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        assertThat(applicationPid()).isEqualTo(pid);
+        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(before);
+        assertThat(writes).isEmpty();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void observationPollingPreservesTheExampleChooserAndRecordedValues() {
+        openProject(choiceProject());
+        selectTrigger();
+        page.locator(".run-result").waitFor();
+        page.locator("#close-inspector").click();
+        page.locator("#dock-example").focus();
+        final var chooser = page.locator("#dock-example").elementHandle();
+        final var value = page.locator("[data-dock-value='output'] output").elementHandle();
+        page.waitForResponse(response -> response.url().contains("/api/scene/observations"), () -> { });
+        assertThat(chooser.evaluate("element => element === document.activeElement")).isEqualTo(true);
+        assertThat(value.evaluate("element => element === document.querySelector('[data-dock-value=output] output')")).isEqualTo(true);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void closingConstructionRestoresTheDockWithoutEditingTheProject() throws Exception {
+        openProject(fourStepProject());
+        selectWorldNode("one");
+        page.locator("#close-inspector").click();
+        final String before = Files.readString(directory.resolve("project.json"));
+        page.locator("#add-next-step").click();
+        assertThat(page.locator("#selection-dock").isVisible()).isFalse();
+        page.locator("[data-close-picker]").click();
+        assertThat(page.locator("#selection-dock").isVisible()).isTrue();
+        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(before);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void groupSelectionOffersZoomBeforeGroupEditing() {
+        openProject(fourStepProject());
+        final String group = createGroup("one", "two");
+        page.locator("#close-inspector").click();
+        page.locator("[data-region-group='" + group + "']").first().click();
+        page.locator("#enter-region").waitFor();
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        page.locator("[data-manage-region]").click();
+        page.locator("#group-search").waitFor();
+        assertThat(page.locator("#inspector").isVisible()).isTrue();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void selectingAGroupDismissesConstructionAndItsPlacementPreview() {
+        openProject(fourStepProject());
+        final String group = createGroup("one", "two");
+        selectTrigger();
+        page.locator("#close-inspector").click();
+        page.locator("#add-next-step").click();
+        page.locator("[data-add-step]").first().focus();
+        page.locator(".world-placement").waitFor();
+        page.locator("[data-region-group='" + group + "']").first().click();
+        assertThat(page.locator(".construction-palette").count()).isZero();
+        page.waitForFunction("() => !document.querySelector('.world-placement')");
+        assertThat(page.locator("#enter-region").isVisible()).isTrue();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void selectingAGroupSupersedesADelayedApplicationSelection() {
+        openProject(fourStepProject());
+        final String group = createGroup("one", "two");
+        page.locator("#close-inspector").click();
+        page.evaluate("""
+                () => {
+                  const fetch = window.fetch;
+                  window.fetch = async (...args) => {
+                    const response = await fetch.apply(window, args);
+                    if (String(args[0]).startsWith('/api/editor?node=app'))
+                      await new Promise(resolve => window.__releaseAppEditor = resolve);
+                    return response;
+                  };
+                  window.__restoreAppEditor = () => { window.__releaseAppEditor?.(); window.fetch = fetch; };
+                }
+                """);
+        try {
+            page.locator("[data-world-id=app]").click();
+            page.waitForFunction("() => Boolean(window.__releaseAppEditor)");
+            page.locator("[data-region-group='" + group + "']").first().click();
+            page.evaluate("() => window.__releaseAppEditor()");
+            page.waitForFunction("() => !state.editorController");
+            assertThat(page.locator("#inspector").isVisible()).isFalse();
+            assertThat(page.locator("#enter-region").isVisible()).isTrue();
+            assertThat(pageErrors).isEmpty();
+        } finally {
+            page.evaluate("() => window.__restoreAppEditor()");
+        }
+    }
+
+    @Test
+    void deletingTheSelectedGroupRestoresItsStepsConstructionTools() {
+        openProject(fourStepProject());
+        final String group = createGroup("one", "two");
+        page.locator("#close-inspector").click();
+        page.locator("[data-region-group='" + group + "']").first().click();
+        page.locator("[data-manage-region]").click();
+        clickAndWaitForCreatorSave(() -> page.locator("#delete-group").click());
+        page.locator("#close-inspector").click();
+        assertThat(page.locator("#enter-region").count()).isZero();
+        assertThat(page.locator("#selection-dock #add-next-step").isVisible()).isTrue();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    void workspaceStartsWithConstructionToolsInsteadOfAnOpenInspector() {
+        page.reload();
+        waitForText("#build-state", "Built");
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        assertThat(page.locator("#selection-dock").isVisible()).isTrue();
+        assertThat(page.locator("#selection-dock #add-trigger").isVisible()).isTrue();
+        page.locator("#open-inspector").click();
+        assertThat(page.locator("#inspector").isVisible()).isTrue();
+        page.keyboard().press("Escape");
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void selectingAStationKeepsTheCanvasAndContextualActionsVisible() {
+        openProject(fourStepProject());
+        page.reload();
+        waitForText("#build-state", "Built");
+        page.evaluate("() => void state.world.focus('one')");
+        awaitScene();
+        page.locator("[data-select-node='one']").click();
+        page.waitForFunction("() => document.querySelector('#selection-dock')?.dataset.selection === 'one'");
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        assertThat(page.locator("#selection-dock #add-next-step").isVisible()).isTrue();
+        assertThat(page.locator("#selection-dock #open-inspector").isVisible()).isTrue();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    void constructingAFlowFromTheDockBuildsTheRealApplication() throws Exception {
+        page.reload();
+        waitForText("#build-state", "Built");
+        page.locator("#selection-dock #add-trigger").click();
+        page.locator("[data-add-step='railix.trigger.cli']").click();
+        page.locator("#dock-example").waitFor();
+        page.locator("#add-next-step").click();
+        page.locator("#step-search").fill("field manipulation");
+        page.locator("[data-add-step='railix.field-manipulation']").click();
+        waitForText("#build-state", "Built");
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        assertThat(Files.readString(directory.resolve("project.json"))).contains("railix.field-manipulation");
+        assertThat(applicationPid()).isNotBlank();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    void stationNamesSitOutsideCompactMachineBodies() {
+        openProject(fourStepProject());
+        selectWorldNode("one");
+        final var label = page.locator("[data-node-id='one']");
+        label.locator(".world-symbol").waitFor();
+        final var symbol = label.locator(".world-symbol").boundingBox();
+        final var name = label.locator("strong").boundingBox();
+        assertThat(symbol.width).isBetween(20.0, 64.1);
+        assertThat(symbol.height).isCloseTo(symbol.width, org.assertj.core.api.Assertions.within(0.1));
+        assertThat(name.y).isGreaterThan(symbol.y + symbol.height);
+        assertThat(label.locator(".world-detail").textContent()).doesNotContain("executions", "sampled", "context");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void appearanceControlsReflectTheDefaultMachineShape() {
+        openProject(fourStepProject());
+        selectWorldNode("one");
+        openInspectorTab("appearance");
+        assertThat(page.locator("#presentation-aspect").inputValue()).isEqualTo("1");
+        assertThat(page.locator("#presentation-roundness").inputValue()).isEqualTo("12");
+        assertThat(page.locator("#presentation-shape").inputValue()).isEqualTo("rectangle");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    void choosingAStepPreviewsItsConnectionWithoutEditingTheProject() throws Exception {
+        openProject(fourStepProject());
+        selectWorldNode("one");
+        final String source = Files.readString(directory.resolve("project.json"));
+        page.locator("#add-next-step").click();
+        page.locator("[data-add-step]").first().focus();
+        page.locator(".world-placement").waitFor();
+        assertThat(page.locator(".world-placement").textContent()).isNotBlank();
+        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(source);
+        page.keyboard().press("Escape");
+        page.waitForFunction("() => !document.querySelector('.world-placement')");
+        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(source);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void filteringAwayAPreviewClearsTheProspectiveStep() {
+        openProject(fourStepProject());
+        selectWorldNode("one");
+        page.locator("#add-next-step").click();
+        page.locator("[data-add-step]").first().focus();
+        page.locator(".world-placement").waitFor();
+        page.locator("#step-search").fill("no-such-step");
+        page.waitForFunction("() => !document.querySelector('.world-placement')");
+        assertThat(page.locator("[data-add-step]").count()).isZero();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void acceptingAPlacementBuildsTheRealInsertedStep() throws Exception {
+        openProject(fourStepProject());
+        selectWorldNode("one");
+        final String before = applicationPid();
+        page.locator("#add-next-step").click();
+        page.locator("[data-add-step='railix.field-manipulation']").focus();
+        page.locator(".world-placement").waitFor();
+        page.locator("[data-add-step='railix.field-manipulation']").click();
+        page.waitForFunction("() => !document.querySelector('.world-placement')");
+        page.waitForFunction("before => Boolean(document.querySelector('#status-pid')?.textContent) && document.querySelector('#status-pid').textContent !== before", "PID " + before);
+        waitForText("#build-state", "Built");
+        assertThat(applicationPid()).isNotEqualTo(before);
+        assertThat(Files.readString(directory.resolve("project.json"))).contains("step-");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void leavingAHoveredOptionRestoresTheKeyboardPlacementPreview() {
+        openProject(fourStepProject());
+        selectWorldNode("one");
+        awaitScene();
+        page.locator("#add-next-step").click();
+        final var options = page.locator("[data-add-step]");
+        final String focused = "Insert " + options.first().locator("strong").textContent();
+        final String hovered = "Insert " + options.nth(1).locator("strong").textContent();
+        page.locator(".step-picker header").hover();
+        options.first().focus();
+        page.waitForFunction("focused => document.querySelector('.world-placement strong')?.textContent === focused", focused);
+        options.nth(1).hover();
+        page.waitForFunction("hovered => document.querySelector('.world-placement strong')?.textContent === hovered", hovered);
+        page.locator(".step-picker header").hover();
+        page.waitForFunction("focused => document.querySelector('.world-placement strong')?.textContent === focused", focused);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
     void triggerTargetsShowOnlyTheirKnownExampleOutput() {
         prepareTextPayloadTrigger();
         page.locator("[data-input-name='target'] [data-path-value='after']").waitFor();
@@ -78,9 +447,9 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         final String pid = applicationPid();
         openInspectorTab("appearance");
         page.locator("#presentation-shape").selectOption(shape);
-        page.locator("#presentation-aspect").fill("1");
+        page.locator("#presentation-aspect").fill("2.625");
         page.locator("#presentation-aspect").press("Tab");
-        page.waitForFunction("() => !state.writeActive && state.savedCreator.steps.one?.aspect === 1");
+        page.waitForFunction("() => !state.writeActive && Number(numberText(state.savedCreator.steps.one?.aspect)) === 2.625");
         assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(functional);
         assertThat(applicationPid()).isEqualTo(pid);
         page.reload();
@@ -88,7 +457,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         selectWorldNode("one");
         openInspectorTab("appearance");
         assertThat(page.locator("#presentation-shape").inputValue()).isEqualTo(shape);
-        assertThat(page.locator("#presentation-aspect").inputValue()).isEqualTo("1");
+        assertThat(page.locator("#presentation-aspect").inputValue()).isEqualTo("2.625");
         assertThat(pageErrors).isEmpty();
     }
 
@@ -199,13 +568,15 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    void clickingTheSelectedNodeReopensTheInspector() {
+    void reselectingAStationKeepsItsInspectorClosedUntilConfigureIsRequested() {
         openProject(choiceProject());
         selectTrigger();
         page.locator("#close-inspector").click();
         page.locator("[data-node-id='command']").click();
 
-        page.waitForFunction("() => !document.querySelector('#inspector').hidden");
+        page.waitForFunction("() => !state.editorController && document.querySelector('#selection-dock').dataset.selection === 'command'");
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        page.locator("#open-inspector").click();
         assertThat(page.locator("#inspector").getAttribute("data-selection")).isEqualTo("command");
     }
 
@@ -279,7 +650,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
             page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
 
             assertThat(page.locator("#inspector").getAttribute("data-selection")).isEqualTo("app");
-            assertThat(page.locator("#project-id").isVisible()).isTrue();
+            assertThat(page.locator("#selection-dock").getAttribute("data-selection")).isEqualTo("app");
             assertThat(pageErrors).isEmpty();
         } finally {
             page.unroute(editorRequests);
@@ -353,6 +724,49 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
+    void addingStepSupersedesAnUnfinishedTriggerFocus() {
+        addTrigger();
+        waitForText("#build-state", "Built");
+        selectTrigger();
+        page.evaluate("""
+                () => {
+                  const fetch = window.fetch, trigger = state.selection.id;
+                  const probe = window.__pendingFocus = {releases:[]};
+                  window.fetch = async (...args) => {
+                    const response = await fetch.apply(window, args);
+                    const url = new URL(String(args[0]), location.href);
+                    if (url.pathname === '/api/scene' && url.searchParams.get('focus') === trigger) {
+                      const json = response.json.bind(response);
+                      response.json = async () => {
+                        const scene = await json();
+                        if (!probe.released) await new Promise(resolve => probe.releases.push(resolve));
+                        return scene;
+                      };
+                    }
+                    return response;
+                  };
+                  probe.restore = () => {
+                    probe.released = true;
+                    window.fetch = fetch;
+                    probe.releases.splice(0).forEach(release => release());
+                  };
+                  state.world.focus(trigger);
+                }
+                """);
+        try {
+            page.waitForFunction("() => window.__pendingFocus.releases.length > 0");
+            addManipulationAfterSelected();
+            waitForText("#build-state", "Built");
+            page.evaluate("() => window.__pendingFocus.restore()");
+            com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.locator(".step-node.selected"))
+                    .isVisible();
+            assertThat(pageErrors).isEmpty();
+        } finally {
+            page.evaluate("() => window.__pendingFocus.restore()");
+        }
+    }
+
+    @Test
     void fittingWhileStepEditorLoadsRetainsTheFittedCamera() {
         openProject(filterProject());
         selectTrigger();
@@ -361,6 +775,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         page.locator("#delete-example").click();
         waitForText("#build-state", "Built");
         waitForText("#status-coverage span", "75% example coverage");
+        page.locator("#close-inspector").click();
         awaitScene();
         page.evaluate("""
                 () => {
@@ -481,6 +896,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
             addManipulationAfterSelected();
             page.waitForFunction("() => typeof window.__releaseScene === 'function'");
             page.locator("#zoom-fit").click();
+            page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving !== 'true'");
             final String fitted = page.locator("#zoom-level").textContent();
             page.evaluate("() => window.__releaseScene()");
             awaitScene();
@@ -548,6 +964,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     void unchangedApplicationPollsDoNotRedrawTheWorldOrReplaceTheExamplePreview() {
         openProject(choiceProject());
         selectWorldNode("matched");
+        awaitScene();
         page.waitForFunction("""
                 () => Boolean(state.preview) && state.application.examples?.state === 'completed'
                   && !state.applicationRefreshing && state.observations?.nodes.get('matched')?.rate === 0
@@ -594,9 +1011,9 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         waitForText("#status-observations", "Observations connected");
         page.waitForFunction("() => document.querySelector('[data-node-id=matched]')?.dataset.activity === 'disabled'");
 
-        assertThat(page.locator("[data-node-id='matched'] .world-detail").textContent()).isEqualTo("Metrics off");
+        assertThat(page.locator("[data-node-id='matched']").getAttribute("title")).isEqualTo("Metrics off");
         assertThat(page.locator("[data-node-id='otherwise']").getAttribute("data-activity")).isEqualTo("idle");
-        assertThat(page.locator("[data-node-id='otherwise'] .world-detail").textContent())
+        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("title"))
                 .startsWith("0 executions").doesNotContain("sampled");
         assertThat(page.locator("[data-node-id='otherwise']").getAttribute("title"))
                 .contains("No duration inferred.");
@@ -608,12 +1025,13 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         openProject(choiceProject());
         selectWorldNode("otherwise");
         waitForText("#status-observations", "Observations connected");
+        page.waitForFunction("() => document.querySelector('[data-node-id=otherwise]')?.dataset.activity === 'active'");
         final ProcessHandle child = ProcessHandle.of(Long.parseLong(applicationPid())).orElseThrow();
 
         assertThat(child.destroy()).isTrue();
         page.waitForFunction("() => document.querySelector('[data-node-id=otherwise]')?.dataset.activity === ''");
 
-        assertThat(page.locator("[data-node-id='otherwise'] .world-detail").textContent()).doesNotContain("executions");
+        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("title")).doesNotContain("executions");
         assertThat(page.locator("#status-observations").isHidden()
                 || !page.locator("#status-observations").textContent().contains("connected")).isTrue();
         assertThat(pageErrors).isEmpty();

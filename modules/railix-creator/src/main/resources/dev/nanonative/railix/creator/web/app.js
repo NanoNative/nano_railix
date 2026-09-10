@@ -34,6 +34,7 @@ const state = {
   application: {},
   workspace: {},
   selection: { type: "app", id: "app" },
+  regionSelection: null,
   diagnostics: [],
   localDiagnostics: [],
   build: "Loading",
@@ -150,8 +151,15 @@ async function boot() {
     state.world = new RailixWorld(document.querySelector("#graph"), {
       selectNode: selectWorldNode,
       selectGroup: (group, region) => {
-        focusRegion(region);
-        if (group) openGroupManager(group);
+        state.editorRequest++;
+        state.editorController?.abort();
+        state.world.cancelFocus();
+        state.regionSelection = state.world.scene.nodes.find(item => item.id === region);
+        state.inspectorMode = "inspect";
+        state.picker = null;
+        showInspector(false);
+        render();
+        state.world.repaint();
       },
       appearance: worldAppearance,
       linkAppearance: worldLinkAppearance,
@@ -168,7 +176,7 @@ async function boot() {
         const message = document.querySelector("#world-error");
         message.hidden = !scene.limited;
         message.dataset.severity = "warning";
-        message.textContent = scene.limited ? "This view has reached its detail limit. Zoom in to inspect the remaining connections." : "";
+        message.textContent = scene.limited ? "Zoom in for finer detail." : "";
         renderWorldStatus();
         scheduleWorldObservations(180);
       },
@@ -183,12 +191,13 @@ async function boot() {
     scheduleApplicationPoll(0);
     scheduleMetricsPoll(0);
   } catch (error) {
-    document.querySelector("#build-state").textContent = "Unavailable";
-    document.querySelector("#inspector").innerHTML = `
-      <section class="empty-state">
-        <strong>Creator unavailable</strong>
-        <p>${html(error instanceof Error ? error.message : "Creator could not open the project.")}</p>
-      </section>`;
+    state.build = "Unavailable";
+    renderBuildStatus();
+    const message = document.querySelector("#world-error");
+    message.dataset.severity = "error";
+    message.textContent = error instanceof Error ? error.message : "Creator could not open the project.";
+    message.hidden = false;
+    document.querySelector("#selection-dock").hidden = true;
   }
 }
 
@@ -233,20 +242,108 @@ function render() {
     if (detail) detail.open = true;
   });
   document.querySelector("#overlay").innerHTML = picker() + iconPicker() + groupPicker();
+  state.world?.preview(null);
   releaseUnusedIconUrls();
   applyExampleCoverage();
   if (state.sceneDirty && state.world) {
     state.sceneDirty = false;
     const reveal = state.revealNode;
-    const view = state.world.viewVersion;
     state.revealNode = "";
-    void state.world.refresh().then(() => {
-      if (reveal && reveal === state.selection.id && view === state.world.viewVersion) {
-        void state.world.focus(reveal);
-      }
-    });
+    if (reveal && reveal === state.selection.id) state.world.focus(reveal);
+    else void state.world.refresh();
   }
   renderWorldStatus();
+}
+
+function renderDock() {
+  const operation = selectedOperation();
+  // Neighbors and retained drafts are not a loaded selection; new local Steps have no editor entry yet.
+  if (!operation || state.editor.nodes[operation.id] && !state.editor.full.includes(operation.id)) return;
+  const definition = definitionFor(operation);
+  const region = state.regionSelection;
+  const app = state.selection.type === "app";
+  const trigger = definition.kind === "trigger";
+  const presentation = stepPresentation(operation.id);
+  const name = region ? state.worldGroups.get(region.group)?.name || region.name
+    : app ? state.project.id : presentation.name || stepName(definition);
+  const actions = region ? `<button type="button" id="enter-region">Enter group</button>${region.group
+    ? `<button type="button" data-manage-region="${html(region.group)}">Manage group</button>` : ""}` : app
+    ? `<button id="add-trigger" type="button" ${availableTriggers().length ? "" : "disabled"}>Add Trigger</button>
+       <button type="button" id="manage-groups">Groups</button>`
+    : nextStepControls(operation);
+  const examples = trigger && !region ? `<label class="dock-example">Example
+      <select id="dock-example" aria-label="Selected Example">${operation.examples.map((example, index) =>
+        `<option value="${index}" ${index === state.exampleIndex ? "selected" : ""}>${html(example.name)}</option>`).join("")}</select>
+      <button type="button" data-open-panel="examples">Edit</button></label>` : "";
+  const source = `<header class="dock-heading"><div><small>${html(region ? count(region.count, "Step") : app ? "Application" : stepName(definition))}</small>
+      <strong>${html(name)}</strong></div></header>
+    <div id="dock-observation"><div class="dock-issues"></div><div class="dock-values"></div><div class="dock-counters"></div></div>
+    <nav class="dock-actions" aria-label="Construction tools">${actions}</nav>`;
+  const dock = document.querySelector("#selection-dock");
+  dock.hidden = Boolean(state.picker);
+  dock.dataset.selection = region?.id || operation.id;
+  document.querySelector("#open-inspector").hidden = Boolean(region) || !document.querySelector("#inspector").hidden;
+  // Polling updates observations only; it must not replace a focused control.
+  renderDockMarkup(document.querySelector("#dock-content"), source);
+  const chooser = document.querySelector("#trigger-example");
+  renderDockMarkup(chooser, examples);
+  state.world?.anchor(examples && !state.picker ? operation.id : "", chooser);
+  renderDockObservation();
+}
+
+function renderDockMarkup(element, source) {
+  if (element.railixMarkup !== source) {
+    const focused = element.contains(document.activeElement) ? document.activeElement.id : "";
+    element.innerHTML = source;
+    element.railixMarkup = source;
+    if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
+  }
+}
+
+function renderDockObservation() {
+  const slot = document.querySelector("#dock-observation");
+  const operation = selectedOperation();
+  if (!slot || !operation || state.editor.nodes[operation.id] && !state.editor.full.includes(operation.id)) return;
+  const region = state.regionSelection;
+  const item = currentWorldObservations()?.nodes.get(region?.id || operation.id);
+  const measured = item?.metrics;
+  const counters = measured && Object.hasOwn(measured, "executions") ? `<span>${formatInteger(measured.executions)} runs</span>
+    ${worldMotionActive() && Number.isFinite(item.rate) ? `<span>${formatRate(item.rate)}/s</span>` : ""}
+    ${metricNumber(measured.duration_samples) ? `<span>${averageNanos(measured)} ${region ? "Step avg" : "avg"}</span>` : ""}
+    ${metricNumber(measured.errors) ? `<span class="dock-error">${formatInteger(measured.errors)} errors</span>` : ""}` : "";
+  const issues = state.worldIssues.get(region?.id || operation.id) || [];
+  const example = selectedTraceCase();
+  let values = "";
+  if (example && !region && state.selection.type !== "app") {
+    const definition = definitionFor(operation);
+    values = `${definition.kind === "trigger" ? "" : `<button type="button" id="dock-case" class="dock-case"
+      data-locate-trigger="${html(triggerFor(operation.id).id)}" title="Choose an Example at its Trigger">${html(example.name)}</button>`}` + [false, true].filter(after =>
+      after || definition.kind !== "trigger").map(after => {
+      const observed = observedExampleContext(operation, after);
+      const ports = after ? definition.returns : definition.receives;
+      const field = definition.inputs.find(input => input.type === "path" && input.access !== "read")
+        || definition.inputs.find(input => input.type === "path");
+      const path = operation[after ? "returns" : "receives"]?.[ports[0]?.name]
+        || operation.inputs?.[field?.name] || (field && defaultInput(field)) || ["context"];
+      const value = observed.status ? undefined : valueAt(observed.root, path);
+      const summary = Array.isArray(value) ? `Array (${value.length})`
+        : plainObject(value) && !exactNumber(value) ? "Object"
+        : typeof value === "string" ? JSON.stringify(value.slice(0, 80)) + (value.length > 80 ? "..." : "")
+        : value === undefined ? "Missing" : previewValue(value);
+      const label = ports.length || definition.kind === "trigger" ? after ? "Out" : "In" : after ? "After" : "Before";
+      return `<div class="dock-value" data-dock-value="${after ? "output" : "input"}" title="${html(displayPath(path))}">
+        <small>${label}</small>${observed.status
+          ? `<span class="value-status">${html(observed.status)}</span>`
+          : `<output>${html(summary)}</output>`}</div>`;
+    }).join("");
+  }
+  for (const [part, source] of [["issues", issues.length
+    ? `<button type="button" class="dock-error" data-open-panel="inspect">${html(issues[0].message)}</button>` : ""],
+    ["values", values], ["counters", counters]]) {
+    const element = slot.querySelector(`.dock-${part}`);
+    renderDockMarkup(element, source);
+    element.hidden = !source;
+  }
 }
 
 function focusGroup(groupId) {
@@ -264,17 +361,14 @@ function renderBuildStatus() {
 }
 
 async function selectWorldNode(id) {
-  if (id === state.selection.id && document.querySelector("#inspector").hidden) {
-    showInspector(true);
-    return true;
-  }
+  state.regionSelection = null;
+  state.picker = null;
   state.revealNode = "";
   state.world?.cancelFocus();
   const loaded = await loadEditor(id);
   if (loaded !== "loaded" && !(loaded === "conflict" && state.editor.full.includes(id))) return false;
   const operation = node(id);
   if (!operation) return false;
-  showInspector(true);
   if (definitionOf(operation.use)?.kind === "step") {
     selectStep(id);
     return true;
@@ -390,6 +484,7 @@ function worldAppearance(item) {
   const operation = state.worldNodes.get(item.id);
   const group = item.kind === "region" ? state.worldGroups.get(item.group) : null;
   const presentation = group || state.creator.steps[item.id] || {};
+  const definition = definitionOf(item.use);
   const issues = state.worldIssues.get(item.id) || [];
   const observation = currentWorldObservations()?.nodes.get(item.id);
   const coverage = item.kind === "app" ? ""
@@ -401,7 +496,6 @@ function worldAppearance(item) {
     ? observation.metrics : null;
   const sampled = live && metricNumber(live.duration_samples) > 0;
   const mean = sampled ? metricNumber(live.duration_nanos_total) / metricNumber(live.duration_samples) : 0;
-  const heat = sampled ? Math.log1p(mean) / Math.log1p(Math.max(1, state.observations.maxMean)) : 0;
   const activity = observation && Number(observation.count) > 0
     && Number(observation.disabled_count) === Number(observation.count) ? "disabled"
     : live ? metricNumber(live.executions) > 0 ? "active" : "idle" : "";
@@ -410,23 +504,25 @@ function worldAppearance(item) {
     : observation && Object.hasOwn(observation, "covered_count") && item.kind === "region"
       ? `${observation.covered_count}/${observation.count} reached${Number(observation.selected_count) ? ` · ${observation.selected_count} selected` : ""}` : "";
   return {
-    selected: state.selection.id === item.id || Boolean(group
+    selected: (state.regionSelection?.id || state.selection.id) === item.id || Boolean(group
       && state.inspectorMode === "groups" && state.managedGroup === group.id),
     changed: state.worldChanges.has(item.id),
     error: issues.length > 0 || Boolean(live && metricNumber(live.errors) > 0),
     coverage,
     activity,
-    meter: observation?.rate > 0 ? Math.log1p(observation.rate) / Math.log1p(Math.max(1, state.observations.maxRate)) : 0,
-    heat: sampled ? heat : undefined,
+    rate: worldMotionActive() && Number.isFinite(observation?.rate) ? observation.rate : 0,
+    duration: sampled ? formatNanos(mean) : "",
     color: presentation.color || item.color,
-    shape: presentation.shape || item.shape || "rectangle",
-    aspect: presentation.aspect ?? item.aspect ?? 2.625,
-    roundness: presentation.roundness ?? item.roundness ?? 0,
+    shape: presentation.shape || item.shape || RailixWorld.appearance.shape,
+    aspect: Number(numberText(presentation.aspect ?? item.aspect ?? RailixWorld.appearance.aspect)),
+    roundness: Number(numberText(presentation.roundness ?? item.roundness ?? RailixWorld.appearance.roundness)),
     boundary: presentation.boundary || item.boundary || (coverage === "uncovered" ? "dashed" : "solid"),
     iconUrl: iconUrl(presentation.icon || state.world?.scene?.icons?.[item.icon_ref]),
+    symbol: item.kind === "step" ? definition?.outcomes.length > 1 ? "branch"
+      : definition?.returns[0]?.shape || "step" : item.kind,
     label: presentation.name || (item.kind === "app" && operation && stepName(definitionFor(operation))) || item.name,
-    description: live ? `${detail}. ${formatInteger(live.errors)} errors; ${formatInteger(live.cancelled)} cancellations. ${
-      item.kind === "region" ? "Contained Step counters, not flow latency. " : ""}${sampled ? "Heat strip compares sampled mean duration in this view." : "No duration inferred."}` : detail,
+    description: activity === "disabled" ? detail : live ? `${detail}. ${formatInteger(live.errors)} errors; ${formatInteger(live.cancelled)} cancellations. ${
+      item.kind === "region" ? "Contained Step counters, not flow latency. " : ""}${sampled ? "Sampled mean execution time, not utilization." : "No duration inferred."}` : detail,
     detail: issues.length ? issues[0].message
       : item.kind === "trigger" ? `${count(operation?.examples?.length ?? item.example_count ?? 0, "example")}${
         activity === "disabled" ? " · Metrics off" : live ? ` · ${formatInteger(live.executions)} runs` : ""}`
@@ -435,8 +531,9 @@ function worldAppearance(item) {
 }
 
 function currentWorldObservations() {
-  return state.observations?.query === state.world?.query
-    && state.observations.revision === state.world?.scene?.revision
+  // Stable identities retain their last observation while the next viewport read is pending.
+  // One bounded snapshot only; edits, deployments and Example changes still invalidate it.
+  return state.observations && state.observations.revision === state.world?.scene?.revision
     && Number(state.observations.application_revision) === Number(state.projectVersion)
     && state.observations.requestedExample === selectedExampleId()
     && Number(state.observations.application_pid) === Number(state.application.pid)
@@ -500,8 +597,6 @@ async function refreshWorldObservations() {
     const observedAt = performance.now();
     const elapsed = previous?.elapsed_nanos !== undefined && value.elapsed_nanos !== undefined
       ? Number(BigInt(numberText(value.elapsed_nanos)) - BigInt(numberText(previous.elapsed_nanos))) / 1e9 : 0;
-    let maxMean = 0;
-    let maxRate = 0;
     for (const [current, before] of [[nodes, previous?.nodes], [links, previous?.links]]) {
       if (elapsed <= 0) continue;
       for (const [id, item] of current) {
@@ -511,18 +606,13 @@ async function refreshWorldObservations() {
         if (delta >= 0n) item.rate = Number(delta) / elapsed;
       }
     }
-    for (const node of nodes.values()) {
-      maxRate = Math.max(maxRate, node.rate || 0);
-      if (metricNumber(node.metrics?.duration_samples) > 0) maxMean = Math.max(maxMean,
-        metricNumber(node.metrics.duration_nanos_total) / metricNumber(node.metrics.duration_samples));
-    }
     repaint = !previous || [[nodes, previous.nodes], [links, previous.links]].some(([current, before]) =>
       current.size !== before.size || [...current].some(([id, item]) => {
         const prior = before.get(id);
         return !prior || Object.keys(item).length !== Object.keys(prior).length
           || Object.keys(item).some(key => JSON.stringify(item[key]) !== JSON.stringify(prior[key]));
       }));
-    state.observations = { ...value, requestedExample: example, query, nodes, links, maxMean, maxRate, observedAt };
+    state.observations = { ...value, requestedExample: example, query, nodes, links, observedAt };
     const metricsAvailable = value.nodes.some(node => Object.hasOwn(node, "metrics"));
     const examplesAvailable = Object.hasOwn(value, "coverage_revision");
     status.hidden = false;
@@ -572,6 +662,7 @@ function renderWorldStatus() {
   coverage.querySelector("progress").value = covered;
   coverage.querySelector("span").textContent = `${Math.round(covered / Math.max(1, total) * 100)}% example coverage`;
   coverage.title = `${covered} of ${total} executable Steps reached by completed Examples`;
+  renderDock();
 }
 
 function refreshPathPicker() {
@@ -856,11 +947,11 @@ function presentationEditor(presentation = {}, defaults = {}, target) {
         ${["rectangle", "ellipse", "triangle", "diamond"].map(shape => `<option value="${shape}" ${
           shape === (presentation.shape || "rectangle") ? "selected" : ""}>${inputLabel(shape)}</option>`).join("")}
       </select>
-      ${[["aspect", "Width / height", .5, 4, 2.625], ["roundness", "Corner rounding (%)", 0, 50, 0]]
+      ${[["aspect", "Width / height", .5, 4], ["roundness", "Corner rounding (%)", 0, 50]]
         .filter(([field]) => field !== "roundness" || !presentation.shape || presentation.shape === "rectangle")
-        .map(([field, label, min, max, fallback]) => `<label for="presentation-${field}">${label}</label>
+        .map(([field, label, min, max]) => `<label for="presentation-${field}">${label}</label>
           <div class="dimension-editor"><input id="presentation-${field}" type="number" min="${min}" max="${max}" step="any"
-            data-presentation="${field}" data-presentation-target="${target}" value="${presentation[field] ?? fallback}">
+            data-presentation="${field}" data-presentation-target="${target}" value="${numberText(presentation[field] ?? RailixWorld.appearance[field])}">
             <button type="button" data-reset-presentation="${field}" data-presentation-target="${target}"
               ${presentation[field] === undefined ? "disabled" : ""}>Reset</button></div>`).join("")}
     </section>`;
@@ -938,19 +1029,21 @@ function nodeIssues(id) {
 }
 
 function appInspector(issues) {
-  const builtAt = Number(state.application.built_at || 0);
   return `
-    ${inspectorHeader("Application Step", "Application", "Project settings and build facts")}
+    ${inspectorHeader("Application Step", "Application", "Project settings")}
     ${issues}
     <section class="inspector-section">
       <label for="project-id">Project name</label>
       <input id="project-id" value="${html(state.project.id)}" autocomplete="off">
     </section>
-    <section class="inspector-section">
-      <button class="button wide" type="button" id="manage-groups">Manage Groups</button>
-    </section>
-    <details id="workspace-details" class="inspector-section facts">
-      <summary>Workspace and build</summary>
+    ${runtimeDetails()}`;
+}
+
+function buildDetails() {
+  const builtAt = Number(state.application.built_at || 0);
+  return `<header><strong>Application and build</strong>
+      <button type="button" popovertarget="application-status" popovertargetaction="hide" aria-label="Close build details">Close</button></header>
+    <section id="workspace-details" class="facts">
       <dl>
         <div><dt>Project path</dt><dd id="project-path">${html(state.workspace.project_path || "")}</dd></div>
         <div><dt>Build path</dt><dd id="build-path">${html(state.application.build_path || "")}</dd></div>
@@ -973,13 +1066,7 @@ function appInspector(issues) {
           builtAt ? html(new Date(builtAt).toLocaleString()) : "Not built"
         }</dd></div>
       </dl>
-    </details>
-    ${runtimeDetails()}
-    ${availableTriggers().length ? `
-      <footer class="inspector-actions">
-        <button class="button primary" id="add-trigger" type="button"
-                data-open-picker="trigger">Add Trigger</button>
-      </footer>` : ""}`;
+    </section>`;
 }
 
 function triggerInspector(trigger, issues) {
@@ -997,10 +1084,6 @@ function triggerInspector(trigger, issues) {
           Object.hasOwn(result, "default") ? " · default " + html(JSON.stringify(result.default)) : ""
         }</small></span>`
       ).join("")}</div>
-    </section>
-    <section class="inspector-section">
-      <button class="button wide" type="button" id="add-next-step"
-              ${insertionAllowed(trigger, primaryOutcome(trigger)) ? "" : "disabled"}>Add next Step</button>
     </section>
     <div id="run-result-panel">${runResultPanel()}</div>
     <footer class="inspector-actions">
@@ -1058,7 +1141,6 @@ function stepInspector(operation, issues) {
     ${runtimeDetails()}
     <div id="preview-error" role="status"></div>
     <footer class="inspector-actions">
-      ${nextStepControls(operation)}
       <button class="button danger" id="delete-step" type="button" ${removableStep(operation)
         ? "" : 'disabled title="Remove branch Steps first"'}>Delete Step</button>
     </footer>`;
@@ -1845,10 +1927,10 @@ function picker() {
     return "";
   }
   return `
-    <div class="picker-backdrop" data-close-picker>
-      <section class="step-picker" role="dialog" aria-modal="true" aria-label="Add Step">
-        <header><span class="eyebrow">Installed Steps</span><h2>Add ${state.picker.mode === "trigger"
-          ? "Trigger" : "Step"}</h2></header>
+    <div class="construction-palette">
+      <section class="step-picker" role="dialog" aria-label="Add Step">
+        <header><div><span class="eyebrow">${html(stepPresentation(state.picker.anchor).name || stepName(definitionFor(node(state.picker.anchor))))}</span><h2>Add ${state.picker.mode === "trigger"
+          ? "Trigger" : "Step"}</h2></div><button type="button" data-close-picker aria-label="Close Step chooser">Close</button></header>
         <input type="search" id="step-search" value="${html(state.picker.query)}"
                placeholder="Search by name or id" autocomplete="off" autofocus>
         <div id="step-options">${pickerOptions()}</div>
@@ -1935,9 +2017,6 @@ function pickerOptions() {
   return options
     .map(definition => `
       <button type="button" class="catalog-option" data-add-step="${html(definition.id)}">
-        <span class="catalog-kind">${html(
-          definition.kind.charAt(0).toUpperCase() + definition.kind.slice(1)
-        )}</span>
         <strong>${html(stepName(definition))}</strong>
         <small>${html(definition.id)}${definition.receives.length || definition.returns.length
           ? ` · ${html(definition.receives.map(port => port.shape).join(" + ") || "context")} to ${html(
@@ -1953,6 +2032,23 @@ function openPicker(mode, anchor, outcome = "") {
   render();
   document.querySelector("#step-search")?.focus();
 }
+
+function previewCatalogStep(event) {
+  const hovered = event.target.closest("[data-add-step]");
+  const option = hovered || document.activeElement?.closest("[data-add-step]");
+  if (!state.picker || state.picker.mode === "trigger") return;
+  if (!option) {
+    state.world?.preview(null);
+    return;
+  }
+  if (hovered?.contains(event.relatedTarget)) return;
+  const definition = definitionOf(option.dataset.addStep);
+  if (definition) state.world?.preview({after: state.picker.anchor,
+    outcome: state.picker.outcome || primaryOutcome(node(state.picker.anchor)), name: stepName(definition)});
+}
+
+document.addEventListener("focusin", previewCatalogStep);
+document.addEventListener("pointerover", previewCatalogStep);
 
 function addCatalogStep(id) {
   const definition = definitionOf(id);
@@ -3652,7 +3748,7 @@ async function requestSelectedTrace() {
     operation.id
   ].join(":");
   const key = summaryKey + ":" + casesKey;
-  if (state.traceKey === key && state.traceSummary && state.traceCasesKey === casesKey) {
+  if (state.traceKey === key && (state.traceController || state.traceSummary && state.traceCasesKey === casesKey)) {
     return;
   }
   state.traceController?.abort();
@@ -3866,6 +3962,7 @@ function exampleCoverage(encoded, project) {
 }
 
 function renderPreview() {
+  renderDockObservation();
   const operation = selectedOperation();
   if (!operation) return;
   document.querySelectorAll("[data-path-observation]").forEach(slot => {
@@ -4644,6 +4741,7 @@ function deleteGroup(id) {
     }
   });
   state.creator.groups = state.creator.groups.filter(group => group.id !== id);
+  if (state.regionSelection?.group === id) state.regionSelection = null;
   state.managedGroup = state.creator.groups[0]?.id || "";
   state.revealNode = state.selection.id;
   creatorDirty();
@@ -4670,7 +4768,6 @@ function selectedOperation() {
 }
 
 function selectStep(id) {
-  showInspector(true);
   clearPreview();
   resetMetrics();
   state.exampleDraft = null;
@@ -4710,7 +4807,7 @@ function updatePresentation(target, field, source) {
   const value = field === "color" && /^#[0-9a-fA-F]{6}$/.test(trimmed)
     ? trimmed.toUpperCase()
     : trimmed;
-  const defaults = { shape: "rectangle", aspect: 2.625, roundness: 0 };
+  const defaults = RailixWorld.appearance;
   const parsed = ["aspect", "roundness"].includes(field) && value !== "" ? Number(value) : value;
   setPresentation(target, field, parsed === "" || parsed === defaults[field] ? undefined : parsed);
 }
@@ -4885,13 +4982,44 @@ function html(value) {
 
 function showInspector(open) {
   document.querySelector("#inspector").hidden = !open;
-  document.querySelector("#open-inspector").hidden = open;
-  document.querySelector(".creator-shell").classList.toggle("inspector-closed", !open);
+  document.querySelector("#open-inspector").hidden = open || Boolean(state.regionSelection);
   if (!open) document.querySelector("#graph").focus({ preventScroll: true });
 }
 
 document.addEventListener("click", event => {
   const target = event.target;
+  if (target.closest(".build-indicator")) {
+    document.querySelector('#application-status').innerHTML = buildDetails();
+    return;
+  }
+  const exampleTrigger = target.closest("[data-locate-trigger]");
+  if (exampleTrigger) {
+    const id = exampleTrigger.dataset.locateTrigger;
+    void selectWorldNode(id).then(selected => { if (selected) state.world.focus(id); });
+    return;
+  }
+  if (target.closest("#dock-focus")) {
+    showInspector(false);
+    void state.world?.focus(state.regionSelection?.id || state.selection.id);
+    return;
+  }
+  if (target.closest("#enter-region") && state.regionSelection) {
+    focusRegion(state.regionSelection.id);
+    return;
+  }
+  const regionManager = target.closest("[data-manage-region]");
+  if (regionManager) {
+    openGroupManager(regionManager.dataset.manageRegion);
+    return;
+  }
+  const panel = target.closest("[data-open-panel]");
+  if (panel) {
+    state.inspectorMode = panel.dataset.openPanel;
+    render();
+    showInspector(true);
+    document.querySelector("#close-inspector").focus({ preventScroll: true });
+    return;
+  }
   if (target.closest("#close-inspector")) {
     showInspector(false);
     return;
@@ -5008,7 +5136,7 @@ document.addEventListener("click", event => {
     render();
     return;
   }
-  if (target.matches(".picker-backdrop")) {
+  if (target.matches(".picker-backdrop") || target.closest("[data-close-picker]")) {
     state.picker = null;
     render();
     return;
@@ -5178,6 +5306,7 @@ document.addEventListener("click", event => {
 document.addEventListener("input", event => {
   if (event.target.id === "step-search" && state.picker) {
     state.picker.query = event.target.value;
+    state.world?.preview(null);
     document.querySelector("#step-options").innerHTML = pickerOptions();
   } else if (event.target.id === "icon-search" && state.iconPicker) {
     state.iconPicker.query = event.target.value;
@@ -5234,6 +5363,10 @@ document.addEventListener("input", event => {
 
 document.addEventListener("change", event => {
   const target = event.target;
+  if (target.id === "dock-example") {
+    selectExample(Number(target.value));
+    return;
+  }
   if (target.matches("[data-input-json]")) {
     setJsonValue(
       parseToken(target.dataset.inputJson),
@@ -5306,6 +5439,7 @@ document.addEventListener("change", event => {
 
 document.addEventListener("keydown", event => {
   if (event.key !== "Escape") return;
+  if (document.querySelector('#application-status').matches(':popover-open')) return;
   if (state.picker || state.iconPicker || state.groupPicker) {
     state.picker = null;
     state.iconPicker = null;

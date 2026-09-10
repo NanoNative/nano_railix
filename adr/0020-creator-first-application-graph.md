@@ -244,7 +244,8 @@ deterministic temporary regions; those regions are not metadata.
 The continuous-world contract replaces scaling a complete DOM graph: zooming into a region reveals
 its recursively indexed children at stable coordinates in the same world. An aggregate is not a
 collapse control. The Creator server owns a derived scene index; viewport requests return bounded
-visible stations and rails. Native WebGL2 draws geometry, with a bounded DOM overlay for labels,
+visible stations and rails. Locally bundled PixiJS draws WebGL2 geometry and cached machine textures,
+with a bounded DOM overlay for labels,
 keyboard focus, and selection. The previous all-card renderer is not retained as a fallback.
 Unsupported WebGL2 reports a visible capability error.
 Automatic corridors occupy compact outer footprints so nearby junctions and terminals remain
@@ -419,8 +420,21 @@ child PID, graph counts, and last successful build time.
 The current Creator authors every declared route of fixed- or authored-outcome ordinary control
 Steps. Layout follows deterministic declared-outcome depth-first order through an explicit
 traversal stack, so nesting depth does not consume the JavaScript call stack. One ephemeral camera
-provides continuous pan, cursor-anchored zoom, Fit, group focus, and scale-based detail. All add,
-edit, delete, grouping, and appearance controls live in the Inspector rather than graph nodes.
+provides continuous pan, cursor-anchored zoom, Fit, group focus, and scale-based detail. The canvas
+fills the workspace. Selection exposes a contextual construction dock and compact observed values;
+configuration, deletion and appearance remain in an on-demand Inspector. The searchable construction
+tray previews a connection without editing the project. Nodes contain no action buttons. Group
+selection is separate from Group Manager; camera focus and wheel zoom reveal the same nested graph.
+Collapsed stations share a collision-limited footprint without changing their centers or persisting
+geometry. Machine housings are baked once per visible shape/resolution variant into shared Pixi
+textures; unused variants are destroyed. Segmented, rounded conveyors remain batched shader geometry
+whose motion changes uniforms, not vertices or per-request objects. Pixi owns GPU resources; native
+DOM controls own input, and one explicit render schedule also advances Pixi housekeeping. Neither
+machine textures nor camera state are persisted, and the generated application includes none of
+these Creator resources. Connection sockets and belt direction derive from the
+graph; only fresh measured rates animate transport. Example selection is anchored above its Trigger;
+values and counters update independently in the selection dock. Optional timing labels never take
+priority over selectable station names.
 Diagnostics and malformed route states appear on their owning node, outcome, or group.
 
 ### CLI Trigger

@@ -118,12 +118,12 @@ final class CreatorScene {
             layout(app);
         }
         final List<Part> world = new ArrayList<>();
-        app.box = new Box(0, Math.max(0, app.outgoing.size() - 1) * 200 + 108, NODE_WIDTH, NODE_HEIGHT);
         world.add(app);
-        int flow = 0;
+        double flowTop = 0;
         for (final Route triggerRoute : app.outgoing) {
             final Part trigger = triggerRoute.to;
-            trigger.box = new Box(COLUMN, flow * 400 + 108, NODE_WIDTH, NODE_HEIGHT);
+            final double flowHeight = Math.max(280, Math.min(720, trigger.rows * 120.0));
+            trigger.box = new Box(COLUMN, flowTop + (flowHeight - NODE_HEIGHT) / 2, NODE_WIDTH, NODE_HEIGHT);
             world.add(trigger);
             final List<Part> units = new ArrayList<>();
             final Set<Part> added = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
@@ -139,11 +139,17 @@ final class CreatorScene {
             }
             if (!units.isEmpty()) {
                 final Part section = hierarchy(sections(units, "region:" + trigger.id), "index:" + trigger.id, false);
-                place(section, new Box(COLUMN * 2, flow * 400, 720, 280));
+                place(section, new Box(COLUMN * 2, flowTop, 960, flowHeight));
+                if (trigger.outgoing.size() == 1) {
+                    final Box entry = trigger.outgoing.getFirst().to.box;
+                    trigger.box = new Box(COLUMN, entry.y + (entry.height - NODE_HEIGHT) / 2, NODE_WIDTH, NODE_HEIGHT);
+                }
                 world.add(section);
             }
-            flow++;
+            flowTop += flowHeight + 120;
         }
+        app.box = new Box(0, app.outgoing.isEmpty() ? 108
+                : (app.outgoing.getFirst().to.box.y + app.outgoing.getLast().to.box.y) / 2, NODE_WIDTH, NODE_HEIGHT);
         root = container("index", "world", "Application", "", Map.of(),
                 world.size() <= 8 ? world : List.of(app, hierarchy(world.subList(1, world.size()), "region:world", true)));
         int sequence = 0;
@@ -1031,7 +1037,9 @@ final class CreatorScene {
             final double startY = start.box.y + start.box.height / 2;
             final double endX = end.box.x + end.box.width / 2;
             final double endY = end.box.y + end.box.height / 2;
-            final boolean horizontal = Math.abs(endX - startX) >= Math.abs(endY - startY);
+            final boolean horizontal = start.box.x + start.box.width <= end.box.x
+                    || end.box.x + end.box.width <= start.box.x
+                    || Math.abs(endX - startX) >= Math.abs(endY - startY);
             final double direction = Math.signum(horizontal ? endX - startX : endY - startY);
             final double x1 = startX + (horizontal ? start.box.width * direction / 2 : 0);
             final double y1 = startY + (horizontal ? 0 : start.box.height * direction / 2);

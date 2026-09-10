@@ -163,8 +163,8 @@ Or select both:
 ```
 
 Creator prints the URL to open. `Ctrl-C` stops Creator and its owned development-application JVM.
-`./mvnw clean` removes the generated JAR and application image. Railix has no third-party runtime
-libraries. Playwright is test-only.
+`./mvnw clean` removes the generated JAR and application image. Railix has no third-party Java runtime
+libraries; Creator bundles PixiJS for its canvas. Playwright is test-only.
 
 The printed URL contains a random Creator token in its fragment. Every Creator API request requires
 that token and the exact loopback `Host`; the browser client supplies both without storing the token
@@ -172,11 +172,12 @@ in project files. Treat the complete local URL as a credential while Creator is 
 
 ## Create The First Flow
 
-1. Select the permanent **Application** Step and choose **Add Trigger** in the Inspector.
+1. Choose **Add Trigger** in the Application's bottom construction dock.
 2. Search the installed Trigger catalog for **CLI**.
-3. Set its Target to `context.payload.arguments` and its Example payload to `["Hello RAILIX"]`.
+3. Open **Configure** to edit Target; use **Edit** beside the Trigger's Example chooser to edit its payload.
+   Use `context.payload.arguments` and `["Hello RAILIX"]` respectively for this flow.
 4. Choose **Add next Step**, search for **Lowercase**, and add it as an ordinary graph Step.
-5. Keep Source at `context.payload.arguments[0]` and set Target to `context.result`.
+5. Open **Configure**, keep Source at `context.payload.arguments[0]`, and set Target to `context.result`.
 6. Wait for **Running** and select the CLI Trigger. Creator shows the Example result automatically.
 
 Each ordinary Step remains one graph node whether or not the user assigns it to a visual group.
@@ -364,33 +365,55 @@ derived from the flat functional links, so the same group can produce multiple d
 regions without persisting occurrences or geometry. Group Manager edits definitions; Step
 Appearance assigns or unassigns membership. Deleting a group only unassigns its Steps.
 
-The canvas uses viewport-only recursive semantic zoom, not a DOM element for every Step.
-Scroll to zoom, drag to pan, and use Fit to return to the overview. Collapsed regions use the same
-station size as ordinary Steps and reveal their actual children at stable positions; WebGL2 is required.
+Creator is a canvas-first workshop. Select a station for contextual construction tools and compact
+observations; **Configure** opens its Inspector on demand. Closing it retains selection and drafts.
+The searchable bottom construction tray previews an insertion on hover or keyboard focus without
+saving a node or running a handler. Group selection offers **Enter group** and **Manage group**
+separately. Double-click or scroll to zoom into the same diagram, drag to pan, and use Fit for its overview.
+
+Viewport-only recursive semantic zoom avoids a DOM element for every Step; WebGL2 is required.
+Creator bundles PixiJS 8.20.1 locally (MIT, [upstream distribution](https://www.npmjs.com/package/pixi.js/v/8.20.1)).
+The unmodified `pixi.min.js` and its CSP extension (`dist/packages/unsafe-eval.min.js`, which avoids
+dynamic code generation) are shipped with their license. No CDN, npm installation, Node runtime,
+or new Java dependency is required. These Creator assets are not included in generated applications.
+Collapsed groups and ordinary Steps share compact machine footprints, scaled together to separate
+dense neighbors while preserving centers, custom shapes and proportions. Layered chassis, faceplates
+and sockets connect to wide segmented conveyors. Shared ports form continuous T/L junctions;
+linear entries share one connection axis. Icons use square areas independent of exterior shape.
+Names and sampled average times share one label outside the body. Machine textures are shared by visible shape
+and resolution, then released when unused. Pixi housekeeping runs with explicit rendering frames,
+not a second idle animation loop. Focus and Fit are interruptible camera
+movements, skipped for reduced motion. Camera, station geometry and insertion previews are not persisted.
+[View the working Creator](screenshots/factory-workshop.png), its
+[construction tray](screenshots/factory-workshop-construction.png), and
+[nested detail with real Example values](screenshots/factory-workshop-detail.png).
 One diagram shows pending changes, application-owned Example coverage, the selected route and
-actual execution metrics. Choose an Example beside its definition in the Trigger's Examples tab;
+actual execution metrics. Choose an Example above the selected Trigger or in its Examples tab;
 the choice remains highlighted while inspecting downstream Steps or application facts.
-Connection width and a moving rail pattern reflect measured counter changes per second. Pattern
+Moving carriers on the conveyors reflect measured counter changes per second. Carrier
 density grows logarithmically from sparse to busy traffic; it is not one particle per request or
 a measurement of transit time. Motion stops when readings expire, metrics disappear, the page is
-hidden, or reduced motion is enabled. Heat strips compare sampled mean
-durations without replacing authored colors. Regions aggregate contained Steps, not flow latency.
-Disabled metrics, idle Steps, and absent timing samples remain distinct. Workspace and runtime
-details stay in the Inspector, with Runtime metrics behind a disclosure and current application
-facts in the bottom status rail. Examples count in the same execution metrics as ordinary inputs;
+hidden, or reduced motion is enabled. Lamps show current observed traffic or errors, not health or
+utilization. Regions report contained Step averages, not flow latency; there is no relative heat meter.
+Disabled metrics, idle Steps, and absent timing samples remain distinct. Configure opens the selected
+station's Inspector. Build status opens project/build paths, PID and application facts separately,
+without changing selection. Runtime metrics remain behind a disclosure; the bottom status rail
+shows compact application facts. Examples count in the same execution metrics as ordinary inputs;
 there is no excluded test counter or view-mode switch. A completed Example path is not ongoing traffic.
 Source/target selectors show the selected Example's actual values beside each field, including
-before/after writes. Missing fields and unreached Steps are distinct. Close the Inspector to give
-the canvas more space; the Inspector button reopens it without losing the current selection or draft.
+before/after writes. Missing fields and unreached Steps are distinct. Counter updates preserve
+unchanged Example values and focused controls in the dock.
 Step and Group Appearance share rectangle, ellipse, triangle, and diamond shapes, width/height
-proportions, and rectangle corner rounding. A ratio of 1 produces a square or circle. These settings
+proportions, and rectangle corner rounding. Defaults are a ratio of 1 and 12% rounding; Reset
+removes the override. A ratio of 1 produces a square or circle. These settings
 are metadata only and never change the compiled application or layout positions.
 Local project files and assembled edits are not limited by the 1 MiB HTTP request budget.
 Compilation still materializes the complete project and generated sources. Individual lowered
 Step plans retain a 32,768-character bound, and the development Example manifest retains a 4 MiB
-bound. Viewport observations use scoped application queries instead of full metric snapshots.
-Scene detail coarsens instead of truncating connections at a traversal cutoff. Removing the old
-node ceiling is not a claim that million-Step applications are supported. See
+bound. Viewport observations use compact application-side queries, not full metric snapshots or
+selected-trace replay. Scene detail coarsens when necessary to keep complete grouped connections
+within the drawing budget; no route traversal cutoff removes connections. Removing the old
+node ceiling is not a claim that million-Step application compilation is supported. See
 [checkpoint 5.3](ROADMAP.md#5-flow-control-groups-and-flat-compilation) for verification evidence.
 Camera position, zoom level, automatic regions, and group bounds are never persisted.
 Legacy format-1 metadata is validated and
@@ -542,7 +565,7 @@ the reusable Step template remain roadmap Item 4.
 - `railix-creator`: Creator HTTP/UI, project build and rolling child-JVM lifecycle, read-only
   management proxies, launcher, and executable shaded JAR.
 
-The reactor has three production modules and no third-party runtime library.
+The reactor has three production modules and no third-party Java runtime library.
 
 ## Pull Requests
 
