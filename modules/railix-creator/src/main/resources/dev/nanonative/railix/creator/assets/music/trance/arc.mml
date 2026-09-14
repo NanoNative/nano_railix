@@ -1,0 +1,7 @@
+name: Arc Transit
+tempo: 136
+triangle .20 .008 .16 | o4 a@1 f@3 d@4 r@8 a@1 f@3 d@4 r@8 a@1 f@3 d@4 r@8 g@2 e@2 c@4 r@8 g@2 e@2 c@4 r@8 e@1 c@3 a@4 r@8 e@1 c@3 a@4 r@8
+triangle .23 .004 .09 | o2 d@4 d@4 d@4 d@4 d@4 d@4 d@4 d@4 d@4 d@4 c@4 c@4 c@4 c@4 c@4 c@4 c@4 c@4 c@4 c@4 a@4 a@4 a@4 a@4 a@4 a@4 a@4 a@4
+sine .06 .06 .24 | o3 [dfa]@8 [dfa]@8 [dfa]@8 [dfa]@8 [dfa]@8 [ceg]@8 [ceg]@8 [ceg]@8 [ceg]@8 [ceg]@8 [ace]@8 [ace]@8 [ace]@8 [ace]@8
+kick .45 .002 .16 | o2 /: c@1 c@1 c@1 c@1 c@1 c@1 c@1 c@1 :/14
+hat .08 .001 .035 | /: c@2 c@2 c@2 c@2 :/14

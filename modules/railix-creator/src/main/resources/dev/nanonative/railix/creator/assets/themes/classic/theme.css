@@ -1,0 +1,10 @@
+/* The original material palette and icon-plate machines, on the shared renderer. */
+:root {
+  --world-buildings: 0;
+  --world-near: #425965;
+  --world-far: #15262f;
+  --machine-light: #dce8de;
+  --machine-shade: #98b2b1;
+  --belt-rim: #90aeb3;
+  --belt-bed: #102936;
+}

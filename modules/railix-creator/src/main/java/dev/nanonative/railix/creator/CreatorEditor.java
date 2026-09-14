@@ -85,7 +85,8 @@ final class CreatorEditor {
     }
 
     boolean matches(final String source, final RailixValue.ObjectValue metadata) {
-        return this.source.equals(source) && this.metadata.equals(metadata);
+        return this.source.equals(source) && List.of("groups", "steps").stream()
+                .allMatch(field -> this.metadata.values().get(field).equals(metadata.values().get(field)));
     }
 
     RailixValue.ObjectValue project() {
@@ -101,7 +102,7 @@ final class CreatorEditor {
     }
 
     /** Returns the selected Step, its predecessor and Trigger, and shallow connection targets. */
-    RailixValue.ObjectValue view(final String query) {
+    RailixValue.ObjectValue view(final String query, final RailixValue.ObjectValue settings) {
         final Map<String, String> parameters = parameters(query);
         final String selected = parameters.getOrDefault("node", "app");
         if (!nodes.containsKey(selected)) throw new NoSuchElementException("Step does not exist: " + selected + ".");
@@ -140,19 +141,24 @@ final class CreatorEditor {
                     return (name.isEmpty() ? "Group" : name).toLowerCase(Locale.ROOT).contains(search);
                 }).toList();
         final List<RailixValue> groups = new ArrayList<>(matching.stream().skip(offset).limit(64).toList());
-        array(metadata, "groups").stream().filter(value -> text((RailixValue.ObjectValue) value, "id").equals(group))
-                .filter(value -> !groups.contains(value)).findFirst().ifPresent(groups::add);
+        final String assignedGroup = text(object(allStyles, selected), "group");
+        array(metadata, "groups").stream().filter(value -> {
+            final String id = text((RailixValue.ObjectValue) value, "id");
+            return id.equals(group) || id.equals(assignedGroup);
+        }).filter(value -> !groups.contains(value)).forEach(groups::add);
         final Map<String, RailixValue> counts = new LinkedHashMap<>();
         groups.forEach(value -> {
             final String id = text((RailixValue.ObjectValue) value, "id");
             counts.put(id, groupCounts.getOrDefault(id, RailixValue.object(Map.of(
                     "steps", RailixValue.number(0), "regions", RailixValue.number(0)))));
         });
+        final Map<String, RailixValue> presentation = new LinkedHashMap<>(settings.values());
+        presentation.put("groups", RailixValue.array(groups));
+        presentation.put("steps", RailixValue.object(styles));
         return RailixValue.object(Map.of(
                 "project", RailixValue.object(Map.of("format", project.values().get("format"), "id", project.values().get("id"),
                         "nodes", RailixValue.array(new ArrayList<>(visible.values())), "links", RailixValue.array(links))),
-                "creator", RailixValue.object(Map.of("format", RailixValue.number(2), "groups", RailixValue.array(groups),
-                        "steps", RailixValue.object(styles))),
+                "creator", RailixValue.object(presentation),
                 "editor", RailixValue.object(Map.of("nodes", RailixValue.object(indexes), "full", RailixValue.array(full.stream().<RailixValue>map(RailixValue::string).toList()),
                         "used", RailixValue.object(used), "groups", RailixValue.object(counts),
                         "group_count", RailixValue.number(array(metadata, "groups").size()),
@@ -211,15 +217,16 @@ final class CreatorEditor {
             final RailixValue.ObjectValue changes,
             final boolean project
     ) {
-        final Set<String> fields = project ? Set.of("format", "id", "nodes", "links") : Set.of("groups", "steps");
+        final Set<String> fields = project ? Set.of("format", "id", "nodes", "links") : Set.of("groups", "steps", "theme");
         final Map<String, RailixValue> result = new LinkedHashMap<>(document.values());
         for (final var entry : changes.values().entrySet()) {
             final String field = entry.getKey();
             if (!fields.contains(field)) {
                 throw new IllegalArgumentException("Unknown edit field: " + field + ".");
             }
-            if (field.equals("id") || field.equals("format")) {
-                result.put(field, entry.getValue());
+            if (field.equals("id") || field.equals("format") || field.equals("theme")) {
+                if (field.equals("theme") && entry.getValue() instanceof RailixValue.NullValue) result.remove(field);
+                else result.put(field, entry.getValue());
                 continue;
             }
             if (!(entry.getValue() instanceof RailixValue.ObjectValue edits)) {
