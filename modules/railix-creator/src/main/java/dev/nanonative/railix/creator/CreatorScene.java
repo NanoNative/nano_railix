@@ -30,7 +30,7 @@ import java.util.Set;
 final class CreatorScene {
     static final int MAX_NODES = 2048;
     static final int MAX_SEGMENTS = 4096;
-    private static final Set<String> VIEW_PARAMETERS = Set.of("x", "y", "width", "height", "scale", "focus");
+    private static final Set<String> VIEW_PARAMETERS = Set.of("x", "y", "width", "height", "scale", "focus", "inside");
     private static final double NODE_WIDTH = 168;
     private static final double NODE_HEIGHT = 64;
     private static final double COLUMN = 248;
@@ -48,8 +48,9 @@ final class CreatorScene {
 
     CreatorScene(final String source, final RailixValue.ObjectValue metadata, final StepCatalog catalog) {
         this.source = source;
-        this.metadata = metadata;
-        revision = identity(source, RailixJson.write(metadata));
+        this.metadata = RailixValue.object(Map.of("groups", metadata.values().get("groups"),
+                "steps", metadata.values().get("steps")));
+        revision = identity(source, RailixJson.write(this.metadata));
         final RailixValue.ObjectValue project =
                 (RailixValue.ObjectValue) ((RailixJson.Parsed) RailixJson.parse(source)).value();
         final Map<String, RailixValue> styles = object(metadata.values().get("steps"));
@@ -122,7 +123,7 @@ final class CreatorScene {
         double flowTop = 0;
         for (final Route triggerRoute : app.outgoing) {
             final Part trigger = triggerRoute.to;
-            final double flowHeight = Math.max(280, Math.min(720, trigger.rows * 120.0));
+            final double flowHeight = Math.max(280, trigger.rows * ROW);
             trigger.box = new Box(COLUMN, flowTop + (flowHeight - NODE_HEIGHT) / 2, NODE_WIDTH, NODE_HEIGHT);
             world.add(trigger);
             final List<Part> units = new ArrayList<>();
@@ -139,7 +140,8 @@ final class CreatorScene {
             }
             if (!units.isEmpty()) {
                 final Part section = hierarchy(sections(units, "region:" + trigger.id), "index:" + trigger.id, false);
-                place(section, new Box(COLUMN * 2, flowTop, 960, flowHeight));
+                // Top-level stations keep their natural scale; only nested group contents use smaller levels.
+                place(section, new Box(COLUMN * 2, flowTop, section.box.width, section.box.height));
                 if (trigger.outgoing.size() == 1) {
                     final Box entry = trigger.outgoing.getFirst().to.box;
                     trigger.box = new Box(COLUMN, entry.y + (entry.height - NODE_HEIGHT) / 2, NODE_WIDTH, NODE_HEIGHT);
@@ -193,6 +195,7 @@ final class CreatorScene {
                     part.members = union(part.members, child.members);
                     part.metricMembers = union(part.metricMembers, child.metricMembers);
                     part.disabled += child.disabled;
+                    part.groupCount += child.groupCount + ("region".equals(child.kind) && !child.group.isEmpty() ? 1 : 0);
                 }
             }
         }
@@ -206,7 +209,8 @@ final class CreatorScene {
     }
 
     boolean matches(final String source, final RailixValue.ObjectValue metadata) {
-        return this.source.equals(source) && this.metadata.equals(metadata);
+        return this.source.equals(source) && this.metadata.values().entrySet().stream()
+                .allMatch(entry -> entry.getValue().equals(metadata.values().get(entry.getKey())));
     }
 
     /** Returns a bounded viewport projection; an omitted viewport fits the world or requested identity. */
@@ -229,7 +233,11 @@ final class CreatorScene {
         if (parameters.containsKey("focus") && focused == null) {
             throw new NoSuchElementException("Scene focus does not identify a Step or region.");
         }
-        final Box basis = focused == null ? root.box : focused.box;
+        final Part inside = parameters.containsKey("inside") ? identities.get(parameters.get("inside")) : null;
+        if (parameters.containsKey("inside") && (inside == null || !"region".equals(inside.kind))) {
+            throw new NoSuchElementException("Entered group is not in this scene.");
+        }
+        final Box basis = focused != null ? focused.box : inside != null ? inside.box : root.box;
         final boolean explicit = parameters.containsKey("x");
         final long coordinates = List.of("x", "y", "width", "height").stream()
                 .filter(parameters::containsKey).count();
@@ -248,15 +256,16 @@ final class CreatorScene {
                         Math.min(1200 / viewport.width, 800 / viewport.height)), true);
         final List<RailixValue> values = new ArrayList<>();
         final List<Part> constrained = new ArrayList<>();
-        final ArrayDeque<Part> pending = new ArrayDeque<>(root.children);
+        final ArrayDeque<Part> pending = new ArrayDeque<>(inside == null ? root.children : List.of(inside));
         boolean limited = false;
         while (!pending.isEmpty()) {
             final Part part = pending.removeFirst();
             if (!part.box.intersects(viewport)) {
                 continue;
             }
-            final boolean expand = expands(part, scale, focused);
-            final boolean boundary = expand && !part.group.isEmpty();
+            final boolean expand = expands(part, scale, focused, inside);
+            final boolean boundary = expand && "region".equals(part.kind) && (!part.group.isEmpty()
+                    || part == inside || inside == null && part.children.stream().noneMatch(child -> "region".equals(child.kind) && expands(child, scale, focused, inside)));
             if (expand && values.size() + pending.size() + part.children.size() + (boundary ? 1 : 0) <= budget) {
                 if (boundary) {
                     values.add(part.value(true));
@@ -279,18 +288,24 @@ final class CreatorScene {
                 if (!next.box.intersects(viewport)) {
                     continue;
                 }
-                final Part enclosing = representative(leaves.get(next.first), scale, focused, constrained);
+                if (inside != null && (next.last < inside.first || next.first > inside.last)) continue;
+                if (inside != null && (next.fromFirst < inside.first || next.toFirst < inside.first
+                        || next.fromLast > inside.last || next.toLast > inside.last)) {
+                    if (next.left != null) { routeQueue.addLast(next.right); routeQueue.addLast(next.left); }
+                    continue;
+                }
+                final Part enclosing = representative(leaves.get(next.first), scale, focused, constrained, inside);
                 if (enclosing.last >= next.last) {
                     continue;
                 }
-                final Part start = representative(leaves.get(next.fromFirst), scale, focused, constrained);
-                final Part end = representative(leaves.get(next.toFirst), scale, focused, constrained);
+                final Part start = representative(leaves.get(next.fromFirst), scale, focused, constrained, inside);
+                final Part end = representative(leaves.get(next.toFirst), scale, focused, constrained, inside);
                 if (start.last < next.fromLast || end.last < next.toLast) {
                     routeQueue.addLast(next.right);
                     routeQueue.addLast(next.left);
                     continue;
                 }
-                if (start == end || !start.box.union(end.box).intersects(viewport)) {
+                if (start == end || !Route.bounds(start, end).intersects(viewport)) {
                     continue;
                 }
                 connections.computeIfAbsent(start.id + ">" + end.id, ignored -> new Connection(start, end, next.outcome))
@@ -303,10 +318,17 @@ final class CreatorScene {
         final Map<String, RailixValue> response = new LinkedHashMap<>();
         response.put("revision", RailixValue.string(revision));
         response.put("bounds", root.box.value());
+        if (inside != null) {
+            response.put("inside", RailixValue.string(inside.id));
+            Part entry = inside;
+            // Flow advances along X; a Y-sorted spatial partition may begin on an upper branch.
+            while (!entry.children.isEmpty()) entry = entry.children.stream()
+                    .min(Comparator.comparingDouble(child -> child.box.x)).orElseThrow();
+            response.put("entry", entry.value(false));
+        }
         if (focused != null) {
             response.put("focus", focused.box.value());
-            response.put("focus_min_scale", RailixValue.number(BigDecimal.valueOf(focused.children.isEmpty() ? 0
-                    : 1.1 * Math.min(REGION_DETAIL_WIDTH / focused.box.width, REGION_DETAIL_HEIGHT / focused.box.height))));
+            response.put("focus_min_scale", RailixValue.number(BigDecimal.valueOf(focusScale(focused, inside))));
         }
         response.put("nodes", RailixValue.array(values));
         final Map<String, RailixValue> visibleIcons = new LinkedHashMap<>();
@@ -326,7 +348,7 @@ final class CreatorScene {
             throw new IllegalArgumentException("Scene observation query exceeds 8192 characters.");
         }
         final Set<String> allowed = new java.util.HashSet<>(VIEW_PARAMETERS);
-        allowed.addAll(Set.of("revision", "example", "metrics"));
+        allowed.addAll(Set.of("revision", "example", "metrics", "members", "cursor"));
         final Map<String, String> parameters = parameters(query, allowed);
         if (!parameters.getOrDefault("revision", "").matches("[0-9a-f]{64}")) {
             throw new IllegalArgumentException("Scene observations require the current scene revision.");
@@ -342,7 +364,40 @@ final class CreatorScene {
                 throw new IllegalArgumentException("Metric selection requires distinct non-blank identifiers.");
             }
         }
+        if (parameters.containsKey("cursor") && (!parameters.containsKey("members")
+                || !parameters.get("cursor").matches("0|[1-9][0-9]{0,9}"))) {
+            throw new IllegalArgumentException("Member cursor requires a region and a nonnegative integer.");
+        }
         return parameters;
+    }
+
+    /** A bounded page of individual counters, for Creator-side reductions without runtime group semantics. */
+    RailixValue.ObjectValue memberPage(final Map<String, String> parameters) {
+        final Part part = identities.get(parameters.get("members"));
+        if (part == null || part.children.isEmpty()) throw new NoSuchElementException("Group is not in this scene.");
+        long cursor = Long.parseLong(parameters.getOrDefault("cursor", "0"));
+        int lower = 0, upper = part.metricMembers.length / 2;
+        while (lower < upper) {
+            final int middle = (lower + upper) >>> 1;
+            if (part.metricMembers[middle * 2 + 1] < cursor) lower = middle + 1;
+            else upper = middle;
+        }
+        final Map<String, RailixValue> steps = new LinkedHashMap<>();
+        for (int range = lower * 2; range < part.metricMembers.length && steps.size() < 512; range += 2) {
+            final int start = part.metricMembers[range], end = part.metricMembers[range + 1];
+            for (cursor = Math.max(start, cursor); cursor <= end && steps.size() < 512; cursor++) {
+                steps.put(Long.toString(cursor), RailixValue.array(List.of(
+                        RailixValue.array(List.of(RailixValue.number(cursor), RailixValue.number(cursor))))));
+            }
+        }
+        final boolean finished = part.metricMembers.length == 0 || cursor > part.metricMembers[part.metricMembers.length - 1];
+        final Map<String, RailixValue> query = new LinkedHashMap<>();
+        query.put("steps", RailixValue.object(steps));
+        query.put("flows", RailixValue.object(Map.of()));
+        if (parameters.containsKey("metrics")) query.put("metrics", RailixValue.array(java.util.Arrays.stream(parameters.get("metrics").split(","))
+                .<RailixValue>map(RailixValue::string).toList()));
+        return RailixValue.object(Map.of("query", RailixValue.object(query), "count", RailixValue.number(part.count),
+                "next", RailixValue.number(finished ? -1 : cursor)));
     }
 
     boolean observesRevision(final String expected) {
@@ -663,12 +718,24 @@ final class CreatorScene {
             node.rows = node.outgoing.isEmpty() ? 1 : node.outgoing.stream().mapToInt(edge -> edge.to.rows).sum();
         }
         for (final Part node : order) {
+            node.station = true;
+            node.exits = node.outgoing.size();
             node.box = new Box(node.depth * COLUMN, (node.row + (node.rows - 1) / 2.0) * ROW,
                     NODE_WIDTH, NODE_HEIGHT);
             int row = node.row;
             for (final Route edge : node.outgoing) {
                 edge.to.row = row;
                 row += edge.to.rows;
+            }
+        }
+        // Centre sockets on the next stations, not on the number of leaves in each subtree.
+        for (int index = order.size() - 1; index >= 0; index--) {
+            final Part node = order.get(index);
+            if (!node.outgoing.isEmpty()) {
+                final Box first = node.outgoing.getFirst().to.box;
+                final Box last = node.outgoing.getLast().to.box;
+                node.box = new Box(node.box.x, (first.y + first.height / 2 + last.y + last.height / 2) / 2
+                        - NODE_HEIGHT / 2, NODE_WIDTH, NODE_HEIGHT);
             }
         }
         return order;
@@ -776,7 +843,7 @@ final class CreatorScene {
         }
         final String kind = aggregate ? "region" : "index";
         if (parts.size() <= 8) {
-            return container(kind, id, "Flow section", "", Map.of(), List.copyOf(parts));
+            return container(kind, id, "Automatic section", "", Map.of(), List.copyOf(parts));
         }
         final Box bounds = bounds(parts);
         final List<Part> sorted = new ArrayList<>(parts);
@@ -784,19 +851,27 @@ final class CreatorScene {
                 ? Comparator.comparingDouble(part -> part.box.x)
                 : Comparator.comparingDouble(part -> part.box.y);
         sorted.sort(coordinate.thenComparing(part -> part.id));
-        final int middle = sorted.size() / 2;
-        return container(kind, id, "Flow section", "", Map.of(), List.of(
-                hierarchy(sorted.subList(0, middle), id + ":0", aggregate),
-                hierarchy(sorted.subList(middle, sorted.size()), id + ":1", aggregate)
-        ));
+        final List<Part> children = new ArrayList<>();
+        final int batch = (sorted.size() + 7) / 8;
+        for (int start = 0; start < sorted.size(); start += batch) {
+            children.add(hierarchy(sorted.subList(start, Math.min(start + batch, sorted.size())),
+                    id + ":" + children.size(), aggregate));
+        }
+        return container(kind, id, "Automatic section", "", Map.of(), children);
     }
 
     private static Part container(final String kind, final String id, final String name, final String group,
                                final Map<String, RailixValue> style, final List<Part> children) {
         final Part result = new Part(id, kind, name, "", group, style, children);
-        result.box = bounds(children).expand(18);
+        result.box = contentBounds(kind, group, children);
         result.count = children.stream().mapToInt(child -> child.count).sum();
         return result;
+    }
+
+    private static Box contentBounds(final String kind, final String group, final List<Part> children) {
+        final double padding = "region".equals(kind) && group.isEmpty()
+                ? children.getFirst().children.isEmpty() ? (COLUMN - NODE_WIDTH) / 2 : 0 : 18;
+        return bounds(children).expand(padding);
     }
 
     /* Each level owns a fixed footprint. Children shrink inside it instead of extending the world. */
@@ -810,10 +885,12 @@ final class CreatorScene {
         }
         // Spatial indexes do not introduce another visual layout or move shared lanes.
         final boolean index = "index".equals(part.kind);
-        final Box original = index ? part.box : bounds(part.children);
+        final boolean automatic = !index && part.group.isEmpty();
+        final Box original = index ? part.box : automatic ? contentBounds(part.kind, part.group, part.children)
+                : bounds(part.children);
         part.box = space;
-        final double insetX = index ? 0 : space.width * 0.06;
-        final double insetY = index ? 0 : space.height * 0.12;
+        final double insetX = index || automatic ? 0 : space.width * 0.06;
+        final double insetY = index || automatic ? 0 : space.height * 0.12;
         final double scaleX = (space.width - insetX * 2) / original.width;
         final double scaleY = (space.height - insetY * 2) / original.height;
         for (final Part child : part.children) {
@@ -831,17 +908,36 @@ final class CreatorScene {
         return result;
     }
 
-    private static boolean expands(final Part part, final double scale, final Part focused) {
+    private static boolean expands(final Part part, final double scale, final Part focused, final Part inside) {
         final boolean reveal = focused != null && part != focused
                 && part.first <= focused.first && part.last >= focused.last;
-        final boolean readableSmallFlow = part.group.isEmpty() && part.count <= 8
-                && part.box.width * scale >= 180;
-        return !part.children.isEmpty() && ("index".equals(part.kind) || reveal || readableSmallFlow
-                || part.box.width * scale > REGION_DETAIL_WIDTH || part.box.height * scale > REGION_DETAIL_HEIGHT);
+        final boolean entered = inside != null && (part.first <= inside.first && part.last >= inside.last
+                || inside.count < MAX_NODES && part.group.isEmpty() && part.first >= inside.first && part.last <= inside.last);
+        return !part.children.isEmpty() && ("index".equals(part.kind) || entered || reveal || scale >= detailScale(part));
+    }
+
+    private static double focusScale(final Part focused, final Part inside) {
+        double scale = 0;
+        // The target must remain revealed after the one-shot focus parameter is removed.
+        for (Part part = focused; part != null; part = part.parent) {
+            if (!part.children.isEmpty() && !expands(part, 0, null, inside)) {
+                scale = Math.max(scale, 1.1 * detailScale(part));
+            }
+        }
+        return scale;
+    }
+
+    /* Reveal the next level only when its children fit readable stations, not merely when the parent is wide. */
+    private static double detailScale(final Part part) {
+        double scale = Math.min(REGION_DETAIL_WIDTH / part.box.width, REGION_DETAIL_HEIGHT / part.box.height);
+        for (final Part child : part.children) {
+            scale = Math.max(scale, Math.max(120 / child.box.width, 48 / child.box.height));
+        }
+        return scale;
     }
 
     private static Part representative(final Part leaf, final double scale, final Part focused,
-                                       final List<Part> constrained) {
+                                       final List<Part> constrained, final Part inside) {
         int low = 0;
         int high = constrained.size() - 1;
         while (low <= high) {
@@ -857,7 +953,7 @@ final class CreatorScene {
         }
         Part result = leaf;
         for (Part part = leaf.parent; part != null; part = part.parent) {
-            if (!expands(part, scale, focused)) {
+            if (!expands(part, scale, focused, inside)) {
                 result = part;
             }
         }
@@ -956,14 +1052,17 @@ final class CreatorScene {
         private int depth;
         private int row;
         private int rows;
+        private int exits;
         private int first;
         private int last;
         private int count;
+        private int groupCount;
         private int node = -1;
         private int[] members = new int[0];
         private int[] metricMembers = new int[0];
         private int disabled;
         private boolean metrics;
+        private boolean station;
         private int exampleCount;
         private String iconRef = "";
         private Part parent;
@@ -977,6 +1076,7 @@ final class CreatorScene {
             this.group = group;
             this.style = style;
             this.children = children;
+            station = children.isEmpty();
             count = "end".equals(kind) ? 0 : 1;
         }
 
@@ -986,6 +1086,12 @@ final class CreatorScene {
             value.put("kind", RailixValue.string("index".equals(kind) ? "region" : kind));
             value.put("name", RailixValue.string(name));
             value.put("count", RailixValue.number(count));
+            value.put("station_scale", decimal(stationScale()));
+            final List<RailixValue> regions = new ArrayList<>();
+            for (Part ancestor = parent; ancestor != null; ancestor = ancestor.parent) {
+                if (ancestor.parent != null) regions.add(RailixValue.string(ancestor.id));
+            }
+            if (!regions.isEmpty()) value.put("regions", RailixValue.array(regions));
             if (!iconRef.isEmpty()) {
                 value.put("icon_ref", RailixValue.string(iconRef));
             }
@@ -1000,11 +1106,17 @@ final class CreatorScene {
             }
             if (!children.isEmpty()) {
                 value.put("expanded", RailixValue.bool(expanded));
+                value.put("group_count", RailixValue.number(groupCount));
             }
             for (final String field : List.of("color", "boundary", "shape", "aspect", "roundness")) {
                 if (style.containsKey(field)) value.put(field, style.get(field));
             }
             return RailixValue.object(value);
+        }
+
+        private double stationScale() {
+            // Internal index regions describe a whole cell, including space around its machine.
+            return Math.min(box.width / (station ? NODE_WIDTH : COLUMN), box.height / (station ? NODE_HEIGHT : ROW));
         }
     }
 
@@ -1037,6 +1149,12 @@ final class CreatorScene {
             final double startY = start.box.y + start.box.height / 2;
             final double endX = end.box.x + end.box.width / 2;
             final double endY = end.box.y + end.box.height / 2;
+            if (start.exits > 1 && !"app".equals(start.kind) && endY != startY) {
+                final double y1 = startY + Math.copySign(start.box.height / 2, endY - startY);
+                final double x2 = endX - Math.copySign(end.box.width / 2, endX - startX);
+                return value(identity, start, end, List.of(point(startX, y1), point(startX, endY),
+                        point((startX + x2) / 2, endY), point(x2, endY)));
+            }
             final boolean horizontal = start.box.x + start.box.width <= end.box.x
                     || end.box.x + end.box.width <= start.box.x
                     || Math.abs(endX - startX) >= Math.abs(endY - startY);
@@ -1046,15 +1164,21 @@ final class CreatorScene {
             final double x2 = endX - (horizontal ? end.box.width * direction / 2 : 0);
             final double y2 = endY - (horizontal ? 0 : end.box.height * direction / 2);
             final double middle = horizontal ? (x1 + x2) / 2 : (y1 + y2) / 2;
+            return value(identity, start, end, List.of(point(x1, y1),
+                    horizontal ? point(middle, y1) : point(x1, middle),
+                    horizontal ? point(middle, y2) : point(x2, middle), point(x2, y2)));
+        }
+
+        private RailixValue.ObjectValue value(final String identity, final Part start, final Part end,
+                                             final List<RailixValue> points) {
             return RailixValue.object(Map.of("id", RailixValue.string(identity),
                     "from", RailixValue.string(start.id), "to", RailixValue.string(end.id),
-                    "outcome", RailixValue.string(outcome), "points", RailixValue.array(List.of(
-                            point(x1, y1), horizontal ? point(middle, y1) : point(x1, middle),
-                            horizontal ? point(middle, y2) : point(x2, middle), point(x2, y2)))));
+                    "station_scale", decimal(Math.min(1, Math.min(start.stationScale(), end.stationScale()))),
+                    "outcome", RailixValue.string(outcome), "points", RailixValue.array(points)));
         }
 
         private Box bounds() {
-            Box bounds = from.box.union(to.box);
+            Box bounds = bounds(from, to);
             for (Part part = from.parent; part != null && !(part.first <= to.first && part.last >= to.last);
                  part = part.parent) {
                 bounds = bounds.union(part.box);
@@ -1064,6 +1188,10 @@ final class CreatorScene {
                 bounds = bounds.union(part.box);
             }
             return bounds;
+        }
+
+        private static Box bounds(final Part from, final Part to) {
+            return from.box.union(to.box);
         }
 
         private static RailixValue point(final double x, final double y) {

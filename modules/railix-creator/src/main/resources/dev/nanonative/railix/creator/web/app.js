@@ -28,18 +28,29 @@ const state = {
   creator: { format: 2, groups: [], steps: {} },
   catalog: [],
   definitions: new Map(),
-  icons: [],
   iconUrls: new Map(),
-  iconDiagnostics: [],
+  themes: [],
+  settings: {},
+  settingsRevision: null,
+  settingsVersion: 0,
+  settingsTimer: 0,
+  settingsWriting: false,
+  hoverTrigger: null,
+  hoverTimer: 0,
+  hoverController: null,
+  themesDirectory: "",
+  themeError: "",
+  themeController: null,
   application: {},
+  audio: null,
   workspace: {},
   selection: { type: "app", id: "app" },
   regionSelection: null,
+  groupPointer: null,
   diagnostics: [],
   localDiagnostics: [],
   build: "Loading",
   picker: null,
-  iconPicker: null,
   pathPicker: null,
   pathDraft: [],
   pathField: "",
@@ -85,11 +96,16 @@ const state = {
   sceneDirty: true,
   revealNode: "",
   observations: null,
+  groupMeans: new Map(),
+  groupMeanKey: "",
+  groupMeanTimer: 0,
+  groupMeanController: null,
   observationTimer: 0,
   observationController: null,
   worldNodes: new Map(),
   worldGroups: new Map(),
   worldChanges: new Set(),
+  worldMarkedRegions: new Map(),
   worldIssues: new Map(),
   worldCovered: new Set(),
   worldSelected: new Set(),
@@ -120,18 +136,16 @@ async function boot() {
     if (!exactJsonSupported()) {
       throw new Error("Browser does not support exact JSON numbers.");
     }
-    const [projectResponse, catalogResponse, iconResponse] = await Promise.all([
+    const [projectResponse, catalogResponse] = await Promise.all([
       fetch("/api/editor"),
-      fetch("/api/catalog"),
-      fetch("/api/icons")
+      fetch("/api/catalog")
     ]);
-    if (!projectResponse.ok || !catalogResponse.ok || !iconResponse.ok) {
+    if (!projectResponse.ok || !catalogResponse.ok) {
       throw new Error("Creator could not open the project.");
     }
-    const [project, catalog, icons] = await Promise.all([
+    const [project, catalog] = await Promise.all([
       projectResponse.text().then(parseExact),
-      catalogResponse.text().then(parseExact),
-      iconResponse.text().then(parseExact)
+      catalogResponse.text().then(parseExact)
     ]);
     state.project = project.project;
     state.editor = project.editor;
@@ -145,25 +159,40 @@ async function boot() {
     state.diagnostics = project.diagnostics || [];
     state.catalog = catalog.steps;
     state.definitions = new Map(state.catalog.map(definition => [definition.id, definition]));
-    state.icons = icons.icons;
-    state.iconDiagnostics = icons.diagnostics;
     state.build = "Built";
+    state.audio = new RailixAudio(document.querySelector('#audio-panel'), changeSettings);
     state.world = new RailixWorld(document.querySelector("#graph"), {
       selectNode: selectWorldNode,
-      selectGroup: (group, region) => {
+      deselect: clearSelection,
+      selectGroup: (group, region, event) => {
+        state.groupPointer = event?.detail === 1 ? {id:region, x:event.clientX, y:event.clientY} : null;
         state.editorRequest++;
         state.editorController?.abort();
         state.world.cancelFocus();
         state.regionSelection = state.world.scene.nodes.find(item => item.id === region);
+        state.audio.cue(worldAppearance(state.regionSelection), true);
         state.inspectorMode = "inspect";
         state.picker = null;
-        showInspector(false);
+        resetMetrics(true);
         render();
+        showInspector(true);
         state.world.repaint();
       },
       appearance: worldAppearance,
+      selectedId: () => state.regionSelection?.id || state.selection.id,
       linkAppearance: worldLinkAppearance,
+      seed: () => numberText(state.creator.created_at ?? state.project.id),
+      powered: () => state.application.state === "running",
       motionActive: worldMotionActive,
+      reducedMotion: () => state.settings.reduced_motion === true,
+      hoverTrigger,
+      onGroup: group => {
+        showInspector(false);
+        const navigation = document.querySelector('#group-navigation');
+        navigation.hidden = !group;
+        navigation.querySelector('span').textContent = group ? `${group.name} (${count(group.count, 'Step')})` : '';
+      },
+      onActivity: level => state.audio.near(level),
       linkLabel: link => {
         const operation = state.worldNodes.get(link.from);
         const label = outcomeLabel(operation, link.outcome);
@@ -172,6 +201,7 @@ async function boot() {
         return connection?.invalid ? `${label}: ${connection.label}` : label;
       },
       onScene: scene => {
+        updateWorldMarks(scene);
         releaseUnusedIconUrls();
         const message = document.querySelector("#world-error");
         message.hidden = !scene.limited;
@@ -188,6 +218,7 @@ async function boot() {
       }
     });
     render();
+    void refreshSettings();
     scheduleApplicationPoll(0);
     scheduleMetricsPoll(0);
   } catch (error) {
@@ -197,7 +228,6 @@ async function boot() {
     message.dataset.severity = "error";
     message.textContent = error instanceof Error ? error.message : "Creator could not open the project.";
     message.hidden = false;
-    document.querySelector("#selection-dock").hidden = true;
   }
 }
 
@@ -205,7 +235,7 @@ function render() {
   if (!state.project) {
     return;
   }
-  document.querySelector("#project-title").textContent = state.project.id;
+  document.title = `${state.project.id} - Railix Creator`;
   renderBuildStatus();
   const flows = triggerNodes();
   document.querySelector("#flow-count").textContent = count(
@@ -222,26 +252,21 @@ function render() {
     : "Not built";
   state.worldNodes = new Map(state.project.nodes.map(operation => [operation.id, operation]));
   state.worldGroups = new Map(state.creator.groups.map(group => [group.id, group]));
-  state.worldChanges = changedIds();
-  state.worldIssues = new Map();
-  for (const issue of allDiagnostics()) {
-    const owner = diagnosticOwner(issue);
-    const issues = state.worldIssues.get(owner) || [];
-    issues.push(issue);
-    state.worldIssues.set(owner, issues);
-  }
+  updateWorldMarks(state.world?.scene);
   const inspectorElement = document.querySelector("#inspector");
   state.optionsPending = false;
   const openDetails = inspectorElement.dataset.selection === state.selection.id
     ? [...inspectorElement.querySelectorAll("details[open][id]")].map(detail => detail.id) : [];
   document.querySelector("#inspector-content").innerHTML = inspector();
-  inspectorElement.dataset.selection = state.selection.id;
+  const navigation = document.querySelector("#inspector-content .inspector-tabs");
+  document.querySelector("#inspector-nav").replaceChildren(...(navigation ? [navigation] : []));
+  inspectorElement.dataset.selection = state.regionSelection?.id || state.selection.id;
   renderPreview();
   openDetails.forEach(id => {
     const detail = document.getElementById(id);
     if (detail) detail.open = true;
   });
-  document.querySelector("#overlay").innerHTML = picker() + iconPicker() + groupPicker();
+  document.querySelector("#overlay").innerHTML = picker() + groupPicker();
   state.world?.preview(null);
   releaseUnusedIconUrls();
   applyExampleCoverage();
@@ -255,40 +280,105 @@ function render() {
   renderWorldStatus();
 }
 
+function updateWorldMarks(scene) {
+  state.worldChanges = changedIds();
+  state.worldIssues = new Map();
+  for (const issue of allDiagnostics()) {
+    const owner = diagnosticOwner(issue);
+    const issues = state.worldIssues.get(owner) || [];
+    issues.push(issue);
+    state.worldIssues.set(owner, issues);
+  }
+  const marked = new Set([...state.worldChanges, ...state.worldIssues.keys()]);
+  for (const id of state.worldMarkedRegions.keys()) if (!marked.has(id)) state.worldMarkedRegions.delete(id);
+  for (const item of scene?.nodes || []) if (marked.has(item.id)) state.worldMarkedRegions.set(item.id, item.regions || []);
+  for (const id of marked) for (const region of state.worldMarkedRegions.get(id) || []) {
+    if (state.worldChanges.has(id)) state.worldChanges.add(region);
+    if (state.worldIssues.has(id)) state.worldIssues.set(region, [...(state.worldIssues.get(region) || []), ...state.worldIssues.get(id)]);
+  }
+}
+
 function renderDock() {
+  renderTriggerChooser();
   const operation = selectedOperation();
-  // Neighbors and retained drafts are not a loaded selection; new local Steps have no editor entry yet.
-  if (!operation || state.editor.nodes[operation.id] && !state.editor.full.includes(operation.id)) return;
-  const definition = definitionFor(operation);
   const region = state.regionSelection;
-  const app = state.selection.type === "app";
+  const dock = document.querySelector("#selection-overview");
+  if (!operation && !region) {
+    return;
+  }
+  // Neighbors and retained drafts are not a loaded selection; new local Steps have no editor entry yet.
+  if (!region && state.editor.nodes[operation.id] && !state.editor.full.includes(operation.id)) return;
+  const definition = region ? {} : definitionFor(operation);
+  const app = !region && state.selection.type === "app";
   const trigger = definition.kind === "trigger";
-  const presentation = stepPresentation(operation.id);
+  const presentation = region ? {} : stepPresentation(operation.id);
   const name = region ? state.worldGroups.get(region.group)?.name || region.name
     : app ? state.project.id : presentation.name || stepName(definition);
-  const actions = region ? `<button type="button" id="enter-region">Enter group</button>${region.group
-    ? `<button type="button" data-manage-region="${html(region.group)}">Manage group</button>` : ""}` : app
-    ? `<button id="add-trigger" type="button" ${availableTriggers().length ? "" : "disabled"}>Add Trigger</button>
-       <button type="button" id="manage-groups">Groups</button>`
+  const actions = region ? '' : app
+    ? `<button id="add-trigger" type="button" ${availableTriggers().length ? "" : "disabled"}><i class="hud-symbol" data-symbol="plus" aria-hidden="true"></i>Add Trigger</button>`
     : nextStepControls(operation);
-  const examples = trigger && !region ? `<label class="dock-example">Example
-      <select id="dock-example" aria-label="Selected Example">${operation.examples.map((example, index) =>
-        `<option value="${index}" ${index === state.exampleIndex ? "selected" : ""}>${html(example.name)}</option>`).join("")}</select>
-      <button type="button" data-open-panel="examples">Edit</button></label>` : "";
-  const source = `<header class="dock-heading"><div><small>${html(region ? count(region.count, "Step") : app ? "Application" : stepName(definition))}</small>
-      <strong>${html(name)}</strong></div></header>
+  const navigation = `<button type="button" id="dock-focus" title="Focus (F)" aria-label="Focus"><i class="hud-symbol" data-symbol="locate" aria-hidden="true"></i></button>
+    ${region ? '<button type="button" id="enter-region" title="Enter group (Enter)" aria-label="Enter group"><i class="hud-symbol" data-symbol="enter" aria-hidden="true"></i></button>' : ''}
+    ${!document.querySelector('#group-navigation').hidden ? '<button type="button" data-leave-group title="Leave group" aria-label="Leave group"><i class="hud-symbol" data-symbol="back" aria-hidden="true"></i></button>' : ''}`;
+  renderDockMarkup(document.querySelector('#inspector-navigation'), navigation);
+  const deletion = state.inspectorMode === 'groups' || app ? '' : region
+    ? region.group ? `data-delete-region="${html(region.group)}"` : ''
+    : `id="delete-step" ${trigger || removableStep(operation) ? '' : 'disabled'}`;
+  const footer = document.querySelector('#inspector-footer');
+  renderDockMarkup(footer, deletion ? `<button type="button" ${deletion} class="danger" title="Delete ${html(name)}" aria-label="Delete ${html(name)}"><i class="hud-symbol" data-symbol="trash" aria-hidden="true"></i></button>` : '');
+  footer.hidden = !deletion;
+  const type = region ? 'Group' : app ? 'Application' : trigger ? 'Trigger'
+    : definition.outcomes?.length > 1 ? stepName(definition) : 'Step';
+  const source = `<header class="dock-heading"><div><small>${html(type)}</small>
+      <h2>${html(name)}</h2>${region ? `<span>${html(count(region.count, 'Step'))}${region.group ? '' : ' · Automatic'}</span>` : ''}</div>
+      <div class="selection-portrait" role="img" aria-label="${html(name)} building"><div></div></div></header>
     <div id="dock-observation"><div class="dock-issues"></div><div class="dock-values"></div><div class="dock-counters"></div></div>
-    <nav class="dock-actions" aria-label="Construction tools">${actions}</nav>`;
-  const dock = document.querySelector("#selection-dock");
-  dock.hidden = Boolean(state.picker);
-  dock.dataset.selection = region?.id || operation.id;
-  document.querySelector("#open-inspector").hidden = Boolean(region) || !document.querySelector("#inspector").hidden;
+    ${actions ? `<nav class="dock-actions" aria-label="Selection actions">${actions}</nav>` : ''}`;
   // Polling updates observations only; it must not replace a focused control.
-  renderDockMarkup(document.querySelector("#dock-content"), source);
-  const chooser = document.querySelector("#trigger-example");
-  renderDockMarkup(chooser, examples);
-  state.world?.anchor(examples && !state.picker ? operation.id : "", chooser);
+  if (dock) {
+    renderDockMarkup(dock, source);
+    state.world?.portrait(region || {id:operation.id,use:operation.use,kind:definition.kind}, dock.querySelector('.selection-portrait > div'));
+  }
   renderDockObservation();
+}
+
+function renderTriggerChooser() {
+  const selected = selectedOperation();
+  const trigger = state.hoverTrigger || (!state.regionSelection && definitionFor(selected)?.kind === 'trigger' ? selected : null);
+  const chooser = document.querySelector('#trigger-example');
+  const examples = trigger?.examples || [];
+  renderDockMarkup(chooser, trigger ? `<label class="dock-example">Example
+    <select id="dock-example" data-trigger="${html(trigger.id)}" aria-label="Selected Example"><option value="-1" ${state.exampleIndex < 0 ? 'selected' : ''}>None</option>${examples.map((example,index) =>
+      `<option value="${index}" ${index === state.exampleIndex ? 'selected' : ''}>${html(example.name)}</option>`).join('')}</select>
+    <button type="button" data-edit-trigger="${html(trigger.id)}">Edit</button></label>` : '');
+  state.world?.anchor(trigger && !state.picker ? trigger.id : '', chooser);
+}
+
+function hoverTrigger(id) {
+  clearTimeout(state.hoverTimer);
+  state.hoverController?.abort();
+  state.hoverTimer = setTimeout(async () => {
+    if (!id) {
+      const chooser = document.querySelector('#trigger-example');
+      // Native select popups leave the hover tree without relinquishing keyboard focus.
+      if (chooser.contains(document.activeElement) || chooser.matches(':hover')) return;
+      state.hoverTrigger = null;
+      renderTriggerChooser();
+      return;
+    }
+    if (state.hoverTrigger?.id === id) return;
+    const controller = state.hoverController = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const existing = state.editor.full.includes(id) ? node(id) : null;
+      const response = existing ? null : await fetch(`/api/editor?${new URLSearchParams({node:id})}`, {signal:controller.signal});
+      if (response && !response.ok) return;
+      const trigger = existing || parseExact(await response.text()).project.nodes.find(item => item.id === id);
+      if (!controller.signal.aborted) { state.hoverTrigger = trigger; renderTriggerChooser(); }
+    } catch (error) {
+      if (error.name !== 'AbortError') document.querySelector('#world-error').textContent = 'Trigger examples could not be read.';
+    } finally { clearTimeout(timeout); }
+  }, id ? 120 : 450);
 }
 
 function renderDockMarkup(element, source) {
@@ -303,13 +393,13 @@ function renderDockMarkup(element, source) {
 function renderDockObservation() {
   const slot = document.querySelector("#dock-observation");
   const operation = selectedOperation();
-  if (!slot || !operation || state.editor.nodes[operation.id] && !state.editor.full.includes(operation.id)) return;
   const region = state.regionSelection;
+  if (!slot || !region && (!operation || state.editor.nodes[operation.id] && !state.editor.full.includes(operation.id))) return;
   const item = currentWorldObservations()?.nodes.get(region?.id || operation.id);
   const measured = item?.metrics;
-  const counters = measured && Object.hasOwn(measured, "executions") ? `<span>${formatInteger(measured.executions)} runs</span>
+  const counters = !region && measured && Object.hasOwn(measured, "executions") ? `<span>${formatInteger(measured.executions)} runs</span>
     ${worldMotionActive() && Number.isFinite(item.rate) ? `<span>${formatRate(item.rate)}/s</span>` : ""}
-    ${metricNumber(measured.duration_samples) ? `<span>${averageNanos(measured)} ${region ? "Step avg" : "avg"}</span>` : ""}
+    ${metricNumber(measured.duration_samples) ? `<span>${averageNanos(measured)} avg</span>` : ""}
     ${metricNumber(measured.errors) ? `<span class="dock-error">${formatInteger(measured.errors)} errors</span>` : ""}` : "";
   const issues = state.worldIssues.get(region?.id || operation.id) || [];
   const example = selectedTraceCase();
@@ -351,7 +441,7 @@ function focusGroup(groupId) {
 }
 
 function focusRegion(regionId) {
-  void state.world?.focus(regionId);
+  void state.world?.enter(regionId);
 }
 
 function renderBuildStatus() {
@@ -361,6 +451,8 @@ function renderBuildStatus() {
 }
 
 async function selectWorldNode(id) {
+  const item = state.world?.scene?.nodes.find(node => node.id === id);
+  if (item) state.audio?.cue(worldAppearance(item));
   state.regionSelection = null;
   state.picker = null;
   state.revealNode = "";
@@ -371,6 +463,7 @@ async function selectWorldNode(id) {
   if (!operation) return false;
   if (definitionOf(operation.use)?.kind === "step") {
     selectStep(id);
+    showInspector(true);
     return true;
   }
   clearPreview();
@@ -385,6 +478,7 @@ async function selectWorldNode(id) {
   state.pathPicker = null;
   clearInputQueries();
   render();
+  showInspector(true);
   scheduleMetricsPoll(0);
   if (id !== "app") requestSelectedTrace();
   return true;
@@ -401,7 +495,7 @@ async function loadEditor(id, group = state.managedGroup, query = state.groupQue
     const writer = state.writePromise;
     const version = state.projectVersion;
     const creatorVersion = state.creatorVersion;
-    const response = await fetch(`/api/editor?${new URLSearchParams({ node: id, group, q: query, offset })}`, { signal: controller.signal });
+    const response = await fetch(`/api/editor?${new URLSearchParams({ ...(id ? {node: id} : {}), group, q: query, offset })}`, { signal: controller.signal });
     const payload = parseExact(await response.text());
     if (request !== state.editorRequest) return "superseded";
     if (writer !== state.writePromise || state.writeActive
@@ -487,15 +581,18 @@ function worldAppearance(item) {
   const definition = definitionOf(item.use);
   const issues = state.worldIssues.get(item.id) || [];
   const observation = currentWorldObservations()?.nodes.get(item.id);
-  const coverage = item.kind === "app" ? ""
+  const incoming = item.kind === "end" ? state.world.scene.links.find(link => link.to === item.id) : null;
+  const arrival = incoming && worldLinkAppearance(incoming);
+  const coverage = arrival?.selected ? "selected" : item.kind === "app" ? ""
     : observation && Object.hasOwn(observation, "covered_count") ? Number(observation.selected_count) > 0 ? "selected"
       : Number(observation.covered_count) > 0 ? "covered" : Number(observation.count) > 0 ? "uncovered" : ""
     : state.worldSelected.has(item.id) ? "selected"
     : state.worldCovered.has(item.id) ? "covered" : "";
   const live = item.kind !== "end" && observation?.metrics && Object.hasOwn(observation.metrics, "executions")
     ? observation.metrics : null;
-  const sampled = live && metricNumber(live.duration_samples) > 0;
-  const mean = sampled ? metricNumber(live.duration_nanos_total) / metricNumber(live.duration_samples) : 0;
+  const timing = item.kind === "region" ? groupMean(item.id) : null;
+  const sampled = item.kind === "region" ? timing?.sampled > 0 : live && metricNumber(live.duration_samples) > 0;
+  const mean = sampled ? timing ? timing.sum : metricNumber(live.duration_nanos_total) / metricNumber(live.duration_samples) : 0;
   const activity = observation && Number(observation.count) > 0
     && Number(observation.disabled_count) === Number(observation.count) ? "disabled"
     : live ? metricNumber(live.executions) > 0 ? "active" : "idle" : "";
@@ -507,22 +604,27 @@ function worldAppearance(item) {
     selected: (state.regionSelection?.id || state.selection.id) === item.id || Boolean(group
       && state.inspectorMode === "groups" && state.managedGroup === group.id),
     changed: state.worldChanges.has(item.id),
-    error: issues.length > 0 || Boolean(live && metricNumber(live.errors) > 0),
+    error: issues.some(issue => issue.severity !== "warning") || Boolean(live && metricNumber(live.errors) > 0),
+    warning: issues.some(issue => issue.severity === "warning") || item.kind === "app" && Boolean(state.themeError),
+    never: item.kind !== "app" && item.kind !== "end" && Boolean(live && metricNumber(live.executions) === 0)
+      && Number(observation?.disabled_count || 0) === 0,
     coverage,
     activity,
-    rate: worldMotionActive() && Number.isFinite(observation?.rate) ? observation.rate : 0,
+    rate: worldMotionActive() ? arrival?.rate || observation?.rate || 0 : 0,
     duration: sampled ? formatNanos(mean) : "",
+    durationNanos: sampled ? mean : null,
     color: presentation.color || item.color,
-    shape: presentation.shape || item.shape || RailixWorld.appearance.shape,
+    shape: presentation.shape || item.shape,
     aspect: Number(numberText(presentation.aspect ?? item.aspect ?? RailixWorld.appearance.aspect)),
     roundness: Number(numberText(presentation.roundness ?? item.roundness ?? RailixWorld.appearance.roundness)),
     boundary: presentation.boundary || item.boundary || (coverage === "uncovered" ? "dashed" : "solid"),
     iconUrl: iconUrl(presentation.icon || state.world?.scene?.icons?.[item.icon_ref]),
+    showIcon: Boolean(presentation.icon),
     symbol: item.kind === "step" ? definition?.outcomes.length > 1 ? "branch"
       : definition?.returns[0]?.shape || "step" : item.kind,
     label: presentation.name || (item.kind === "app" && operation && stepName(definitionFor(operation))) || item.name,
     description: activity === "disabled" ? detail : live ? `${detail}. ${formatInteger(live.errors)} errors; ${formatInteger(live.cancelled)} cancellations. ${
-      item.kind === "region" ? "Contained Step counters, not flow latency. " : ""}${sampled ? "Sampled mean execution time, not utilization." : "No duration inferred."}` : detail,
+      item.kind === "region" ? `Sum of means from ${timing?.sampled || 0}/${observation.count} sampled Steps; not passage latency. ` : ""}${sampled ? "Sampled execution time, not utilization." : "No duration inferred."}` : detail,
     detail: issues.length ? issues[0].message
       : item.kind === "trigger" ? `${count(operation?.examples?.length ?? item.example_count ?? 0, "example")}${
         activity === "disabled" ? " · Metrics off" : live ? ` · ${formatInteger(live.executions)} runs` : ""}`
@@ -540,13 +642,77 @@ function currentWorldObservations() {
     && state.application.state === "running" && state.build !== "Building" && !state.pendingProject ? state.observations : null;
 }
 
+function groupMeanKey() {
+  return `${state.world?.scene?.revision}:${state.application.pid}:${state.projectVersion}`;
+}
+
+function groupMean(id) {
+  const value = state.groupMeanKey === groupMeanKey() && currentWorldObservations() ? state.groupMeans.get(id) : null;
+  return value?.offset === -1 ? value : null;
+}
+
+async function refreshGroupMeans() {
+  clearTimeout(state.groupMeanTimer);
+  if (state.groupMeanController || document.hidden || !currentWorldObservations()) return;
+  const key = groupMeanKey();
+  if (key !== state.groupMeanKey) {
+    state.groupMeans.clear();
+    state.groupMeanKey = key;
+  }
+  const visible = new Set(state.world.scene.nodes.filter(node => node.kind === "region" && !node.expanded).map(node => node.id));
+  for (const id of state.groupMeans.keys()) if (!visible.has(id)) state.groupMeans.delete(id);
+  for (const id of visible) if (!state.groupMeans.has(id)) state.groupMeans.set(id, {offset: 0, sum: 0, sampled: 0, at: 0});
+  const now = performance.now();
+  const candidate = [...state.groupMeans].filter(([, value]) => now >= value.at)
+    .sort((a, b) => a[1].at - b[1].at)[0];
+  if (!candidate) {
+    state.groupMeanTimer = setTimeout(refreshGroupMeans, 1_000);
+    return;
+  }
+  const [id, value] = candidate;
+  if (value.offset === -1) Object.assign(value, {offset: 0, sum: 0, sampled: 0});
+  const controller = new AbortController();
+  state.groupMeanController = controller;
+  const timeout = setTimeout(() => controller.abort(), 6_000);
+  try {
+    const parameters = new URLSearchParams({revision: state.world.scene.revision, members: id,
+      cursor: String(value.offset), metrics: "duration_nanos_total,duration_samples"});
+    const response = await fetch(`/api/scene/observations?${parameters}`, {signal: controller.signal, cache: "no-store"});
+    if (!response.ok) throw new Error("Group counters unavailable");
+    const page = parseExact(await response.text());
+    if (key !== groupMeanKey() || Number(page.application_pid) !== Number(state.application.pid)
+        || !state.world.scene.nodes.some(node => node.id === id && !node.expanded)) return;
+    for (const metrics of Object.values(page.groups)) {
+      const samples = metricNumber(metrics.duration_samples);
+      if (samples > 0) { value.sum += metricNumber(metrics.duration_nanos_total) / samples; value.sampled++; }
+    }
+    value.offset = Number(page.next);
+    value.at = performance.now() + (value.offset === -1 ? 10_000 : 100);
+    state.world.repaint();
+    renderDockObservation();
+  } catch (_error) {
+    Object.assign(value, {offset: 0, sum: 0, sampled: 0, at: performance.now() + 5_000});
+  } finally {
+    clearTimeout(timeout);
+    state.groupMeanController = null;
+    state.groupMeanTimer = setTimeout(refreshGroupMeans, 100);
+  }
+}
+
 function worldLinkAppearance(link) {
-  const observation = currentWorldObservations()?.links.get(link.id);
+  const readings = currentWorldObservations();
+  const observation = readings?.links.get(link.id);
+  // End markers have no counters. Only infer an unambiguous successful Example exit.
+  const ended = observation?.selection === "unknown" && state.application.example?.id === selectedExampleId()
+    && state.application.example?.status === "succeeded" && Number(readings?.nodes.get(link.from)?.selected_count) > 0
+    && state.world.scene.nodes.some(node => node.id === link.to && node.kind === "end")
+    && state.world.scene.links.filter(route => route.from === link.from).length === 1;
+  const selected = observation?.selection === "reached" || ended;
   const rate = worldMotionActive() && Number.isFinite(observation?.rate) ? observation.rate : 0;
   return {
-    selected: observation?.selection === "reached",
-    rate,
-    width: rate > 0 ? 3 + Math.min(4, Math.log10(1 + rate)) : 3
+    selected,
+    coverage: selected ? "reached" : observation?.selection || "unknown",
+    rate
   };
 }
 
@@ -613,11 +779,14 @@ async function refreshWorldObservations() {
           || Object.keys(item).some(key => JSON.stringify(item[key]) !== JSON.stringify(prior[key]));
       }));
     state.observations = { ...value, requestedExample: example, query, nodes, links, observedAt };
+    if (!state.groupMeanController) {
+      clearTimeout(state.groupMeanTimer);
+      state.groupMeanTimer = setTimeout(refreshGroupMeans, 100);
+    }
     const metricsAvailable = value.nodes.some(node => Object.hasOwn(node, "metrics"));
     const examplesAvailable = Object.hasOwn(value, "coverage_revision");
-    status.hidden = false;
-    status.textContent = metricsAvailable && examplesAvailable ? "Observations connected"
-      : metricsAvailable ? "Metrics connected" : examplesAvailable ? "Examples connected" : "Observations unavailable";
+    status.hidden = metricsAvailable || examplesAvailable;
+    status.textContent = status.hidden ? '' : 'Observations unavailable';
   } catch (error) {
     if (controller.signal.aborted || state.observationController !== controller) return;
     state.observations = null;
@@ -658,9 +827,7 @@ function renderWorldStatus() {
   const covered = Number(examples?.covered_steps || 0);
   const coverage = document.querySelector("#status-coverage");
   coverage.hidden = !measurable || total === 0;
-  coverage.querySelector("progress").max = Math.max(1, total);
-  coverage.querySelector("progress").value = covered;
-  coverage.querySelector("span").textContent = `${Math.round(covered / Math.max(1, total) * 100)}% example coverage`;
+  coverage.textContent = `${Math.round(covered / Math.max(1, total) * 100)}% coverage`;
   coverage.title = `${covered} of ${total} executable Steps reached by completed Examples`;
   renderDock();
 }
@@ -789,13 +956,24 @@ function mergeSummary(target, source) {
 }
 
 function inspector() {
-  if (state.inspectorMode === "groups") {
-    return manageGroupsInspector();
+  if (!state.selection.id && !state.regionSelection) return "";
+  if (state.regionSelection) {
+    const region = state.regionSelection, group = state.creator.groups.find(group => group.id === region.group);
+    if (!['appearance','groups'].includes(state.inspectorMode)) state.inspectorMode = "overview";
+    const modes = [["overview", "Overview"], ...(group ? [["appearance", "Appearance"]] : []), ['groups','Groups']];
+    const tabs = `<nav class="inspector-tabs" aria-label="Inspector mode" style="--tab-count:${modes.length}">${modes.map(([id, label]) =>
+      `<button type="button" data-inspector-mode="${id}" class="${state.inspectorMode === id ? "active" : ""}">${label}</button>`).join("")}</nav>`;
+    return tabs + (state.inspectorMode === 'groups' ? manageGroupsInspector() : state.inspectorMode === "appearance" && group
+      ? presentationEditor(group, {name: region.name}, "group:" + group.id)
+      : `<section id="selection-overview"></section><section class="inspector-section">${issueList(region.id)}</section>`
+        + metricFacts("Group metrics", [...metricRows(currentWorldObservations()?.nodes.get(region.id)?.metrics),
+          ...(groupMean(region.id)?.sampled ? [['Sum of Step averages',formatNanos(groupMean(region.id).sum)]] : [])]));
   }
   const modes = [
-    ["inspect", "Inspector"],
-    ...(["trigger", "step"].includes(state.selection.type)
-      ? [["appearance", "Appearance"]] : []),
+    ["overview", "Overview"],
+    ["inspect", "Inputs"],
+    ["appearance", "Appearance"],
+    ["groups", "Groups"],
     ...(state.selection.type === "trigger" ? [["examples", "Examples"]] : [])
   ];
   if (!modes.some(([mode]) => mode === state.inspectorMode)) {
@@ -806,6 +984,8 @@ function inspector() {
     <button type="button" data-inspector-mode="${mode}" class="${
       state.inspectorMode === mode ? "active" : ""
     }">${label}</button>`).join("")}</nav>`;
+  if (state.inspectorMode === "overview") return tabs + '<section id="selection-overview"></section>';
+  if (state.inspectorMode === 'groups') return tabs + manageGroupsInspector();
   if (state.inspectorMode === "examples") {
     return tabs + examplesInspector(node(state.selection.id));
   }
@@ -830,6 +1010,10 @@ function inspector() {
 function appearanceInspector() {
   const operation = selectedOperation();
   const definition = definitionFor(operation);
+  if (definition?.kind === "app") return `${inspectorHeader("Application", state.project.id, "")}
+    <section class="inspector-section">
+      ${state.creator.created_at !== undefined ? `<p>Created ${html(new Date(Number(numberText(state.creator.created_at))).toLocaleString())}</p>` : ""}
+    </section>${presentationEditor(stepPresentation(operation.id), {name: stepName(definition)}, "step:" + operation.id)}`;
   return operation && definition
     ? `${inspectorHeader(
         definition.kind === "trigger" ? "Trigger" : "Step",
@@ -841,6 +1025,211 @@ function appearanceInspector() {
         "step:" + operation.id
       )}${definition.kind === "step" ? groupAssignment(operation) : ""}`
     : appInspector(issueList("app"));
+}
+
+function selectedTheme() {
+  const selected = state.settings.theme || '';
+  return state.themes.find(theme => theme.id === selected)
+    || state.themes.find(theme => theme.stylesheet === selected);
+}
+
+function themeOptions() {
+  const selected = selectedTheme()?.id ?? state.settings.theme ?? '';
+  const themes = state.themes.some(theme => theme.id === selected) || !selected ? state.themes
+    : [...state.themes, {id:selected, name:selected + " (unavailable)"}];
+  return themes.map(theme =>
+    `<option value="${html(theme.id)}" ${theme.id === selected ? "selected" : ""}>${html(theme.name)}</option>`).join("");
+}
+
+function reflectTheme() {
+  const theme = selectedTheme();
+  const variants = theme?.variants || [], selected = state.settings.theme_variant || theme?.defaultVariant || '';
+  const available = variants.some(item => item.id === selected);
+  document.querySelector('#theme-select').innerHTML = themeOptions();
+  document.querySelector('#theme-variant-field').hidden = !variants.length && !selected;
+  document.querySelector('#theme-variant').innerHTML = [
+    ...(!available ? [{id:selected, name:selected ? `${selected} (unavailable)` : 'Default'}] : []), ...variants
+  ].map(item => `<option value="${html(item.id)}" ${item.id === selected ? 'selected' : ''}>${html(item.name)}</option>`).join('');
+  document.querySelector('#theme-description').textContent = variants.find(item => item.id === selected)?.description || '';
+  document.querySelector('#theme-origin').textContent = theme?.builtin ? 'Built in. No local files required.' : 'Local stylesheet over the embedded default.';
+  document.querySelector('#theme-download').disabled = !theme?.installable;
+  const file = theme?.stylesheet || theme?.id || '';
+  document.querySelector('#theme-structure').textContent = `${file}\n${file.replace(/\.css$/, '.json')} (optional names, variants and assets)`;
+}
+
+async function refreshSettings() {
+  if (state.settingsWriting || state.settingsTimer) return;
+  const version = state.settingsVersion;
+  try {
+    const response = await fetch('/api/settings', {cache:'no-store', signal:AbortSignal.timeout(5000)});
+    const payload = await response.json();
+    if (!response.ok) throw Error(payload.message || 'Settings could not be read.');
+    if (version !== state.settingsVersion) return;
+    state.settings = payload.values;
+    state.settingsRevision = payload.revision;
+    applySettings();
+    document.querySelector('#settings-status').textContent = payload.diagnostics.map(item => item.message).join(' ');
+    await refreshThemes();
+  } catch (error) { document.querySelector('#settings-status').textContent = error.message; }
+}
+
+function applySettings() {
+  reflectSettings();
+  document.querySelector('#reduced-motion').checked = state.settings.reduced_motion === true;
+  state.audio?.applyPreferences(state.settings);
+}
+
+function reflectSettings() {
+  const motion = String(state.settings.reduced_motion === true);
+  if (document.body.dataset.reducedMotion !== motion) {
+    document.body.dataset.reducedMotion = motion;
+    state.world?.repaint();
+  }
+  for (const button of document.querySelectorAll('[data-audio-preference]')) {
+    button.setAttribute('aria-pressed', String(state.settings[button.dataset.audioPreference] !== false));
+  }
+}
+
+function selectSettingsTab(tab) {
+  for (const name of ['appearance', 'sound', 'music']) {
+    const selected = name === tab;
+    document.querySelector(`#settings-${name}-tab`).setAttribute('aria-selected', String(selected));
+    document.querySelector(`#settings-${name}`).hidden = !selected;
+  }
+  if (tab === 'sound' || tab === 'music') state.audio?.setEditorKind(tab);
+}
+
+document.querySelector('.settings-tabs').addEventListener('keydown', event => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const tabs = [...event.currentTarget.querySelectorAll('[role=tab]')];
+  const current = tabs.indexOf(document.activeElement);
+  const index = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+    : (current + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+  tabs[index].focus();
+  selectSettingsTab(tabs[index].dataset.settingsTab);
+  event.preventDefault();
+});
+
+function changeSettings(patch) {
+  if (Object.entries(patch).every(([key,value]) => JSON.stringify(state.settings[key]) === JSON.stringify(value))) return;
+  Object.assign(state.settings, patch);
+  state.settingsVersion++;
+  reflectSettings();
+  clearTimeout(state.settingsTimer);
+  state.settingsTimer = setTimeout(() => { state.settingsTimer = 0; void saveSettings(); }, 150);
+}
+
+async function saveSettings() {
+  if (state.settingsWriting) return;
+  if (state.settingsRevision === null) {
+    document.querySelector('#settings-status').textContent = 'Settings are not loaded. Reopen Settings before saving.';
+    return;
+  }
+  state.settingsWriting = true;
+  const version = state.settingsVersion;
+  try {
+    const response = await fetch('/api/settings', {method:'POST', headers:mutationHeaders(),
+      body:JSON.stringify({revision:state.settingsRevision, values:state.settings}), signal:AbortSignal.timeout(5000)});
+    const result = await response.json();
+    if (!response.ok) throw Error(result.message || 'Settings could not be saved.');
+    state.settingsRevision = result.revision;
+    document.querySelector('#settings-status').textContent = '';
+  } catch (error) {
+    document.querySelector('#settings-status').textContent = error.message + ' Reopen Settings to reload saved preferences.';
+    return;
+  } finally { state.settingsWriting = false; }
+  if (version !== state.settingsVersion) void saveSettings();
+}
+
+async function downloadTheme() {
+  const theme = selectedTheme();
+  if (!theme) { themeStatus('Selected theme is unavailable.'); return; }
+  try {
+    const copied = await fetch('/api/themes', {method:'POST', headers:mutationHeaders(),
+      body:JSON.stringify({action:'install', id:theme.id}), signal:AbortSignal.timeout(5000)});
+    const result = await copied.json();
+    if (!copied.ok) throw Error(result.message || 'Theme copy was rejected.');
+    await refreshThemes();
+    themeStatus(`Installed ${result.installed} files; kept ${result.skipped} existing files.`, false);
+  } catch (error) { themeStatus(error.message); }
+}
+
+async function refreshThemes() {
+  state.themeController?.abort();
+  const controller = new AbortController();
+  state.themeController = controller;
+  try {
+    const response = await fetch("/api/themes", {signal:controller.signal, cache:"no-store"});
+    if (!response.ok) throw new Error("Themes could not be read.");
+    const catalog = await response.json();
+    if (controller.signal.aborted) return;
+    state.themes = catalog.themes;
+    state.themesDirectory = catalog.directory;
+    reflectTheme();
+    const folder = document.querySelector(".theme-folder");
+    if (folder) folder.textContent = catalog.directory;
+    await applyTheme();
+    if (catalog.diagnostics?.length) themeStatus(catalog.diagnostics.map(item => item.message).join(' '));
+  } catch (error) {
+    if (error.name !== "AbortError") themeStatus(error.message);
+  }
+}
+
+async function applyTheme() {
+  state.themeController?.abort();
+  const controller = new AbortController();
+  state.themeController = controller;
+  const selected = state.settings.theme;
+  const pending = [], anchor = document.querySelector('#theme-style');
+  const previous = [...document.querySelectorAll('link[data-theme-loaded]')];
+  try {
+    const theme = selectedTheme();
+    if (!theme) throw Error(`Theme ${selected} is unavailable. Railix styling is shown.`);
+    const variantId = state.settings.theme_variant || theme.defaultVariant || '';
+    const variant = theme.variants?.find(item => item.id === variantId);
+    if (variantId && !variant) throw Error(`Variant ${variantId} is unavailable. Railix styling is shown.`);
+    // Stage real stylesheets without applying them, so relative assets keep their native URL base.
+    for (const url of [theme.url, ...(variant ? [variant.url] : [])]) {
+      await new Promise((resolve, reject) => {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet'; link.media = 'not all'; link.href = url; pending.push(link);
+        const abort = () => finish(new DOMException('Theme loading cancelled', 'AbortError'));
+        const timer = setTimeout(() => finish(Error('Theme loading timed out. Railix styling is shown.')), 5000);
+        const finish = error => {
+          clearTimeout(timer); controller.signal.removeEventListener('abort', abort);
+          link.onload = link.onerror = null;
+          error ? reject(error) : resolve();
+        };
+        link.onload = () => finish();
+        link.onerror = () => finish(Error(`Theme ${selected || theme.name} is unavailable. Railix styling is shown.`));
+        controller.signal.addEventListener('abort', abort, {once:true});
+        if (controller.signal.aborted) abort(); else anchor.before(link);
+      });
+    }
+    if (controller.signal.aborted) return;
+    await state.world?.renderer(variant || {}, controller.signal, () => {
+      for (const link of pending) { link.media = 'all'; link.dataset.themeLoaded = ''; }
+      previous.forEach(link => link.remove());
+    });
+    pending.length = 0;
+    reflectTheme();
+    themeStatus("");
+    state.world?.repaint();
+    window.dispatchEvent(new Event("resize"));
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    previous.forEach(link => link.remove());
+    await state.world?.renderer();
+    themeStatus(error.message);
+    window.dispatchEvent(new Event("resize"));
+  } finally { pending.forEach(link => link.remove()); }
+}
+
+function themeStatus(message, error = true) {
+  state.themeError = error ? message : '';
+  const status = document.querySelector("#theme-status");
+  if (status) status.textContent = message;
+  state.world?.repaint();
 }
 
 function manageGroupsInspector() {
@@ -856,7 +1245,6 @@ function manageGroupsInspector() {
   const regions = Number(state.editor.groups[selected?.id]?.regions || 0);
   return `
     <header class="manager-heading">
-      <button class="button" type="button" id="close-group-manager">Back</button>
       ${inspectorHeader("Creator", "Group Manager", "Presentation only")}
     </header>
     <section class="inspector-section">
@@ -888,7 +1276,7 @@ function manageGroupsInspector() {
       </section>
       <footer class="inspector-actions">
         <button class="button" type="button" id="focus-group" ${regions ? "" : "disabled"}>Show</button>
-        <button class="button danger" type="button" id="delete-group">Delete Group</button>
+        <button class="button danger" type="button" id="delete-group" title="Delete ${html(groupName(selected))}" aria-label="Delete ${html(groupName(selected))}"><i class="hud-symbol" data-symbol="trash" aria-hidden="true"></i></button>
       </footer>` : ""}`;
 }
 
@@ -908,7 +1296,6 @@ function groupAssignment(operation) {
     <label>Group</label>
     <div class="group-assignment">
       <button class="button" type="button" id="choose-group">${html(group ? groupName(group) : "No group")}</button>
-      <button class="button" type="button" id="manage-groups">Manage</button>
     </div>
   </section>`;
 }
@@ -918,7 +1305,6 @@ function presentationEditor(presentation = {}, defaults = {}, target) {
   const color = /^#[0-9a-fA-F]{6}$/.test(presentation.color || inheritedColor)
     ? (presentation.color || inheritedColor).toUpperCase()
     : "#147982";
-  const icon = presentation.icon || defaults.icon;
   return `
     <section class="inspector-section presentation-editor">
       <div class="section-heading"><strong>Appearance</strong><span>Creator only</span></div>
@@ -935,16 +1321,9 @@ function presentationEditor(presentation = {}, defaults = {}, target) {
         <button id="reset-color" type="button" data-reset-presentation="color"
                 data-presentation-target="${target}" ${presentation.color ? "" : "disabled"}>Reset</button>
       </div>
-      <label>Icon</label>
-      <div class="icon-editor">
-        <span class="icon-preview">${icon ? iconMarkup(icon) : "Automatic"}</span>
-        <button id="choose-icon" type="button" data-open-icon-picker="${target}">Choose</button>
-        <button id="reset-icon" type="button" data-reset-presentation="icon"
-                data-presentation-target="${target}" ${presentation.icon ? "" : "disabled"}>Reset</button>
-      </div>
       <label for="presentation-shape">Shape</label>
       <select id="presentation-shape" data-presentation="shape" data-presentation-target="${target}">
-        ${["rectangle", "ellipse", "triangle", "diamond"].map(shape => `<option value="${shape}" ${
+        ${["rectangle", "ellipse", "triangle", "diamond", "hexagon", "event", "storage", "subsystem"].map(shape => `<option value="${shape}" ${
           shape === (presentation.shape || "rectangle") ? "selected" : ""}>${inputLabel(shape)}</option>`).join("")}
       </select>
       ${[["aspect", "Width / height", .5, 4], ["roundness", "Corner rounding (%)", 0, 50]]
@@ -985,8 +1364,7 @@ function issueList(owner) {
 function allDiagnostics() {
   const diagnostics = [
     ...state.localDiagnostics,
-    ...state.diagnostics,
-    ...state.iconDiagnostics
+    ...state.diagnostics
   ];
   const draft = state.jsonDraft;
   if (draft && node(draft.node)) {
@@ -1085,10 +1463,7 @@ function triggerInspector(trigger, issues) {
         }</small></span>`
       ).join("")}</div>
     </section>
-    <div id="run-result-panel">${runResultPanel()}</div>
-    <footer class="inspector-actions">
-      <button class="button danger" id="delete-step" type="button">Delete flow</button>
-    </footer>`;
+    <div id="run-result-panel">${runResultPanel()}</div>`;
 }
 
 function examplesInspector(trigger) {
@@ -1102,12 +1477,13 @@ function examplesInspector(trigger) {
     <section class="inspector-section">
       <div class="section-heading"><strong>Examples</strong><span>${count(trigger.examples.length, "case")}</span></div>
       <div class="example-tabs">
+        <button type="button" data-select-example="-1" class="${example ? "" : "active"}">None</button>
         ${trigger.examples.map((candidate, index) => `
           <button type="button" class="${candidate === example ? "active" : ""}"
                   data-select-example="${index}">${html(candidate.name)}</button>`).join("")}
         <button type="button" id="add-example">Add</button>
       </div>
-      <label for="example-name">Name</label>
+      ${example ? `<label for="example-name">Name</label>
       <input id="example-name" value="${html(example.name)}" autocomplete="off">
       <label for="example-payload">Payload</label>
       <textarea id="example-payload" rows="7" spellcheck="false">${html(
@@ -1124,7 +1500,7 @@ function examplesInspector(trigger) {
       )}</textarea>
       ${trigger.examples.length > 1
         ? `<button class="button danger" type="button" id="delete-example">Delete example</button>`
-        : ""}
+        : ""}` : ""}
     </section>`;
 }
 
@@ -1139,11 +1515,7 @@ function stepInspector(operation, issues) {
     </div>
     ${metricsSetting(operation)}
     ${runtimeDetails()}
-    <div id="preview-error" role="status"></div>
-    <footer class="inspector-actions">
-      <button class="button danger" id="delete-step" type="button" ${removableStep(operation)
-        ? "" : 'disabled title="Remove branch Steps first"'}>Delete Step</button>
-    </footer>`;
+    <div id="preview-error" role="status"></div>`;
 }
 
 function portMappings(operation, definition) {
@@ -1182,7 +1554,7 @@ function nextStepControls(operation) {
   const declared = displayOutcomes(operation);
   if (declared.length === 1) {
     return `<button class="button" type="button" id="add-next-step"
-                    ${insertionAllowed(operation, declared[0]) ? "" : "disabled"}>Add next Step</button>`;
+                    ${insertionAllowed(operation, declared[0]) ? "" : "disabled"}><i class="hud-symbol" data-symbol="plus" aria-hidden="true"></i>Add next Step</button>`;
   }
   return `<section class="next-routes" aria-label="Next Steps">
     ${declared.map(outcome => {
@@ -1372,7 +1744,7 @@ function matcherGroupEditor(operation, input, locator, group, index, size, scope
   return `
     <article class="matcher-group" data-matcher-group="${index}">
       <div class="candidate-heading matcher-group-heading">
-        <strong>Group ${index + 1} <span>All match</span></strong>
+        <strong>${index ? 'OR: all of' : 'All of'}</strong>
         <div>
           <button type="button" data-move-matcher-group="${index}" data-direction="-1"
                   data-matcher-groups-locator="${locatorToken(locator)}" ${index === 0 ? "disabled" : ""}>Up</button>
@@ -1437,10 +1809,10 @@ function candidateEditor(
       ? `${condition.all.length} ${condition.all.length === 1 ? "matcher" : "matchers"} must pass`
       : "add matcher";
   return `
-    <article class="candidate${selected ? " selected-candidate" : ""}" data-candidate-index="${index}"
+    <article class="candidate${view.selectable === false ? ' matcher-row' : ''}${selected ? " selected-candidate" : ""}" data-candidate-index="${index}"
              ${path ? `data-candidate-path="${html(path)}"` : ""}>
       <div class="candidate-heading">
-        <strong>${html(noun)} ${index + 1}</strong>
+        <strong>${view.selectable === false ? index ? 'AND' : 'Where' : `${html(noun)} ${index + 1}`}</strong>
         <div>
           <button type="button" data-move-candidate="${index}" data-direction="-1"
                   data-candidate-locator="${locatorToken(locator)}" data-input-meta="${metaToken(input)}"
@@ -1458,7 +1830,8 @@ function candidateEditor(
         <input id="${html(inputId(candidateLocator))}-label" type="text"
                value="${html(stepPresentation(operation.id).outcomes?.[candidate.outcome] || "")}" data-candidate-label="${locatorToken(locator)}"
                data-candidate-index="${index}" autocomplete="off">` : ""}
-      <label for="${html(inputId(candidateLocator))}-option">Source</label>
+      <div class="candidate-source">
+      <label class="candidate-source-label" for="${html(inputId(candidateLocator))}-option">Source</label>
       <select id="${html(inputId(candidateLocator))}-option"
               data-candidate-option="${locatorToken(locator)}" data-candidate-index="${index}"
               data-input-meta="${metaToken(input)}">
@@ -1469,6 +1842,7 @@ function candidateEditor(
           </option>`).join("")}
       </select>
       ${option ? inputFields(operation, option.inputs, [...candidateLocator, "inputs"]) : ""}
+      </div>
       <div class="candidate-condition">
         <div class="section-heading"><strong>${html(view.condition || "Accept when")}</strong><span data-candidate-status
              data-candidate-default-status="${html(predicateStatus)}">${selected ? "Selected, " : ""}${
@@ -1517,12 +1891,13 @@ function conditionEditor(operation, input, option, candidateLocator, condition, 
   const queryLocator = [...candidateLocator, "when", "new-predicate"];
   const token = locatorToken(candidateLocator);
   return `
-    <section class="condition-transforms">
-      <div class="section-heading"><strong>Transform value</strong><span>Run once</span></div>
+    <details class="condition-transforms">
+      <summary title="Calculate the comparison value without changing the context">${condition.transforms.length
+        ? html(condition.transforms.map(step => stepName(definitionOf(step.use))).join(" / "))
+        : 'Calculate value'}</summary>
       ${programEditor(operation, transforms, transformLocator, condition.transforms, scopeInputs, scopeBase)}
-    </section>
+    </details>
     <section class="condition-predicates">
-      <div class="section-heading"><strong>Matchers</strong><span>All must pass</span></div>
       <div class="condition-predicate-list">
         ${condition.all.map((steps, index) => predicateEditor(
           operation,
@@ -1537,9 +1912,7 @@ function conditionEditor(operation, input, option, candidateLocator, condition, 
           scopeBase
         )).join("") || '<p class="empty-options">No matcher configured.</p>'}
       </div>
-      <label class="program-search-label" for="${html(inputId(queryLocator))}-search">
-        <strong>Add AND matcher</strong><span>Receives transformed value</span>
-      </label>
+      <details class="condition-add" ${condition.all.length ? '' : 'open'}><summary>Add comparison (AND)</summary>
       <input type="search" id="${html(inputId(queryLocator))}-search"
              value="${html(queryAt(state.candidateQueries, queryLocator))}"
              data-predicate-query="${token}" data-input-meta="${metaToken(input)}"
@@ -1549,6 +1922,7 @@ function conditionEditor(operation, input, option, candidateLocator, condition, 
            data-input-scope="${metaToken({ inputs: scopeInputs, base: scopeBase })}">
         ${predicateOptions(candidateLocator, preparedShape)}
       </div>
+      </details>
     </section>`;
 }
 
@@ -1575,7 +1949,7 @@ function predicateEditor(
   return `
     <article class="condition-predicate" data-condition-predicate="${index}">
       <div class="candidate-heading">
-        <strong>Matcher ${index + 1}</strong>
+        <strong>${index ? 'AND' : ''}</strong>
         <div>
           <button type="button" data-move-predicate="${index}" data-direction="-1"
                   data-condition-locator="${locatorToken(candidateLocator)}"
@@ -1594,23 +1968,23 @@ function predicateEditor(
 function predicateOptions(candidateLocator, shape) {
   const queryLocator = [...candidateLocator, "when", "new-predicate"];
   const query = queryAt(state.candidateQueries, queryLocator).trim().toLowerCase();
-  return state.catalog
-    .filter(definition => definition.kind === "step")
-    .filter(definition => !authoredOutcomeInput(definition))
-    .filter(definition => definition.receives.length === 1 && definition.returns.length === 1)
-    .filter(definition => definition.outcomes.length === 1 && definition.returns[0].shape === "boolean")
-    .filter(definition => portAcceptsValue(definition.receives[0], shape, []))
+  return matcherDefinitions(shape)
     .filter(definition => definitionMatchesQuery(definition, query))
     .map(definition => `
       <button type="button" class="catalog-option compact-option program-option"
               data-add-predicate="${html(definition.id)}"
               data-condition-locator="${locatorToken(candidateLocator)}">
         <strong>${html(stepName(definition))}</strong>
-        <span class="program-role">Matcher</span>
-        <span class="program-shape">${html(definition.receives[0].shape)} to boolean</span>
-        <small>${html(definition.id)}${definition.search_terms?.length
-          ? ` · ${html(definition.search_terms.join(", "))}` : ""}</small>
       </button>`).join("") || '<p class="empty-options">No compatible matcher found.</p>';
+}
+
+function matcherDefinitions(shape) {
+  return state.catalog
+    .filter(definition => definition.kind === "step")
+    .filter(definition => !authoredOutcomeInput(definition))
+    .filter(definition => definition.receives.length === 1 && definition.returns.length === 1)
+    .filter(definition => definition.outcomes.length === 1 && definition.returns[0].shape === "boolean")
+    .filter(definition => portAcceptsValue(definition.receives[0], shape, []));
 }
 
 function predicateOptionsFor(operation, input, candidateLocator, scopeInputs, scopeBase) {
@@ -1748,6 +2122,7 @@ function programEditor(operation, input, locator, steps, scopeInputs, scopeBase)
     <div class="program-list">
       ${steps.map((step, index) => nestedStep(operation, input, locator, step, index, steps.length)).join("")}
     </div>
+    ${predicate && steps.length && shape === 'boolean' ? '<details class="condition-chain"><summary>Extend comparison</summary>' : ''}
     <label class="program-search-label" for="${html(id)}-search">
       <strong>${action}</strong>
       <span>${html(status)}</span>
@@ -1759,29 +2134,34 @@ function programEditor(operation, input, locator, steps, scopeInputs, scopeBase)
     <div id="${html(id)}-options" data-step-options="${locatorToken(locator)}"
          data-input-meta="${metaToken(input)}" data-input-scope="${scope}">
       ${nestedOptions(operation, input, locator, scopeInputs, scopeBase)}
-    </div>`;
+    </div>${predicate && steps.length && shape === 'boolean' ? '</details>' : ''}`;
 }
 
 function nestedStep(operation, input, locator, step, index, size) {
   const definition = definitionOf(step.use);
   const previewInput = programPath(locator);
+  const comparison = input.program_role === 'predicate' && size === 1;
+  const choices = comparison ? matcherDefinitions(input.program_shape) : [];
   return `
     <div class="nested-step">
       <div class="nested-step-summary">
-        <span>${html(stepName(definition))}</span>
+        ${comparison ? `<select aria-label="Comparison" data-replace-comparison="${locatorToken(locator)}">
+          ${choices.some(item => item.id === step.use) ? '' : `<option value="${html(step.use)}">${html(stepName(definition))}</option>`}
+          ${choices.map(item => `<option value="${html(item.id)}" ${item.id === step.use ? 'selected' : ''}>${html(stepName(item))}</option>`).join('')}
+        </select>` : `<span>${html(stepName(definition))}</span>`}
         <span data-preview-input="${html(previewInput)}" data-preview-slot="${index}">${
           previewStage(operation, previewInput, index)
         }</span>
         ${inputFields(operation, definition.inputs, [...locator, index, "inputs"])}
       </div>
-      <div>
+      ${comparison ? '' : `<div>
         <button type="button" data-move-nested="${index}" data-direction="-1"
                 data-program-locator="${locatorToken(locator)}" ${index === 0 ? "disabled" : ""}>Up</button>
         <button type="button" data-move-nested="${index}" data-direction="1"
                 data-program-locator="${locatorToken(locator)}" ${index === size - 1 ? "disabled" : ""}>Down</button>
         <button type="button" data-remove-nested="${index}"
                 data-program-locator="${locatorToken(locator)}">Remove</button>
-      </div>
+      </div>`}
     </div>`;
 }
 
@@ -1938,24 +2318,6 @@ function picker() {
     </div>`;
 }
 
-function iconPicker() {
-  if (!state.iconPicker) {
-    return "";
-  }
-  return `
-    <div class="picker-backdrop icon-picker-backdrop">
-      <section class="step-picker icon-picker" role="dialog" aria-modal="true" aria-label="Choose icon">
-        <header class="icon-picker-heading">
-          <div><span class="eyebrow">Portable icons</span><h2>Choose icon</h2></div>
-          <button type="button" id="close-icon-picker">Cancel</button>
-        </header>
-        <input type="search" id="icon-search" value="${html(state.iconPicker.query)}"
-               placeholder="Search built-in and custom icons" autocomplete="off" autofocus>
-        <div id="icon-options">${iconOptions()}</div>
-      </section>
-    </div>`;
-}
-
 function groupPicker() {
   if (!state.groupPicker) {
     return "";
@@ -1963,7 +2325,7 @@ function groupPicker() {
   return `
     <div class="picker-backdrop group-picker-backdrop">
       <section class="step-picker group-picker" role="dialog" aria-modal="true" aria-label="Choose group">
-        <header class="icon-picker-heading">
+        <header class="picker-heading">
           <div><span class="eyebrow">Creator groups</span><h2>Choose Group</h2></div>
           <button type="button" id="close-group-picker">Cancel</button>
         </header>
@@ -1988,18 +2350,6 @@ function groupPickerOptions() {
         <strong>${html(groupName(group))}</strong>
         <small>${count(inventory.get(group.id) || 0, "Step")}</small>
       </button>`).join("") || '<p class="empty-options">No group matches.</p>'}${groupPages()}`;
-}
-
-function iconOptions() {
-  const query = state.iconPicker?.query.toLowerCase() || "";
-  return state.icons
-    .filter(icon => !query || icon.id.toLowerCase().includes(query)
-      || icon.name.toLowerCase().includes(query))
-    .map(icon => `
-      <button type="button" class="icon-option" data-select-icon="${html(icon.id)}">
-        ${iconMarkup(icon)}
-        <span><strong>${html(icon.name)}</strong><small>${html(icon.id)}</small></span>
-      </button>`).join("") || '<p class="empty-options">No icon matches.</p>';
 }
 
 function pickerOptions() {
@@ -2263,10 +2613,9 @@ function updateExampleName(value) {
   dirty();
 }
 
-function selectExample(index) {
-  const trigger = node(state.selection.id);
+function selectExample(index, trigger = node(state.selection.id)) {
   state.exampleTrigger = trigger.id;
-  state.exampleIndex = Math.max(0, Math.min(index, trigger.examples.length - 1));
+  state.exampleIndex = Math.max(-1, Math.min(index, trigger.examples.length - 1));
   state.exampleDraft = null;
   clearPreview(true, false);
   render();
@@ -2275,6 +2624,7 @@ function selectExample(index) {
 
 function addExample() {
   const trigger = node(state.selection.id);
+  const template = selectedExample(trigger) || trigger.examples[0];
   const used = new Set(trigger.examples.map(example => example.name));
   let index = trigger.examples.length + 1;
   while (used.has("example-" + index)) {
@@ -2282,9 +2632,8 @@ function addExample() {
   }
   trigger.examples.push({
     name: "example-" + index,
-    payload: clone(selectedExample(trigger).payload),
-    ...(plainObject(selectedExample(trigger).context)
-      ? { context: clone(selectedExample(trigger).context) } : {})
+    payload: clone(template.payload),
+    ...(plainObject(template.context) ? { context: clone(template.context) } : {})
   });
   state.exampleIndex = trigger.examples.length - 1;
   state.exampleDraft = null;
@@ -2307,8 +2656,8 @@ function selectedExample(trigger) {
     state.exampleTrigger = trigger.id;
     state.exampleIndex = 0;
   }
-  state.exampleIndex = Math.max(0, Math.min(state.exampleIndex, trigger.examples.length - 1));
-  return trigger.examples[state.exampleIndex];
+  state.exampleIndex = Math.max(-1, Math.min(state.exampleIndex, trigger.examples.length - 1));
+  return trigger.examples[state.exampleIndex] || null;
 }
 
 function openPathPicker(locatorSource, inputSource) {
@@ -3493,13 +3842,8 @@ function metricsSetting(operation) {
 }
 
 function metricTarget() {
-  if (state.inspectorMode !== "inspect") {
-    return "app";
-  }
-  if (state.selection.type === "app") {
-    return "app";
-  }
-  return ["trigger", "step"].includes(state.selection.type) ? state.selection.id : "";
+  return !state.regionSelection && state.inspectorMode === "inspect" && ["trigger", "step"].includes(state.selection.type)
+    ? state.selection.id : "app";
 }
 
 function scheduleMetricsPoll(delay = 1_000) {
@@ -3512,10 +3856,9 @@ function resetMetrics(poll = false) {
   state.metricsPollTimer = 0;
   state.metricsController?.abort();
   state.metricsController = null;
-  state.metrics = null;
   state.metricsNode = "";
   renderMetrics();
-  if (poll && metricTarget()) {
+  if (poll) {
     scheduleMetricsPoll(0);
   }
 }
@@ -3523,10 +3866,6 @@ function resetMetrics(poll = false) {
 async function refreshMetrics() {
   state.metricsPollTimer = 0;
   const target = metricTarget();
-  if (!target) {
-    resetMetrics();
-    return;
-  }
   if (document.hidden || state.build !== "Built" || state.pendingProject) {
     scheduleMetricsPoll(500);
     return;
@@ -3589,14 +3928,36 @@ function renderMetrics() {
 
 function metricsPanel() {
   const target = metricTarget();
-  if (!target || state.metricsNode !== target || !plainObject(state.metrics)) {
+  if (state.metricsNode !== target || !plainObject(state.metrics)) {
     return "";
   }
-  if (target === "app") return metricFacts("Runtime metrics", [
-    ...metricRows(state.metrics.application?.metrics),
-    ...metricRows(state.metrics.process),
-    ...metricRows(state.metrics)
-  ]);
+  if (target === "app") {
+    const process = metricRows(state.metrics.process);
+    const columns = [
+      [...metricRows(state.metrics.application?.metrics), ...metricRows(state.metrics), ...process.filter(([, , id]) => id.startsWith("metric_"))],
+      process.filter(([, , id]) => !id.startsWith("system_") && !id.startsWith("metric_")),
+      process.filter(([, , id]) => id.startsWith("system_"))
+    ];
+    const measurements = new Map();
+    columns.forEach((column, index) => column.forEach(metric => {
+      const [label, , id] = metric;
+      const name = id.replace(/^(?:app|application|process|jvm|system)_/, "");
+      const key = JSON.stringify([name, state.metricCatalog.metrics[id].unit || ""]);
+      if (!measurements.has(key)) measurements.set(key, []);
+      const matches = measurements.get(key);
+      let row = matches.find(candidate => !candidate.values[index]);
+      if (!row) {
+        row = {label: name === id ? label : label.replace(/^(?:App|Application|Process|JVM|System)\s+/i, ""),
+          values: Array(3).fill(null)};
+        matches.push(row);
+      }
+      row.values[index] = metric;
+    }));
+    return `<table class="metric-systems" aria-label="Application, JVM and System metrics"><thead><tr>${["Metric", "App", "JVM", "System"].map(name => `<th scope="col">${name}</th>`).join("")}</tr></thead><tbody>${
+      [...measurements.values()].flat().map(row => `<tr><th scope="row">${html(row.label)}</th>${row.values.map(metric =>
+        metric ? `<td data-metric-id="${html(metric[2])}" title="${html(metric[0])}"><output>${html(metric[1])}</output></td>` : "<td></td>"
+      ).join("")}</tr>`).join("")}</tbody></table>`;
+  }
   const steps = Array.isArray(state.metrics.steps) ? state.metrics.steps : [];
   const flows = Array.isArray(state.metrics.flows) ? state.metrics.flows : [];
   const step = steps.find(candidate => candidate.id === target)?.metrics;
@@ -3641,7 +4002,7 @@ function metricFacts(title, rows) {
     .map(([label, value, id]) => `<div${id ? ` data-metric-id="${html(id)}"` : ""}><dt>${html(label)}</dt><dd>${html(value)}</dd></div>`)
     .join("");
   return `<section class="inspector-section facts runtime-metrics">
-    <div class="section-heading"><strong>${html(title)}</strong><span>Connected</span></div>
+    <div class="section-heading"><strong>${html(title)}</strong></div>
     <dl>${facts}</dl>
   </section>`;
 }
@@ -3846,6 +4207,7 @@ async function readExampleProjection(path, signal) {
 }
 
 function selectedTraceCase() {
+  if (state.exampleIndex < 0) return null;
   const operation = state.selection.type === "trigger" || state.selection.type === "step"
     ? node(state.selection.id)
     : null;
@@ -3866,7 +4228,7 @@ function selectTracePreview(example = selectedTraceCase()) {
     state.preview = {
       ...reached,
       step: reached.id,
-      selected_candidates: selectedCandidates(operation, reached.options || {})
+      selected_candidates: selectedCandidates(operation, reached.options || {}, reached.outcome)
     };
   } else {
     state.preview = null;
@@ -3886,13 +4248,15 @@ function selectTracePreview(example = selectedTraceCase()) {
   refreshTraceView();
 }
 
-function selectedCandidates(operation, options) {
+function selectedCandidates(operation, options, outcome) {
   const selected = {};
   const definition = definitionFor(operation);
   definition?.inputs.filter(input => input.type === "candidates").forEach(input => {
     const candidates = operation.inputs?.[input.name] || [];
-    const index = candidates.findIndex(candidate => candidate.option === options[input.name]);
-    if (index >= 0) {
+    const matches = input.authored_outcomes ? candidate => candidate.outcome === outcome
+      : candidate => candidate.option === options[input.name];
+    const index = candidates.findIndex(matches);
+    if (index >= 0 && index === candidates.findLastIndex(matches)) {
       selected[inputDiagnosticPath(operation.id, ["inputs", input.name])] = index;
     }
   });
@@ -4194,7 +4558,7 @@ async function drainWrites() {
   }
   state.writeActive = false;
   window.setTimeout(() => {
-    if (state.build === "Built" && !state.pendingProject && !state.writeActive && !state.editorController) {
+    if (state.selection.id && state.build === "Built" && !state.pendingProject && !state.writeActive && !state.editorController) {
       void loadEditor(state.selection.id).then(loaded => {
         if (loaded !== "loaded") return;
         state.worldNodes = new Map(state.project.nodes.map(operation => [operation.id, operation]));
@@ -4452,11 +4816,6 @@ function addableDefinitions() {
   return state.catalog.filter(definition => definition.kind === "step");
 }
 
-function iconMarkup(icon) {
-  const url = iconUrl(icon);
-  return url ? `<img class="flow-icon" src="${html(url)}" alt="">` : "";
-}
-
 function iconUrl(icon) {
   if (!icon?.media_type || !icon?.data) {
     return "";
@@ -4484,7 +4843,7 @@ function iconKey(icon) {
 }
 
 function releaseUnusedIconUrls() {
-  const live = new Set(state.icons.map(iconKey));
+  const live = new Set();
   Object.values(state.world?.scene?.icons || {}).forEach(icon => live.add(iconKey(icon)));
   state.creator.groups.forEach(group => {
     if (group.icon) {
@@ -4684,7 +5043,7 @@ function flowTrigger(operation) {
 
 async function openGroupManager(id = "") {
   const selected = selectedOperation();
-  state.managedGroup = id || groupForStep(selected?.id)?.id || state.creator.groups[0]?.id || "";
+  state.managedGroup = id || state.regionSelection?.group || groupForStep(selected?.id)?.id || state.creator.groups[0]?.id || "";
   state.groupQuery = "";
   state.groupPicker = null;
   state.inspectorMode = "groups";
@@ -4982,12 +5341,52 @@ function html(value) {
 
 function showInspector(open) {
   document.querySelector("#inspector").hidden = !open;
-  document.querySelector("#open-inspector").hidden = open || Boolean(state.regionSelection);
   if (!open) document.querySelector("#graph").focus({ preventScroll: true });
 }
 
+function clearSelection() {
+  state.editorRequest++;
+  state.editorController?.abort();
+  state.world?.cancelFocus();
+  state.selection = {type: "none", id: ""};
+  state.regionSelection = null;
+  state.revealNode = "";
+  state.managedGroup = "";
+  state.inspectorMode = "inspect";
+  state.picker = state.groupPicker = state.pathPicker = null;
+  clearPreview();
+  resetMetrics(true);
+  showInspector(false);
+  render();
+}
+
 document.addEventListener("click", event => {
+  const groupPointer = state.groupPointer;
+  state.groupPointer = null;
+  // An Inspector opening beneath the pointer must not steal the second group click.
+  if (event.detail === 2 && groupPointer && groupPointer.id === state.regionSelection?.id
+    && Math.hypot(event.clientX - groupPointer.x, event.clientY - groupPointer.y) <= 4) {
+    event.preventDefault();
+    focusRegion(groupPointer.id);
+    return;
+  }
   const target = event.target;
+  const tab = target.closest('[data-settings-tab]');
+  if (tab) {
+    selectSettingsTab(tab.dataset.settingsTab);
+    event.preventDefault();
+    return;
+  }
+  const editTrigger = target.closest('[data-edit-trigger]');
+  if (editTrigger) {
+    void selectWorldNode(editTrigger.dataset.editTrigger).then(selected => {
+      if (selected) { state.inspectorMode = 'examples'; render(); showInspector(true); }
+    });
+    return;
+  }
+  if (target.closest('button:not(:disabled), summary') && !target.closest('#world-labels, #audio-panel')) {
+    state.audio?.action('click');
+  }
   if (target.closest(".build-indicator")) {
     document.querySelector('#application-status').innerHTML = buildDetails();
     return;
@@ -5007,9 +5406,9 @@ document.addEventListener("click", event => {
     focusRegion(state.regionSelection.id);
     return;
   }
-  const regionManager = target.closest("[data-manage-region]");
-  if (regionManager) {
-    openGroupManager(regionManager.dataset.manageRegion);
+  const regionDelete = target.closest("[data-delete-region]");
+  if (regionDelete) {
+    deleteGroup(regionDelete.dataset.deleteRegion);
     return;
   }
   const panel = target.closest("[data-open-panel]");
@@ -5024,18 +5423,14 @@ document.addEventListener("click", event => {
     showInspector(false);
     return;
   }
-  if (target.closest("#open-inspector")) {
-    showInspector(true);
-    document.querySelector("#close-inspector").focus({ preventScroll: true });
-    return;
-  }
-  if (target.closest("#close-group-manager")) {
-    state.inspectorMode = "inspect";
-    render();
+  if (target.closest('[data-leave-group]')) {
+    showInspector(false);
+    state.world?.leave();
     return;
   }
   const inspectorMode = target.closest("[data-inspector-mode]");
   if (inspectorMode) {
+    if (inspectorMode.dataset.inspectorMode === 'groups') { void openGroupManager(); return; }
     resetMetrics();
     state.inspectorMode = inspectorMode.dataset.inspectorMode;
     render();
@@ -5056,10 +5451,6 @@ document.addEventListener("click", event => {
   if (groupPage) {
     void loadEditor(state.selection.id, state.managedGroup, state.groupPicker?.query || state.groupQuery,
       Number(groupPage.dataset.groupPage)).then(loaded => { if (loaded === "loaded") render(); });
-    return;
-  }
-  if (target.closest("#manage-groups")) {
-    openGroupManager();
     return;
   }
   if (target.closest("#choose-group") && state.selection.type === "step") {
@@ -5104,24 +5495,6 @@ document.addEventListener("click", event => {
     addCatalogStep(addStep.dataset.addStep);
     return;
   }
-  const openIcon = target.closest("[data-open-icon-picker]");
-  if (openIcon) {
-    state.picker = null;
-    state.iconPicker = { target: openIcon.dataset.openIconPicker, query: "" };
-    render();
-    document.querySelector("#icon-search")?.focus();
-    return;
-  }
-  const selectedIcon = target.closest("[data-select-icon]");
-  if (selectedIcon && state.iconPicker) {
-    const icon = state.icons.find(candidate => candidate.id === selectedIcon.dataset.selectIcon);
-    if (icon) {
-      const owner = state.iconPicker.target;
-      state.iconPicker = null;
-      setPresentation(owner, "icon", { media_type: icon.media_type, data: icon.data });
-    }
-    return;
-  }
   const resetPresentation = target.closest("[data-reset-presentation]");
   if (resetPresentation) {
     setPresentation(
@@ -5129,11 +5502,6 @@ document.addEventListener("click", event => {
       resetPresentation.dataset.resetPresentation,
       undefined
     );
-    return;
-  }
-  if (target.closest("#close-icon-picker") || target.matches(".icon-picker-backdrop")) {
-    state.iconPicker = null;
-    render();
     return;
   }
   if (target.matches(".picker-backdrop") || target.closest("[data-close-picker]")) {
@@ -5308,9 +5676,6 @@ document.addEventListener("input", event => {
     state.picker.query = event.target.value;
     state.world?.preview(null);
     document.querySelector("#step-options").innerHTML = pickerOptions();
-  } else if (event.target.id === "icon-search" && state.iconPicker) {
-    state.iconPicker.query = event.target.value;
-    document.querySelector("#icon-options").innerHTML = iconOptions();
   } else if (event.target.id === "group-search") {
     state.groupQuery = event.target.value;
     void loadEditor(state.selection.id).then(loaded => {
@@ -5362,9 +5727,30 @@ document.addEventListener("input", event => {
 });
 
 document.addEventListener("change", event => {
+  const comparison = event.target.closest('[data-replace-comparison]');
+  if (comparison) {
+    const steps = programAt(selectedOperation(), parseToken(comparison.dataset.replaceComparison));
+    const definition = definitionOf(comparison.value);
+    if (!steps || steps.length !== 1 || !definition) return;
+    const previous = definitionOf(steps[0].use), inputs = defaultInputs(definition.inputs);
+    for (const input of definition.inputs) if (previous.inputs.some(field => field.name === input.name
+        && field.type === input.type && field.shape === input.shape) && Object.hasOwn(steps[0].inputs, input.name))
+      inputs[input.name] = steps[0].inputs[input.name];
+    steps[0] = {use: definition.id, inputs};
+    dirty();
+    return;
+  }
   const target = event.target;
+  if (target.id === "theme-select") {
+    changeSettings({theme:target.value, theme_variant:''});
+    reflectTheme();
+    void applyTheme();
+    return;
+  }
+  if (target.id === 'theme-variant') { changeSettings({theme_variant:target.value}); void applyTheme(); return; }
+  if (target.id === 'reduced-motion') { changeSettings({reduced_motion:target.checked}); return; }
   if (target.id === "dock-example") {
-    selectExample(Number(target.value));
+    selectExample(Number(target.value), state.hoverTrigger?.id === target.dataset.trigger ? state.hoverTrigger : node(target.dataset.trigger));
     return;
   }
   if (target.matches("[data-input-json]")) {
@@ -5438,11 +5824,33 @@ document.addEventListener("change", event => {
 });
 
 document.addEventListener("keydown", event => {
-  if (event.key !== "Escape") return;
-  if (document.querySelector('#application-status').matches(':popover-open')) return;
-  if (state.picker || state.iconPicker || state.groupPicker) {
+  if (event.isComposing || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+  const optionList = event.target.matches('input[type="search"]') ? event.target.nextElementSibling
+    : event.target.closest('#step-options,[data-step-options],[data-predicate-options]');
+  const search = optionList?.previousElementSibling;
+  if (search?.matches('input[type="search"]') && ['ArrowDown','ArrowUp','Escape'].includes(event.key)) {
+    const options = [...optionList.querySelectorAll('button:not(:disabled)')].filter(button => button.getClientRects().length);
+    const index = options.indexOf(event.target);
+    const target = event.key === 'Escape' ? (index >= 0 ? search : null)
+      : event.key === 'ArrowDown' ? options[Math.min(index+1,options.length-1)] : index >= 0 ? options[index-1] || search : null;
+    if (target) { event.preventDefault(); target.focus(); return; }
+  }
+  const editing = event.target.isContentEditable || event.target.closest('input,textarea,select,[role="textbox"]');
+  if (event.key !== "Escape") {
+    if (editing || event.target.closest('button:not([data-world-id]),[data-world-overlay],#inspector,#overlay')) return;
+    const key=event.key.toLowerCase();
+    if (key==='e' && (state.regionSelection || state.selection.id)) {
+      event.preventDefault(); showInspector(true);
+    } else if (key==='enter' && state.regionSelection) {
+      event.preventDefault(); if (!event.repeat) focusRegion(state.regionSelection.id);
+    } else if (key==='f' && (state.regionSelection || state.selection.id)) {
+      event.preventDefault(); if (!event.repeat) void state.world?.focus(state.regionSelection?.id || state.selection.id);
+    }
+    return;
+  }
+  if (document.querySelector(':popover-open')) return;
+  if (state.picker || state.groupPicker) {
     state.picker = null;
-    state.iconPicker = null;
     state.groupPicker = null;
     render();
     return;
@@ -5452,10 +5860,14 @@ document.addEventListener("keydown", event => {
     render();
     return;
   }
-  showInspector(false);
+  if (editing) return;
+  if (!document.querySelector("#inspector").hidden) showInspector(false);
+  else clearSelection();
 });
 
 document.addEventListener("visibilitychange", () => {
+  clearTimeout(state.groupMeanTimer);
+  state.groupMeanController?.abort();
   scheduleWorldObservations();
   if (!document.hidden) {
     scheduleMetricsPoll(0);
@@ -5463,9 +5875,36 @@ document.addEventListener("visibilitychange", () => {
 });
 
 document.querySelector("#zoom-out").addEventListener("click", () => state.world?.zoom(1 / 1.4));
+document.querySelector('#leave-group').addEventListener('click', () => state.world?.leave());
+document.querySelector('#theme-download').addEventListener('click', () => void downloadTheme());
+document.querySelector('#toggle-effects').addEventListener('click', () => {
+  const effects = state.settings.effects !== true;
+  state.audio?.applyPreferences({...state.settings, effects});
+  void state.audio?.effects(effects);
+  changeSettings({effects});
+});
+document.querySelector('#toggle-music').addEventListener('click', () => void state.audio?.toggleMusic());
+document.querySelector('#audio-panel').addEventListener('toggle', event => { if (event.newState === 'open') void refreshSettings(); });
+document.querySelector('#audio-panel').addEventListener('toggle', event => { if (event.newState === 'open') selectSettingsTab('appearance'); });
+document.addEventListener('pointerdown', () => {
+  if (state.musicGesture || state.settings.music_enabled === false || state.settings.music_volume === 0) return;
+  state.musicGesture = true;
+  void state.audio?.play();
+}, {once:true, capture:true});
+document.querySelector('#trigger-example').addEventListener('pointerenter', () => clearTimeout(state.hoverTimer));
+document.querySelector('#trigger-example').addEventListener('pointerleave', () => hoverTrigger(''));
+document.querySelector('#trigger-example').addEventListener('focusin', () => clearTimeout(state.hoverTimer));
+document.querySelector('#trigger-example').addEventListener('focusout', () => hoverTrigger(''));
 document.querySelector("#zoom-in").addEventListener("click", () => state.world?.zoom(1.4));
-document.querySelector("#zoom-fit").addEventListener("click", () => state.world?.fit());
+document.querySelector("#zoom-fit").addEventListener("click", () => { showInspector(false); state.world?.focus('app', .5); });
 window.addEventListener("beforeunload", () => {
+  state.audio?.dispose();
+  clearTimeout(state.groupMeanTimer);
+  state.groupMeanController?.abort();
+  state.themeController?.abort();
+  state.hoverController?.abort();
+  clearTimeout(state.hoverTimer);
+  clearTimeout(state.settingsTimer);
   state.world?.dispose();
   clearTimeout(state.applicationPollTimer);
   clearTimeout(state.metricsPollTimer);

@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
 /** Parser and validator for presentation-only Creator metadata. */
 final class CreatorDocument {
     static final String EMPTY = "{\"format\":2,\"groups\":[],\"steps\":{}}";
-    private static final Set<String> FIELDS = Set.of("format", "groups", "steps");
+    private static final Set<String> FIELDS = Set.of("format", "groups", "steps", "created_at", "theme");
     private static final Set<String> PRESENTATION_FIELDS = Set.of("name", "color", "icon", "outcomes", "group", "shape", "aspect", "roundness");
     private static final Set<String> LEGACY_PRESENTATION_FIELDS = Set.of("name", "color", "icon", "outcomes");
     private static final Set<String> GROUP_FIELDS = Set.of("id", "name", "color", "icon", "boundary", "shape", "aspect", "roundness");
@@ -67,6 +67,19 @@ final class CreatorDocument {
         if (unknown.isPresent()) {
             return Result.rejected(unknown.get());
         }
+        final RailixValue created = document.values().get("created_at");
+        if (created != null && (!(created instanceof RailixValue.NumberValue number)
+                || number.value().signum() < 0 || number.value().stripTrailingZeros().scale() > 0
+                || number.value().compareTo(BigDecimal.valueOf(8_640_000_000_000_000L)) > 0)) {
+            return Result.rejected("CREATOR_CREATED_AT_INVALID", "Creation date must be UTC epoch milliseconds.", "created_at");
+        }
+        final RailixValue theme = document.values().get("theme");
+        if (theme != null && (!(theme instanceof RailixValue.StringValue text) || text.value().isBlank()
+                || text.value().length() > 4096 || !text.value().endsWith(".css")
+                || text.value().contains("\\") || text.value().chars().anyMatch(Character::isISOControl)
+                || java.util.Arrays.stream(text.value().split("/", -1)).anyMatch(part -> part.isEmpty() || part.equals(".") || part.equals("..")))) {
+            return Result.rejected("CREATOR_THEME_INVALID", "Theme must be a relative CSS file path inside the themes folder.", "theme");
+        }
         if (!(document.values().get("format") instanceof RailixValue.NumberValue format)
                 || !(BigDecimal.ONE.equals(format.value()) || BigDecimal.TWO.equals(format.value()))) {
             return Result.rejected(
@@ -76,9 +89,15 @@ final class CreatorDocument {
             );
         }
         final RailixValue.ObjectValue project = project(projectSource);
-        return BigDecimal.ONE.equals(format.value())
+        final Result result = BigDecimal.ONE.equals(format.value())
                 ? legacy(document, graph(project, catalog, true))
                 : current(document, graph(project, catalog, false));
+        if (!result.diagnostics().isEmpty() || created == null && theme == null) return result;
+        final Map<String, RailixValue> values = new LinkedHashMap<>(result.value().values());
+        if (created != null) values.put("created_at", created);
+        if (theme != null) values.put("theme", theme);
+        final RailixValue.ObjectValue valueWithSettings = RailixValue.object(values);
+        return new Result(RailixJson.write(valueWithSettings), valueWithSettings, List.of());
     }
 
     private static Result current(
@@ -688,9 +707,9 @@ final class CreatorDocument {
         }
         final RailixValue shape = value.values().get("shape");
         if (shape != null && (!(shape instanceof RailixValue.StringValue text)
-                || !Set.of("rectangle", "ellipse", "triangle", "diamond").contains(text.value()))) {
+                || !Set.of("rectangle", "ellipse", "triangle", "diamond", "hexagon", "event", "storage", "subsystem").contains(text.value()))) {
             return Optional.of(Diagnostic.atPath("CREATOR_PRESENTATION_SHAPE_INVALID",
-                    "Shape must be rectangle, ellipse, triangle, or diamond.", path + ".shape"));
+                    "Unknown Creator shape preset.", path + ".shape"));
         }
         for (final String field : List.of("aspect", "roundness")) {
             final RailixValue setting = value.values().get(field);

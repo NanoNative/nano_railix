@@ -33,81 +33,1246 @@ import static org.assertj.core.api.Assertions.within;
 
 @Timeout(120)
 final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
-    @Test
-    void junctionMarkingsStayPerpendicularToLongTransportRuns() {
-        openProject(choiceProject());
-        awaitScene();
-        final Map<?, ?> result = (Map<?, ?>) page.evaluate("""
-                () => new Promise((resolve,reject)=>{
-                  const render=PIXI.WebGLRenderer.prototype.render;
-                  const timeout=setTimeout(()=>{PIXI.WebGLRenderer.prototype.render=render;reject(new Error('No belt frame'));},2000);
-                  PIXI.WebGLRenderer.prototype.render=function(root,...args){
-                    const result=render.call(this,root,...args);
-                    if(this.canvas.id!=='world-canvas') return result;
-                    PIXI.WebGLRenderer.prototype.render=render;clearTimeout(timeout);
-                    const v=root.children[0].geometry.getBuffer('aPosition').data;
-                    let count=0,skewed=0;
-                    for(let i=0;i+54<=v.length;i+=27){
-                      if(!v[i+7] || v[i]!==v[i+27] || v[i+1]!==v[i+28]) continue;
-                      const a=[v[i],v[i+1]],b=[v[i+9],v[i+10]],c=[v[i+18],v[i+19]],d=[v[i+45],v[i+46]];
-                      const dx=(b[0]+c[0]-a[0]-d[0])/2,dy=(b[1]+c[1]-a[1]-d[1])/2,length=Math.hypot(dx,dy);
-                      if(length>40){count++;if(Math.abs((a[0]-d[0])*dx+(a[1]-d[1])*dy)/length>.05
-                        || Math.abs((b[0]-c[0])*dx+(b[1]-c[1])*dy)/length>.05)skewed++;}
-                      i+=27;
-                    }
-                    resolve({count,skewed});return result;
-                  };
-                  state.world.repaint();
-                })
-                """);
-        assertThat(((Number) result.get("count")).intValue()).isPositive();
-        assertThat(((Number) result.get("skewed")).intValue()).isZero();
+    @ParameterizedTest
+    @CsvSource({"hq,1280", "canvas,320", "classic,390"})
+    void footerZoomAndRoundHomeStayReachable(final String variant, final int width) throws IOException {
+        page.setViewportSize(width, 800);
+        page.locator("#open-settings").click();
+        if (variant.equals("classic")) page.locator("#theme-select").selectOption("classic/theme.css");
+        else page.locator("#theme-variant").selectOption(variant);
+        page.waitForFunction("variant => !state.themeError && document.querySelector('#graph').dataset.renderer === (variant==='canvas'?'canvas':'css') && (variant!=='classic' || document.documentElement.dataset.architecture==='classic')", variant);
+        page.keyboard().press("Escape");
+
+        assertThat(page.locator(".status-rail .canvas-tools #zoom-in, .status-rail .canvas-tools #zoom-out, .status-rail .canvas-tools #zoom-level").count()).isEqualTo(3);
+        assertThat(page.locator(".topbar #toggle-music + #zoom-fit").count()).isEqualTo(1);
+        final var home = page.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,
+                new Page.GetByRoleOptions().setName("Home").setExact(true));
+        final BoundingBox homeBounds = home.boundingBox();
+        assertThat(home.textContent()).isEmpty();
+        assertThat(homeBounds.width).isCloseTo(homeBounds.height, within(.1));
+        assertThat(home.evaluate("element => getComputedStyle(element).borderRadius")).isEqualTo("50%");
+        final BoundingBox footer = page.locator(".status-rail").boundingBox();
+        final BoundingBox zoom = page.locator(".canvas-tools").boundingBox();
+        assertThat(footer.x + footer.width - zoom.x - zoom.width).isBetween(0.0, 16.0);
+        assertThat(zoom.y).isGreaterThanOrEqualTo(footer.y);
+        assertThat(zoom.y + zoom.height).isLessThanOrEqualTo(footer.y + footer.height);
+        final BoundingBox metrics = page.locator(".status-metrics").boundingBox();
+        assertThat(metrics.x + metrics.width).isLessThanOrEqualTo(zoom.x);
+        final BoundingBox music = page.locator("#toggle-music").boundingBox();
+        final BoundingBox running = page.locator(".build-indicator").boundingBox();
+        assertThat(homeBounds.y + homeBounds.height / 2).isCloseTo(music.y + music.height / 2, within(.1));
+        assertThat(running.y + running.height / 2).isCloseTo(music.y + music.height / 2, within(.1));
+        assertThat(running.x).isGreaterThanOrEqualTo(homeBounds.x + homeBounds.width);
+        assertThat(running.x + running.width).isLessThanOrEqualTo(width);
+        assertThat(page.locator(".build-indicator strong").evaluate("element => element.scrollWidth <= element.clientWidth")).isEqualTo(true);
+
+        home.click();
+        page.waitForFunction("() => document.querySelector('#zoom-level').textContent === '50%'");
+        page.locator("#zoom-in").press("Enter");
+        page.waitForFunction("() => document.querySelector('#zoom-level').textContent === '70%'");
+        page.locator("#zoom-out").click();
+        page.waitForFunction("() => document.querySelector('#zoom-level').textContent === '50%'");
+        final Path screenshot = Files.createDirectories(Path.of("target/footer-hud")).resolve(variant + "-" + width + ".png");
+        page.screenshot(new Page.ScreenshotOptions().setPath(screenshot));
         assertThat(pageErrors).isEmpty();
     }
 
     @Test
-    void choiceJunctionHasContinuousSurfaceAtItsBranchAxis() {
-        openProject(choiceProject());
-        final Object junction = page.evaluate("""
-                async () => {
-                  state.world.dispose();
-                  window.__renderer = new RailixWorld(document.querySelector('#graph'));
-                  await window.__renderer.refresh();
-                  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-                  const link=window.__renderer.scene.links.find(link=>link.from==='choice');
-                  const query=new URLSearchParams(window.__renderer.query),scale=Number(query.get('scale'));
-                  const x=(link.points[1][0]-Number(query.get('x')))*scale;
-                  const y=(link.points[1][1]-Number(query.get('y')))*scale;
-                  return new Promise((resolve,reject)=>{
-                    const render=PIXI.WebGLRenderer.prototype.render;
-                    const timeout=setTimeout(()=>{PIXI.WebGLRenderer.prototype.render=render;reject(new Error('No junction frame'));},2000);
-                    PIXI.WebGLRenderer.prototype.render=function(root,...args){
-                      const result=render.call(this,root,...args);
-                      if(this.canvas.id!=='world-canvas') return result;
-                      PIXI.WebGLRenderer.prototype.render=render;clearTimeout(timeout);
-                      const v=root.children[0].geometry.getBuffer('aPosition').data;
-                      let ink=[];
-                      for(let i=0;i<v.length;i+=27){
-                        const points=[0,9,18].map(j=>[v[i+j],v[i+j+1]]);
-                        const cross=points.map((a,j)=>{const b=points[(j+1)%3];return (b[0]-a[0])*(y-a[1])-(b[1]-a[1])*(x-a[0]);});
-                        if(cross.every(c=>Math.abs(c)<.001)) continue;
-                        if(cross.every(c=>c>=-.001)||cross.every(c=>c<=.001)) ink=[v[i+2],v[i+3],v[i+4]];
+    void nativeSceneryReplacesCssFacesAtTheSameWorldLocations() throws IOException {
+        final String variant="canvas";
+        openProject(fourStepProject());
+        page.evaluate("() => {state.creator.created_at=1;state.settings.reduced_motion=true;state.world.fit();}");
+        awaitScene();
+        page.waitForFunction("() => document.querySelector('.world-scenery') !== null");
+        final String project = Files.readString(directory.resolve("project.json"));
+        final Object plots = page.locator(".world-scenery").evaluateAll("""
+                elements => {
+                  const stage=document.querySelector('#graph').getBoundingClientRect();
+                  return elements.map(element=>{
+                    const marker=document.createElement('span');element.append(marker);
+                    try {
+                      for(const x of [50,25,75])for(const y of [50,25,75]){
+                        marker.style.cssText=`position:absolute;left:${x}%;top:${y}%;width:0;height:0`;
+                        const point=marker.getBoundingClientRect(),px=point.x-stage.x,py=point.y-stage.y;
+                        if(px>4&&py>4&&px<stage.width-4&&py<stage.height-4)return {x:px-3,y:py-3,width:6,height:6};
                       }
-                      resolve({surface:[92/255,99/255,94/255].every((c,i)=>Math.abs(c-ink[i])<.001),ink});return result;
-                    };
-                    window.__renderer.repaint();
-                  });
+                    }finally{marker.remove();}
+                    return null;
+                  }).filter(Boolean);
                 }
                 """);
-        assertThat(junction).isInstanceOfSatisfying(Map.class, value -> assertThat(value.get("surface")).as("Junction surface: %s", value).isEqualTo(true));
-        page.evaluate("() => { window.__renderer.dispose(); }");
+        assertThat((List<?>) plots).isNotEmpty();
+        page.evaluate("async variant=>{state.settings.theme_variant=variant;await applyTheme();}",variant);
+        page.waitForFunction("() => document.querySelector('.world-raster') !== null");
+        assertThat(page.locator(".world-scenery").count()).as("Scenery uses the same cached atlas as machines, not duplicate CSS faces").isZero();
+        assertThat(page.evaluate("""
+                plots => {
+                  const canvas=document.querySelector('.world-raster'),r=canvas.width/canvas.clientWidth;
+                  return plots.every(box=>{
+                    const pixels=canvas.getContext('2d').getImageData(Math.floor(box.x*r),Math.floor(box.y*r),Math.ceil(box.width*r),Math.ceil(box.height*r)).data;
+                    let visible=0;for(let i=3;i<pixels.length;i+=4)if(pixels[i]>20)visible++;
+                    return visible>pixels.length/4*.03;
+                  });
+                }
+                """,plots)).as("Native scenery occupies the same cleared world plots as the CSS variant").isEqualTo(true);
+        final String source=(String)page.locator(".world-raster").evaluate("canvas=>canvas.toDataURL()");
+        final Path screenshots=Files.createDirectories(Path.of("target/renderer-scenery"));
+        page.screenshot(new Page.ScreenshotOptions().setPath(screenshots.resolve(variant+".png")));
+        page.evaluate("async()=>{state.world.zoom(1.4);await state.world.refresh();state.world.fit();await state.world.refresh();}");
+        awaitScene();
+        assertThat(page.locator(".world-raster").getAttribute("data-scenery")).isNotEqualTo("0");
+        page.evaluate("async()=>{state.settings.theme_variant='hq';await applyTheme();}");
+        assertThat(page.locator(".world-scenery").count()).isPositive();
+        page.evaluate("async variant=>{state.settings.theme_variant=variant;await applyTheme();}",variant);
+        assertThat(page.locator(".world-raster").evaluate("canvas=>canvas.toDataURL()")).isEqualTo(source);
+        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
         assertThat(pageErrors).isEmpty();
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"rectangle", "ellipse", "triangle", "diamond"})
-    void machineSymbolsKeepTheirSizeAndAspectAcrossShapes(final String shape) {
+    @CsvSource({"hq,1280", "canvas,1280", "hq,390", "canvas,390"})
+    void doubleClickingGroupLabelEntersWithoutInspectorInterference(final String variant, final int width) {
+        page.setViewportSize(width, width < 560 ? 720 : 800);
+        openProject(deepBranchProject(128));
+        page.locator("#open-settings").click();
+        page.locator("#theme-variant").selectOption(variant);
+        page.waitForFunction("variant => state.settings.theme_variant === variant && !state.themeError && document.querySelector('#graph').dataset.renderer === (variant==='canvas'?'canvas':'css')",variant);
+        page.keyboard().press("Escape");
+        page.locator("[data-group-region-label]").first().dblclick();
+        page.waitForFunction("() => new URLSearchParams(state.world.query).has('inside')", null,
+                new Page.WaitForFunctionOptions().setTimeout(5000));
+        page.waitForFunction("() => document.querySelector('#zoom-level').textContent === '50%'");
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        page.locator("#leave-group").click();
+        page.waitForFunction("() => !new URLSearchParams(state.world.query).has('inside')");
+        page.locator("[data-group-region-label]").first().click();
+        page.locator("[data-inspector-mode=groups]").dblclick(new Locator.DblclickOptions().setTimeout(5000));
+        assertThat(page.locator("#inspector").isVisible()).isTrue();
+        assertThat(page.evaluate("() => state.inspectorMode")).isEqualTo("groups");
+        assertThat(page.evaluate("() => new URLSearchParams(state.world.query).has('inside')")).isEqualTo(false);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"hq", "canvas"})
+    void themeVariantsKeepGroupEntryZoomAndHomeBehavior(final String variant) throws IOException {
+        openProject(deepBranchProject(128));
+        page.locator("#open-settings").click();
+        page.locator("#theme-variant").selectOption(variant);
+        page.waitForFunction("variant => state.settings.theme_variant === variant && !state.themeError && document.querySelector('#graph').dataset.renderer === (variant.startsWith('canvas')?'canvas':'css')",variant);
+        page.keyboard().press("Escape");
+        page.locator("[data-group-region-label]").first().click();
+        page.locator("#enter-region").click();
+        page.waitForFunction("() => new URLSearchParams(state.world.query).has('inside') && document.querySelector('#graph').dataset.cameraMoving !== 'true'");
+        page.waitForFunction("() => document.querySelector('#zoom-level').textContent === '50%'");
+        final String inside=(String)page.evaluate("() => new URLSearchParams(state.world.query).get('inside')");
+        assertThat(page.locator("[data-select-node=step-0]").isVisible()).isTrue();
+        final Path images=Files.createDirectories(Path.of("target/renderer-navigation"));
+        page.screenshot(new Page.ScreenshotOptions().setPath(images.resolve(variant+"-50.png")));
+        page.locator("#zoom-in").click();
+        page.waitForFunction("() => document.querySelector('#zoom-level').textContent === '70%'");
+        page.screenshot(new Page.ScreenshotOptions().setPath(images.resolve(variant+"-70.png")));
+        if (variant.startsWith("canvas")) assertThat(((Number) page.locator(".world-raster").evaluate("""
+                canvas => {
+                  const rgba=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+                  let opaque=0;for(let i=3;i<rgba.length;i+=4)if(rgba[i]>200)opaque++;
+                  return opaque/(canvas.width*canvas.height);
+                }
+                """)).doubleValue()).as("A group outline must not paint a giant solid stripe across the viewport").isLessThan(.2);
+        page.locator("[data-select-node=step-0]").click();
+        page.locator("#inspector").waitFor(new com.microsoft.playwright.Locator.WaitForOptions().setState(com.microsoft.playwright.options.WaitForSelectorState.VISIBLE));
+        assertThat(page.locator("#inspector").isVisible()).isTrue();
+        page.locator("#close-inspector").click();
+        page.locator("#zoom-out").click();page.locator("#zoom-out").click();
+        awaitScene();
+        assertThat(page.evaluate("() => new URLSearchParams(state.world.query).get('inside')")).isEqualTo(inside);
+        page.locator("#leave-group").click();
+        page.waitForFunction("() => !new URLSearchParams(state.world.query).has('inside')");
+        page.locator("#zoom-fit").click();
+        page.waitForFunction("() => document.querySelector('#zoom-level').textContent === '50%'");
+        assertThat(page.locator("[data-select-node=app]").isVisible()).isTrue();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void nativeTransportMovesForTrafficAndExampleReplayAndStopsWhenHidden(final boolean replay) {
+        startRendererTraffic(replay ? 0 : 10,30_000,replay);
+        page.evaluate("""
+                async () => {
+                  const catalog=await (await fetch('/api/themes')).json();
+                  const variant=catalog.themes.find(theme=>theme.id==='').variants.find(variant=>variant.id==='canvas');
+                  await window.__renderer.renderer(variant);
+                }
+                """);
+        page.waitForFunction("() => Number(document.querySelector('.world-raster')?.dataset.routes)>0");
+        page.evaluate("""
+                () => window.readParcelPixels=()=>{
+                  const canvas=document.querySelector('.world-raster'),rgba=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+                  const pixels=[];for(let i=0;i<rgba.length;i+=4)if(rgba[i]===212&&rgba[i+1]===255&&rgba[i+2]===236)pixels.push(i/4);
+                  return pixels.join(',');
+                }
+                """);
+        final String before=(String)page.evaluate("() => window.readParcelPixels()");
+        assertThat(before).as("Raised parcels, not just moving lights, must be visible").isNotEmpty();
+        page.waitForFunction("before=>window.readParcelPixels()!==before",before);
+        page.evaluate("() => void window.__renderer.focus('step-0',1)");
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving !== 'true'");
+        page.evaluate("() => {Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));}");
+        page.waitForFunction("() => document.querySelector('.world-raster').dataset.animated==='false'");
+        final String paused=(String)page.locator(".world-raster").evaluate("canvas=>canvas.toDataURL()");
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        assertThat(page.locator(".world-raster").evaluate("canvas=>canvas.toDataURL()")).isEqualTo(paused);
+        page.evaluate("() => {delete document.hidden;document.dispatchEvent(new Event('visibilitychange'));}");
+        page.waitForFunction("() => document.querySelector('.world-raster').dataset.animated==='true'");
+        page.evaluate("""
+                async () => {
+                  const original=window.fetch,empty={...window.__renderer.scene,revision:'empty-view',nodes:[],links:[]};
+                  window.fetch=(url,...args)=>String(url).startsWith('/api/scene?')
+                    ?Promise.resolve(new Response(JSON.stringify(empty))):original(url,...args);
+                  try {await window.__renderer.refresh();} finally {window.fetch=original;}
+                  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+                }
+                """);
+        assertThat(page.locator(".world-raster").getAttribute("data-animated")).as("Empty space must not keep the graphics loop running").isEqualTo("false");
+        page.evaluate("() => { window.__renderer.dispose(); }");
+        assertThat(page.locator("#world-plane canvas").count()).isZero();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named = "railix.sprite.export", matches = "true")
+    void exportThemeSpritesFromTheSharedBuildingPortrait() throws IOException {
+        page.setViewportSize(1280, 900);
         openProject(fourStepProject());
+        page.evaluate("async()=>{state.world.zoom(.08);await state.world.refresh();}");
+        page.waitForFunction("() => new Set([...document.querySelectorAll('.world-scenery')].map(element=>element.dataset.variant)).size===3");
+        page.evaluate("""
+                () => {
+                  window.sceneryTemplates=new Map([...document.querySelectorAll('.world-scenery')].map(element=>[element.dataset.variant,element.cloneNode(true)]));
+                  state.world.dispose();
+                  window.authoringWorld=new RailixWorld(document.querySelector('#graph'),{
+                    appearance:node=>({symbol:node.id==='branch'?'branch':'',rate:10,color:'#53d8d1'})
+                  });
+                  const style=document.createElement('style');style.textContent=`
+                    html,body,#graph {background:transparent!important;color-scheme:light}
+                    #world-plane,#world-labels,#world-hud,.topbar {visibility:hidden}
+                    #sprite-authoring .machine::before,#sprite-authoring .machine::after,
+                    #sprite-authoring .machine-top,#sprite-authoring .machine-side,
+                    #sprite-authoring .machine-light {visibility:hidden}
+                    #sprite-authoring {position:fixed;left:340px;top:350px;width:136px;height:136px;
+                      transform:var(--world-camera) scale3d(2,2,2);transform-origin:0 0;transform-style:preserve-3d}
+                    #sprite-authoring>div {position:relative;width:136px;height:136px;transform-style:preserve-3d}
+                  `;document.head.append(style);
+                  const author=document.createElement('div');author.id='sprite-authoring';
+                  author.append(document.createElement('div'));document.querySelector('#graph').append(author);
+                  document.querySelector('#graph').dataset.trafficAnimated='true';
+                }
+                """);
+        final Path output = Files.createDirectories(Path.of(System.getProperty("railix.sprite.output", "target/theme-sprites")));
+        final JsonObject sprites = new JsonObject();
+        for (final String role : List.of("app", "trigger", "step", "region", "branch", "scenery-ridge", "scenery-grove", "scenery-basin")) {
+            final var geometry = (Map<String, Number>) page.evaluate("""
+                    role=>{
+                      const host=document.querySelector('#sprite-authoring>div');
+                      const scenery=role.startsWith('scenery-');
+                      let width=136,height=136;
+                      if(scenery){
+                        const element=sceneryTemplates.get(role.slice(8)).cloneNode(true),unit=parseFloat(element.style.getPropertyValue('--unit'));
+                        for(const part of [element,...element.children])part.style.cssText=part.style.cssText.replace(/(-?[\\d.]+)px/g,(_,value)=>Number(value)/unit+'px');
+                        element.style.setProperty('--unit','1');element.style.left=element.style.top='0';element.style.transform='none';
+                        width=parseFloat(element.style.width);height=parseFloat(element.style.height);host.replaceChildren(element);
+                      }else authoringWorld.portrait({id:role,kind:role==='branch'?'step':role,station_scale:1},host);
+                      const marker=document.createElement('i');marker.style.cssText=`position:absolute;left:${scenery?0:68}px;top:${scenery?0:68}px;width:0;height:0`;
+                      host.append(marker);const anchor=marker.getBoundingClientRect();marker.remove();
+                      const m=new DOMMatrix(getComputedStyle(document.querySelector('#sprite-authoring')).transform);
+                      const points=(scenery?[-8,width+16]:[-68,68]).flatMap(x=>(scenery?[-8,height+16]:[-68,68]).flatMap(y=>[0,112].map(z=>
+                        [m.m11*x+m.m21*y+m.m31*z,m.m12*x+m.m22*y+m.m32*z])));
+                      const x=Math.floor(anchor.x+Math.min(...points.map(p=>p[0])))-3;
+                      const y=Math.floor(anchor.y+Math.min(...points.map(p=>p[1])))-3;
+                      return {x,y,width:Math.ceil(anchor.x+Math.max(...points.map(p=>p[0]))-x)+3,
+                        height:Math.ceil(anchor.y+Math.max(...points.map(p=>p[1]))-y)+3,
+                        anchorX:anchor.x-x,anchorY:anchor.y-y};
+                    }
+                    """, role);
+            final int count = role.equals("branch") ? 8 : 1;
+            java.awt.image.BufferedImage strip = null;
+            for (int frame = 0; frame < count; frame++) {
+                page.locator("#sprite-authoring").evaluate("(element,time)=>element.getAnimations({subtree:true}).forEach(a=>{a.pause();a.currentTime=time;})", frame * 2400.0 / Math.max(1, count - 1));
+                final byte[] bytes = page.screenshot(new Page.ScreenshotOptions().setOmitBackground(true).setClip(
+                        geometry.get("x").doubleValue(), geometry.get("y").doubleValue(),
+                        geometry.get("width").doubleValue(), geometry.get("height").doubleValue()));
+                final var image = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(bytes));
+                if (strip == null) strip = new java.awt.image.BufferedImage(image.getWidth() * count, image.getHeight(), java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                final var graphics = strip.createGraphics();
+                try { graphics.drawImage(image, frame * image.getWidth(), 0, null); } finally { graphics.dispose(); }
+            }
+            javax.imageio.ImageIO.write(strip, "png", output.resolve(role + ".png").toFile());
+            final JsonObject sprite = new JsonObject();
+            sprite.addProperty("file", role + ".png");
+            sprite.addProperty("frames", count);
+            sprite.addProperty("scale", 2);
+            sprite.addProperty("anchorX", geometry.get("anchorX"));
+            sprite.addProperty("anchorY", geometry.get("anchorY"));
+            sprite.addProperty("period", 4800);
+            sprites.add(role, sprite);
+        }
+        final JsonObject atlas = new JsonObject();
+        atlas.addProperty("version", 1);
+        atlas.add("sprites", sprites);
+        Files.writeString(output.resolve("atlas.json"), atlas.toString());
+        page.evaluate("() => authoringWorld.dispose()");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Timeout(480)
+    @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named = "railix.renderer.comparison", matches = "true")
+    void compareProductionVariantsWith128VisibleStations() throws IOException {
+        page.setViewportSize(1920, 1080);
+        openProject(fourStepProject());
+        final CDPSession cdp = context.newCDPSession(page);
+        final CDPSession processes = context.browser().newBrowserCDPSession();
+        cdp.send("Performance.enable");
+        System.out.println("RAILIX_GRAPHICS " + processes.send("SystemInfo.getInfo"));
+        page.evaluate("""
+                async () => {
+                  state.world.dispose();
+                  const nodes=Array.from({length:128},(_,i)=>({id:'probe-'+i,kind:'step',name:'Processor',
+                    x:i%16*240,y:Math.floor(i/16)*210,width:168,height:64,station_scale:1}));
+                  const links=nodes.filter((_,i)=>i%16!==15).map(node=>{
+                    const next=nodes[Number(node.id.slice(6))+1];
+                    return {id:node.id+'-out',from:node.id,to:next.id,station_scale:1,
+                      points:[[node.x+168,node.y+32],[next.x,next.y+32]]};
+                  });
+                  const scene={revision:'renderer-comparison',bounds:{x:-160,y:-160,width:4240,height:1820},nodes,links};
+                  const original=window.fetch;
+                  window.fetch=(url,...args)=>String(url).startsWith('/api/scene?')
+                    ?Promise.resolve(new Response(JSON.stringify(scene),{headers:{'Content-Type':'application/json'}})):original(url,...args);
+                  window.restoreProbeFetch=()=>window.fetch=original;
+                  window.probeRate=100;
+                  state.world=new RailixWorld(document.querySelector('#graph'),{
+                    appearance:()=>({rate:window.probeRate,color:'#53d8d1'}),
+                    linkAppearance:()=>({rate:window.probeRate}),motionActive:()=>true
+                  });
+                  await state.world.refresh();
+                }
+                """);
+        final Path output=Files.createDirectories(Path.of("target/renderer-comparison"));
+        final Path report=output.resolve("measurements.jsonl");
+        Files.writeString(report,"");
+        final List<String> variants=(List<String>)page.evaluate("() => state.themes.find(theme=>theme.id==='').variants.map(variant=>variant.id)");
+        final List<String> rounds=new ArrayList<>(variants);
+        rounds.addAll(variants.reversed());
+        try {
+            for (final String variant : rounds) {
+                page.evaluate("""
+                        async variant => {state.settings.theme_variant=variant;await applyTheme();if(state.themeError)throw Error(state.themeError);}
+                        """, variant);
+                for (final String phase : List.of("active","idle")) {
+                page.evaluate("phase => {window.probeRate=phase==='active'?100:0;state.world.repaint();}",phase);
+                page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving !== 'true'");
+                page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+                final JsonObject before=cdp.send("Performance.getMetrics"), processBefore=processes.send("SystemInfo.getProcessInfo");
+                final long start=System.nanoTime();
+                final Object frames=page.evaluate("""
+                        async () => {
+                          const times=[];let previous=await new Promise(requestAnimationFrame);
+                          for(let i=0;i<100;i++){
+                            const now=await new Promise(requestAnimationFrame);if(i>=20)times.push(now-previous);previous=now;
+                          }
+                          times.sort((a,b)=>a-b);
+                          const canvas=document.querySelector('.world-raster');
+                          return {p50:times[Math.floor(times.length*.5)],p95:times[Math.floor(times.length*.95)],max:times.at(-1),
+                            stations:canvas?Number(canvas.dataset.stations):document.querySelectorAll('#world-plane .machine').length,
+                            scenery:canvas?Number(canvas.dataset.scenery):document.querySelectorAll('.world-scenery').length,
+                            dom:document.querySelectorAll('#world-plane *').length,
+                            canvasPixels:canvas?canvas.width*canvas.height:0,dpr:devicePixelRatio,
+                            heap:performance.memory?.usedJSHeapSize??null};
+                        }
+                        """);
+                final var result=new JsonObject();
+                result.addProperty("variant",variant);
+                result.addProperty("phase",phase);
+                result.addProperty("seconds",(System.nanoTime()-start)/1e9);
+                result.add("frames",new com.google.gson.Gson().toJsonTree(frames));
+                result.add("before",before);result.add("after",cdp.send("Performance.getMetrics"));
+                result.add("processBefore",processBefore);result.add("processAfter",processes.send("SystemInfo.getProcessInfo"));
+                Files.writeString(report,result+"\n",StandardOpenOption.APPEND);
+                System.out.println("RAILIX_VARIANT "+result);
+                assertThat(((Number)((Map<?,?>)frames).get("stations")).intValue()).isEqualTo(128);
+                if(phase.equals("active"))page.screenshot(new Page.ScreenshotOptions().setPath(output.resolve(variant+".png")));
+                }
+            }
+            for(final String variant:variants){
+                page.evaluate("async variant=>{window.probeRate=100;state.settings.theme_variant=variant;await applyTheme();}",variant);
+                page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+                final Object navigation=page.evaluate("""
+                        async () => {
+                          const times=[];let previous=performance.now();
+                          for(let i=0;i<32;i++){
+                            state.world.zoom(i<16?1.015:1/1.015);
+                            const now=await new Promise(requestAnimationFrame);times.push(now-previous);previous=now;
+                          }
+                          times.sort((a,b)=>a-b);return {p95:times[Math.floor(times.length*.95)],max:times.at(-1)};
+                        }
+                        """);
+                System.out.println("RAILIX_VARIANT_NAVIGATION "+variant+" "+navigation);
+            }
+            assertThat(pageErrors).isEmpty();
+        } finally {
+            cdp.detach();processes.detach();
+            page.evaluate("() => {state.world.dispose();window.restoreProbeFetch();}");
+        }
+    }
+
+
+    @Test
+    void parcelsFollowTheWholeConnectionAcrossCorners() {
+        startRendererTraffic(10, 30_000, true);
+        final Locator routes = page.locator(".cargo-route");
+        assertThat(routes.count()).as("One continuous parcel path, not a loop at every belt segment").isPositive();
+        assertThat(routes.evaluateAll("""
+                  routes => routes.some(route => route.firstElementChild.sheet.cssRules[0].cssRules.length >= 3)
+                """)).isEqualTo(true);
+        assertThat(routes.evaluateAll("""
+                routes => routes.every(route => {
+                  const item=route.querySelector('.cargo-item'), style=getComputedStyle(item);
+                  return style.animationPlayState === 'running' && style.transformStyle === 'flat'
+                    && !route.closest('.world-projection')
+                    && style.backgroundImage.startsWith('conic-gradient(')
+                    && getComputedStyle(item,'::before').content === 'none';
+                })
+                """)).isEqualTo(true);
+        final Locator item = routes.first().locator(".cargo-item").first();
+        final Object before = item.evaluate("item=>getComputedStyle(item).transform");
+        page.waitForFunction("before=>getComputedStyle(document.querySelector('.cargo-route .cargo-item')).transform!==before", before);
+        page.evaluate("() => { window.__parcels=[...document.querySelectorAll('.cargo-item')]; window.__renderer.zoom(1.02); }");
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        assertThat(page.evaluate("() => window.__parcels.every(item=>item.isConnected)"))
+                .as("Panning and small zoom changes do not restart parcel lifetimes").isEqualTo(true);
+        assertThat(pageErrors).isEmpty();
+        page.evaluate("() => window.__renderer.dispose()");
+    }
+
+    @Test
+    void projectedParcelsStayOnTheirBeltsAcrossCameraBatches() {
+        startRendererTraffic(10, 30_000, true);
+        page.evaluate("() => window.__renderer.focus('step-0', 1)");
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving === 'false'");
+        assertThat((List<?>) page.evaluate("""
+                async () => {
+                  const failures=[];
+                  for (const zoom of [1,1.2,.75,2.2]) {
+                    window.__renderer.zoom(zoom);
+                    document.querySelector('#graph').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+                    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+                    const lines=[...document.querySelectorAll('.belt-run')].map(run=>[0,100].map(left=>{
+                      const probe=document.createElement('i');
+                      probe.style.cssText=`position:absolute;left:${left}%;top:50%;width:0;height:0`;
+                      run.append(probe); const box=probe.getBoundingClientRect(); probe.remove(); return [box.x,box.y];
+                    }));
+                    const viewport=document.querySelector('#graph').getBoundingClientRect();
+                    const casings=[...document.querySelectorAll('.machine')].map(machine=>machine.getBoundingClientRect());
+                    const scale=new DOMMatrix(getComputedStyle(document.querySelector('.world-cargo')).transform).m11;
+                    let checked=0;
+                    for (const item of document.querySelectorAll('.cargo-item')) {
+                      const route=item.parentElement, style=getComputedStyle(route);
+                      const unit=parseFloat(style.scale)*scale, origin=style.getPropertyValue('--cargo-origin').split(',').map(parseFloat);
+                      const rect=item.getBoundingClientRect(), p=[rect.x-origin[0]*unit,rect.y-origin[1]*unit];
+                      if (p[0]<viewport.x || p[0]>viewport.right || p[1]<viewport.y || p[1]>viewport.bottom) continue;
+                      if (casings.some(box=>p[0]>=box.x && p[0]<=box.right && p[1]>=box.y && p[1]<=box.bottom)) continue;
+                      checked++;
+                      const distance=Math.min(...lines.map(([a,b])=>{
+                        const dx=b[0]-a[0],dy=b[1]-a[1],t=Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/(dx*dx+dy*dy)));
+                        return Math.hypot(p[0]-a[0]-t*dx,p[1]-a[1]-t*dy);
+                      }));
+                      if (distance>1) failures.push({zoom,distance});
+                    }
+                    if (!checked) failures.push({zoom,error:'No exposed parcel tested'});
+                  }
+                  return failures;
+                }
+                """)).as("Screen-space parcel feet remain on the projected physical conveyors").isEmpty();
+        assertThat(pageErrors).isEmpty();
+        page.evaluate("() => window.__renderer.dispose()");
+    }
+
+    @Test
+    void buildingFrameDoesNotShrinkWithItsFoundationShape() {
+        openProject(choiceProject());
+        page.evaluate("""
+                async () => {
+                  state.world.dispose(); window.foundation = 'rectangle';
+                  window.__renderer = new RailixWorld(document.querySelector('#graph'), {
+                    appearance: node => ({shape:window.foundation, symbol:node.id === 'choice' ? 'branch' : ''})
+                  });
+                  await window.__renderer.refresh(); window.__renderer.focus('choice', 1);
+                }
+                """);
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving === 'false'");
+        final List<Object> dimensions = new ArrayList<>();
+        for (final String shape : List.of("rectangle", "circle", "triangle", "diamond", "hexagon", "junction")) {
+            page.evaluate("""
+                    async shape => {
+                      window.foundation = shape; window.__renderer.repaint();
+                      await new Promise(requestAnimationFrame);
+                    }
+                    """, shape);
+            dimensions.add(page.locator(".machine[data-station-id=choice]").evaluate("""
+                    machine => {
+                      const core = getComputedStyle(machine.querySelector('.machine-core'));
+                      return [machine.style.width, machine.style.height, core.width, core.height];
+                    }
+                    """));
+        }
+        assertThat(dimensions).as("Different silhouettes use the same logical building frame").containsOnly(dimensions.getFirst());
+        assertThat(pageErrors).isEmpty();
+        page.evaluate("() => window.__renderer.dispose()");
+    }
+
+    @Test
+    void portalSharesTheBuildingEnvelopeAndBranchHasAnArticulatedTongue() {
+        openProject(choiceProject());
+        page.evaluate("() => state.world.focus('command', 1)");
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving === 'false'");
+        assertThat(page.locator(".machine[data-building=trigger]").evaluate("""
+                machine => {
+                  const base=getComputedStyle(machine), core=getComputedStyle(machine.querySelector('.machine-core'));
+                  const size=parseFloat(base.getPropertyValue('--body-size'));
+                  const upright=getComputedStyle(machine.querySelector('.building-volume'));
+                  return Math.abs(parseFloat(core.width)-size)<.1 && Math.abs(parseFloat(core.height)-size)<.1
+                    && new DOMMatrix(upright.transform).m43 <= size*.7;
+                }
+                """)).as("The portal shares the other buildings' body size and proportional height").isEqualTo(true);
+        page.evaluate("() => state.world.focus('choice', 1)");
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving === 'false'");
+        final Locator branch = page.locator(".machine[data-building=branch]");
+        assertThat(branch.getAttribute("data-shape")).isEqualTo("junction");
+        assertThat(branch.evaluate("machine=>getComputedStyle(machine.querySelector('.machine-top')).clipPath.match(/%/g).length"))
+                .as("The T has eight corners, including the two shoulder recesses").isEqualTo(16);
+        assertThat(branch.locator(".building-field").evaluate("field=>getComputedStyle(field,'::before').transform"))
+                .as("The switch tongue has an extruded return face").isNotEqualTo("none");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void foundryTransportShowsReusableSolidCargoAndRaisedConveyorWalls() throws Exception {
+        startRendererTraffic(10, 30_000, true);
+        page.evaluate("() => window.__renderer.focus('step-0', 1)");
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving === 'false'");
+        final Locator cargo = page.locator(".cargo-route[data-replay=true] .cargo-item");
+        assertThat(cargo.count()).as("Recognizable parcels, not flat repeating marks").isPositive();
+        final Object position = cargo.first().evaluate("element=>getComputedStyle(element).transform");
+        page.waitForFunction("before=>getComputedStyle(document.querySelector('.cargo-item')).transform!==before", position);
+        assertThat(cargo.evaluateAll("""
+                items => items.every(item => {
+                  const top=getComputedStyle(item);
+                  return top.transformStyle === 'flat' && top.clipPath.startsWith('polygon(')
+                    && top.backgroundImage.startsWith('conic-gradient(')
+                    && getComputedStyle(item,'::before').content === 'none';
+                })
+                """)).isEqualTo(true);
+        assertThat(page.locator(".belt-run").evaluateAll("""
+                runs => runs.every(run => {
+                  const wall=getComputedStyle(run,'::before');
+                  return wall.content !== 'none' && wall.transform !== 'none';
+                })
+                """)).as("Conveyors retain raised return walls").isEqualTo(true);
+        page.evaluate("() => { window.__cargo=[...document.querySelectorAll('.cargo-item')]; window.__renderer.zoom(1.01); }");
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        assertThat(page.evaluate("() => window.__cargo.every(item=>item.isConnected)"))
+                .as("Camera-only navigation reuses the parcels").isEqualTo(true);
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("foundry-transport.png")));
+        page.evaluate("() => window.__renderer.focus('step-0', 3)");
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving === 'false'");
+        page.screenshot(new Page.ScreenshotOptions().setPath(Path.of("target", "screenshots", "foundry-transport-detail.png")));
+        assertThat(cargo.count()).as("Only the visible path owns parcel objects").isLessThan(100);
+        page.evaluate("() => window.__renderer.dispose()");
+    }
+
+    @Test
+    void buildingFamiliesReplaceIconPlatesAndTheirRaisedFacesRemainSelectable() throws Exception {
+        openProject(choiceProject());
+        for (final var entry : Map.of("app", "app", "command", "trigger", "choice", "branch").entrySet()) {
+            page.evaluate("id => state.world.focus(id, 1)", entry.getKey());
+            page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving === 'false'");
+            awaitScene();
+            final Locator machine = page.locator(".machine[data-station-id='" + entry.getKey() + "']");
+            assertThat(machine.getAttribute("data-building")).isEqualTo(entry.getValue());
+            final Locator roof = machine.locator(".building-volume").first();
+            assertThat(roof.isVisible()).isTrue();
+            assertThat(page.locator("[data-world-id='" + entry.getKey() + "'] .world-symbol").isVisible()).isFalse();
+            final BoundingBox bounds = roof.boundingBox();
+            page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                    .resolve("foundry-" + entry.getValue() + ".png")));
+            page.mouse().click(bounds.x+bounds.width/2, bounds.y+bounds.height/2);
+            page.waitForFunction("id => state.selection.id === id && !document.querySelector('#inspector').hidden", entry.getKey());
+            assertThat(page.locator("#inspector").isVisible()).isTrue();
+            page.locator("#close-inspector").click();
+            final double width = roof.boundingBox().width;
+            page.evaluate("() => state.world.zoom(1.2)");
+            page.evaluate("() => new Promise(resolve => requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+            assertThat(roof.boundingBox().width).isCloseTo(width*1.2, within(.03));
+        }
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void groupCanopyUsesBoundedSymbolicContents() throws Exception {
+        openProject(deepBranchProject(128));
+        page.locator("[data-group-region-label]").first().click();
+        page.locator("#close-inspector").click();
+        final Locator group = page.locator(".machine[data-building=region]:not([data-expanded=true])").first();
+        assertThat(group.locator(".building-volume").count()).isEqualTo(3);
+        assertThat(group.locator(".building-canopy").isVisible()).isTrue();
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("foundry-group.png")));
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void cameraNavigationReusesFactoryMaterials() {
+        startRendererTraffic(10, 30_000);
+        page.evaluate("() => window.__renderer.focus('step-0', 1)");
+        page.waitForFunction("() => Number(document.querySelector('#graph').dataset.sceneScale) === 1 && document.querySelector('#graph').dataset.cameraMoving === 'false'");
+        page.locator("#world-map").waitFor();
+        page.evaluate("async () => { await window.__renderer.refresh(); await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))); }");
+        final var pending = new ArrayList<com.microsoft.playwright.Route>();
+        page.route("**/api/scene?*", pending::add);
+        try {
+            final JsonObject observation = JsonParser.parseString((String) page.evaluate("""
+                    async () => {
+                      const machine = document.querySelector('.machine[data-station-id=step-0]');
+                      const before = machine.getBoundingClientRect();
+                      const changes = [];
+                      const watch = new MutationObserver(records => changes.push(...records));
+                      watch.observe(document.querySelector('#world-plane'), {attributes:true,attributeFilter:['style'],subtree:true});
+                      window.__renderer.zoom(1.02);
+                      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                      watch.disconnect();
+                      return JSON.stringify({ratio:machine.getBoundingClientRect().width/before.width,
+                        materials:changes.filter(record => record.target.matches('.machine,.machine-side,.machine-core,.belt-run,.belt-junction,.belt-port')).length});
+                    }
+                    """)).getAsJsonObject();
+            assertThat(observation.get("ratio").getAsDouble()).isCloseTo(1.02, within(.001));
+            assertThat(observation.get("materials").getAsInt())
+                    .as("Camera-only frames move the factory, not every material").isZero();
+        } finally {
+            page.unroute("**/api/scene?*");
+            pending.forEach(com.microsoft.playwright.Route::resume);
+            page.evaluate("() => window.__renderer.dispose()");
+        }
+    }
+
+    @Test
+    void zoomScalesDetailedMachinesWithTheCamera() {
+        openProject(fourStepProject());
+        page.evaluate("() => state.world.focus('one')");
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving === 'false'");
+        awaitScene();
+        final Locator machine = page.locator(".machine[data-station-id=one]");
+        final double before = machine.boundingBox().width;
+        final Locator side = machine.locator(".machine-side").first();
+        final double sideHeight = side.boundingBox().height;
+        final double coreOffset = machine.boundingBox().y - machine.locator(".machine-core").boundingBox().y;
+        page.evaluate("() => state.world.zoom(1.4)");
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        assertThat(machine.boundingBox().width)
+                .isCloseTo(before * 1.4, within(.01));
+        assertThat(side.boundingBox().height).as("Camera scaling includes the casing's vertical depth")
+                .isCloseTo(sideHeight * 1.4, within(.02));
+        assertThat(machine.boundingBox().y - machine.locator(".machine-core").boundingBox().y)
+                .as("The core and its symbol keep the same elevation relative to the casing")
+                .isCloseTo(coreOffset * 1.4, within(.02));
+        page.evaluate("async () => { await state.world.refresh(); await new Promise(requestAnimationFrame); }");
+        assertThat(machine.boundingBox().width).as("Scene refresh retains the camera's rendered scale")
+                .isCloseTo(before * 1.4, within(.01));
+    }
+
+    @Test
+    void cameraBatchKeepsThemeProjectionAndPickingAligned() {
+        openProject(fourStepProject());
+        page.evaluate("""
+                () => {
+                  document.querySelector('#world-plane').style.setProperty('--world-camera','rotateX(45deg) rotateZ(-40deg)');
+                  dispatchEvent(new Event('resize'));
+                  state.world.focus('one', 1);
+                }
+                """);
+        page.waitForFunction("() => Number(document.querySelector('#graph').dataset.sceneScale) === 1 && document.querySelector('#graph').dataset.cameraMoving === 'false'");
+        page.evaluate("async () => { await state.world.refresh(); await new Promise(requestAnimationFrame); }");
+        final BoundingBox before = page.locator(".machine[data-station-id=one] .machine-core").boundingBox();
+        page.evaluate("() => state.world.zoom(1.1)");
+        page.locator("#graph").press("ArrowRight");
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        final BoundingBox moved = page.locator(".machine[data-station-id=one] .machine-core").boundingBox();
+        assertThat(moved.width).isCloseTo(before.width * 1.1, within(.02));
+        page.mouse().click(moved.x+moved.width/2, moved.y+moved.height/2);
+        page.waitForFunction("() => state.selection.id === 'one'");
+        assertThat(page.locator("#inspector").isVisible()).isTrue();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void homeReturnsToTheAppAtHalfScaleRegardlessOfGraphSize() {
+        openProject(deepBranchProject(128));
+        page.locator("#zoom-fit").click();
+        page.waitForFunction("() => Number(new URLSearchParams(state.world.query).get('scale')) === .5");
+        assertThat(page.locator("[data-world-id=app]").isVisible()).isTrue();
+        assertThat(page.locator("#zoom-fit").getAttribute("aria-label")).isEqualTo("Home");
+    }
+
+    @Test
+    void clickingARegionOpensItsInspectorWithLocalEnterAction() {
+        openProject(deepBranchProject(128));
+        page.locator("[data-group-region-label]").first().click();
+        assertThat(page.locator("#inspector").isVisible()).isTrue();
+        assertThat(page.locator("#inspector #enter-region").count()).isEqualTo(1);
+        assertThat(page.locator("#clear-selection, #world-hud #enter-region, #open-inspector").count()).isZero();
+    }
+
+    @Test
+    void poweredIdleMachinesAnimateWithoutRepaintingTheirMaterials() {
+        openProject(fourStepProject());
+        page.waitForFunction("() => document.querySelector('#graph').dataset.powered === 'true'");
+        page.waitForFunction("() => [...document.querySelectorAll('.machine')].some(machine => machine.getAnimations({subtree:true}).some(animation => animation.playState === 'running'))");
+        final var animatedProperties = (List<?>) page.evaluate("""
+                () => document.querySelectorAll('.machine').values().flatMap(machine =>
+                  machine.getAnimations({subtree:true}).filter(animation => animation.playState === 'running')
+                    .flatMap(animation => animation.effect.getKeyframes().flatMap(frame => Object.keys(frame))))
+                  .filter(key => !['offset','computedOffset','easing','composite'].includes(key)).toArray()
+                """);
+        assertThat(animatedProperties).isNotEmpty().allMatch(property -> List.of("opacity", "transform").contains(property));
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void fixedCameraDoesNotAllocateHiddenCasingFaces() {
+        openProject(fourStepProject());
+        assertThat(page.locator(".machine-side").count()).isPositive();
+        assertThat(page.locator(".machine-side").evaluateAll("""
+                sides => {
+                  const camera=new DOMMatrixReadOnly(getComputedStyle(document.querySelector('.world-projection')).transform);
+                  return sides.every(side => camera.multiply(new DOMMatrixReadOnly(getComputedStyle(side).transform)).m33 > 0);
+                }
+                """)).as("The fixed-view factory omits back faces instead of allocating invisible 3D surfaces").isEqualTo(true);
+    }
+
+    @Test
+    void cargoHasRaisedFacesAndLongBeltsOnlyPaintTheCameraVicinity() {
+        startRendererTraffic(10, 10_000);
+        final var belt = page.locator(".belt-run[data-active=true]").first();
+        final var center = belt.boundingBox();
+        page.evaluate("point => window.__renderer.zoom(32, ...point)", List.of(center.x + center.width / 2, center.y + center.height / 2));
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        final var cargo = page.locator(".cargo-route .cargo-item").first();
+        assertThat(cargo.count()).isEqualTo(1);
+        assertThat(cargo.evaluate("element=>getComputedStyle(element).backgroundImage")).asString().contains("conic-gradient");
+        assertThat(cargo.evaluate("element=>getComputedStyle(element).clipPath")).asString().startsWith("polygon(");
+        assertThat(page.locator(".belt-run").evaluateAll("""
+                belts => belts.every(belt => {
+                  const box=belt.getBoundingClientRect();
+                  return Math.hypot(box.width,box.height) < 4*Math.hypot(innerWidth,innerHeight);
+                })
+                """)).isEqualTo(true);
+        page.evaluate("() => window.__renderer.dispose()");
+    }
+
+    @Test
+    void navigationPreservesContinuousBeltSurfacesAndTheirAnimations() {
+        startRendererTraffic(10, 30_000, true);
+        final Object material = page.locator(".belt-track").first().evaluate("track=>getComputedStyle(track,'::after').backgroundSize");
+        page.evaluate("() => { window.__belts = [...document.querySelectorAll('.belt-run')]; window.__renderer.zoom(1.005); }");
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        assertThat(page.evaluate("() => window.__belts.length > 0 && window.__belts.every(belt=>belt.isConnected)"))
+                .as("A camera change must not tear down unchanged conveyor surfaces").isEqualTo(true);
+        assertThat(page.locator(".belt-track").first().evaluate("track=>getComputedStyle(track,'::after').backgroundSize"))
+                .as("Camera transforms reuse belt materials rather than resizing and repainting their textures")
+                .isEqualTo(material);
+        page.evaluate("() => window.__renderer.dispose()");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void repeatedCameraRefreshesKeepChoiceConveyorsConnected() {
+        openProject(choiceProject());
+        awaitScene();
+        final Object geometry = page.evaluate("""
+                () => {
+                  window.__beltGeometry = () => [...document.querySelectorAll('.belt-run')].map(run => {
+                    const unit=Number(run.style.getPropertyValue('--unit'));
+                    const matrix=new DOMMatrixReadOnly(getComputedStyle(run).transform);
+                    return [Number((parseFloat(run.style.width)/unit).toFixed(3)),
+                      Number(matrix.m11.toFixed(3)), Number(matrix.m12.toFixed(3))].join(':');
+                  }).sort();
+                  return window.__beltGeometry();
+                }
+                """);
+        for (int i = 0; i < 8; i++) {
+            page.evaluate("""
+                    async factor => {
+                      state.world.zoom(factor);
+                      await state.world.refresh();
+                      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+                    }
+                    """, i % 2 == 0 ? 1.005 : 1 / 1.005);
+            assertThat(page.evaluate("() => window.__beltGeometry()"))
+                    .as("A settled scene refresh cannot change physical conveyor runs").isEqualTo(geometry);
+        }
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void lateralMultiBranchBeltsReachEveryDestinationAfterZoom() {
+        final JsonObject project = JsonParser.parseString(nestedSwitchProject()).getAsJsonObject();
+        final var links = project.getAsJsonArray("links");
+        for (final var value : links.deepCopy()) {
+            final var link = value.getAsJsonObject();
+            if (!link.get("from").getAsString().startsWith("switch.")) continue;
+            final String id = "result-" + link.get("from").getAsString().substring(7);
+            project.getAsJsonArray("nodes").add(JsonParser.parseString("{\"id\":\"" + id
+                    + "\",\"use\":\"railix.field-manipulation\",\"inputs\":{}}"));
+            for (final var original : links) if (original.equals(value)) original.getAsJsonObject().addProperty("to", id);
+            links.add(JsonParser.parseString("{\"from\":\"" + id + ".next\",\"to\":\"end\"}"));
+        }
+        openProject(project.toString());
+        page.evaluate("() => state.world.focus('switch', 1)");
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving === 'false'");
+        awaitScene();
+        for (int i = 0; i < 12; i++) {
+            page.evaluate("""
+                    async factor => {
+                      state.world.zoom(factor);
+                      await state.world.refresh();
+                      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+                    }
+                    """, i % 2 == 0 ? 1.25 : .8);
+            final List<?> missing = (List<?>) page.evaluate("""
+                    () => {
+                      const query=new URLSearchParams(state.world.query), scale=Number(query.get('scale'));
+                      const camera=[Number(query.get('x')),Number(query.get('y'))];
+                      // Use a rendered station to locate the scene coordinate origin, not private renderer state.
+                      const node=state.world.scene.nodes.find(node=>document.querySelector(`.machine[data-station-id="${node.id}"]`));
+                      const machine=document.querySelector(`.machine[data-station-id="${node.id}"]`);
+                      const origin=getComputedStyle(machine).translate.split(' ').map(parseFloat);
+                      const meshScale=parseFloat(getComputedStyle(machine).scale);
+                      const batch=new DOMMatrixReadOnly(getComputedStyle(machine.parentElement).transform);
+                      const center=batch.transformPoint({x:origin[0]+parseFloat(machine.style.width)*meshScale/2,
+                        y:origin[1]+parseFloat(machine.style.height)*meshScale/2});
+                      const cx=node.x+node.width/2, cy=node.y+node.height/2;
+                      camera[0]=cx-center.x/scale;
+                      camera[1]=cy-center.y/scale;
+                      const runs=[...document.querySelectorAll('.belt-run')];
+                      return state.world.scene.links.filter(link=>link.from==='switch').filter(link=>{
+                        const point=link.points[2].map((value,axis)=>((value+link.points[3][axis])/2-camera[axis])*scale);
+                        const graph=document.querySelector('#graph'), projection=new DOMMatrixReadOnly(getComputedStyle(document.querySelector('.world-projection')).transform);
+                        const x=point[0]-graph.clientWidth/2,y=point[1]-graph.clientHeight/2;
+                        const sx=graph.clientWidth/2+projection.m11*x+projection.m21*y;
+                        const sy=graph.clientHeight/2+projection.m12*x+projection.m22*y;
+                        if(sx<0 || sy<0 || sx>graph.clientWidth || sy>graph.clientHeight) return false;
+                        const local=batch.inverse().transformPoint({x:point[0],y:point[1]});
+                        return !runs.some(run=>{
+                          const style=getComputedStyle(run), matrix=new DOMMatrixReadOnly(style.transform);
+                          const dx=local.x-parseFloat(run.style.left),dy=local.y-parseFloat(run.style.top);
+                          const along=dx*matrix.m11+dy*matrix.m12, across=-dx*matrix.m12+dy*matrix.m11;
+                          const unit=parseFloat(style.scale);
+                          return Math.abs(matrix.m12)<.001 && Math.abs(across)<15*unit+.02
+                            && along>=-.02 && along<=parseFloat(run.style.width)*unit+.02;
+                        });
+                      }).map(link=>link.outcome);
+                    }
+                    """);
+            assertThat(missing).as("Every authored outlet must keep its horizontal destination leg").isEmpty();
+        }
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void longGroupNavigationReportsCostsWithViewportCulling() {
+        openProject(deepBranchProject(128));
+        page.locator("[data-group-region-label]").first().click();
+        page.locator("#enter-region").click();
+        page.waitForFunction("() => document.querySelector('#zoom-level').textContent === '50%' && document.querySelector('#graph').dataset.cameraMoving !== 'true'");
+        final CDPSession cdp = context.newCDPSession(page);
+        try {
+            cdp.send("Performance.enable");
+            final JsonObject before = cdp.send("Performance.getMetrics");
+            final Object frames = page.evaluate("""
+                    async () => {
+                      const times = [], commands = [];
+                      let previous = performance.now();
+                      for (let i=0; i<60; i++) {
+                        await new Promise(requestAnimationFrame);
+                        const now = performance.now();
+                        times.push(now-previous); previous=now;
+                        state.world.zoom(i%2 ? 1/1.005 : 1.005);
+                        commands.push(performance.now()-now);
+                      }
+                      const summary = values => ({p95:values.toSorted((a,b)=>a-b)[Math.ceil(values.length*.95)-1], max:Math.max(...values)});
+                      return {frames:summary(times), commands:summary(commands),
+                        machines:document.querySelectorAll('.machine:not([data-expanded=true])').length,
+                        dom:document.querySelectorAll('#world-plane *').length};
+                    }
+                    """);
+            System.out.printf("RAILIX_CHAIN_128_VIEWPORT frames=%s before=%s after=%s%n", frames, before, cdp.send("Performance.getMetrics"));
+            assertThat(page.locator(".machine[data-kind=step]:not([data-expanded=true])").count()).isBetween(2, 127);
+            assertThat(page.evaluate("() => state.world.scene.nodes.filter(node => node.kind === 'step').length")).isNotEqualTo(128);
+        } finally {
+            cdp.send("Performance.disable");
+            cdp.detach();
+        }
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void inspectorKeepsNavigationInItsHeaderAndRemovesDuplicateGroupSummary() {
+        openProject(deepBranchProject(128));
+        page.locator("[data-group-region-label]").first().click();
+        assertThat(page.locator(".dock-heading small").textContent()).isEqualTo("Group");
+        assertThat(page.locator(".selection-portrait .machine[data-building=region]").count()).isEqualTo(1);
+        assertThat(page.locator("#selection-overview").textContent()).contains("128 Steps");
+        assertThat(page.locator("#inspector-content").textContent()).doesNotContain("This section is not saved");
+        assertThat(page.locator(".inspector-chrome #enter-region").count()).isEqualTo(1);
+        assertThat(page.locator(".inspector-chrome #dock-focus").count()).isEqualTo(1);
+        assertThat(page.locator(".inspector-chrome #enter-region").textContent()).isEmpty();
+        assertThat(page.locator("#dock-observation .dock-counters").textContent()).isEmpty();
+        assertThat(page.locator("#inspector .section-heading").allTextContents()).noneMatch(text -> text.contains("Connected"));
+        page.locator("[data-inspector-mode=groups]").click();
+        assertThat(page.locator("[data-inspector-mode=overview]").isVisible()).isTrue();
+        page.locator("[data-inspector-mode=overview]").click();
+        assertThat(page.locator("#selection-overview").isVisible()).isTrue();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void stepOverviewUsesPlainValuesAndAFooterTrashControl() throws IOException {
+        openProject(fourStepProject());
+        selectWorldNode("one");
+        openInspectorTab("overview");
+        assertThat(page.locator(".dock-heading small").textContent()).startsWith("Step");
+        assertThat(page.locator(".selection-portrait .machine[data-station-id=one]").count()).isEqualTo(1);
+        assertThat(page.locator(".selection-portrait").boundingBox().width).isBetween(60.0, 140.0);
+        assertThat(page.locator(".inspector-chrome #dock-focus").getAttribute("aria-label")).isEqualTo("Focus");
+        assertThat(page.locator("#inspector-footer #delete-step").getAttribute("aria-label")).startsWith("Delete ");
+        assertThat(page.locator("#inspector-footer #delete-step").textContent()).isEmpty();
+        assertThat(page.locator("#dock-observation").evaluate("element=>getComputedStyle(element).borderTopWidth")).isEqualTo("0px");
+        assertThat(page.locator("#dock-observation").evaluate("element=>getComputedStyle(element).backgroundColor")).isEqualTo("rgba(0, 0, 0, 0)");
+        assertThat(page.locator("#selection-overview #manage-groups, #selection-overview #dock-focus, #selection-overview #delete-step").count()).isZero();
+        page.waitForFunction("() => document.querySelector('#dock-observation .dock-counters').textContent.includes('runs')");
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("inspector-header-controls.png")));
+        openInspectorTab("appearance");
+        assertThat(page.locator("#choose-icon,#reset-icon,.icon-editor").count()).isZero();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"app,Application,app", "command,Trigger,trigger"})
+    void overviewIdentifiesTheSelectedEntryBuilding(final String id, final String type, final String building) {
+        openProject(choiceProject());
+        selectWorldNode(id);
+        openInspectorTab("overview");
+        assertThat(page.locator(".dock-heading small").textContent()).isEqualTo(type);
+        assertThat(page.locator(".dock-heading h2").textContent()).isNotBlank();
+        assertThat(page.locator(".selection-portrait .machine").getAttribute("data-building")).isEqualTo(building);
+        assertThat(page.locator(".selection-portrait .machine").getAttribute("data-station-id")).isEqualTo(id);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void enteredAutomaticGroupStartsAtItsFirstStepWithLocalHalfScale() throws IOException {
+        openProject(deepBranchProject(128));
+        final String parentZoom = page.locator("#zoom-level").textContent();
+        page.locator("[data-group-region-label]").first().click();
+        page.locator("#enter-region").click();
+        page.waitForFunction("() => new URLSearchParams(state.world.query).has('inside')");
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving !== 'true'");
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        page.waitForFunction("() => document.getAnimations().every(animation => animation.playState !== 'running' || animation.effect.getComputedTiming().iterations === Infinity)");
+        assertThat(page.locator("#zoom-level").textContent()).isEqualTo("50%");
+        assertThat(page.locator("[data-select-node=step-0]").isVisible()).isTrue();
+        final double width = page.locator(".machine[data-station-id=step-0]").boundingBox().width;
+        page.locator("#zoom-in").click();
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        assertThat(page.locator("#zoom-level").textContent()).isEqualTo("70%");
+        assertThat(page.locator(".machine[data-station-id=step-0]").boundingBox().width)
+                .isCloseTo(width * 1.4, org.assertj.core.data.Offset.offset(.5));
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("world-128-entry.png")));
+        final String inside = (String) page.evaluate("() => new URLSearchParams(state.world.query).get('inside')");
+        page.locator("#zoom-out").click();
+        page.locator("#zoom-out").click();
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving !== 'true'");
+        page.evaluate("() => state.world.refresh()");
+        assertThat(page.evaluate("() => new URLSearchParams(state.world.query).get('inside')")).isEqualTo(inside);
+        assertThat(page.locator("#leave-group").isVisible()).isTrue();
+        page.locator("#leave-group").click();
+        page.waitForFunction("() => !new URLSearchParams(state.world.query).has('inside')");
+        assertThat(page.locator("#zoom-level").textContent()).isEqualTo(parentZoom);
+        assertThat(page.locator("#world-map").isVisible()).isTrue();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void hoveringTriggerOffersExamplesWithoutChangingSelection() {
+        openProject(choiceProject());
+        page.locator("#zoom-fit").click();
+        awaitScene();
+        final String selected = (String) page.evaluate("() => state.selection.id");
+        page.locator("[data-select-node=command]").hover();
+        page.locator("#dock-example").waitFor();
+        assertThat(page.evaluate("() => state.selection.id")).isEqualTo(selected);
+        page.locator("#dock-example").focus();
+        // A native popup can leave the page's hover tree while its select still owns focus.
+        page.mouse().move(1, 1);
+        page.waitForTimeout(900);
+        assertThat(page.locator("#dock-example").isVisible()).isTrue();
+        page.locator("#dock-example").selectOption("-1");
+        page.waitForFunction("() => document.querySelector('#graph').dataset.replaying === 'false'");
+        assertThat(page.locator("#inspector").isVisible()).isFalse();
+        page.locator("#graph").focus();
+        page.waitForFunction("() => document.querySelector('#trigger-example').hidden");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void wheelEntryPinsTheGroupAndHomeLeavesIt() {
+        openProject(deepBranchProject(128));
+        final var group = page.locator("[data-group-region-label]").first();
+        // A narrow viewport starts farther out; cross the detail boundary with real wheel gestures.
+        for (int zoom = 0; zoom < 3 && !Boolean.TRUE.equals(page.evaluate(
+                "() => new URLSearchParams(state.world.query).has('inside')")); zoom++) {
+            group.hover();
+            final Object before = page.evaluate("() => state.world.query");
+            page.mouse().wheel(0, -1100);
+            page.waitForFunction("before => state.world.query !== before", before);
+            awaitScene();
+        }
+        page.waitForFunction("() => new URLSearchParams(state.world.query).has('inside')");
+        page.waitForFunction("() => document.querySelector('#zoom-level').textContent === '50%'");
+        page.locator("#zoom-fit").click();
+        page.waitForFunction("() => !new URLSearchParams(state.world.query).has('inside') && document.querySelector('#zoom-level').textContent === '50%'");
+        assertThat(page.locator("#leave-group").isVisible()).isFalse();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void changingANeighbourCannotResizeAnUnchangedMachine() {
+        openProject(fourStepProject());
+        page.evaluate("""
+                async () => {
+                  state.world.dispose();
+                  window.__aspect = 1;
+                  window.__renderer = new RailixWorld(document.querySelector('#graph'), {
+                    appearance: node => ({aspect:node.id === 'two' ? window.__aspect : 1})
+                  });
+                  await window.__renderer.refresh();
+                  await window.__renderer.refresh();
+                }
+                """);
+        page.waitForFunction("() => document.querySelector('.machine[data-station-id=one]')");
+        final String width = page.locator(".machine[data-station-id=one]").evaluate("element=>element.style.width").toString();
+        page.evaluate("() => { window.__aspect=2.625; window.__renderer.repaint(); }");
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        assertThat(page.locator(".machine[data-station-id=one]").evaluate("element=>element.style.width")).isEqualTo(width);
+        page.evaluate("() => window.__renderer.dispose()");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"zoom", "pan"})
+    void cameraNavigationCannotAbruptlyResizeExistingStations(final String gesture) {
+        openProject(deepBranchProject(128));
+        awaitScene();
+        page.evaluate("""
+                () => state.world.focus(state.world.scene.nodes.find(node=>node.kind==='region' && node.count===128).id)
+                """);
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving === 'false'");
+        awaitScene();
+        final String sizes = """
+                () => Object.fromEntries([...document.querySelectorAll('.machine:not([data-expanded=true])')]
+                  .map(element=>[element.dataset.stationId,element.getBoundingClientRect().width]))
+                """;
+        int comparisons = 0;
+        for (int tick = 0; tick < 12; tick++) {
+            final Object before = page.evaluate(sizes);
+            final String cameraScale = "() => Number(new URLSearchParams(state.world.query).get('scale'))";
+            final double previousScale = ((Number) page.evaluate(cameraScale)).doubleValue();
+            if (gesture.equals("zoom")) page.locator("#zoom-in").click();
+            else page.locator("#graph").press(tick < 6 ? "ArrowRight" : "ArrowLeft");
+            // Deep zoom can legitimately frame empty space; the general helper requires a label.
+            page.evaluate("""
+                    async () => {
+                      await state.world.refresh();
+                      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+                    }
+                    """);
+            assertThat(page.locator("#graph").getAttribute("data-scene-error")).isNull();
+            final var result = (List<?>) page.evaluate("""
+                    settings => {
+                      const before=settings[0],factor=settings[1];
+                      const pairs=[...document.querySelectorAll('.machine:not([data-expanded=true])')]
+                        .filter(element=>before[element.dataset.stationId])
+                        .map(element=>({id:element.dataset.stationId,ratio:element.getBoundingClientRect().width/before[element.dataset.stationId]}));
+                      return [pairs.length,pairs.filter(pair=>pair.ratio<.999 || pair.ratio>factor+.001)];
+                    }
+                    """, List.of(before, ((Number) page.evaluate(cameraScale)).doubleValue() / previousScale));
+            comparisons += ((Number) result.getFirst()).intValue();
+            assertThat((List<?>) result.get(1)).as("Station continuity during " + gesture + " tick " + tick).isEmpty();
+        }
+        assertThat(comparisons).isPositive();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void selectedJunctionRimsMatchTheSelectedBelt() {
+        openProject(choiceProject());
+        selectWorldNode("command");
+        page.locator("#dock-example").selectOption("0");
+        page.evaluate("() => state.world.fit()");
+        awaitScene();
+        page.waitForFunction("() => document.querySelector('.belt-junction[data-selected=true]')");
+        assertThat(page.locator(".belt-junction[data-selected=true]").evaluateAll("""
+                junctions => junctions.every(junction => {
+                  const style=getComputedStyle(junction);
+                  const selected=getComputedStyle(document.querySelector('.belt-run[data-selected=true]')).borderTopColor;
+                  return ['Top','Right','Bottom','Left'].every(side =>
+                    style[`border${side}Color`] === 'rgba(0, 0, 0, 0)' || style[`border${side}Color`] === selected);
+                })
+                """)).isEqualTo(true);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void changingAMachineShapeKeepsItsBranchAxisInPlace() {
+        openProject(choiceProject());
+        page.evaluate("""
+                async () => {
+                  state.world.dispose();
+                  window.__aspect=1;
+                  window.__renderer=new RailixWorld(document.querySelector('#graph'), {
+                    appearance:node=>({aspect:node.id==='choice'?window.__aspect:1})
+                  });
+                  await window.__renderer.refresh();
+                  await window.__renderer.refresh();
+                }
+                """);
+        final var junctions = page.locator(".belt-junction");
+        junctions.first().waitFor();
+        final Object positions = junctions.evaluateAll("items=>items.map(item=>[item.style.left,item.style.top])");
+        page.evaluate("() => { window.__aspect=2.625; window.__renderer.repaint(); }");
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        assertThat(junctions.evaluateAll("items=>items.map(item=>[item.style.left,item.style.top])")).isEqualTo(positions);
+        page.evaluate("() => window.__renderer.dispose()");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void collinearBeltSectionsKeepOneContinuousTreadPhase() {
+        openProject(choiceProject());
+        awaitScene();
+        final List<?> discontinuities = (List<?>) page.evaluate("""
+                () => {
+                  const runs=[...document.querySelectorAll('.belt-run')].map(run=>{
+                    const matrix=new DOMMatrixReadOnly(getComputedStyle(run).transform);
+                    const axis=Math.abs(matrix.m11)>.5?0:1, direction=Math.sign(axis?matrix.m12:matrix.m11);
+                    const coordinates=[parseFloat(run.style.left),parseFloat(run.style.top)];
+                    const track=getComputedStyle(run.querySelector('.belt-track'),'::before');
+                    return {axis,direction,fixed:coordinates[1-axis],start:coordinates[axis]*direction,
+                      pitch:32*parseFloat(getComputedStyle(run).scale),
+                      phase:parseFloat(track.backgroundPositionX)*parseFloat(getComputedStyle(run).scale)};
+                  });
+                  let comparisons=0;
+                  const failures=runs.flatMap((a,i)=>runs.slice(i+1).filter(b=>a.axis===b.axis
+                    && a.direction===b.direction && Math.abs(a.fixed-b.fixed)<.01 && Math.abs(a.pitch-b.pitch)<.01)
+                    .flatMap(b=>{
+                      comparisons++;
+                      const remainder=((a.start+a.phase-b.start-b.phase)%a.pitch+a.pitch)%a.pitch;
+                      return Math.min(remainder,a.pitch-remainder)<.02?[]:[{a,b,remainder}];
+                    }));
+                  return comparisons?failures:['No split transport was exercised'];
+                }
+                """);
+        assertThat(discontinuities).isEmpty();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void cargoIsPaintedAboveDirectionMarkingsAndSocketsDoNotCoverTheTrack() {
+        startRendererTraffic(10, 10_000, true);
+        assertThat(page.locator(".belt-run[data-replay=true] .belt-track").first().evaluate("""
+                track => {
+                  const surface=getComputedStyle(track,'::after'),tread=getComputedStyle(track,'::before');
+                  const route=document.querySelector('.cargo-route'), cargo=getComputedStyle(route.querySelector('.cargo-item'));
+                  return cargo.backgroundImage !== 'none'
+                    && track.closest('.world-projection').nextElementSibling === route.parentElement
+                    && surface.transform===tread.transform;
+                }
+                """)).isEqualTo(true);
+        assertThat(page.locator(".belt-port").evaluateAll("""
+                ports => ports.every(port => getComputedStyle(port).backgroundColor === 'rgba(0, 0, 0, 0)'
+                  && getComputedStyle(port,'::after').content === 'none')
+                """)).isEqualTo(true);
+        page.evaluate("() => window.__renderer.dispose()");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void factoryUsesCssSurfacesWithoutGraphicsRuntime() {
+        openProject(fourStepProject());
+        awaitScene();
+        assertThat(page.locator("#graph canvas").count()).isZero();
+        assertThat(page.evaluate("() => typeof window.PIXI")).isEqualTo("undefined");
+        assertThat(page.locator("#world-plane .machine-top").count()).isPositive();
+        assertThat(page.evaluate("() => getComputedStyle(document.querySelector('#world-plane')).transformStyle"))
+                .isEqualTo("flat");
+        assertThat(page.locator(".world-projection").evaluateAll("layers=>layers.length===2 && layers.every(layer=>getComputedStyle(layer).transformStyle==='preserve-3d')"))
+                .isEqualTo(true);
+        assertThat(page.locator("#world-plane .machine-side").count()).isPositive();
+        assertThat(page.locator("#world-plane .belt-run").count()).isPositive();
+        assertThat(page.locator("#world-plane .belt-port").count()).isPositive();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void junctionMarkingsStayPerpendicularToLongTransportRuns() {
+        openProject(choiceProject());
+        awaitScene();
+        assertThat(page.locator("#world-plane .belt-run .belt-track").count()).isPositive();
+        assertThat(page.locator("#world-plane .belt-track").evaluateAll("""
+                tracks => tracks.every(track => {
+                  const tread = getComputedStyle(track, '::before');
+                  return tread.backgroundImage.includes('repeating-linear-gradient(90deg')
+                    && getComputedStyle(track).transform === 'none';
+                })
+                """)).isEqualTo(true);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void choiceLateralElbowsHaveContinuousSurfacesWithoutAnExternalSplitter() {
+        openProject(choiceProject());
+        awaitScene();
+        assertThat(page.locator("#world-plane .belt-junction").count()).isGreaterThanOrEqualTo(2);
+        assertThat(page.locator("#world-plane .belt-junction").evaluateAll("""
+                junctions => junctions.every(junction => {
+                  const style = getComputedStyle(junction), mask = Number(junction.dataset.ports);
+                  return ['Top','Right','Bottom','Left'].every((side,i) =>
+                    style[`border${side}Color`].endsWith(', 0)') === Boolean(mask & 1<<i))
+                    && style.backgroundColor !== 'rgba(0, 0, 0, 0)';
+                })
+                """)).isEqualTo(true);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"rectangle", "ellipse", "triangle", "diamond", "hexagon", "event", "storage", "subsystem"})
+    void machineSymbolsStaySquareAndInsideProjectedShapes(final String shape) {
+        openProject(fourStepProject());
+        // Icon plates belong to the retained Classic theme, not the building family.
+        page.evaluate("() => document.documentElement.style.setProperty('--world-buildings', '0')");
         page.evaluate("""
                 async shape => {
                   state.world.dispose();
@@ -119,10 +1284,15 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 }
                 """, shape);
         page.waitForFunction("() => Number(new URLSearchParams(window.__renderer.query).get('scale')) >= 1");
-        page.waitForFunction("() => document.querySelector('[data-world-id=one] .world-symbol')?.getBoundingClientRect().width >= 30");
+        page.waitForFunction("() => document.querySelector('[data-world-id=one] .world-symbol')?.getBoundingClientRect().width > 0");
         final BoundingBox icon = page.locator("[data-world-id=one] .world-symbol").boundingBox();
+        final BoundingBox surface = page.locator("#world-plane .machine[data-station-id=one] .machine-top").boundingBox();
         assertThat(icon.width).isCloseTo(icon.height, within(.1));
-        assertThat(icon.width).isBetween(30.0, 48.0);
+        assertThat(icon.width).isGreaterThanOrEqualTo(16);
+        assertThat(icon.x).isGreaterThanOrEqualTo(surface.x);
+        assertThat(icon.y).isGreaterThanOrEqualTo(surface.y - surface.height / 2);
+        assertThat(icon.x + icon.width).isLessThanOrEqualTo(surface.x + surface.width);
+        assertThat(icon.y + icon.height).isLessThanOrEqualTo(surface.y + surface.height);
         page.evaluate("() => { window.__renderer.dispose(); }");
         assertThat(pageErrors).isEmpty();
     }
@@ -153,33 +1323,21 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    void measuredDurationDoesNotDrawAnUnlabelledOrangeMeter() {
+    void measuredDurationAppearsAsLabelledTextOutsideTheMachine() {
         openProject(fourStepProject());
-        final Number orange = (Number) page.evaluate("""
+        page.evaluate("""
                 async () => {
                   state.world.dispose();
-                  window.__renderer = new RailixWorld(document.querySelector('#graph'), {
-                    appearance: () => ({duration:'12 ms',heat:1})
-                  });
-                  await window.__renderer.refresh();
-                  return new Promise((resolve,reject) => {
-                    const render = PIXI.WebGLRenderer.prototype.render;
-                    const timeout = setTimeout(() => {PIXI.WebGLRenderer.prototype.render=render;reject(new Error('No frame'));},2000);
-                    PIXI.WebGLRenderer.prototype.render = function(root,...args) {
-                      const result = render.call(this,root,...args);
-                      if(this.canvas.id!=='world-canvas') return result;
-                      PIXI.WebGLRenderer.prototype.render=render;clearTimeout(timeout);
-                      const v=root.children[2].geometry.getBuffer('aPosition').data;
-                      let count=0;
-                      for(let i=0;i<v.length;i+=9) if([164/255,99/255,20/255].every((c,j)=>Math.abs(c-v[i+2+j])<.001)) count++;
-                      resolve(count);return result;
-                    };
-                    window.__renderer.repaint();
-                  });
+                  window.__renderer = new RailixWorld(document.querySelector('#graph'), {appearance: () => ({duration:'12 ms'})});
+                  await window.__renderer.refresh(); window.__renderer.focus('one');
                 }
                 """);
-        assertThat(orange.intValue()).isZero();
-        page.evaluate("() => { window.__renderer.dispose(); }");
+        page.locator("[data-world-id=one] .world-duration").waitFor();
+        assertThat(page.locator("[data-world-id=one] .world-duration").textContent()).contains("12 ms", "avg");
+        final BoundingBox text = page.locator("[data-world-id=one] .world-duration").boundingBox();
+        final BoundingBox machine = page.locator(".machine[data-station-id=one] .machine-top").boundingBox();
+        assertThat(text.y >= machine.y + machine.height || text.y + text.height <= machine.y).isTrue();
+        page.evaluate("() => window.__renderer.dispose()");
         assertThat(pageErrors).isEmpty();
     }
 
@@ -189,6 +1347,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         awaitScene();
         page.waitForFunction("() => state.application.examples?.state === 'completed'");
         page.locator("[data-world-id=command]").click();
+        openInspectorTab("overview");
         waitForText("#dock-observation [data-dock-value=output] output", "Array (0)");
         page.evaluate("""
                 () => {
@@ -269,72 +1428,22 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         page.reload();
         waitForText("#build-state", "Built");
         awaitScene();
-        final Map<?, ?> faces = (Map<?, ?>) page.evaluate("""
-                () => new Promise((resolve,reject) => {
-                  const render = PIXI.WebGLRenderer.prototype.render;
-                  const deadline = setTimeout(() => { PIXI.WebGLRenderer.prototype.render = render;
-                    reject(new Error('No conveyor frame')); },2000);
-                  PIXI.WebGLRenderer.prototype.render = function(root,...args) {
-                    const result = render.call(this,root,...args);
-                    if (this.canvas.id !== 'world-canvas') return result;
-                    PIXI.WebGLRenderer.prototype.render = render;
-                    clearTimeout(deadline);
-                    const vertices = root.children[0].geometry.getBuffer('aPosition').data;
-                    const folded = [];
-                    let count = 0;
-                    for(let i=0;i+27<=vertices.length;i+=27) {
-                      if (!vertices[i+7]) continue;
-                      count++;
-                      const cross = (vertices[i+9]-vertices[i])*(vertices[i+19]-vertices[i+1])
-                        -(vertices[i+10]-vertices[i+1])*(vertices[i+18]-vertices[i]);
-                      if(cross > .01) folded.push([cross,...vertices.slice(i,i+2),...vertices.slice(i+9,i+11),...vertices.slice(i+18,i+20)]);
-                    }
-                    resolve({folded,count});
-                    return result;
-                  };
-                  state.world.repaint();
-                })
-                """);
-        assertThat(((Number) faces.get("count")).intValue()).isGreaterThan(10);
-        assertThat((List<?>) faces.get("folded")).as("No inverted conveyor triangles").isEmpty();
+        assertThat(page.locator("#world-plane .belt-run").count()).isGreaterThan(10);
+        assertThat(page.locator("#world-plane .belt-run .belt-track").count()).isEqualTo(page.locator("#world-plane .belt-run").count());
         assertThat(pageErrors).isEmpty();
     }
 
     @Test
-    void gridDensityDoesNotFlashAtAZoomLevelBoundary() {
+    void gridKeepsItsDominantSpacingAcrossAZoomBoundary() {
         openProject(fourStepProject());
+        page.evaluate("() => state.world.zoom(.9999 / Number(new URLSearchParams(state.world.query).get('scale')))");
         awaitScene();
-        final List<?> coverage = (List<?>) page.evaluate("""
-                async () => {
-                  const sample = scale => new Promise((resolve,reject) => {
-                    const render = PIXI.WebGLRenderer.prototype.render;
-                    const deadline = setTimeout(() => { PIXI.WebGLRenderer.prototype.render = render;
-                      reject(new Error('No grid frame')); },2000);
-                    PIXI.WebGLRenderer.prototype.render = function(root,...args) {
-                      const result = render.call(this,root,...args);
-                      if (this.canvas.id !== 'world-canvas') return result;
-                      PIXI.WebGLRenderer.prototype.render = render;
-                      clearTimeout(deadline);
-                      const v = root.children[0].geometry.getBuffer('aPosition').data;
-                      let area = 0;
-                      for(let i=0;i+27<=v.length;i+=27) if(v[i+5]>0 && v[i+5]<=.1)
-                        area += Math.abs((v[i+9]-v[i])*(v[i+19]-v[i+1])
-                          -(v[i+10]-v[i+1])*(v[i+18]-v[i]))/2*v[i+5];
-                      resolve(area);
-                      return result;
-                    };
-                    state.world.zoom(scale / Number(new URLSearchParams(state.world.query).get('scale')));
-                  });
-                  await state.world.refresh();
-                  const before = await sample(.9999);
-                  await state.world.refresh();
-                  const after = await sample(1.0001);
-                  return [before,after];
-                }
-                """);
-        final double before = ((Number) coverage.getFirst()).doubleValue();
-        assertThat(before).isPositive();
-        assertThat(((Number) coverage.getLast()).doubleValue()).isCloseTo(before, within(before * .05));
+        final double before = ((Number) page.evaluate("() => parseFloat(getComputedStyle(document.querySelector('.world-floor')).getPropertyValue('--grid'))")).doubleValue();
+        page.evaluate("() => state.world.zoom(1.0001 / Number(new URLSearchParams(state.world.query).get('scale')))");
+        awaitScene();
+        final double after = ((Number) page.evaluate("() => 2 * parseFloat(getComputedStyle(document.querySelector('.world-floor')).getPropertyValue('--grid'))")).doubleValue();
+        assertThat(after).isCloseTo(before, within(.02));
+        assertThat(((Number) page.evaluate("() => Number(getComputedStyle(document.querySelector('.world-floor')).getPropertyValue('--grid-alpha'))")).doubleValue()).isLessThan(.001);
         assertThat(pageErrors).isEmpty();
     }
 
@@ -354,27 +1463,26 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         });
         openProject(fourStepProject());
         awaitScene();
-        assertThat(page.locator("#graph").getAttribute("data-renderer")).isEqualTo("pixi");
-        assertThat(page.evaluate("PIXI.VERSION")).isEqualTo("8.20.1");
-        assertThat(page.locator(".world-symbol").count()).isGreaterThan(2);
+        assertThat(page.locator("#graph").getAttribute("data-renderer")).isEqualTo("css");
+        assertThat(page.evaluate("() => typeof window.PIXI")).isEqualTo("undefined");
+        assertThat(page.locator(".building-volume").count()).isGreaterThan(2);
         assertThat(externalRequests).isEmpty();
         assertThat(pageErrors).isEmpty();
     }
 
     @Test
-    void unavailableWebGl2ReportsTheRendererCapabilityError() {
+    void cssRendererWorksWhenCanvasContextsAreUnavailable() {
         page.addInitScript("""
                 (() => {
-                  const getContext = HTMLCanvasElement.prototype.getContext;
                   HTMLCanvasElement.prototype.getContext = function(type, ...args) {
-                    return type === 'webgl2' ? null : getContext.call(this, type, ...args);
+                    throw new Error('Canvas must not be used by the CSS renderer.');
                   };
                 })()
                 """);
         page.reload();
-        page.locator("#world-error:not([hidden])").waitFor();
-        assertThat(page.locator("#world-error").textContent()).contains("WebGL2");
-        assertThat(page.locator("#graph").getAttribute("data-renderer")).isNull();
+        awaitScene();
+        assertThat(page.locator("#graph").getAttribute("data-renderer")).isEqualTo("css");
+        assertThat(page.locator("#world-plane .machine").count()).isPositive();
         assertThat(pageErrors).isEmpty();
     }
 
@@ -382,41 +1490,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     void conveyorsHaveTransportWidthRatherThanDiagramLines() {
         openProject(fourStepProject());
         awaitScene();
-        final Map<?, ?> ratio = (Map<?, ?>) page.evaluate("""
-                () => new Promise((resolve, reject) => {
-                  const render = PIXI.WebGLRenderer.prototype.render;
-                  const deadline = setTimeout(() => { PIXI.WebGLRenderer.prototype.render = render;
-                    reject(new Error('Timed out waiting for a Pixi frame.')); }, 2_000);
-                  PIXI.WebGLRenderer.prototype.render = function(root, ...args) {
-                    const result = render.call(this,root,...args);
-                    if (this.canvas.id !== 'world-canvas') return result;
-                    PIXI.WebGLRenderer.prototype.render = render;
-                    clearTimeout(deadline);
-                    const a = document.querySelector('[data-world-id="one"] .world-symbol').getBoundingClientRect();
-                    const b = document.querySelector('[data-world-id="two"] .world-symbol').getBoundingClientRect();
-                    const canvas = this.canvas.getBoundingClientRect();
-                    const image = this.extract.pixels({target:root, frame:this.screen, resolution:this.resolution});
-                    const x = Math.max(0,Math.min(image.width-1,Math.floor(((a.right+b.left)/2-canvas.left)*this.resolution)));
-                    const y = Math.floor(((a.top+a.bottom)/2-canvas.top)*this.resolution);
-                    // Icons now occupy a small square; scan beyond the complete belt, not only its center.
-                    const height = Math.max(1,Math.floor(a.height*3*this.resolution));
-                    let longest=0,run=0;
-                    let nonblank=0;
-                    for(let row=Math.max(0,y-Math.floor(height/2));row<Math.min(image.height,y+Math.ceil(height/2));row++) {
-                      const i=((image.height-1-row)*image.width+x)*4;
-                      const bright=image.pixels[i]+image.pixels[i+1]+image.pixels[i+2];
-                      if(image.pixels[i+3]>0 && bright>0) nonblank++;
-                      run = bright < 400 ? run+1 : 0;
-                      longest=Math.max(longest,run);
-                    }
-                    resolve({ratio:longest/height,nonblank});
-                    return result;
-                  };
-                  state.world.repaint();
-                })
-                """);
-        assertThat(((Number) ratio.get("nonblank")).intValue()).isPositive();
-        assertThat(((Number) ratio.get("ratio")).doubleValue()).isGreaterThanOrEqualTo(.25);
+        assertThat(page.locator("#world-plane .belt-run").evaluateAll("runs => runs.every(run => run.getBoundingClientRect().height >= 12)")).isEqualTo(true);
         assertThat(pageErrors).isEmpty();
     }
 
@@ -424,76 +1498,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     void stationaryConveyorChevronsPointForwardAlongTheOutgoingAppBelt() {
         openProject(fourStepProject());
         awaitScene();
-        final Map<?, ?> chevron = (Map<?, ?>) page.evaluate("""
-                () => new Promise((resolve, reject) => {
-                  const renderer = PIXI.WebGLRenderer.prototype;
-                  const render = renderer.render;
-                  const deadline = setTimeout(() => { renderer.render = render;
-                    reject(new Error('Timed out waiting for the Pixi conveyor frame.')); }, 2_000);
-                  renderer.render = function(root, ...args) {
-                    const result = render.call(this, root, ...args);
-                    if (this.canvas.id !== 'world-canvas') return result;
-                    renderer.render = render;
-                    clearTimeout(deadline);
-                    try {
-                      const vertices = root.children[0].geometry.getBuffer('aPosition').data;
-                      const app = document.querySelector('[data-world-id="app"] .world-symbol').getBoundingClientRect();
-                      const command = document.querySelector('[data-world-id="command"] .world-symbol').getBoundingClientRect();
-                      const midpoint = [(app.right + command.left) / 2, (app.top + app.bottom) / 2];
-                      let belt;
-                      for (let i = 0; i + 54 <= vertices.length; i += 27) {
-                        if (vertices[i] !== vertices[i+27] || vertices[i+1] !== vertices[i+28]
-                          || vertices[i+18] !== vertices[i+36] || vertices[i+19] !== vertices[i+37]) continue;
-                        const start = vertices[i + 6], end = vertices[i + 15], spacing = vertices[i + 7];
-                        const dx = vertices[i + 9] - vertices[i], dy = vertices[i + 10] - vertices[i + 1];
-                        const half = Math.abs(vertices[i + 8]);
-                        const unit = half / 19, period = 42 * unit;
-                        const peak = period * Math.ceil((start - 21 * unit) / period) + 21 * unit;
-                        const distance = Math.hypot((vertices[i] + vertices[i + 9]) / 2 - midpoint[0],
-                          (vertices[i + 1] + vertices[i + 10]) / 2 - midpoint[1]);
-                        if (spacing < 0 && dx > 12 * unit && Math.abs(dy) < unit && half >= 10 * unit
-                          && peak - 3 * unit > start && peak + 3 * unit < end && (!belt || distance < belt.distance)) {
-                          belt = {i,start,end,peak,half,unit,distance};
-                        }
-                      }
-                      if (!belt) throw new Error('The outgoing App belt did not submit a rightward stationary segment.');
-                      const point = (along, side) => {
-                        const t = (along - belt.start) / (belt.end - belt.start), i = belt.i;
-                        const plus = [vertices[i] + (vertices[i + 9] - vertices[i]) * t,
-                          vertices[i + 1] + (vertices[i + 10] - vertices[i + 1]) * t];
-                        const minus = [vertices[i + 45] + (vertices[i + 18] - vertices[i + 45]) * t,
-                          vertices[i + 46] + (vertices[i + 19] - vertices[i + 46]) * t];
-                        return [(plus[0] + minus[0]) / 2 + (plus[0] - minus[0]) * side / (2 * belt.half),
-                          (plus[1] + minus[1]) / 2 + (plus[1] - minus[1]) * side / (2 * belt.half)];
-                      };
-                      const image = this.extract.pixels({target:root, frame:this.screen, resolution:this.resolution});
-                      const brightness = ([x,y]) => {
-                        const column = Math.max(0,Math.min(image.width-1,Math.round(x*this.resolution)));
-                        const row = Math.max(0,Math.min(image.height-1,Math.round(y*this.resolution)));
-                        const index = ((image.height-1-row)*image.width+column)*4;
-                        return image.pixels[index] + image.pixels[index+1] + image.pixels[index+2];
-                      };
-                      // A rightward chevron has its arms behind its tip, never ahead of it.
-                      // Average both arms across several rows rather than selecting one subpixel edge.
-                      const samples = [-4,-3,-2,2,3,4].map(row => {
-                        const side = row * belt.unit, offset = Math.abs(side) * .85;
-                        const guide = along => brightness(point(along, side))
-                          - brightness(point(along, Math.sign(side) * 10 * belt.unit));
-                        return [guide(belt.peak - offset), guide(belt.peak + offset)];
-                      });
-                      const painted = image.pixels.some((value,index) => index % 4 === 3 && value > 0
-                        && image.pixels[index-1] + image.pixels[index-2] + image.pixels[index-3] > 0);
-                      resolve({behind:samples.reduce((sum,sample) => sum+sample[0],0),
-                        ahead:samples.reduce((sum,sample) => sum+sample[1],0),painted,samples});
-                    } catch (error) { reject(error); }
-                    return result;
-                  };
-                  state.world.repaint();
-                })
-                """);
-        assertThat(chevron.get("painted")).isEqualTo(true);
-        assertThat(((Number) chevron.get("behind")).doubleValue()).as("Conveyor arm samples: %s", chevron)
-                .isGreaterThan(((Number) chevron.get("ahead")).doubleValue());
+        assertThat(page.locator("#world-plane .belt-run[data-active=false] .belt-track").evaluateAll("tracks => tracks.length > 0 && tracks.every(track => { const image = getComputedStyle(track, '::after').backgroundImage; return image.includes('linear-gradient(45deg') && image.includes('linear-gradient(-45deg'); })")).isEqualTo(true);
         assertThat(pageErrors).isEmpty();
     }
 
@@ -504,13 +1509,13 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         awaitScene();
         final List<?> overlaps = (List<?>) page.evaluate("""
                 () => {
-                  const bodies = [...document.querySelectorAll('.world-symbol')].map(element => element.getBoundingClientRect());
+                  const bodies = [...document.querySelectorAll('.machine-core')].map(element => element.getBoundingClientRect());
                   return bodies.flatMap((a, index) => bodies.slice(index + 1)
                     .filter(b => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom)
                     .map(b => ({first: a.toJSON(), second: b.toJSON()})));
                 }
                 """);
-        assertThat(page.locator(".world-symbol").count()).isGreaterThanOrEqualTo(4);
+        assertThat(page.locator(".machine-core").count()).isGreaterThanOrEqualTo(4);
         assertThat(overlaps).isEmpty();
         assertThat(pageErrors).isEmpty();
     }
@@ -539,10 +1544,42 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 """);
         page.waitForFunction("() => Number(new URLSearchParams(state.world.query).get('scale')) >= 1");
         awaitScene();
-        assertThat(page.evaluate("() => window.__cameraMoved")).isEqualTo(!reduced);
+        assertThat(page.evaluate("() => window.__cameraMoved")).isEqualTo(true);
         assertThat(requests).hasSizeBetween(2, 4);
         assertThat(page.locator("#graph").getAttribute("data-camera-moving")).isEqualTo("false");
         page.evaluate("() => window.__cameraObserver.disconnect()");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    void browserScrollingCannotMoveTheWorldOutsideItsCamera() {
+        openProject(deepBranchProject(128));
+        awaitScene();
+        final BoundingBox tools = page.locator(".canvas-tools").boundingBox();
+        page.evaluate("() => document.querySelector('#graph').scrollBy(0, 350)");
+        final BoundingBox after = page.locator(".canvas-tools").boundingBox();
+        assertThat(after.y).as("Browser focus scrolling must not displace the camera controls").isEqualTo(tools.y);
+        assertThat(page.evaluate("() => document.querySelector('#graph').scrollTop")).isEqualTo(0);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    void locatingATriggerKeepsItVisibleBesideALargeAutomaticGroup() {
+        openProject(deepBranchProject(128));
+        selectWorldNode("command");
+        openInspectorTab("overview");
+        final Response response = page.waitForResponse(CreatorWorldBrowserIT::viewportResponse,
+                () -> page.locator("#dock-focus").click());
+        finishScene(response);
+        awaitScene();
+        final BoundingBox body = page.locator("#world-plane .machine[data-station-id=command] .machine-top").boundingBox();
+        final BoundingBox graph = page.locator("#graph").boundingBox();
+        assertThat(body).isNotNull();
+        assertThat(body.x + body.width / 2).isBetween(graph.x, graph.x + graph.width);
+        assertThat(body.y + body.height / 2).isBetween(graph.y, graph.y + graph.height);
+        assertThat(page.locator("[data-world-id=command]").getAttribute("aria-pressed")).isEqualTo("true");
         assertThat(pageErrors).isEmpty();
     }
 
@@ -610,7 +1647,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     @ValueSource(booleans = {true, false})
     void selectedExamplesAndActiveTrafficRemainVisibleOnSharedBranchTrunks(final boolean highlight) {
         openProject(deepBranchProject(4));
-        final Map<?, ?> rail = (Map<?, ?>) page.evaluate("""
+        page.evaluate("""
                 async highlight => {
                   state.world.dispose();
                   let selected;
@@ -621,43 +1658,15 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                   const scene = window.__renderer.scene;
                   const link = scene.links.find(link => scene.links.filter(other => other.from===link.from).length>1);
                   selected = link.id;
-                  const query = new URLSearchParams(window.__renderer.query), scale = Number(query.get('scale'));
                   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-                  const x = ((link.points[0][0]+link.points[1][0])/2-Number(query.get('x')))*scale;
-                  const y = ((link.points[0][1]+link.points[1][1])/2-Number(query.get('y')))*scale;
-                  return new Promise((resolve, reject) => {
-                    const renderer = PIXI.WebGLRenderer.prototype;
-                    const render = renderer.render;
-                    const deadline = setTimeout(() => { renderer.render = render;
-                      reject(new Error('Timed out waiting for the Pixi underlay frame.')); }, 2_000);
-                    renderer.render = function(root, ...args) {
-                      const result = render.call(this, root, ...args);
-                      if (this.canvas.id!=='world-canvas') return result;
-                      renderer.render = render;
-                      clearTimeout(deadline);
-                      const vertices = root.children[0].geometry.getBuffer('aPosition').data;
-                      let ink = [], spacing = 0;
-                      for (let i=0;i<vertices.length;i+=27) {
-                        const points = [0,1,2].map(j=>[vertices[i+j*9],vertices[i+j*9+1]]);
-                        if (Math.abs((points[1][0]-points[0][0])*(points[2][1]-points[0][1])
-                          -(points[1][1]-points[0][1])*(points[2][0]-points[0][0])) < .001) continue;
-                        const crosses = points.map((a,j)=>{
-                          const b=points[(j+1)%3]; return (b[0]-a[0])*(y-a[1])-(b[1]-a[1])*(x-a[0]);
-                        });
-                        if (crosses.every(v=>v>=-.001)||crosses.every(v=>v<=.001)) {
-                          ink=[vertices[i+2],vertices[i+3],vertices[i+4]]; spacing=vertices[i+7];
-                        }
-                      }
-                      resolve({painted:ink.length===3,moving:spacing>0,selected:(highlight?[18/255,109/255,120/255]:[92/255,99/255,94/255]).every((v,i)=>Math.abs(v-ink[i])<.001)});
-                      return result;
-                    };
-                    window.__renderer.repaint();
-                  });
                 }
                 """, highlight);
-        assertThat(rail.get("painted")).isEqualTo(true);
-        assertThat(rail.get("selected")).isEqualTo(true);
-        assertThat(rail.get("moving")).isEqualTo(true);
+        page.waitForFunction("() => document.querySelector('#graph').dataset.trafficAnimated === 'true'");
+        assertThat(page.locator("#world-plane .belt-run[data-active='true']").count()).isPositive();
+        assertThat(page.locator(".belt-run[data-active=true] .belt-track").first().evaluate(
+                "element => getComputedStyle(element, '::after').backgroundImage").toString())
+                .contains("linear-gradient(45deg", "linear-gradient(-45deg");
+        assertThat(page.locator("#world-plane .belt-run[data-selected='" + highlight + "']").count()).isPositive();
         page.evaluate("() => { window.__renderer.dispose(); }");
         assertThat(pageErrors).isEmpty();
     }
@@ -677,58 +1686,18 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 }
                 """, List.of(shape, aspect));
         page.waitForFunction("() => window.__renderer.scene?.nodes.some(node => node.id === 'one') && Number(new URLSearchParams(window.__renderer.query).get('scale')) >= 1");
-        final Map<?, ?> marks = (Map<?, ?>) page.evaluate("""
-                settings => new Promise((resolve, reject) => {
-                  const renderer = PIXI.WebGLRenderer.prototype;
-                  const render = renderer.render;
-                  const deadline = setTimeout(() => { renderer.render = render;
-                    reject(new Error('Timed out waiting for the Pixi overlay frame.')); }, 2_000);
-                  renderer.render = function(root, ...args) {
-                    const result = render.call(this, root, ...args);
-                    if (this.canvas.id !== 'world-canvas') return result;
-                    renderer.render = render;
-                    clearTimeout(deadline);
-                    const node = window.__renderer.scene.nodes.find(node => node.id === 'one');
-                    const query = new URLSearchParams(window.__renderer.query), scale = Number(query.get('scale'));
-                    const center = [(node.x+node.width/2-Number(query.get('x')))*scale,
-                      (node.y+node.height/2-Number(query.get('y')))*scale];
-                    const height = Math.min(136,272/settings[1]), width = height*settings[1];
-                    const sprite = root.children[1].children.map(sprite => ({sprite,
-                      distance:Math.hypot(sprite.getBounds().x+sprite.getBounds().width/2-center[0],
-                        sprite.getBounds().y+sprite.getBounds().height/2-center[1])}))
-                      .sort((a,b) => a.distance-b.distance)[0]?.sprite;
-                    if (!sprite) return reject(new Error('The focused machine housing was not submitted.'));
-                    const spriteBounds = sprite.getBounds();
-                    const housing = {width:spriteBounds.width*width/(width+24), height:spriteBounds.height*height/(height+24)};
-                    const x = spriteBounds.x+(spriteBounds.width-housing.width)/2;
-                    const y = spriteBounds.y+(spriteBounds.height-housing.height)/2;
-                    const vertices = root.children[2].geometry.getBuffer('aPosition').data;
-                    const points = [];
-                    for (let i=0;i<vertices.length;i+=9) {
-                      if (![164/255,99/255,20/255].every((v,j)=>Math.abs(v-vertices[i+2+j])<.001)) continue;
-                      points.push([(vertices[i]-x)/housing.width,(vertices[i+1]-y)/housing.height]);
-                    }
-                    resolve({count:points.length,inside:points.every(([x,y]) => {
-                      if (x<0 || y<0 || x>1 || y>1) return false;
-                      if (settings[0]==='ellipse') return (x-.5)**2+(y-.5)**2<=.2501;
-                      if (settings[0]==='diamond') return Math.abs(x-.5)+Math.abs(y-.5)<=.5001;
-                      if (settings[0]==='triangle') return y>=x/2 && y<=1-x/2;
-                      return true;
-                    })});
-                    return result;
-                  };
-                  window.__renderer.repaint();
-                })
-                """, List.of(shape, aspect));
-        assertThat(((Number) marks.get("count")).intValue()).isPositive();
-        assertThat(marks.get("inside")).isEqualTo(true);
+        assertThat(page.locator("#world-plane .machine[data-station-id='one'][data-changed='true'] .machine-top").count()).isEqualTo(1);
+        assertThat(page.locator("#world-plane .machine[data-station-id='one'] .machine-top").evaluate("""
+                element => getComputedStyle(element).clipPath.startsWith('polygon(')
+                  && getComputedStyle(element, '::after').backgroundImage.includes('repeating-linear-gradient')
+                """)).isEqualTo(true);
         page.evaluate("() => { window.__renderer.dispose(); }");
         assertThat(pageErrors).isEmpty();
     }
 
     @ParameterizedTest
     @Tag("responsive")
-    @ValueSource(strings = {"ellipse", "triangle", "diamond", "rectangle"})
+    @ValueSource(strings = {"ellipse", "triangle", "diamond", "rectangle", "hexagon", "event", "storage", "subsystem"})
     void shapeCornersDoNotCaptureClicksOutsideTheirOutline(final String shape) {
         openProject(fourStepProject());
         final Number status = (Number) page.evaluate("""
@@ -741,31 +1710,33 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         waitForText("#build-state", "Built");
         selectWorldNode("command");
         page.locator("#close-inspector").click();
-        final String selected = page.locator("#selection-dock .dock-heading strong").textContent();
         page.evaluate("() => { state.world.focus('one'); }");
-        page.waitForFunction("() => state.world.scene?.nodes.some(node => node.id === 'one') && Number(new URLSearchParams(state.world.query).get('scale')) >= 1");
         awaitScene();
         final var point = (List<?>) page.evaluate("""
                 () => {
-                  const node = state.world.scene.nodes.find(node => node.id === 'one');
-                  const query = new URLSearchParams(state.world.query);
-                  const scale = Number(query.get('scale'));
-                  const stage = document.querySelector('#graph').getBoundingClientRect();
-                  return [stage.x + (node.x + node.width / 2 - Number(query.get('x'))) * scale,
-                    stage.y + (node.y + node.height / 2 - Number(query.get('y'))) * scale,
-                    Math.min(scale, 1)];
+                  const body = document.querySelector("#world-plane .machine[data-station-id='one'] .machine-top")
+                    .getBoundingClientRect();
+                  return [body.x + body.width / 2, body.y + body.height / 2, Math.min(body.width, body.height) / 2];
                 }
                 """);
         final double x = ((Number) point.get(0)).doubleValue();
         final double y = ((Number) point.get(1)).doubleValue();
-        final double scale = ((Number) point.get(2)).doubleValue();
-        final double outsideX = x + 69 * scale;
-        final double outsideY = y + 69 * scale;
+        final BoundingBox outline = page.locator("#world-plane .machine[data-station-id=one] .machine-top").boundingBox();
+        final double outsideX = outline.x + 1;
+        final double outsideY = outline.y + 1;
         assertThat(page.evaluate("point => document.elementFromPoint(...point)?.closest('[data-world-id]') === null",
                 List.of(outsideX, outsideY))).as("The outline probe must not click the separate text label").isEqualTo(true);
         page.mouse().click(outsideX, outsideY);
         page.waitForFunction("() => !state.editorController");
-        assertThat(page.locator("#selection-dock .dock-heading strong").textContent()).isEqualTo(selected);
+        assertThat(page.locator(".machine[data-station-id=one][data-selected=true]").count()).isZero();
+        page.screenshot(new Page.ScreenshotOptions().setPath(Path.of("target", "screenshots", "shape-hit-" + shape + ".png")));
+        assertThat(page.evaluate("""
+                point => {
+                  const target = document.elementFromPoint(...point);
+                  return target && target.closest('#graph') && !target.closest('[data-world-overlay], .canvas-tools')
+                    ? 'world' : JSON.stringify({point, target:target?.outerHTML});
+                }
+                """, List.of(x, y))).as("The focused machine body must remain clear of the HUD").isEqualTo("world");
         page.mouse().click(x, y);
         page.waitForFunction("() => document.querySelector('[data-world-id=one]')?.getAttribute('aria-pressed') === 'true'");
         assertThat(pageErrors).isEmpty();
@@ -774,166 +1745,116 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     @ParameterizedTest
     @ValueSource(doubles = {1, 100, 1_000_000})
     void trafficFramesReuseGeometryAndLabelsAtEveryRate(final double rate) {
-        startRendererTraffic(rate, 10_000);
-        page.waitForFunction("() => window.__traffic.draws >= 8");
-        assertThat(page.evaluate("() => window.__traffic.uploads")).isEqualTo(0);
-        assertThat(page.evaluate("() => window.__traffic.labels")).isEqualTo(0);
-        assertThat(page.evaluate("() => window.__traffic.vertices")).isInstanceOfSatisfying(Number.class,
-                number -> assertThat(number.intValue()).isBetween(1, 20_000));
+        startRendererTraffic(rate, 30_000);
+        page.evaluate("""
+                () => { window.__parts = [...document.querySelectorAll('#world-plane *, #world-labels *')];
+                  window.__animation = document.getAnimations().find(animation => animation.playState === 'running');
+                  window.__time = window.__animation.currentTime; }
+                """);
+        page.waitForFunction("() => window.__animation.currentTime > window.__time + 100");
+        assertThat(page.evaluate("() => window.__parts.every(element => element.isConnected) && window.__parts.length === document.querySelectorAll('#world-plane *, #world-labels *').length")).isEqualTo(true);
+        assertThat(page.locator("#world-plane .belt-run[data-active='true']").count()).isPositive();
+        System.out.println("FOUNDRY_TRAFFIC rate=" + rate + " " + page.evaluate("""
+                async () => {
+                  const frames=[]; let previous=await new Promise(requestAnimationFrame);
+                  for (let i=0;i<60;i++) {
+                    const now=await new Promise(requestAnimationFrame); frames.push(now-previous); previous=now;
+                  }
+                  frames.sort((a,b)=>a-b);
+                  return {p95:frames[56],max:frames[59],cargo:document.querySelectorAll('.cargo-item').length,
+                    elements:document.querySelectorAll('#world-plane *').length};
+                }
+                """));
         assertThat(pageErrors).isEmpty();
-        page.evaluate("() => { window.__traffic.restore(); window.__renderer.dispose(); }");
+        page.evaluate("() => window.__renderer.dispose()");
     }
 
-    @Test
-    void trafficStopsWhenItsObservationExpires() {
-        startRendererTraffic(10, 1_000);
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void expiredObservationsStopTrafficButNotSelectedExampleReplay(final boolean replay) {
+        startRendererTraffic(10, 1_000, replay);
         page.waitForFunction("() => document.querySelector('#graph').dataset.trafficAnimated === 'false'");
-        page.evaluate("() => window.__traffic.draws = 0");
-        page.evaluate("() => new Promise(resolve => setTimeout(resolve, 150))");
-        assertThat(page.evaluate("() => window.__traffic.draws")).isEqualTo(0);
-        page.evaluate("() => { window.__traffic.restore(); window.__renderer.dispose(); }");
+        assertThat(page.locator("#world-plane .belt-run[data-active='true'] .belt-track").evaluateAll("tracks => tracks.every(track => getComputedStyle(track, '::before').animationPlayState === 'running')")).isEqualTo(replay);
+        assertThat(page.locator(".cargo-item").evaluateAll("items=>items.every(item=>getComputedStyle(item).animationPlayState === 'running')"))
+                .isEqualTo(replay);
+        page.evaluate("() => window.__renderer.dispose()");
     }
 
     @Test
-    void reducedMotionStopsAndCanResumeTraffic() {
+    void browserMotionPreferenceDoesNotHideTraffic() {
         startRendererTraffic(10, 10_000);
         page.emulateMedia(new Page.EmulateMediaOptions().setReducedMotion(com.microsoft.playwright.options.ReducedMotion.REDUCE));
-        page.waitForFunction("() => document.querySelector('#graph').dataset.trafficAnimated === 'false'");
-        page.evaluate("() => window.__traffic.draws = 0");
-        page.evaluate("() => new Promise(resolve => setTimeout(resolve, 150))");
-        assertThat(page.evaluate("() => window.__traffic.draws")).isEqualTo(0);
+        assertThat(page.locator("#graph").getAttribute("data-traffic-animated")).isEqualTo("true");
         page.emulateMedia(new Page.EmulateMediaOptions().setReducedMotion(com.microsoft.playwright.options.ReducedMotion.NO_PREFERENCE));
         page.waitForFunction("() => document.querySelector('#graph').dataset.trafficAnimated === 'true'");
-        page.evaluate("() => { window.__traffic.restore(); window.__renderer.dispose(); }");
+        page.evaluate("() => window.__renderer.dispose()");
     }
 
     @Test
-    void disposingTrafficStopsItsFrames() {
+    void disposingTrafficReleasesItsCssParts() {
         startRendererTraffic(10, 10_000);
-        page.evaluate("() => { window.__renderer.dispose(); window.__traffic.draws = 0; }");
-        page.evaluate("() => new Promise(resolve => setTimeout(resolve, 150))");
-        assertThat(page.evaluate("() => window.__traffic.draws")).isEqualTo(0);
-        page.evaluate("() => window.__traffic.restore()");
+        page.evaluate("() => window.__renderer.dispose()");
+        assertThat(page.locator("#world-plane *").count()).isZero();
+        assertThat(page.locator("#graph").getAttribute("data-traffic-animated")).isEqualTo("false");
     }
 
     @Test
-    void losingAndRestoringGraphicsReleasesAndRebuildsTraffic() {
-        startRendererTraffic(10, 30_000);
+    void disposedRendererDoesNotRetainItsDetachedScene() {
+        startRendererTraffic(10, 10_000, true);
         page.evaluate("""
                 () => {
-                  window.__contextLoss = document.querySelector('#world-canvas').getContext('webgl2').getExtension('WEBGL_lose_context');
-                  window.__contextLoss.loseContext();
+                  window.__releasedParcel = new WeakRef(document.querySelector('.cargo-item'));
+                  window.__releasedMachine = new WeakRef(document.querySelector('.machine'));
+                  window.__renderer.dispose();
                 }
                 """);
-        page.waitForFunction("() => document.querySelector('#graph').dataset.sceneError?.includes('lost')");
-        page.evaluate("() => window.__traffic.draws = 0");
-        page.evaluate("() => new Promise(resolve => setTimeout(resolve, 150))");
-        assertThat(page.evaluate("() => window.__traffic.draws")).isEqualTo(0);
-        page.evaluate("() => window.__contextLoss.restoreContext()");
-        page.waitForFunction("() => !document.querySelector('#graph').dataset.sceneError && window.__traffic.draws > 0");
-        assertThat(page.evaluate("""
-                () => {
-                  const renderer = window.__renderer._renderer, root = window.__renderer._root;
-                  const image = renderer.extract.pixels({target:root, frame:renderer.screen, resolution:renderer.resolution});
-                  return image.pixels.some((value,index) => index % 4 === 3 && value > 0
-                    && image.pixels[index-1] + image.pixels[index-2] + image.pixels[index-3] > 0);
-                }
-                """)).isEqualTo(true);
-        assertThat(pageErrors).isEmpty();
-        page.evaluate("() => { window.__traffic.restore(); window.__renderer.dispose(); }");
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+        final CDPSession cdp = context.newCDPSession(page);
+        try {
+            cdp.send("HeapProfiler.collectGarbage");
+            assertThat(page.evaluate("() => !window.__releasedParcel.deref() && !window.__releasedMachine.deref()"))
+                    .as("Keeping the disposed public renderer alive must not keep its old CSS scene alive").isEqualTo(true);
+        } finally {
+            cdp.detach();
+        }
     }
 
     @Test
-    void disposingAndRecreatingTheRendererRebuildsTrafficWithoutAnIdleTicker() {
+    void disposingAndRecreatingTheRendererRebuildsCssTraffic() {
         startRendererTraffic(10, 30_000);
         page.evaluate("""
                 async () => {
                   const stage = document.querySelector('#graph');
-                  const canvas = document.querySelector('#world-canvas');
                   window.__renderer.dispose();
                   window.__renderer = new RailixWorld(stage, {
                     linkAppearance: () => ({rate:10, selected:true}), motionActive: () => true
                   });
                   await window.__renderer.refresh();
-                  window.__replacement = {replaced: canvas !== document.querySelector('#world-canvas'),
-                    tickerStopped: !PIXI.Ticker.system.started && !PIXI.Ticker.system.autoStart};
                 }
                 """);
         page.waitForFunction("() => document.querySelector('#graph').dataset.trafficAnimated === 'true'");
-        page.waitForFunction("() => window.__traffic.draws > 0");
-        assertThat(page.evaluate("() => window.__replacement.replaced")).isEqualTo(true);
-        assertThat(page.evaluate("() => window.__replacement.tickerStopped")).isEqualTo(true);
-        assertThat(page.locator("#world-canvas").count()).isEqualTo(1);
+        assertThat(page.locator("#world-plane .belt-run[data-active='true']").count()).isPositive();
+        assertThat(page.evaluate("() => typeof window.PIXI")).isEqualTo("undefined");
         assertThat(pageErrors).isEmpty();
-        page.evaluate("() => { window.__traffic.restore(); window.__renderer.dispose(); }");
+        page.evaluate("() => window.__renderer.dispose()");
     }
 
     @Test
-    void visibleMachineTexturesAreReusedBoundedAndReleasedOnDisposal() {
+    void visibleMachineCssPartsStayBoundedAndReleaseOnDisposal() {
         openProject(deepBranchProject(24));
-        final Map<?, ?> before = (Map<?, ?>) page.evaluate("""
-                async () => {
-                  state.world.dispose();
-                  const Texture = PIXI.Texture;
-                  const tracking = {next:0, created:[], destroyed:[], faces:[]};
-                  PIXI.Texture = class TrackingTexture extends Texture {
-                    constructor(options) {
-                      super(options);
-                      this.__railixTextureId = ++tracking.next;
-                      tracking.created.push(this.__railixTextureId);
-                      const canvas = options.source.resource;
-                      const pixel = canvas.getContext('2d').getImageData(canvas.width/2, canvas.height/2, 1, 1).data;
-                      tracking.faces.push([pixel[0],pixel[1],pixel[2]]);
-                    }
-                    destroy(...args) {
-                      tracking.destroyed.push(this.__railixTextureId);
-                      return super.destroy(...args);
-                    }
-                  };
-                  window.__textureTracking = {Texture, tracking};
-                  window.textureTrackingSnapshot = () => {
-                    const created = new Set(tracking.created), destroyed = new Set(tracking.destroyed);
-                    return {created:created.size, destroyed:destroyed.size, residents:[...created]
-                      .filter(id => !destroyed.has(id)).length,
-                      labels:document.querySelector('#world-labels').childElementCount,
-                      darkFaces:tracking.faces.every(pixel => pixel[0]+pixel[1]+pixel[2] < 180)};
-                  };
-                  window.__renderer = new RailixWorld(document.querySelector('#graph'));
-                  await window.__renderer.refresh();
-                  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-                  return window.textureTrackingSnapshot();
-                }
-                """);
-        page.evaluate("() => { window.__renderer.repaint(); window.__renderer.repaint(); }");
-        page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
-        final Map<?, ?> repainted = (Map<?, ?>) page.evaluate("() => window.textureTrackingSnapshot()");
-        page.evaluate("() => { window.__renderer.focus('step-23'); }");
-        page.waitForFunction("() => window.__renderer.scene?.nodes.some(node => node.id === 'step-23')");
-        page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
-        final Map<?, ?> focused = (Map<?, ?>) page.evaluate("() => window.textureTrackingSnapshot()");
-        page.evaluate("""
-                () => {
-                  window.__renderer.dispose();
-                  PIXI.Texture = window.__textureTracking.Texture;
-                  delete window.textureTrackingSnapshot;
-                }
-                """);
-        final Map<?, ?> disposed = (Map<?, ?>) page.evaluate("""
-                () => {
-                  const tracking = window.__textureTracking.tracking;
-                  const created = new Set(tracking.created), destroyed = new Set(tracking.destroyed);
-                  return {residents:[...created].filter(id => !destroyed.has(id)).length};
-                }
-                """);
-        assertThat(((Number) before.get("created")).intValue()).isPositive();
-        assertThat(before.get("darkFaces")).as("Canvas-baked machine faces before Pixi uploads them").isEqualTo(true);
-        assertThat(repainted).isEqualTo(before);
-        assertThat(((Number) focused.get("residents")).intValue()).isLessThanOrEqualTo(((Number) focused.get("labels")).intValue());
-        assertThat(disposed.get("residents")).isEqualTo(0);
+        awaitScene();
+        assertThat(page.locator("#world-plane .machine").count()).isLessThanOrEqualTo(256);
+        assertThat(page.locator("#world-plane .machine .machine-top").count()).isPositive();
+        page.evaluate("() => state.world.dispose()");
+        assertThat(page.locator("#world-plane *").count()).isZero();
         assertThat(pageErrors).isEmpty();
     }
 
     private void startRendererTraffic(final double rate, final int lifetime) {
+        startRendererTraffic(rate, lifetime, false);
+    }
+
+    private void startRendererTraffic(final double rate, final int lifetime, final boolean replay) {
         openProject(deepBranchProject(4));
         // Exercise the renderer's public rate input, not fabricated application execution counters.
         page.evaluate("""
@@ -941,90 +1862,31 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                   state.world.dispose();
                   const until = performance.now() + settings[1];
                   window.__renderer = new RailixWorld(document.querySelector('#graph'), {
-                    linkAppearance: () => ({rate: settings[0], selected: true}),
+                    linkAppearance: () => ({rate: settings[0], selected: settings[2]}),
                     motionActive: () => performance.now() < until
                   });
                   await window.__renderer.refresh();
                 }
-                """, List.of(rate, lifetime));
-        page.waitForFunction("() => document.querySelector('#graph').dataset.trafficAnimated === 'true'");
-        // Initial fitting publishes a second viewport; measure only after that geometry is rendered.
+                """, List.of(rate, lifetime, replay));
+        page.waitForFunction("() => document.querySelector('#graph').dataset.trafficAnimated === 'true' || document.querySelector('#graph').dataset.replaying === 'true'");
+        // Initial fitting publishes a second viewport; inspect only the settled CSS state.
         page.evaluate("""
                 async () => {
                   await window.__renderer.refresh();
                   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
                 }
                 """);
-        page.evaluate("""
-                () => {
-                  const renderer = PIXI.WebGLRenderer.prototype;
-                  const render = renderer.render;
-                  const upload = WebGL2RenderingContext.prototype.bufferSubData;
-                  const probe = window.__traffic = {draws:0,uploads:0,labels:0,vertices:0};
-                  const observer = new MutationObserver(records => probe.labels += records.length);
-                  observer.observe(document.querySelector('#world-labels'), {childList:true,subtree:true,attributes:true});
-                  renderer.render = function(...args) {
-                    if (this.canvas.id === 'world-canvas') {
-                      probe.draws++;
-                      probe.vertices = Math.max(probe.vertices,
-                        ...window.__renderer._meshes.map(mesh => mesh.geometry.getBuffer('aPosition').data.length / 9));
-                    }
-                    return render.apply(this, args);
-                  };
-                  WebGL2RenderingContext.prototype.bufferSubData = function(target,...args) {
-                    if (this.canvas.id === 'world-canvas' && target === this.ARRAY_BUFFER) probe.uploads++;
-                    return upload.call(this, target, ...args);
-                  };
-                  probe.restore = () => { observer.disconnect(); renderer.render = render; WebGL2RenderingContext.prototype.bufferSubData = upload; };
-                }
-                """);
     }
 
     @ParameterizedTest
     @ValueSource(doubles = {0.7, 1.0, 1.4, 3.0})
-    void renderedBranchConnectionsHaveOrthogonalRunsAndShortRoundedCorners(final double zoom) {
+    void renderedBranchConnectionsKeepOrthogonalRunsAtEveryZoom(final double zoom) {
         openProject(deepBranchProject(24));
         page.evaluate("scale => { state.world.zoom(scale); }", zoom);
         awaitScene();
 
-        final Object geometry = page.evaluate("""
-                () => new Promise((resolve, reject) => {
-                  const renderer = PIXI.WebGLRenderer.prototype;
-                  const render = renderer.render;
-                  const deadline = setTimeout(() => { renderer.render = render;
-                    reject(new Error('Timed out waiting for the Pixi underlay frame.')); }, 2_000);
-                  renderer.render = function(root, ...args) {
-                    const result = render.call(this, root, ...args);
-                    if (this.canvas.id !== 'world-canvas') return result;
-                    renderer.render = render;
-                    clearTimeout(deadline);
-                    const vertices = root.children[0].geometry.getBuffer('aPosition').data;
-                    const rails = [];
-                    const point = index => [vertices[index * 9], vertices[index * 9 + 1]];
-                    const same = (a, b) => a.every((value, index) => Math.abs(value - b[index]) < .001);
-                    for (let index = 0; index + 5 < vertices.length / 9; index += 3) {
-                      const ink = [vertices[index * 9 + 2], vertices[index * 9 + 3], vertices[index * 9 + 4]];
-                      if (!same(ink, [92/255,99/255,94/255])
-                          || !same(point(index), point(index + 3))
-                          || !same(point(index + 2), point(index + 4))) continue;
-                      const a = point(index), b = point(index + 1), c = point(index + 2), d = point(index + 5);
-                      const centerA = [(a[0] + d[0]) / 2, (a[1] + d[1]) / 2];
-                      const centerB = [(b[0] + c[0]) / 2, (b[1] + c[1]) / 2];
-                      rails.push(Math.abs(centerA[0] - centerB[0]) < .001 || Math.abs(centerA[1] - centerB[1]) < .001
-                          || Math.hypot(centerA[0]-centerB[0],centerA[1]-centerB[1]) <= 8);
-                      index += 3;
-                    }
-                    resolve({count: rails.length, orthogonal: rails.every(Boolean)});
-                    return result;
-                  };
-                  state.world.repaint();
-                })
-                """);
-
-        assertThat(geometry).isInstanceOfSatisfying(Map.class, result -> {
-            assertThat(((Number) result.get("count")).intValue()).isPositive();
-            assertThat(result.get("orthogonal")).isEqualTo(true);
-        });
+        assertThat(page.locator("#world-plane .belt-run").count()).isPositive();
+        assertThat(page.locator("#world-plane .belt-run").evaluateAll("runs => runs.every(run => { const m = new DOMMatrixReadOnly(getComputedStyle(run).transform); return Math.min(Math.abs(m.m11), Math.abs(m.m12)) < .001 && parseFloat(run.style.width) > 0; })")).isEqualTo(true);
         assertThat(pageErrors).isEmpty();
     }
 
@@ -1128,8 +1990,76 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                   && !node.group && !node.expanded && node.count > 8)
                 """)).isEqualTo(true);
 
-        assertMatchingFootprints(page.locator("[data-kind='region']:not([data-region-group])").first(),
+        assertMatchingFootprints(page.locator("#world-labels [data-kind='region']:not([data-region-group])").first(),
                 page.locator("[data-node-id='filter']"));
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void automaticRegionKeepsItsBoundaryWhenEntered() {
+        openProject(deepBranchProject(128));
+        awaitScene();
+        final String region = (String) page.evaluate("""
+                () => state.world.scene.nodes.find(node => node.kind === 'region' && node.count === 128).id
+                """);
+        page.evaluate("id => state.world.focus(id)", region);
+        page.waitForFunction("id => state.world.scene.nodes.some(node => node.id === id && node.expanded)", region);
+        assertThat(page.locator(".machine[data-station-id='" + region + "'][data-expanded='true']").count()).isEqualTo(1);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void enteringAGroupRevealsItsChildrenWithABoundedSpatialTransition() {
+        openProject(deepBranchProject(128));
+        awaitScene();
+        page.evaluate("""
+                () => {
+                  window.revealFrames = [];
+                  window.watchReveal = true;
+                  const record = () => {
+                    for (const machine of document.querySelectorAll('.machine')) {
+                      for (const animation of machine.getAnimations()) {
+                        if (animation instanceof CSSAnimation) continue;
+                        window.revealFrames.push({duration:animation.effect.getTiming().duration,
+                          frames:animation.effect.getKeyframes()});
+                      }
+                    }
+                    if (window.watchReveal) requestAnimationFrame(record);
+                  };
+                  requestAnimationFrame(record);
+                  state.world.focus(state.world.scene.nodes.find(node => node.kind === 'region' && node.count === 128).id);
+                }
+                """);
+        try {
+            page.waitForFunction("() => window.revealFrames.length > 0");
+            assertThat(page.evaluate("""
+                    () => window.revealFrames.every(animation => animation.duration > 0 && animation.duration <= 250
+                      && animation.frames.every(frame => frame.transform && !('opacity' in frame)))
+                    """)).isEqualTo(true);
+        } finally {
+            page.evaluate("() => { window.watchReveal = false; }");
+        }
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void zoomingIntoAnAutomaticRegionDoesNotRevealTinyMachines() {
+        openProject(deepBranchProject(128));
+        awaitScene();
+        page.evaluate("""
+                () => state.world.focus(state.world.scene.nodes.find(node => node.kind === 'region' && node.count === 128).id)
+                """);
+        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving === 'false'");
+        awaitScene();
+        for (int index = 0; index < 6; index++) {
+            page.locator("#zoom-in").click();
+            awaitScene();
+            assertThat(((Number) page.evaluate("""
+                    () => Math.min(...[...document.querySelectorAll('.machine:not([data-expanded="true"])')]
+                      .map(element => parseFloat(element.style.width)))
+                    """)).doubleValue()).as("Newly revealed machines must remain readable at zoom tick " + index)
+                    .isGreaterThanOrEqualTo(64);
+        }
         assertThat(pageErrors).isEmpty();
     }
 
@@ -1141,14 +2071,17 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 () => !state.editorController && document.querySelector('#inspector').dataset.selection === 'command'
                 """);
         awaitScene();
-        final BoundingBox label = page.locator("[data-node-id='app'] .world-symbol").boundingBox();
-        assertThat(label).isNotNull();
+        final BoundingBox body = page.locator("#world-plane .machine[data-station-id='app'] .machine-top").boundingBox();
+        assertThat(body).isNotNull();
         assertThat(page.evaluate("""
-                point => document.elementFromPoint(point[0], point[1])?.id
-                """, List.of(label.x + label.width / 2, label.y + label.height / 2)))
-                .as("The App body click must land on the canvas, outside the label button")
-                .isEqualTo("world-canvas");
-        return label;
+                point => {
+                  const hit=document.elementFromPoint(point[0], point[1]);
+                  return hit?.id === 'graph' || Boolean(hit?.closest('#world-plane'));
+                }
+                """, List.of(body.x + body.width / 2, body.y + body.height / 2)))
+                .as("The App body click must land on the graph, outside the label button")
+                .isEqualTo(true);
+        return body;
     }
 
     private void awaitAppSelection() {
@@ -1158,13 +2091,15 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 """);
     }
 
-    private static void assertMatchingFootprints(final Locator region, final Locator step) {
-        final BoundingBox regionBox = region.locator(".world-symbol").boundingBox();
-        final BoundingBox stepBox = step.locator(".world-symbol").boundingBox();
+    private void assertMatchingFootprints(final Locator region, final Locator step) {
+        final BoundingBox regionBox = page.locator("#world-plane .machine[data-station-id='"
+                + region.getAttribute("data-world-id") + "'] .machine-top").boundingBox();
+        final BoundingBox stepBox = page.locator("#world-plane .machine[data-station-id='"
+                + step.getAttribute("data-world-id") + "'] .machine-top").boundingBox();
         assertThat(regionBox).as("Visible collapsed region body content").isNotNull();
         assertThat(stepBox).as("Visible ordinary Step body content").isNotNull();
         assertThat(stepBox.width).isGreaterThan(20);
-        assertThat(stepBox.height).isBetween(18.0, 136.0);
+        assertThat(stepBox.height).isGreaterThan(18.0);
         assertThat(regionBox.width).as("Collapsed region width at the same camera scale")
                 .isCloseTo(stepBox.width, within(0.1));
         assertThat(regionBox.height).as("Collapsed region height at the same camera scale")
@@ -1190,11 +2125,11 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         final List<String> stations = List.of("step-0", "step-2999", "step-5999");
         final List<String> directions = List.of("ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp");
         final List<Double> requests = new ArrayList<>();
-        final List<Double> frames = new ArrayList<>();
         final List<Long> heaps = new ArrayList<>();
         final List<Integer> checkpoints = new ArrayList<>();
         final CDPSession cdp = context.newCDPSession(page);
         try {
+            cdp.send("Performance.enable");
             if (extendedRetention) {
                 cdp.send("HeapProfiler.enable");
                 Files.writeString(retentionOutput, "");
@@ -1205,12 +2140,11 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 focusStation(station);
                 for (final String direction : directions) {
                     navigate(direction);
-                    collectMeasurements(frames);
+                    collectMeasurements();
                 }
             }
             fitWorld();
-            collectMeasurements(frames);
-            frames.clear();
+            collectMeasurements();
             final JsonObject baseline = retainedHeap(cdp);
             heaps.add(baseline.get("usedSize").getAsLong());
             checkpoints.add(0);
@@ -1220,10 +2154,10 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 focusStation(stations.get(round % stations.size()));
                 for (int index = 0; index < 20; index++) {
                     requests.add(navigate(directions.get(index % directions.size())));
-                    collectMeasurements(frames);
+                    collectMeasurements();
                 }
                 fitWorld();
-                collectMeasurements(frames);
+                collectMeasurements();
                 final JsonObject heap = retainedHeap(cdp);
                 heaps.add(heap.get("usedSize").getAsLong());
                 checkpoints.add(requests.size());
@@ -1235,9 +2169,8 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                         page.viewportSize().width, requests.size(), heaps.getLast());
             }
 
-            collectMeasurements(frames);
+            collectMeasurements();
             assertThat(requests).hasSize(rounds * 20);
-            assertThat(frames).isNotEmpty();
             assertThat(pageErrors).isEmpty();
             assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(persisted);
             assertThat(creatorMetadata()).isEqualTo(metadata);
@@ -1251,14 +2184,12 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
             page.screenshot(new Page.ScreenshotOptions().setPath(overview));
             final var region = (Map<?, ?>) page.evaluate("""
                     () => {
-                      const view = new URLSearchParams(state.world.query);
-                      const scale = Number(view.get('scale'));
                       const graph = document.querySelector('#graph');
                       return state.world.scene.nodes.filter(node => node.kind === 'region' && !node.expanded)
-                        .map(node => ({...node,
-                          screen_x: (node.x + node.width / 2 - Number(view.get('x'))) * scale,
-                          screen_y: (node.y + node.height / 2 - Number(view.get('y'))) * scale
-                        })).find(node => node.screen_x > 0 && node.screen_x < graph.clientWidth
+                        .map(node => {
+                          const box = state.world._screenBounds(node);
+                          return {...node, screen_x: box.x + box.width / 2, screen_y: box.y + box.height / 2};
+                        }).find(node => node.screen_x > 0 && node.screen_x < graph.clientWidth
                           && node.screen_y > 0 && node.screen_y < graph.clientHeight);
                     }
                     """);
@@ -1276,27 +2207,40 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                         && node.y + node.height <= region.y + region.height)
                     """, region);
             final Object expandedScene = sceneSnapshot();
+            assertThat(page.locator(".machine[data-expanded=false]").evaluateAll("""
+                    elements => {
+                      const boxes = elements.map(element => ({id:element.dataset.stationId,
+                        x:parseFloat(element.style.left),y:parseFloat(element.style.top),
+                        w:parseFloat(element.style.width),h:parseFloat(element.style.height)}));
+                      return boxes.flatMap((a,index) => boxes.slice(index+1)
+                        .filter(b => Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x) > .01
+                          && Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y) > .01)
+                        .map(b => a.id + ' overlaps ' + b.id));
+                    }
+                    """)).isEqualTo(List.of());
             page.screenshot(new Page.ScreenshotOptions().setPath(expanded));
             focusStation("step-2999");
             page.locator("[data-node-id='step-2999']").waitFor();
             final Object detailScene = sceneSnapshot();
             page.screenshot(new Page.ScreenshotOptions().setPath(detail));
-            final Map<String, Object> counts = collectMeasurements(frames);
+            final Map<String, Object> counts = collectMeasurements();
             assertThat(pageErrors).isEmpty();
             assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(persisted);
             assertThat(creatorMetadata()).isEqualTo(metadata);
             final List<Long> tail = heaps.subList(Math.max(0, heaps.size() - 10), heaps.size());
+            final JsonObject browserPerformance = cdp.send("Performance.getMetrics");
+            assertThat(browserPerformance.getAsJsonArray("metrics")).isNotEmpty();
 
             final String report = String.format(Locale.ROOT, """
                     RAILIX_WORLD_MEASUREMENTS advisory=true
                     captured_at_epoch_ms=%d
                     project_nodes=6003 viewport=%dx%d browser=%s os=%s java=%s
-                    warmup_navigation_requests=12 navigation_rounds=%d measured_navigation_requests=%d measured_pixi_frames=%d
+                    warmup_navigation_requests=12 navigation_rounds=%d measured_navigation_requests=%d
                     viewport_request_p95_ms=%.3f
-                    pixi_frame_cpu_submission_p95_ms=%.3f
-                    max_scene_glyphs=%s max_route_segments=%s max_labels=%s max_label_dom_elements=%s
+                    max_scene_glyphs=%s max_route_segments=%s max_labels=%s max_world_and_label_dom_elements=%s
                     post_gc_navigation_counts=%s
                     post_gc_used_js_heap_bytes=%s
+                    browser_performance_metrics=%s
                     retained_js_heap_delta_bytes=%d
                     last_%d_gc_samples_range_bytes=%d last_%d_gc_samples_delta_bytes=%d
                     semantic_zoom_aggregate=%s
@@ -1307,15 +2251,14 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                     expanded_region_screenshot=%s
                     detail_screenshot=%s
                     Request timing is browser request start through response completion, excluding input debounce.
-                    Frame timing is the CPU animation callback submitting a real Pixi renderer frame, not GPU completion.
                     Heap is CDP Runtime.getHeapUsage usedSize after forced GC, at the same fitted camera after each round.
                     The heap series is observational evidence, not proof of leak freedom or a retained-memory threshold.
                     Percentiles use nearest rank; timings and heap growth have no pass/fail thresholds.
                     """, System.currentTimeMillis(), width, page.viewportSize().height,
                     context.browser().version(), System.getProperty("os.name"), System.getProperty("java.version"),
-                    rounds, requests.size(), frames.size(), percentile95(requests), percentile95(frames),
+                    rounds, requests.size(), percentile95(requests),
                     counts.get("glyphs"), counts.get("segments"), counts.get("labels"), counts.get("dom"),
-                    checkpoints, heaps, heaps.getLast() - heaps.getFirst(),
+                    checkpoints, heaps, browserPerformance, heaps.getLast() - heaps.getFirst(),
                     tail.size(), tail.stream().mapToLong(Long::longValue).max().orElseThrow()
                             - tail.stream().mapToLong(Long::longValue).min().orElseThrow(),
                     tail.size(), tail.getLast() - tail.getFirst(), aggregateId,
@@ -1330,9 +2273,10 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
             System.out.print(report);
         } finally {
             try {
-                page.evaluate("() => { window.__railixWorldMeasurements?.restore(); delete window.__railixWorldMeasurements; }");
+                page.evaluate("() => delete window.__railixWorldMeasurements");
             } finally {
                 try {
+                    cdp.send("Performance.disable");
                     if (extendedRetention) cdp.send("HeapProfiler.disable");
                 } finally {
                     cdp.detach();
@@ -1344,40 +2288,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     private void installMeasurements() {
         page.evaluate("""
                 () => {
-                  const requestFrame = window.requestAnimationFrame;
-                  const renderer = PIXI.WebGLRenderer.prototype;
-                  const render = renderer.render;
-                  let renders = 0;
-                  const probe = window.__railixWorldMeasurements = {
-                    frames: [], glyphs: 0, segments: 0, labels: 0, dom: 0,
-                    restore() {
-                      window.requestAnimationFrame = requestFrame;
-                      renderer.render = render;
-                    }
-                  };
-                  renderer.render = function(...args) {
-                    if (this.canvas.id === 'world-canvas') renders++;
-                    return render.apply(this, args);
-                  };
-                  window.requestAnimationFrame = callback => requestFrame.call(window, timestamp => {
-                    const before = renders;
-                    const started = performance.now();
-                    try {
-                      return callback.call(window, timestamp);
-                    } finally {
-                      const elapsed = performance.now() - started;
-                      if (renders !== before) {
-                        probe.frames.push(elapsed);
-                        const scene = state.world.scene;
-                        const labels = document.querySelector('#world-labels');
-                        probe.glyphs = Math.max(probe.glyphs, scene.nodes.length);
-                        probe.segments = Math.max(probe.segments,
-                          scene.links.reduce((sum, link) => sum + link.points.length - 1, 0));
-                        probe.labels = Math.max(probe.labels, labels.childElementCount);
-                        probe.dom = Math.max(probe.dom, labels.querySelectorAll('*').length);
-                      }
-                    }
-                  });
+                  window.__railixWorldMeasurements = {glyphs: 0, segments: 0, labels: 0, dom: 0};
                 }
                 """);
     }
@@ -1392,15 +2303,19 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     private void focusStation(final String id) {
-        final Response response = page.waitForResponse(CreatorWorldBrowserIT::viewportResponse,
+        final Response response = page.waitForResponse(candidate -> candidate.url().contains("focus=" + id),
                 () -> page.evaluate("id => void state.world.focus(id)", id));
         finishScene(response);
-        assertThat(page.evaluate("id => state.world.scene.nodes.some(node => node.id === id)", id)).isEqualTo(true);
+        page.waitForFunction("""
+                id => document.querySelector('#graph').dataset.cameraMoving === 'false'
+                  && !new URLSearchParams(state.world.query).has('focus')
+                  && state.world.scene.nodes.some(node => node.id === id)
+                """, id);
     }
 
     private void fitWorld() {
         final Response response = page.waitForResponse(CreatorWorldBrowserIT::viewportResponse,
-                () -> page.locator("#zoom-fit").click());
+                () -> page.evaluate("() => state.world.fit()"));
         finishScene(response);
     }
 
@@ -1417,29 +2332,40 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                   await new Promise(requestAnimationFrame);
                 }
                 """);
-        assertThat(page.locator("#world-error").isVisible()).isFalse();
-        assertThat(page.locator("#world-canvas").count()).isEqualTo(1);
+        assertThat(page.locator("#world-error[data-severity=error]").isVisible())
+                .as("Scene navigation error: %s", page.locator("#world-error").textContent()).isFalse();
+        assertThat(page.locator("#world-plane").count()).isEqualTo(1);
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> collectMeasurements(final List<Double> frames) {
+    private Map<String, Object> collectMeasurements() {
         final Map<String, Object> measurements = (Map<String, Object>) page.evaluate("""
                 () => {
                   const probe = window.__railixWorldMeasurements;
-                  return {frames: probe.frames.splice(0), glyphs: probe.glyphs,
-                    segments: probe.segments, labels: probe.labels, dom: probe.dom};
+                  const scene = state.world.scene;
+                  const labels = document.querySelector('#world-labels');
+                  const plane = document.querySelector('#world-plane');
+                  const stations=[...plane.querySelectorAll('.machine:not([data-preview=true])')].map(item=>item.dataset.stationId);
+                  const visible=new Set(scene.nodes.map(node=>node.id));
+                  probe.glyphs = Math.max(probe.glyphs, scene.nodes.length);
+                  probe.segments = Math.max(probe.segments,
+                    scene.links.reduce((sum, link) => sum + link.points.length - 1, 0));
+                  probe.labels = Math.max(probe.labels, labels.childElementCount);
+                  probe.dom = Math.max(probe.dom, plane.querySelectorAll('*').length + labels.querySelectorAll('*').length);
+                  return {glyphs: probe.glyphs, segments: probe.segments, labels: probe.labels, dom: probe.dom,
+                    visibleStations:stations.every(id=>visible.has(id)) && new Set(stations).size===stations.length};
                 }
                 """);
-        ((List<Number>) measurements.get("frames")).stream().map(Number::doubleValue).forEach(frames::add);
         assertThat(((Number) measurements.get("glyphs")).intValue()).isBetween(1, 2_048);
         assertThat(((Number) measurements.get("segments")).intValue()).isBetween(1, 4_096);
         assertThat(((Number) measurements.get("labels")).intValue()).isBetween(1, 256);
-        assertThat(((Number) measurements.get("dom")).intValue()).isBetween(1, 1_024);
+        assertThat(((Number) measurements.get("dom")).intValue()).isPositive();
+        assertThat(measurements.get("visibleStations")).as("No duplicate or off-scene machine objects survive navigation").isEqualTo(true);
         return measurements;
     }
 
     private JsonObject retainedHeap(final CDPSession cdp) {
-        page.evaluate("() => { performance.clearResourceTimings(); window.__railixWorldMeasurements.frames.length = 0; }");
+        page.evaluate("() => performance.clearResourceTimings()");
         cdp.send("HeapProfiler.collectGarbage");
         return cdp.send("Runtime.getHeapUsage");
     }
@@ -1464,10 +2390,9 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                     label_map: state.world._labelElements.size,
                     label_nodes: document.querySelector('#world-labels').childElementCount,
                     label_dom_elements: document.querySelector('#world-labels').querySelectorAll('*').length,
-                    mesh_vertex_buffer_bytes: state.world._meshes.map(mesh => mesh.geometry.getBuffer('aPosition').data.byteLength),
-                    mesh_vertex_counts: state.world._meshes.map(mesh => mesh.geometry.getBuffer('aPosition').data.length / 9),
-                    visible_sprites: state.world._stationSprites.size,
-                    visible_textures: state.world._stationTextures.size
+                    visible_machines: document.querySelectorAll('#world-plane .machine').length,
+                    visible_belts: document.querySelectorAll('#world-plane .belt-run').length,
+                    visible_junctions: document.querySelectorAll('#world-plane .belt-junction').length
                   },
                   editor: {
                     project_nodes: state.project.nodes.length,

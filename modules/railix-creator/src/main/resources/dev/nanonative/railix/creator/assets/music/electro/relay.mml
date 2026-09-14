@@ -1,0 +1,8 @@
+name: Relay Current
+tempo: 122
+triangle .20 .008 .16 | o4 a@1 c@3 e@4 r@8 a@1 c@3 e@4 r@8 d@1.5 b@.5 g@6 r@8 d@1.5 b@.5 g@6 r@8 c@2 a@2 g@4 r@8 c@2 a@2 g@4 r@8
+triangle .23 .004 .09 | o2 a@1.5 a@.5 r@2 a@4 a@1.5 a@.5 r@2 a@4 a@1.5 a@.5 r@2 a@4 a@1.5 a@.5 r@2 a@4 g@1.5 g@.5 r@2 g@4 g@1.5 g@.5 r@2 g@4 g@1.5 g@.5 r@2 g@4 g@1.5 g@.5 r@2 g@4 f@1.5 f@.5 r@2 f@4 f@1.5 f@.5 r@2 f@4 f@1.5 f@.5 r@2 f@4 f@1.5 f@.5 r@2 f@4
+sine .06 .06 .24 | o3 [ace]@8 [ace]@8 [ace]@8 [ace]@8 [gbd]@8 [gbd]@8 [gbd]@8 [gbd]@8 [fac]@8 [fac]@8 [fac]@8 [fac]@8
+kick .45 .002 .16 | o2 /: c@2 c@2 c@2 c@2 :/12
+snare .18 .001 .09 | r@2 /: c@4 :/16 /: c@4 :/7 r@2
+hat .08 .001 .035 | /: c@1 c@1 c@1 c@1 c@1 c@1 c@1 c@1 :/12

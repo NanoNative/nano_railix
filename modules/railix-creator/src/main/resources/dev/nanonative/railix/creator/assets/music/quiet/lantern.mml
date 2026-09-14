@@ -1,0 +1,8 @@
+name: Lantern Shift
+tempo: 76
+triangle .16 .008 .16 | o4 e@3 g@1 c@4 r@8 e@3 g@1 c@4 r@8 a@2 e@2 c@4 r@8 a@1 g@3 f@4 r@8
+triangle .23 .004 .09 | o2 c@1.5 c@.5 r@2 c@4 c@1.5 c@.5 r@2 c@4 c@1.5 c@.5 r@2 c@4 a@1.5 a@.5 r@2 a@4 a@1.5 a@.5 r@2 a@4 a@1.5 a@.5 r@2 a@4 f@1.5 f@.5 r@2 f@4 f@1.5 f@.5 r@2 f@4
+sine .06 .06 .24 | o3 [ceg]@8 [ceg]@8 [ceg]@8 [ace]@8 [ace]@8 [ace]@8 [fac]@8 [fac]@8
+kick .16 .002 .16 | o2 /: c@4 c@4 :/8
+snare .08 .001 .09 | r@2 /: c@4 :/15 r@2
+hat .045 .001 .035 | /: c@4 c@4 :/8

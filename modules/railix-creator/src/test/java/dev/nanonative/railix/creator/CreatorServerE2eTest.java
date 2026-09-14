@@ -1,6 +1,7 @@
 package dev.nanonative.railix.creator;
 
 import dev.nanonative.railix.core.value.RailixJson;
+import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixValue;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -19,6 +20,7 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -27,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
@@ -901,6 +904,817 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
 
 @Execution(ExecutionMode.SAME_THREAD)
 final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
+
+    @Test
+    void mmlOverridesLegacyScoresRegardlessOfDirectoryListingOrder() throws Exception {
+        final Path home = directory.resolve("sound-home");
+        final Path sounds = Files.createDirectories(home.resolve("sounds"));
+        for (int index = 0; index < 8; index++) {
+            Files.writeString(sounds.resolve("custom-" + index + ".json"),
+                    "name: Legacy " + index + "\ntempo: 120\nsine .2 .01 .1 | c4");
+            Files.writeString(sounds.resolve("custom-" + index + ".mml"),
+                    "name: Current " + index + "\ntempo: 120\nsine .2 .01 .1 | c4");
+        }
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final var listing = request(creator.baseUri(), "GET", "/api/sounds", "");
+            assertThat(listing.statusCode()).isEqualTo(200);
+            for (int index = 0; index < 8; index++) {
+                assertThat(listing.body()).contains("Current " + index).doesNotContain("Legacy " + index);
+            }
+        }
+    }
+
+    @Test
+    void soundEditsAcrossCreatorsAndExternalFilesRejectStaleContent() throws Exception {
+        final Path home = directory.resolve("shared-sound-home");
+        final String score = "name: First\ntempo: 120\nsine .2 .01 .1 | c4";
+        try (CreatorServer first = start(directory.resolve("first/project.json"), home);
+             CreatorServer second = start(directory.resolve("second/project.json"), home);
+             var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            final var revision = object(request(first.baseUri(), "GET", "/api/sounds", "").body()).values().get("revision");
+            assertThat(object(request(second.baseUri(), "GET", "/api/sounds", "").body()).values().get("revision"))
+                    .isEqualTo(revision);
+            final String body = RailixJson.write(RailixValue.object(java.util.Map.of(
+                    "action", RailixValue.string("save"), "id", RailixValue.string("sounds/shared.mml"),
+                    "revision", revision, "content", RailixValue.string(score))));
+            final var gate = new CountDownLatch(1);
+            final var left = executor.submit(() -> {
+                gate.await();
+                return request(first.baseUri(), "POST", "/api/sounds", body);
+            });
+            final var right = executor.submit(() -> {
+                gate.await();
+                return request(second.baseUri(), "POST", "/api/sounds", body.replace("First", "Second"));
+            });
+            gate.countDown();
+            final var a = left.get(10, TimeUnit.SECONDS);
+            final var b = right.get(10, TimeUnit.SECONDS);
+            assertThat(List.of(a.statusCode(), b.statusCode())).containsExactlyInAnyOrder(200, 409);
+            final String winner = a.statusCode() == 200 ? score : score.replace("First", "Second");
+            final Path file = home.resolve("sounds/shared.mml");
+            assertThat(Files.readString(file)).isEqualTo(winner);
+            final var current = object(request(second.baseUri(), "GET", "/api/sounds", "").body()).values().get("revision");
+            final String stale = body.replace("\"revision\":" + RailixJson.write(revision),
+                    "\"revision\":" + RailixJson.write(current));
+            final String external = score.replace("First", "External");
+            Files.writeString(file, external);
+            assertThat(request(first.baseUri(), "POST", "/api/sounds", stale).statusCode()).isEqualTo(409);
+            assertThat(Files.readString(file)).isEqualTo(external);
+        }
+    }
+
+    @Test
+    void concurrentSettingsWritesDoNotLoseAnAcceptedChange() throws Exception {
+        final Path home = directory.resolve("shared-home");
+        try (CreatorServer first = start(directory.resolve("first/project.json"), home);
+             CreatorServer second = start(directory.resolve("second/project.json"), home);
+             var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            final var snapshot = object(request(first.baseUri(), "GET", "/api/settings", "").body());
+            final String source = RailixJson.write(snapshot.values().get("values"));
+            final String prefix = "{\"revision\":\"" + string(snapshot, "revision") + "\",\"values\":";
+            final var gate = new java.util.concurrent.CountDownLatch(1);
+            final var left = executor.submit(() -> {
+                gate.await();
+                return request(first.baseUri(), "POST", "/api/settings", prefix + source.replace("\"theme\":\"\"", "\"theme\":\"first.css\"") + "}");
+            });
+            final var right = executor.submit(() -> {
+                gate.await();
+                return request(second.baseUri(), "POST", "/api/settings", prefix + source.replace("\"theme\":\"\"", "\"theme\":\"second.css\"") + "}");
+            });
+            gate.countDown();
+            final var a = left.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            final var b = right.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(List.of(a.statusCode(), b.statusCode())).containsExactlyInAnyOrder(200, 409);
+            final var winner = object(a.statusCode() == 200 ? a.body() : b.body());
+            assertThat(object(request(second.baseUri(), "GET", "/api/settings", "").body()).values().get("values"))
+                    .isEqualTo(winner.values().get("values"));
+        }
+    }
+    @Test
+    void creatorWideCatalogsAndSettingsPersistWithoutChangingTheApplicationOrMetadata() throws Exception {
+        final Path home = directory.resolve("home");
+        final Path project = directory.resolve("project.json");
+        final Path metadata = directory.resolve("railix.creator.json");
+        Files.createDirectories(home.resolve("themes"));
+        Files.createDirectories(home.resolve("sounds/music"));
+        Files.writeString(home.resolve("themes/local.css"), "body { color: #123; }");
+        Files.writeString(home.resolve("sounds/idle.json"), """
+                {"version":1,"name":"Local idle","tempo":120,"tracks":[{"waveform":"sine","volume":0.3,"attack":0.01,"release":0.1,"notes":[{"note":60,"duration":0.5}]}]}
+                """);
+        Files.writeString(home.resolve("sounds/music/custom.json"), """
+                {"version":1,"name":"Custom music","tempo":120,"tracks":[{"waveform":"sine","volume":0.3,"attack":0.01,"release":0.1,"notes":[{"note":60,"duration":0.5}]}]}
+                """);
+
+        final String revision;
+        final long pid;
+        try (CreatorServer creator = start(project, home)) {
+            pid = number(application(creator.baseUri()), "pid");
+            final String originalMetadata = Files.readString(metadata);
+            final RailixValue.ObjectValue themes = object(request(creator.baseUri(), "GET", "/api/themes", "").body());
+            final RailixValue.ObjectValue sounds = object(request(creator.baseUri(), "GET", "/api/sounds", "").body());
+            final RailixValue.ObjectValue settings = object(request(creator.baseUri(), "GET", "/api/settings", "").body());
+            revision = string(settings, "revision");
+
+            assertThat(RailixJson.write(themes.values().get("themes"))).contains(
+                    "\"id\":\"\"", "\"name\":\"Railix Foundry\"", "\"builtin\":true", "\"url\":\"/api/themes/files/foundry/theme.css\"",
+                    "\"id\":\"local.css\"", "\"builtin\":false", "\"url\":\"/api/themes/files/local.css\""
+            );
+            assertThat(RailixJson.write(sounds.values().get("scores"))).contains(
+                    "\"id\":\"sounds/idle.mml\"", "\"key\":\"builtin:sounds/idle.mml\"", "\"key\":\"local:sounds/idle.mml\"",
+                    "\"key\":\"builtin:music/orbital.mml\"", "\"key\":\"local:music/custom.mml\""
+            );
+            assertThat(RailixJson.write(sounds.values().get("events"))).contains(
+                    "\"id\":\"idle\"", "\"default\":\"builtin:sounds/idle.mml\"");
+
+            final String values = """
+                    {"theme":"missing.css","reduced_motion":true,"effects":false,"effects_volume":0.5,"music_volume":0.4,"music":"track:local:music/missing.json","sounds":{"idle":"local:idle.json"}}
+                    """;
+            final HttpResponse<String> saved = request(creator.baseUri(), "POST", "/api/settings",
+                    "{\"revision\":\"" + revision + "\",\"values\":" + values + "}");
+
+            assertThat(saved.statusCode()).isEqualTo(200);
+            assertThat(Files.readString(home.resolve("creator.settings.json"))).contains("missing.css", "local:sounds/idle.mml");
+            assertThat(Files.readString(metadata)).isEqualTo(originalMetadata);
+            assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+            assertThat(request(creator.baseUri(), "POST", "/api/settings",
+                    "{\"revision\":\"" + revision + "\",\"values\":" + values + "}").statusCode()).isEqualTo(409);
+        }
+
+        try (CreatorServer reopened = start(project, home)) {
+            final RailixValue.ObjectValue values = (RailixValue.ObjectValue) object(
+                    request(reopened.baseUri(), "GET", "/api/settings", "").body()
+            ).values().get("values");
+            assertThat(string(values, "theme")).isEqualTo("missing.css");
+            assertThat(string(values, "music")).isEqualTo("track:local:music/missing.mml");
+        }
+    }
+
+    @Test
+    void settingsRejectInvalidOrUnauthenticatedRequestsAndSymlinkedPersistence() throws Exception {
+        final Path home = directory.resolve("home");
+        Files.createDirectories(home);
+        final String defaults = "{\"theme\":\"\",\"reduced_motion\":false,\"effects\":true,\"effects_volume\":0.35,\"music_volume\":0.25,\"music\":\"\",\"sounds\":{}}";
+        try (CreatorServer creator = start(directory.resolve("project.json"), home);
+             HttpClient client = HttpClient.newHttpClient()) {
+            final RailixValue.ObjectValue settings = object(request(creator.baseUri(), "GET", "/api/settings", "").body());
+            final long pid = number(application(creator.baseUri()), "pid");
+            final String request = "{\"revision\":\"" + string(settings, "revision") + "\",\"values\":" + defaults + "}";
+            final HttpResponse<String> unauthenticated = client.send(HttpRequest.newBuilder(creator.baseUri().resolve("/api/settings"))
+                    .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(request))
+                    .build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            final HttpResponse<String> invalid = request(creator.baseUri(), "POST", "/api/settings",
+                    "{\"revision\":\"" + string(settings, "revision") + "\",\"values\":{}}");
+
+            assertThat(unauthenticated.statusCode()).isEqualTo(401);
+            assertThat(invalid.statusCode()).isEqualTo(400);
+            assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+        }
+        Files.writeString(home.resolve("creator.settings.json"), "{");
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final RailixValue.ObjectValue settings = object(request(creator.baseUri(), "GET", "/api/settings", "").body());
+            assertThat(RailixJson.write(settings.values().get("diagnostics"))).contains("invalid-settings");
+            assertThat(string((RailixValue.ObjectValue) settings.values().get("values"), "theme")).isEmpty();
+        }
+        Files.delete(home.resolve("creator.settings.json"));
+        Files.createSymbolicLink(home.resolve("creator.settings.json"), directory.resolve("outside.json"));
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final RailixValue.ObjectValue settings = object(request(creator.baseUri(), "GET", "/api/settings", "").body());
+            assertThat(request(creator.baseUri(), "POST", "/api/settings", "{\"revision\":\""
+                    + string(settings, "revision") + "\",\"values\":" + defaults + "}").statusCode()).isEqualTo(400);
+        }
+    }
+
+    @Test
+    void soundsListBundledScoresAndIgnoreBinaryOrInvalidEntries() throws Exception {
+        final Path home = directory.resolve("home");
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            Files.writeString(home.resolve("sounds/legacy.wav"), "not a score");
+            Files.writeString(home.resolve("sounds/broken.json"), "{");
+
+            final var response = request(creator.baseUri(), "GET", "/api/sounds", "");
+
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains("Orbital Assembly", "Relay Garden", "Foundry Signal", "\"version\":2", "sounds/broken.mml")
+                    .doesNotContain("legacy.wav");
+        }
+    }
+
+    @Test
+    void soundsUseSeparateRootsAndNormalizeLegacyScoresWithoutWritingThem() throws Exception {
+        final Path home = directory.resolve("home");
+        final String legacy = "name: Legacy\ntempo: 120\nsine .3 .01 .1 | o4 c4";
+        Files.createDirectories(home.resolve("sounds/music"));
+        Files.writeString(home.resolve("sounds/legacy.json"), legacy);
+        Files.writeString(home.resolve("sounds/music/legacy.json"), legacy.replace("Legacy", "Legacy music"));
+
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final HttpResponse<String> listing = request(creator.baseUri(), "GET", "/api/sounds", "");
+            final HttpResponse<String> installed = soundMutation(creator.baseUri(), "{\"action\":\"install-defaults\"}");
+
+            assertThat(listing.body()).contains("\"id\":\"sounds/legacy.mml\"", "\"id\":\"music/legacy.mml\"");
+            assertThat(installed.statusCode()).isEqualTo(200);
+            assertThat(home.resolve("sounds/legacy.json")).exists();
+            assertThat(home.resolve("sounds/music/legacy.json")).exists();
+            assertThat(home.resolve("sounds/idle.mml")).exists();
+            assertThat(home.resolve("music/orbital.mml")).exists();
+        }
+    }
+
+    @Test
+    void soundsRequireAuthenticatedValidatedCrudAndDoNotOverwriteDefaults() throws Exception {
+        final Path home = directory.resolve("home");
+        final String score = """
+                {"version":1,"name":"Shift","tempo":120,"tracks":[{"waveform":"sine","volume":0.3,"attack":0.01,"release":0.1,"notes":[{"note":60,"duration":0.5}]}]}
+        """;
+        try (HttpClient client = HttpClient.newHttpClient(); CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final var grouped = soundMutation(creator.baseUri(), "{\"action\":\"save\",\"id\":\"music/foundry/shift.mml\",\"score\":" + score + "}");
+            final var unauthenticated = client.send(HttpRequest.newBuilder(creator.baseUri().resolve("/api/sounds"))
+                    .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString("{\"action\":\"install-defaults\"}"))
+                    .build(), HttpResponse.BodyHandlers.ofString());
+            final var saved = soundMutation(creator.baseUri(), "{\"action\":\"save\",\"id\":\"music/foundry/shift.mml\",\"score\":" + score + "}");
+            final var invalid = soundMutation(creator.baseUri(), "{\"action\":\"save\",\"id\":\"sounds/bad.mml\",\"score\":{}}");
+
+            assertThat(unauthenticated.statusCode()).isEqualTo(401);
+            assertThat(grouped.statusCode()).isEqualTo(200);
+            assertThat(saved.statusCode()).isEqualTo(200);
+            assertThat(Files.readString(home.resolve("music/foundry/shift.mml"))).contains("Shift");
+            assertThat(invalid.statusCode()).isEqualTo(400);
+            assertThat(Files.exists(home.resolve("sounds/bad.mml"))).isFalse();
+        }
+    }
+
+    @Test
+    void mmlToneParametersRoundTripAndRejectInvalidOrDuplicateControls() throws Exception {
+        final String source = "name: Pluck\ntempo: 108\nsawtooth .2 .004 .12 decay=.18 sustain=.2 cutoff=1800 | o4 a4 e4";
+        try (CreatorServer creator = start(directory.resolve("project.json"))) {
+            final String body = RailixJson.write(RailixValue.object(java.util.Map.of("action", RailixValue.string("preview"),
+                    "content", RailixValue.string(source))));
+            final var accepted = request(creator.baseUri(), "POST", "/api/sounds", body);
+            assertThat(accepted.statusCode()).as(accepted.body()).isEqualTo(200);
+            assertThat(accepted.body()).contains("\"decay\":0.18", "\"sustain\":0.2", "\"cutoff\":1800");
+            for (final String invalid : List.of("decay=-1", "sustain=2", "cutoff=NaN", "cutoff=Infinity",
+                    "cutoff=0", "cutoff=16001", "cutoff=800 cutoff=1200", "unknown=1")) {
+                final String invalidBody = body.replace("decay=.18 sustain=.2 cutoff=1800", invalid);
+                assertThat(request(creator.baseUri(), "POST", "/api/sounds", invalidBody).statusCode()).as(invalid).isEqualTo(400);
+            }
+        }
+    }
+
+    @Test
+    void soundsAcceptBoundedMmlAndRejectCopyCollisions() throws Exception {
+        final Path home = directory.resolve("home");
+        final String mml = "name: Bell\ntempo: 100\nsine .2 .01 .1 | o4 l8 /: c e g e :/4";
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final String request = "{\"action\":\"copy\",\"id\":\"music/bell.mml\",\"content\":\""
+                    + mml.replace("\\", "\\\\").replace("\n", "\\n") + "\"}";
+            assertThat(soundMutation(creator.baseUri(), request).statusCode()).isEqualTo(200);
+            assertThat(Files.readString(home.resolve("music/bell.mml"))).isEqualTo(mml);
+            assertThat(soundMutation(creator.baseUri(), request).statusCode()).isEqualTo(400);
+            final var emptyRepeat = request(creator.baseUri(), "POST", "/api/sounds", """
+                    {"action":"preview","content":"name: Empty\\ntempo: 100\\nsine .2 .01 .1 | /: :/16"}
+                    """);
+            final var lateHeader = request(creator.baseUri(), "POST", "/api/sounds", """
+                    {"action":"preview","content":"name: Late\\nsine .2 .01 .1 | t120 c\\ntempo: 120"}
+                    """);
+            assertThat(emptyRepeat).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(400, "{\"message\":\"MML repeat bodies require at least one note or rest.\",\"status\":\"invalid-sound\"}");
+            assertThat(lateHeader).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(400, "{\"message\":\"MML headers must appear before instrument lines.\",\"status\":\"invalid-sound\"}");
+        }
+    }
+
+    @Test
+    void soundMutationsRejectTraversalLinksAndMissingFilesAndInstallWithoutOverwriting() throws Exception {
+        final Path home = directory.resolve("home");
+        final String idle = """
+                {"version":1,"name":"Local idle","tempo":120,"tracks":[{"waveform":"sine","volume":0.3,"attack":0.01,"release":0.1,"notes":[{"note":60,"duration":0.5}]}]}
+                """;
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            Files.writeString(home.resolve("sounds/idle.json"), idle);
+            final Path outside = Files.createDirectories(directory.resolve("outside"));
+            Files.createSymbolicLink(home.resolve("music/foreign"), outside);
+
+            final var traversal = soundMutation(creator.baseUri(), "{\"action\":\"save\",\"id\":\"music/../escape.mml\",\"score\":" + idle + "}");
+            final var linked = soundMutation(creator.baseUri(), "{\"action\":\"save\",\"id\":\"music/foreign/escape.mml\",\"score\":" + idle + "}");
+            final var missing = soundMutation(creator.baseUri(), "{\"action\":\"delete\",\"id\":\"sounds/missing.mml\"}");
+            final var missingGroup = soundMutation(creator.baseUri(), "{\"action\":\"delete\",\"id\":\"music/absent/missing.mml\"}");
+            assertThat(missingGroup.statusCode()).isEqualTo(404);
+            assertThat(Files.exists(home.resolve("music/absent"))).isFalse();
+            final var defaults = soundMutation(creator.baseUri(), "{\"action\":\"install-defaults\"}");
+
+            assertThat(traversal.statusCode()).isEqualTo(400);
+            assertThat(linked.statusCode()).isEqualTo(400);
+            assertThat(missing.statusCode()).isEqualTo(404);
+            assertThat(defaults.statusCode()).isEqualTo(200);
+            assertThat(Files.readString(home.resolve("sounds/idle.json"))).isEqualTo(idle);
+            assertThat(Files.exists(home.resolve("music/orbital.mml"))).isTrue();
+            assertThat(Files.exists(home.resolve("music/quiet/lantern.mml"))).isTrue();
+        }
+    }
+
+    @Test
+    void soundMutationsRejectStaleRevisionsWithoutWriting() throws Exception {
+        final Path home = directory.resolve("home");
+        final String score = """
+                {"version":1,"name":"Stale","tempo":120,"tracks":[{"waveform":"sine","volume":0.3,"attack":0.01,"release":0.1,"notes":[{"note":60,"duration":0.5}]}]}
+                """;
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final var revision = object(request(creator.baseUri(), "GET", "/api/sounds", "").body()).values().get("revision");
+            assertThat(soundMutation(creator.baseUri(), "{\"action\":\"install-defaults\"}").statusCode()).isEqualTo(200);
+
+            final var stale = request(creator.baseUri(), "POST", "/api/sounds", "{\"action\":\"save\",\"revision\":"
+                    + RailixJson.write(revision) + ",\"id\":\"sounds/stale.mml\",\"score\":" + score + "}");
+
+            assertThat(stale.statusCode()).isEqualTo(409);
+            assertThat(Files.exists(home.resolve("sounds/stale.mml"))).isFalse();
+        }
+    }
+
+    @Test
+    void soundMutationsRejectEmptyOrNearZeroDurationTracks() throws Exception {
+        final Path home = directory.resolve("home");
+        final String empty = """
+                {"version":1,"name":"Empty","tempo":120,"tracks":[{"waveform":"sine","volume":0.3,"attack":0.01,"release":0.1,"notes":[]}]}
+                """;
+        final String tiny = """
+                {"version":1,"name":"Tiny","tempo":120,"tracks":[{"waveform":"sine","volume":0.3,"attack":0.01,"release":0.1,"notes":[{"note":60,"duration":0.01}]}]}
+                """;
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final var emptyResponse = soundMutation(creator.baseUri(), "{\"action\":\"save\",\"id\":\"sounds/empty.mml\",\"score\":" + empty + "}");
+            final var tinyResponse = soundMutation(creator.baseUri(), "{\"action\":\"save\",\"id\":\"sounds/tiny.mml\",\"score\":" + tiny + "}");
+
+            assertThat(emptyResponse.statusCode()).isEqualTo(400);
+            assertThat(tinyResponse.statusCode()).isEqualTo(400);
+            assertThat(Files.exists(home.resolve("sounds/empty.mml"))).isFalse();
+            assertThat(Files.exists(home.resolve("sounds/tiny.mml"))).isFalse();
+        }
+    }
+
+
+    @Test
+    void themesNewProjectRecordsCreationTimeAndRetainsItOnReload() throws Exception {
+        final Path project = directory.resolve("project.json");
+        final long before = System.currentTimeMillis();
+        final long created;
+        try (CreatorServer creator = start(project)) {
+            final HttpResponse<String> response = request(creator.baseUri(), "GET", "/api/project", "");
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(((RailixValue.ObjectValue) object(response.body()).values().get("creator")).values())
+                    .containsKey("created_at");
+            created = number((RailixValue.ObjectValue) object(response.body()).values().get("creator"), "created_at");
+            assertThat(created).isBetween(before, System.currentTimeMillis());
+            assertThat(number(object(Files.readString(directory.resolve("railix.creator.json"))), "created_at"))
+                    .isEqualTo(created);
+        }
+        try (CreatorServer creator = start(project)) {
+            final HttpResponse<String> response = request(creator.baseUri(), "GET", "/api/project", "");
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(number((RailixValue.ObjectValue) object(response.body()).values().get("creator"), "created_at"))
+                    .isEqualTo(created);
+            assertThat(number(object(Files.readString(directory.resolve("railix.creator.json"))), "created_at"))
+                    .isEqualTo(created);
+        }
+    }
+
+    @Test
+    void themesExistingProjectWithoutMetadataKeepsCreationTimeUnknown() throws Exception {
+        final Path project = directory.resolve("project.json");
+        Files.writeString(project, CreatorProjects.empty("existing-project"));
+        for (int opening = 0; opening < 2; opening++) {
+            try (CreatorServer creator = start(project)) {
+                final HttpResponse<String> response = request(creator.baseUri(), "GET", "/api/project", "");
+                assertThat(response.statusCode()).isEqualTo(200);
+                assertThat(((RailixValue.ObjectValue) object(response.body()).values().get("creator")).values())
+                        .doesNotContainKey("created_at");
+                assertThat(object(Files.readString(directory.resolve("railix.creator.json"))).values())
+                        .doesNotContainKey("created_at");
+            }
+        }
+    }
+
+    @Test
+    void themesHtmlPolicyRestrictsForeignResourcesAndPreservesLocalAssets() throws Exception {
+        final String policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                + "img-src 'self' data: blob:; font-src 'self' data:; media-src 'none'; connect-src 'self'; object-src 'none'; "
+                + "base-uri 'none'; form-action 'self'; frame-src 'none'";
+        try (CreatorServer creator = start(directory.resolve("project.json"))) {
+            for (final String path : List.of("/", "/index.html")) {
+                final HttpResponse<String> response = request(creator.baseUri(), "GET", path, "");
+                assertThat(response.statusCode()).as(path).isEqualTo(200);
+                assertThat(response.headers().firstValue("Content-Security-Policy")).contains(policy);
+            }
+            for (final String path : List.of("/app.css", "/themes/railix.css", "/themes/classic.css", "/app.js", "/world.js", "/audio.js", "/api/themes")) {
+                final HttpResponse<String> response = request(creator.baseUri(), "GET", path, "");
+                assertThat(response.statusCode()).as(path).isEqualTo(200);
+                assertThat(response.headers().firstValue("Content-Security-Policy")).isEmpty();
+            }
+        }
+    }
+
+    @Test
+    void themesDiscoverRecursiveRelativeIdsAndRediscoverAddedFilesWithoutRebuilding() throws Exception {
+        final Path home = directory.resolve("railix-home");
+        final Path project = directory.resolve("project.json");
+        try (CreatorServer creator = start(project, home)) {
+            final Path themes = home.resolve("themes");
+            assertThat(themes).isDirectory();
+            final long pid = number(application(creator.baseUri()), "pid");
+            final String persisted = Files.readString(project);
+            final String metadata = Files.readString(directory.resolve("railix.creator.json"));
+            final HttpResponse<String> empty = request(creator.baseUri(), "GET", "/api/themes", "");
+            assertThat(empty.statusCode()).isEqualTo(200);
+            assertThat(string(object(empty.body()), "directory")).isEqualTo(themes.toRealPath().toString());
+            assertThat(RailixJson.write(object(empty.body()).values().get("themes"))).contains(
+                    "\"id\":\"\"", "\"url\":\"/api/themes/files/foundry/theme.css\"", "\"defaultVariant\":\"canvas\"",
+                    "\"id\":\"classic/theme.css\"", "\"url\":\"/api/themes/files/classic/theme.css\""
+            );
+
+            Files.createDirectories(themes.resolve("nested"));
+            Files.createDirectories(themes.resolve("directory.css"));
+            Files.writeString(themes.resolve("nested/dusk.css"), "body { color: blue; }");
+            Files.writeString(themes.resolve("dusk.css"), "body { color: red; }");
+            Files.writeString(themes.resolve("ignored.txt"), "not a stylesheet");
+            final HttpResponse<String> discovered = request(creator.baseUri(), "GET", "/api/themes", "");
+            assertThat(discovered.statusCode()).isEqualTo(200);
+            assertThat(RailixJson.write(object(discovered.body()).values().get("themes"))).contains(
+                    "\"id\":\"\"", "\"id\":\"dusk.css\"", "\"id\":\"nested/dusk.css\"",
+                    "\"url\":\"/api/themes/files/nested/dusk.css\""
+            );
+            assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+            assertThat(Files.readString(project)).isEqualTo(persisted);
+            assertThat(Files.readString(directory.resolve("railix.creator.json"))).isEqualTo(metadata);
+        }
+    }
+
+    @Test
+    void themesDiscoverDeepSubfoldersWithoutRetainingAncestorHandles() throws Exception {
+        final Path home = directory.resolve("railix-home");
+        final Path themes = Files.createDirectories(home.resolve("themes"));
+        final int depth = 192;
+        Path deepest = themes;
+        try {
+            for (int level = 0; level < depth; level++) {
+                deepest = Files.createDirectory(deepest.resolve("d"));
+            }
+            Files.writeString(deepest.resolve("deep.css"), "body { color: teal; }");
+            final String id = "d/".repeat(depth) + "deep.css";
+            try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+                final long pid = number(application(creator.baseUri()), "pid");
+                for (int read = 0; read < 2; read++) {
+                    final HttpResponse<String> listing = request(creator.baseUri(), "GET", "/api/themes", "");
+                    assertThat(listing.statusCode()).as(listing.body()).isEqualTo(200);
+                    assertThat(RailixJson.write(object(listing.body()).values().get("themes"))).contains(
+                            "\"id\":\"\"", "\"id\":\"" + id + "\"");
+                    final HttpResponse<String> stylesheet = request(creator.baseUri(), "GET",
+                            "/api/themes?file=" + URLEncoder.encode(id, StandardCharsets.UTF_8), "");
+                    assertThat(stylesheet.statusCode()).as(stylesheet.body()).isEqualTo(200);
+                    assertThat(stylesheet.body()).isEqualTo("body { color: teal; }");
+                }
+                assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+            }
+        } finally {
+            Files.deleteIfExists(deepest.resolve("deep.css"));
+            // Keep fixture cleanup within the same descriptor budget as the HTTP regression.
+            while (!deepest.equals(themes)) {
+                Files.delete(deepest);
+                deepest = deepest.getParent();
+            }
+        }
+    }
+
+    @Test
+    void themesDiscoveryExcludesNoncanonicalFileAndDirectoryNames() throws Exception {
+        final Path home = directory.resolve("railix-home");
+        final Path themes = Files.createDirectories(home.resolve("themes"));
+        Files.writeString(themes.resolve(".hidden.css"), "body {}");
+        Files.writeString(Files.createDirectory(themes.resolve(" ")).resolve("valid.css"), "body {}");
+        Files.writeString(Files.createDirectory(themes.resolve("a..b")).resolve("valid.css"), "body {}");
+        for (final String name : List.of("line\nbreak", "tab\tstop", "delete" + (char) 127,
+                "control" + (char) 133, "back\\slash")) {
+            Files.writeString(themes.resolve(name + ".css"), "invalid-name-content");
+            Files.writeString(Files.createDirectory(themes.resolve(name)).resolve("nested.css"), "invalid-name-content");
+        }
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final HttpResponse<String> listing = request(creator.baseUri(), "GET", "/api/themes", "");
+            assertThat(listing.statusCode()).as(listing.body()).isEqualTo(200);
+            assertThat(RailixJson.write(object(listing.body()).values().get("themes"))).contains(
+                    "\"id\":\"\"", "\"id\":\" /valid.css\"", "\"id\":\".hidden.css\"", "\"id\":\"a..b/valid.css\"");
+        }
+    }
+
+    @Test
+    void themesRejectNoncanonicalExistingFileAndParentNames() throws Exception {
+        final Path home = directory.resolve("railix-home");
+        final Path themes = Files.createDirectories(home.resolve("themes"));
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            for (final String name : List.of("line\nbreak", "tab\tstop", "delete" + (char) 127,
+                    "control" + (char) 133, "back\\slash")) {
+                Files.writeString(themes.resolve(name + ".css"), "invalid-name-content");
+                Files.writeString(Files.createDirectory(themes.resolve(name)).resolve("nested.css"), "invalid-name-content");
+                for (final String id : List.of(name + ".css", name + "/nested.css")) {
+                    final HttpResponse<String> response = request(creator.baseUri(), "GET",
+                            "/api/themes?file=" + URLEncoder.encode(id, StandardCharsets.UTF_8), "");
+                    assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+                    assertThat(response.body()).contains("invalid-theme", "canonical").doesNotContain("invalid-name-content");
+                }
+            }
+        }
+    }
+
+    @Test
+    void themesReadEncodedCssFreshWithoutRebuilding() throws Exception {
+        final Path home = directory.resolve("railix-home");
+        final Path themes = Files.createDirectories(home.resolve("themes/nested"));
+        final Path file = themes.resolve("night + day.css");
+        final String original = "body { --label: '\u00e9'; color: #234; }\n";
+        Files.writeString(file, original);
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final long pid = number(application(creator.baseUri()), "pid");
+            final String path = "/api/themes?file=" + URLEncoder.encode("nested/night + day.css", StandardCharsets.UTF_8);
+            final HttpResponse<String> first = request(creator.baseUri(), "GET", path, "");
+            assertThat(first.statusCode()).isEqualTo(200);
+            assertThat(first.headers().firstValue("Content-Type")).contains("text/css; charset=utf-8");
+            assertThat(first.headers().firstValue("Cache-Control")).contains("no-store");
+            assertThat(first.headers().firstValue("X-Content-Type-Options")).contains("nosniff");
+            assertThat(first.body()).isEqualTo(original);
+            Files.writeString(file, "body { color: #abc; }\n");
+            assertThat(request(creator.baseUri(), "GET", path, "").body()).isEqualTo("body { color: #abc; }\n");
+            Files.writeString(file, "");
+            final HttpResponse<String> empty = request(creator.baseUri(), "GET", path, "");
+            assertThat(empty.statusCode()).isEqualTo(200);
+            assertThat(empty.body()).isEmpty();
+            assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+        }
+    }
+
+    @Test
+    void themesRejectMissingFilesAndNoncanonicalPaths() throws Exception {
+        final Path home = directory.resolve("railix-home");
+        final Path themes = Files.createDirectories(home.resolve("themes"));
+        Files.writeString(themes.resolve("present.css"), "body {}");
+        Files.createDirectory(themes.resolve("folder.css"));
+        Files.writeString(home.resolve("outside.css"), "outside-content");
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            for (final String file : List.of("absent.css", "folder.css", "absent/child.css")) {
+                final HttpResponse<String> response = request(creator.baseUri(), "GET", "/api/themes?file=" + file, "");
+                assertThat(response.statusCode()).as(file).isEqualTo(404);
+                assertThat(response.body()).contains("theme-not-found");
+            }
+            for (final String file : List.of("", "../outside.css", "nested/../../outside.css", "./present.css",
+                    "nested/../present.css", "/outside.css", "nested//present.css", "present.css/", "present.txt",
+                    "nested\\present.css", "present.css" + (char) 0, "a/".repeat(2048) + "present.css")) {
+                final HttpResponse<String> response = request(creator.baseUri(), "GET",
+                        "/api/themes?file=" + URLEncoder.encode(file, StandardCharsets.UTF_8), "");
+                assertThat(response.statusCode()).as(file).isEqualTo(400);
+                assertThat(response.body()).contains("invalid-theme").doesNotContain("outside-content");
+            }
+            for (final String query : List.of("file=present.css&file=present.css", "unknown=present.css")) {
+                final HttpResponse<String> response = request(creator.baseUri(), "GET", "/api/themes?" + query, "");
+                assertThat(response.statusCode()).as(query).isEqualTo(400);
+                assertThat(response.body()).contains("invalid-theme");
+            }
+        }
+    }
+
+    @Test
+    void themesSkipSymlinksAndRefuseReadsThroughLinkedFilesOrParents() throws Exception {
+        final Path home = directory.resolve("railix-home");
+        final Path themes = Files.createDirectories(home.resolve("themes"));
+        final Path outside = Files.createDirectory(directory.resolve("outside"));
+        Files.writeString(outside.resolve("secret.css"), "outside-content");
+        Files.writeString(themes.resolve("safe.css"), "body {}");
+        Files.createSymbolicLink(themes.resolve("linked.css"), outside.resolve("secret.css"));
+        Files.createSymbolicLink(themes.resolve("nested"), outside);
+        Files.createSymbolicLink(themes.resolve("internal.css"), themes.resolve("safe.css"));
+        Files.createSymbolicLink(themes.resolve("dangling.css"), outside.resolve("absent.css"));
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final HttpResponse<String> listing = request(creator.baseUri(), "GET", "/api/themes", "");
+            assertThat(listing.statusCode()).isEqualTo(200);
+            assertThat(RailixJson.write(object(listing.body()).values().get("themes")))
+                    .contains("\"id\":\"\"", "\"id\":\"safe.css\"");
+            for (final String file : List.of("linked.css", "nested/secret.css", "internal.css", "dangling.css")) {
+                final HttpResponse<String> response = request(creator.baseUri(), "GET", "/api/themes?file=" + file, "");
+                assertThat(response.statusCode()).as(file).isEqualTo(400);
+                assertThat(response.body()).contains("invalid-theme", "symbolic").doesNotContain("outside-content");
+            }
+        }
+    }
+
+    @Test
+    void themesRefuseDirectoryReplacedWithSymlink() throws Exception {
+        final Path home = directory.resolve("railix-home");
+        final Path themes = Files.createDirectories(home.resolve("themes"));
+        final Path outside = Files.createDirectory(directory.resolve("outside"));
+        Files.writeString(outside.resolve("secret.css"), "outside-content");
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            Files.move(themes, home.resolve("original-themes"));
+            Files.createSymbolicLink(themes, outside);
+            for (final String path : List.of("/api/themes", "/api/themes?file=secret.css")) {
+                final HttpResponse<String> response = request(creator.baseUri(), "GET", path, "");
+                assertThat(response.statusCode()).as(path).isEqualTo(400);
+                assertThat(response.body()).contains("invalid-theme", "symbolic").doesNotContain("outside-content");
+            }
+        }
+    }
+
+    @Test
+    void themesRejectOversizedStylesheetWithExplicitDiagnostic() throws Exception {
+        final Path home = directory.resolve("railix-home");
+        final Path themes = Files.createDirectories(home.resolve("themes"));
+        Files.write(themes.resolve("large.css"), new byte[RailixData.DEFAULT_MAX_SOURCE_BYTES + 1]);
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final HttpResponse<String> response = request(creator.baseUri(), "GET", "/api/themes?file=large.css", "");
+            assertThat(response.statusCode()).isEqualTo(400);
+            assertThat(response.body()).contains("theme-too-large", "Stylesheet", "byte");
+        }
+    }
+
+    @Test
+    void themesRequireAuthenticationAndRejectUnsupportedMutations() throws Exception {
+        final Path home = directory.resolve("railix-home");
+        final Path themes = Files.createDirectories(home.resolve("themes"));
+        final Path file = themes.resolve("safe.css");
+        Files.writeString(file, "body {}");
+        try (CreatorServer creator = start(directory.resolve("project.json"), home);
+             HttpClient client = HttpClient.newHttpClient()) {
+            final long pid = number(application(creator.baseUri()), "pid");
+            for (final String path : List.of("/api/themes", "/api/themes?file=safe.css")) {
+                final HttpResponse<String> unauthenticated = client.send(
+                        HttpRequest.newBuilder(creator.baseUri().resolve(path)).GET().build(),
+                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                assertThat(unauthenticated.statusCode()).as(path).isEqualTo(401);
+                assertThat(unauthenticated.body()).contains("unauthorized");
+                assertThat(request(creator.baseUri(), "POST", path, "body { color: red; }").statusCode()).isEqualTo(400);
+                for (final String method : List.of("PUT", "PATCH", "DELETE")) {
+                    final HttpResponse<String> rejected = request(creator.baseUri(), method, path, "body { color: red; }");
+                    assertThat(rejected.statusCode()).as(method + " " + path).isEqualTo(405);
+                    assertThat(rejected.body()).contains("method-not-allowed");
+                }
+            }
+            assertThat(Files.readString(file)).isEqualTo("body {}");
+            assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+        }
+    }
+
+    @Test
+    void themesExposeEmbeddedVariantsAndServeOnlyAllowlistedAssets() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("project.json"))) {
+            final HttpResponse<String> listing = request(creator.baseUri(), "GET", "/api/themes", "");
+            final HttpResponse<String> variant = request(creator.baseUri(), "GET",
+                    "/api/themes/files/foundry/variants/hq/style.css", "");
+            final HttpResponse<String> missing = request(creator.baseUri(), "GET",
+                    "/api/themes/files/not-embedded.css", "");
+
+            assertThat(listing.statusCode()).isEqualTo(200);
+            assertThat(listing.body()).contains("\"id\":\"\"", "\"name\":\"Renderer Canvas\"", "\"name\":\"Renderer CSS\"", "\"defaultVariant\":\"canvas\"")
+                    .doesNotContain("\"id\":\"standard\"", "\"id\":\"canvas-hq\"");
+            assertThat(variant.statusCode()).isEqualTo(200);
+            assertThat(variant.headers().firstValue("Content-Type")).contains("text/css; charset=utf-8");
+            assertThat(missing.statusCode()).isEqualTo(404);
+        }
+    }
+
+    @Test
+    void themesUseLocalDescriptorAssetsWithoutFollowingLinksAndDiagnoseMalformedDescriptors() throws Exception {
+        final Path home = directory.resolve("home");
+        final Path themes = Files.createDirectories(home.resolve("themes/studio"));
+        Files.writeString(themes.resolve("theme.css"), "body { color: black; }");
+        Files.writeString(themes.resolve("theme.json"), """
+                {"name":"Studio","variants":[{"id":"night","name":"Night","description":"After hours","stylesheet":"night.css"}],"files":["icons/logo.svg"]}
+                """);
+        Files.writeString(themes.resolve("night.css"), "body { color: navy; }");
+        Files.createDirectories(themes.resolve("icons"));
+        Files.writeString(themes.resolve("icons/logo.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+        Files.writeString(themes.resolve("icons/logo+accent.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+        Files.writeString(themes.resolve("broken.css"), "body {}");
+        Files.writeString(themes.resolve("broken.json"), "{");
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final HttpResponse<String> listing = request(creator.baseUri(), "GET", "/api/themes", "");
+            final HttpResponse<String> svg = request(creator.baseUri(), "GET",
+                    "/api/themes/files/studio%2Ficons%2Flogo.svg", "");
+
+            assertThat(listing.body()).contains("\"id\":\"studio/theme.css\"", "\"id\":\"night\"", "broken.json");
+            assertThat(listing.body()).doesNotContain("\"id\":\"studio/night.css\"");
+            assertThat(svg.statusCode()).isEqualTo(200);
+            assertThat(svg.headers().firstValue("Content-Type")).contains("image/svg+xml");
+            assertThat(svg.headers().firstValue("Content-Security-Policy").orElseThrow()).contains("default-src 'none'");
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/studio/icons/logo+accent.svg", "").statusCode()).isEqualTo(200);
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/studio%2F..%2Ftheme.css", "").statusCode()).isEqualTo(400);
+        }
+    }
+
+    @Test
+    void themesMergeLocalDescriptorsIntoEmbeddedThemesWithoutChangingTheirIds() throws Exception {
+        final Path home = directory.resolve("home");
+        final Path themes = Files.createDirectories(home.resolve("themes"));
+        Files.createDirectories(themes.resolve("foundry"));
+        Files.createDirectories(themes.resolve("classic"));
+        Files.writeString(themes.resolve("foundry/theme.css"), "body { color: foundry-local; }");
+        Files.writeString(themes.resolve("classic/theme.css"), "body { color: local; }");
+        Files.writeString(themes.resolve("classic/theme.json"), """
+                {"name":"Local Classic","defaultVariant":"line","variants":[{"id":"line","name":"Line art","stylesheet":"classic-line.css"}],"files":[]}
+                """);
+        Files.writeString(themes.resolve("classic/classic-line.css"), "body { outline: 1px solid; }");
+        Files.createDirectories(themes.resolve("studio"));
+        Files.writeString(themes.resolve("studio/night light.css"), "body { color: midnightblue; }");
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final HttpResponse<String> listing = request(creator.baseUri(), "GET", "/api/themes", "");
+
+            assertThat(listing.body()).contains("\"id\":\"classic/theme.css\"", "\"name\":\"Local Classic\"",
+                    "\"builtin\":false", "\"installable\":true", "\"defaultVariant\":\"line\"");
+            assertThat(listing.body()).contains("\"builtin\":false,\"defaultVariant\":\"canvas\",\"id\":\"\"", "\"stylesheet\":\"foundry/theme.css\"")
+                    .containsOnlyOnce("\"id\":\"\"");
+            assertThat(listing.body()).doesNotContain("\"id\":\"classic/classic-line.css\"");
+            assertThat(listing.body()).contains("\"url\":\"/api/themes/files/studio/night%20light.css\"");
+        }
+    }
+
+    @Test
+    void themesAssetEndpointRequiresAuthenticationAndRejectsLinkedOrOversizedFiles() throws Exception {
+        final Path home = directory.resolve("home");
+        final Path themes = Files.createDirectories(home.resolve("themes"));
+        final Path outside = directory.resolve("outside.css");
+        Files.writeString(outside, "outside-content");
+        Files.createSymbolicLink(themes.resolve("linked.css"), outside);
+        Files.write(themes.resolve("large.png"), new byte[RailixData.DEFAULT_MAX_SOURCE_BYTES + 1]);
+        try (CreatorServer creator = start(directory.resolve("project.json"), home);
+             HttpClient client = HttpClient.newHttpClient()) {
+            final HttpResponse<String> listing = request(creator.baseUri(), "GET", "/api/themes", "");
+            final String cookie = listing.headers().firstValue("Set-Cookie").orElseThrow().split(";", 2)[0];
+            final HttpResponse<String> unauthenticated = client.send(
+                    HttpRequest.newBuilder(creator.baseUri().resolve("/api/themes/files/foundry/theme.css")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            final HttpResponse<String> asset = client.send(
+                    HttpRequest.newBuilder(creator.baseUri().resolve("/api/themes/files/foundry/theme.css")).header("Cookie", cookie).GET().build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            final HttpResponse<String> wrongCookie = client.send(
+                    HttpRequest.newBuilder(creator.baseUri().resolve("/api/themes/files/foundry/theme.css")).header("Cookie", cookie + "x").GET().build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            final HttpResponse<String> crossSite = client.send(
+                    HttpRequest.newBuilder(creator.baseUri().resolve("/api/themes/files/foundry/theme.css"))
+                            .header("Cookie", cookie).header("Sec-Fetch-Site", "cross-site").GET().build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            final HttpResponse<String> project = client.send(
+                    HttpRequest.newBuilder(creator.baseUri().resolve("/api/project")).header("Cookie", cookie).GET().build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            final HttpResponse<String> mutation = client.send(
+                    HttpRequest.newBuilder(creator.baseUri().resolve("/api/themes")).header("Cookie", cookie)
+                            .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString("{\"action\":\"install\",\"id\":\"\"}"))
+                            .build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+
+            assertThat(unauthenticated.statusCode()).isEqualTo(401);
+            assertThat(listing.headers().firstValue("Set-Cookie").orElseThrow()).contains("HttpOnly", "SameSite=Strict", "Path=/api/themes/files/");
+            assertThat(asset.statusCode()).isEqualTo(200);
+            assertThat(wrongCookie.statusCode()).isEqualTo(401);
+            assertThat(crossSite.statusCode()).isEqualTo(403);
+            assertThat(project.statusCode()).isEqualTo(401);
+            assertThat(mutation.statusCode()).isEqualTo(401);
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/linked.css", "").statusCode()).isEqualTo(400);
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/large.png", "").statusCode()).isEqualTo(400);
+        }
+    }
+
+    @Test
+    void themesInstallEmbeddedCatalogWithoutReplacingLocalFilesAndNormalizeLegacySettings() throws Exception {
+        final Path home = directory.resolve("home");
+        final Path themes = Files.createDirectories(home.resolve("themes"));
+        Files.createDirectories(themes.resolve("foundry"));
+        Files.writeString(themes.resolve("foundry/theme.css"), "/* local */");
+        Files.writeString(home.resolve("creator.settings.json"), """
+                {"theme":"classic.css","reduced_motion":false,"effects":true,"effects_volume":0.35,"music_volume":0.25,"music":"","sounds":{}}
+                """);
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final RailixValue.ObjectValue settings = object(request(creator.baseUri(), "GET", "/api/settings", "").body());
+            final HttpResponse<String> installed = request(creator.baseUri(), "POST", "/api/themes",
+                    "{\"action\":\"install\",\"id\":\"\"}");
+            final HttpResponse<String> retried = request(creator.baseUri(), "POST", "/api/themes",
+                    "{\"action\":\"install\",\"id\":\"\"}");
+
+            assertThat(string((RailixValue.ObjectValue) settings.values().get("values"), "theme_variant")).isEmpty();
+            assertThat(string((RailixValue.ObjectValue) settings.values().get("values"), "theme")).isEqualTo("classic/theme.css");
+            assertThat(installed.statusCode()).isEqualTo(200);
+            assertThat(installed.body()).contains("\"status\":\"theme-installed\"", "\"skipped\"");
+            assertThat(retried.statusCode()).isEqualTo(200);
+            assertThat(retried.body()).contains("\"installed\":0");
+            assertThat(Files.readString(themes.resolve("foundry/theme.css"))).isEqualTo("/* local */");
+            assertThat(Files.readString(themes.resolve("foundry/theme.json"))).contains("Renderer CSS", "Renderer Canvas");
+            final String root="/dev/nanonative/railix/creator/assets/themes/foundry/";
+            try(var descriptor=CreatorServer.class.getResourceAsStream(root+"theme.json")) {
+                assertThat(Files.readAllBytes(themes.resolve("foundry/theme.json"))).isEqualTo(descriptor.readAllBytes());
+            }
+            final var descriptor=object(Files.readString(themes.resolve("foundry/theme.json")));
+            final List<String> files=new ArrayList<>();
+            ((RailixValue.ArrayValue)descriptor.values().get("files")).values().forEach(file->files.add(((RailixValue.StringValue)file).value()));
+            for(final var value:((RailixValue.ArrayValue)descriptor.values().get("variants")).values()) {
+                final var variant=(RailixValue.ObjectValue)value;
+                files.add(string(variant,"stylesheet"));
+                if(variant.values().containsKey("atlas"))files.add(string(variant,"atlas"));
+            }
+            for(final String file:files)try(var resource=CreatorServer.class.getResourceAsStream(root+file)) {
+                assertThat(Files.readAllBytes(themes.resolve("foundry/"+file))).as(file).isEqualTo(resource.readAllBytes());
+            }
+        }
+    }
 
     @Test
     void duplicateCustomIconStemIsReportedOnce() throws Exception {
@@ -2419,6 +3233,12 @@ abstract class CreatorServerE2eSupport {
 
     @TempDir
     Path directory;
+
+    static HttpResponse<String> soundMutation(final URI baseUri, final String body) throws IOException, InterruptedException {
+        final var values = new java.util.LinkedHashMap<>(object(body).values());
+        values.put("revision", object(request(baseUri, "GET", "/api/sounds", "").body()).values().get("revision"));
+        return request(baseUri, "POST", "/api/sounds", RailixJson.write(RailixValue.object(values)));
+    }
 
     static HttpResponse<String> request(
             final URI baseUri,

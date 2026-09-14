@@ -242,6 +242,50 @@ final class RailixPackageIT {
     }
 
     @Test
+    void packagedCreatorDiscoversAndReloadsUserAssetsWithoutRebuilding() throws Exception {
+        final Path home = Files.createDirectories(directory.resolve("home"));
+        final String binary = digest(Files.readAllBytes(CREATOR_JAR));
+        try (PackagedCreator creator = PackagedCreator.start(
+                EXECUTABLE, directory.resolve("project.json"), isolatedEnvironment(home))) {
+            final long pid = number(object(request(creator.uri(), "GET", "/api/application", "").body()), "pid");
+            assertThat(pid).isPositive();
+            final String project = Files.readString(directory.resolve("project.json"));
+            assertThat(request(creator.uri(), "GET", "/api/themes", "").body()).contains("Railix Foundry", "Renderer Canvas", "Renderer CSS");
+            assertThat(request(creator.uri(), "GET", "/world-canvas.js", "").body()).contains("class RailixCanvas");
+            assertThat(request(creator.uri(), "GET", "/api/themes/files/foundry/variants/canvas/atlas.json", "").statusCode()).isEqualTo(200);
+            assertThat(request(creator.uri(), "GET", "/api/sounds", "").body()).contains("builtin:");
+            final Path theme = Files.createDirectories(home.resolve(".railix/themes/user/atelier"));
+            Files.createDirectories(theme.resolve("assets"));
+            Files.writeString(theme.resolve("theme.css"), ":root { --machine-light: #abcdef; }");
+            Files.writeString(theme.resolve("theme.json"), """
+                    {"name":"User atelier","files":["assets/processor.png"]}
+                    """);
+            final byte[] sprite = java.util.Base64.getDecoder().decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP1sAAAAASUVORK5CYII=");
+            Files.write(theme.resolve("assets/processor.png"), sprite);
+            final Path music = Files.createDirectories(home.resolve(".railix/music/user"));
+            final String score = "name: User sound\ntempo: 108\nsine .2 .01 .1 | o4 c8 e8 g4";
+            Files.writeString(home.resolve(".railix/sounds/user.mml"), score);
+            Files.writeString(music.resolve("track.mml"), score.replace("User sound", "User track"));
+            assertThat(request(creator.uri(), "GET", "/api/themes", "").body()).contains("User atelier", "Railix Foundry");
+            final var asset = request(creator.uri(), "GET", "/api/themes/files/user/atelier/assets/processor.png", "");
+            assertThat(asset.statusCode()).isEqualTo(200);
+            assertThat(asset.headers().firstValue("content-type")).contains("image/png");
+            assertThat(asset.headers().firstValueAsLong("content-length").orElseThrow()).isEqualTo(sprite.length);
+            assertThat(request(creator.uri(), "GET", "/api/sounds", "").body())
+                    .contains("User sound", "User track", "sounds/user.mml", "music/user/track.mml");
+            Files.writeString(theme.resolve("theme.css"), ":root { --machine-light: #123456; }");
+            Files.writeString(home.resolve(".railix/sounds/user.mml"), score.replace("User sound", "Edited sound"));
+            Files.writeString(music.resolve("track.mml"), score.replace("User sound", "Edited track"));
+            assertThat(request(creator.uri(), "GET", "/api/themes/files/user/atelier/theme.css", "").body()).contains("#123456");
+            assertThat(request(creator.uri(), "GET", "/api/sounds", "").body()).contains("Edited sound", "Edited track");
+            assertThat(number(object(request(creator.uri(), "GET", "/api/application", "").body()), "pid")).isEqualTo(pid);
+            assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
+            assertThat(digest(Files.readAllBytes(CREATOR_JAR))).isEqualTo(binary);
+        }
+    }
+
+    @Test
     void packagedExecutableUsesDefaultProjectAndAvailablePort() throws Exception {
         final Path project = directory.resolve("railix.project.json").toAbsolutePath().normalize();
 

@@ -1,0 +1,8 @@
+name: Relay Garden
+tempo: 96
+triangle .20 .008 .16 | o4 a@2 e@1 c@5 r@8 a@2 e@1 c@5 r@8 c@3 a@1 g@4 r@8 c@3 a@1 g@4 r@8 e@1 g@3 c@4 r@8 e@1 g@3 c@4 r@8
+triangle .23 .004 .09 | o2 a@1.5 a@.5 r@2 a@4 a@1.5 a@.5 r@2 a@4 a@1.5 a@.5 r@2 a@4 a@1.5 a@.5 r@2 a@4 f@1.5 f@.5 r@2 f@4 f@1.5 f@.5 r@2 f@4 f@1.5 f@.5 r@2 f@4 f@1.5 f@.5 r@2 f@4 c@1.5 c@.5 r@2 c@4 c@1.5 c@.5 r@2 c@4 c@1.5 c@.5 r@2 c@4 c@1.5 c@.5 r@2 c@4
+sine .06 .06 .24 | o3 [ace]@8 [ace]@8 [ace]@8 [ace]@8 [fac]@8 [fac]@8 [fac]@8 [fac]@8 [ceg]@8 [ceg]@8 [ceg]@8 [ceg]@8
+kick .45 .002 .16 | o2 /: c@4 c@4 :/12
+snare .18 .001 .09 | r@2 /: c@4 :/16 /: c@4 :/7 r@2
+hat .08 .001 .035 | /: c@2 c@2 c@2 c@2 :/12

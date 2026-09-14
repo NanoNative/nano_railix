@@ -164,7 +164,8 @@ Or select both:
 
 Creator prints the URL to open. `Ctrl-C` stops Creator and its owned development-application JVM.
 `./mvnw clean` removes the generated JAR and application image. Railix has no third-party Java runtime
-libraries; Creator bundles PixiJS for its canvas. Playwright is test-only.
+libraries or graphics framework. Creator renders its factory with native Canvas2D or HTML/CSS;
+Playwright is test-only.
 
 The printed URL contains a random Creator token in its fragment. Every Creator API request requires
 that token and the exact loopback `Host`; the browser client supplies both without storing the token
@@ -172,12 +173,12 @@ in project files. Treat the complete local URL as a credential while Creator is 
 
 ## Create The First Flow
 
-1. Choose **Add Trigger** in the Application's bottom construction dock.
+1. Select the Application, then **Add Trigger** in Inspector Overview.
 2. Search the installed Trigger catalog for **CLI**.
-3. Open **Configure** to edit Target; use **Edit** beside the Trigger's Example chooser to edit its payload.
+3. Select the Trigger to edit Target; use **Edit** beside its Example chooser to edit its payload.
    Use `context.payload.arguments` and `["Hello RAILIX"]` respectively for this flow.
 4. Choose **Add next Step**, search for **Lowercase**, and add it as an ordinary graph Step.
-5. Open **Configure**, keep Source at `context.payload.arguments[0]`, and set Target to `context.result`.
+5. Select the Step, keep Source at `context.payload.arguments[0]`, and set Target to `context.result`.
 6. Wait for **Running** and select the CLI Trigger. Creator shows the Example result automatically.
 
 Each ordinary Step remains one graph node whether or not the user assigns it to a visual group.
@@ -365,44 +366,236 @@ derived from the flat functional links, so the same group can produce multiple d
 regions without persisting occurrences or geometry. Group Manager edits definitions; Step
 Appearance assigns or unassigns membership. Deleting a group only unassigns its Steps.
 
-Creator is a canvas-first workshop. Select a station for contextual construction tools and compact
-observations; **Configure** opens its Inspector on demand. Closing it retains selection and drafts.
+Creator is a factory-first workshop. Clicking a station or group selects it and opens its Inspector.
+Inspector Overview shows the selection type, name and a small building portrait using the same
+theme and geometry as the diagram, followed by available observations and construction actions.
+Focus and Enter Group sit beside Close; Delete is in the footer. Inputs, Appearance and Groups have
+separate tabs. There is no icon chooser; existing embedded icons remain readable.
+Closing the Inspector retains selection and drafts.
+Click empty floor to deselect a Step or group. Escape dismisses open controls,
+then the Inspector, then selection. Dragging keeps selection; the chosen Example and global
+application status are independent of it. HUD symbols are CSS geometry on native labeled buttons,
+with raised controls, pressed feedback and recessed active tabs/readouts; no icon library is loaded.
 The searchable bottom construction tray previews an insertion on hover or keyboard focus without
-saving a node or running a handler. Group selection offers **Enter group** and **Manage group**
-separately. Double-click or scroll to zoom into the same diagram, drag to pan, and use Fit for its overview.
+saving a node or running a handler. Enter Group lives in Inspector Overview, not the global HUD.
+Double-click or scroll to zoom into the same diagram, drag to pan, and use Home to return to the App at 50%.
+Minus, zoom percentage and Plus stay right-aligned in the status footer; status values scroll separately
+on narrow screens. The round Home button sits beside Music in the HUD.
+World shortcuts are E (Inspector), F (Focus), Enter (enter group), arrows (pan), +/- (zoom), and
+Home (App at 50%). Text fields, composition input, native controls and OS-modified keys retain their normal
+behavior. Search results support Up/Down, Enter to choose and Escape to return to search.
+Choice comparisons use adjacent field, comparison and operand controls; changing the comparison keeps
+compatible operands. Optional calculations and longer comparison chains expand on demand.
 
-Viewport-only recursive semantic zoom avoids a DOM element for every Step; WebGL2 is required.
-Creator bundles PixiJS 8.20.1 locally (MIT, [upstream distribution](https://www.npmjs.com/package/pixi.js/v/8.20.1)).
-The unmodified `pixi.min.js` and its CSP extension (`dist/packages/unsafe-eval.min.js`, which avoids
-dynamic code generation) are shipped with their license. No CDN, npm installation, Node runtime,
-or new Java dependency is required. These Creator assets are not included in generated applications.
-Collapsed groups and ordinary Steps share compact machine footprints, scaled together to separate
-dense neighbors while preserving centers, custom shapes and proportions. Layered chassis, faceplates
+Viewport-only recursive semantic zoom avoids a DOM element for every project Step. A fixed,
+orthographic camera renders visible machines using CSS geometry or cached images on native Canvas2D.
+Neither path needs WebGL, a graphics dependency, a CDN, npm or a Node runtime. These Creator assets
+are not included in generated applications. JavaScript still owns camera interaction, bounded scene
+requests and real application observations; "CSS rendering" does not mean a non-functional CSS demo.
+Collapsed groups and ordinary Steps share compact machine footprints derived from their layout scale,
+not their currently visible neighbors. Top-level flows keep their natural extent rather than shrinking
+into a fixed canvas beside full-size App and Trigger buildings. Panning cannot resize unchanged machines. A region expands only when
+its children are readable. Machine and belt dimensions scale with the camera between detail levels.
+Automatic sections group at most eight child sections per level; their repeated outer partition
+boxes disappear when deeper sections are entered. These are derived overviews, not saved groups.
+Inspector Overview identifies them as automatic and shows their Step count. Selection
+uses one cool accent (except warnings/errors); group colors remain on the expanded boundary.
+Layered chassis, faceplates
 and sockets connect to wide segmented conveyors. Shared ports form continuous T/L junctions;
-linear entries share one connection axis. Icons use square areas independent of exterior shape.
-Names and sampled average times share one label outside the body. Machine textures are shared by visible shape
-and resolution, then released when unused. Pixi housekeeping runs with explicit rendering frames,
-not a second idle animation loop. Focus and Fit are interruptible camera
-movements, skipped for reduced motion. Camera, station geometry and insertion previews are not persisted.
-[View the working Creator](screenshots/factory-workshop.png), its
-[construction tray](screenshots/factory-workshop-construction.png), and
-[nested detail with real Example values](screenshots/factory-workshop-detail.png).
+linear entries share one connection axis, which does not move when a shape changes. Belt patterns
+stay continuous across split straight runs; socket overruns lie beneath the casings. Icons use square areas independent of exterior shape.
+Names and sampled average times share one screen-facing label outside the body. Visible surfaces are
+reused by stable identity and removed when they leave the scene. Transport uses CSS transform animations
+while fresh, nonzero traffic is observed. Tread sections, direction chevrons and visible cargo move
+together during traffic and replay. Foundry parcels follow whole connections across elbows instead
+of restarting on each straight run. Their three visible faces share one camera-projected CSS paint
+surface. Ground transport, screen-space parcels and raised buildings now have independent
+compositing contexts, using the same theme camera (`--world-camera`). Camera batches move these
+cached layers together without rebuilding their geometry. Reused parcel count depends on visible path length, never request count; loops end under
+stations or outside the viewport. Classic retains its tiled transport. Long belt surfaces and
+parcel paths are limited to the camera vicinity. Compositing traces show lower rendering cost;
+a short native CPU sample was also taken with Example replay enabled. Neither provides a thermal
+or million-Step capacity guarantee. See ADR 0020 and the roadmap evidence.
+A selected Example animates its recorded path in cyan,
+without executing it again or changing counters; select **None** at its Trigger to clear replay.
+Idle machines have a gentle powered glow; known never-executed machines are dimmed. Missing or
+disabled metrics are not treated as zero executions. Hidden pages stop animation.
+Application metrics compare matching measurements in App, JVM and System columns. Rows are derived
+from catalog identifiers and units, with unavailable values left blank; JVM heap limits are not
+reported as system memory. This presentation requires no changes to the generated application.
+CSS uses browser animations; Canvas uses one visible-world animation loop and cached static layers.
+There is no additional pause/resume control. App-to-Trigger links carry power,
+not traffic.
+Focus and Home are interruptible camera
+movements. **Settings > Reduced motion** disables camera transitions and operational animations;
+the browser preference does not override this explicit Creator setting. Camera, station geometry and insertion previews are not persisted.
+The CSS material variables live in `app.css`; individual visible machines expose stable
+`data-station-id` and generic `data-kind` attributes. Add local `.css` files under `~/.railix/themes/`,
+including subfolders, then select **Settings > Appearance > Theme**. The panel shows the actual folder
+when Railix home is overridden. Themes are reread when opening Settings; no rebuild is needed.
+The embedded **Railix Foundry** default renders an App headquarters, Trigger portal, routing switch,
+processing buildings, recessed Ends and glass-covered groups with three symbolic inner machines.
+There are no per-contained-Step decorative objects. **Railix Classic** retains the former icon-plate
+machines on the same scene/camera path. Both are selectable and installable as editable theme folders;
+`assets/themes/foundry/theme.css` holds Foundry materials, while `web/app.css` remains the shared baseline.
+Foundry offers exactly **Renderer Canvas** (default) and **Renderer CSS** under **Settings > Appearance > Renderer**,
+each at high quality, without additional quality tiers. CSS keeps individually styleable building faces.
+Canvas reuses embedded PNG machines and scenery and draws moving transport natively, at up to two pixels
+per screen point on high-density displays. Both retain motion, selection, observations and shared group navigation.
+The choices and their names come from the theme descriptor, not a fixed global enum.
+**Install editable copy** installs the theme, variants and descriptor,
+and preserves every existing file. No local folder contents are required for the embedded defaults.
+
+A custom theme can use this optional layout. Embedded resources under `assets/` mirror the same
+relative roots as the user directory; each theme owns its own folder:
+
+```text
+~/.railix/themes/studio/theme.css
+~/.railix/themes/studio/theme.json
+~/.railix/themes/studio/variants/line.css
+~/.railix/themes/studio/assets/portal.svg
+~/.railix/themes/studio/assets/processor.png
+~/.railix/sounds/working.mml
+~/.railix/music/quiet/track.mml
+```
+
+The optional sibling descriptor names variants and their files, relative to its directory:
+
+```json
+{"name":"Studio","defaultVariant":"line","variants":[{"id":"line","name":"Line art","stylesheet":"variants/line.css"}],"files":["assets/portal.svg","assets/processor.png"]}
+```
+
+CSS URLs resolve relative to the stylesheet, so `variants/line.css` can use
+`url('../assets/portal.svg')`. Local files at embedded paths override only those assets; missing files
+fall back to their embedded equivalents. A Canvas variant adds `"renderer":"canvas"` and an `"atlas"`
+path to its descriptor. PNG and SVG are source formats, not different renderers: both are decoded and
+rasterized once, then cached. No PixiJS or other graphics dependency is required. Packaged-Creator tests add
+and edit nested themes, PNG assets and MML sounds/music while the executable is running without system
+Java; the running application and functional project are unaffected. User extensions remain external
+data, not code that must be compiled into Creator. Open Settings again to refresh the catalogs.
+An atlas is version 1 with a `sprites` object. Each entry names a relative `file`, horizontal-strip
+`frames`, pixel `scale`, ground anchor `anchorX`/`anchorY`, and animation `period` in milliseconds.
+The installed Foundry atlas is the editable example. `step` is the required fallback; existing node
+kinds and output symbols select optional specialized sprites. Source images match the theme's fixed
+camera; arbitrary CSS cannot restyle their internal pixels. The Inspector uses the same loaded image.
+Optional `scenery-ridge`, `scenery-grove` and `scenery-basin` entries replace the corresponding CSS
+environment plots. They use the same loader, resource overrides and bitmap budget. Their ground anchor
+is the plot's top-left world coordinate (a 307.2 by 230.4 world-unit plot); a static first frame is cached
+beneath transport and machines. Missing scenery entries retain CSS, so existing custom atlases still work.
+Foundry includes all three scenery images in Renderer Canvas and in its editable installation.
+Native foundation colors, selection and cargo use CSS tokens such as `--canvas-wall`,
+`--canvas-selection`, `--canvas-error`, `--canvas-tread`, `--canvas-cargo-top`,
+`--canvas-cargo-light` and `--canvas-cargo-shade`.
+Shape/aspect/roundness overrides still control the common foundation geometry. Atlases are limited to
+64 shared sprites, 16 megapixels decoded in total and 32 frames per sprite, not 64 project Steps.
+Each of the three viewport drawing surfaces is capped at 8 megapixels; high-resolution drawing adapts
+to that surface budget. Broken atlases show a warning and restore CSS instead of leaving an empty world.
+Theme assets use a separate read-only, HttpOnly cookie; it cannot authorize project reads or mutations.
+Local asset reads retain the existing 1 MiB per-file boundary; external resources are blocked.
+Themes can select building geometry with `--world-buildings: 1` (Classic uses `0`); taller custom
+buildings must increase the conservative `--world-building-height` culling envelope (112 by default).
+The fixed orthographic camera omits invisible solid faces. Preferences are saved globally in
+`~/.railix/creator.settings.json`, not in the functional project or per-Step appearance.
+Older project `theme` metadata is left untouched but no longer selects the Creator theme. Missing files
+show an explicit warning and built-in styling; external CSS resources and symbolic links are rejected.
+Custom files must be installed on each machine. Local theme loading requires filesystem support
+for secure directory access (the supported macOS/Linux runtime); other providers return an explicit
+diagnostic rather than use an unsafe read path. No per-Step CSS text editor is provided.
+New projects record `created_at` in Creator metadata; existing projects keep an unknown creation date.
+Scenery derives from this date (or the existing project ID), with no persisted geometry.
+Seeded districts contain service-building rows, power structures and cooling basins in Foundry,
+or ridges, spire groves and basins in Classic, on fixed world coordinates; distance removes
+detail rather than moving anchors. World-space factory plots and transport clearance keep scenery
+placement independent of zoomed group contents and changing labels. Close zoom retains visible relief.
+The outlined CSS cursor is confined to the factory; HUD and form controls retain native pointers.
+A camera-following minimap uses the existing coarse scene plus visible detail and at most 640 display cells.
+Foundry presents it as a round radar with larger machine marks and directional line ends; theme tokens
+`--map-aspect` and `--map-range` control its projection and surrounding context. It distinguishes
+machine marks from transport, retains selection while travelling, and overlays available errors,
+unreached paths, never-executed Steps and logarithmic sampled-time shading. It does not request global
+runtime observations: unmeasured areas stay neutral. Blue timing intensity is not proof of a bottleneck;
+amber is reserved for pending changes and warnings.
+The map stores no layout or unbounded observation history. Enter a group by zooming over it,
+double-clicking it or using Inspector **Enter**. Entry starts at the first Step at local **50%** and remains open while zooming
+out; the group header's close button restores the enclosing camera and zoom reference. Entry uses the free area outside
+the HUD and Inspector. Home leaves all entered groups and returns to the App at 50%.
+Small entered sections expose all their Steps; very large sections retain viewport-bounded detail.
+Long sequential sections remain forward lanes; only actual branches create additional lanes.
+Automatic subregions retain execution order; their content bounds do not enlarge the collapsed machine.
+Hovering a Trigger offers its Example selector without changing the current selection. The chooser
+stays open while it or its native dropdown owns keyboard focus.
+
+**Settings** has Appearance, Sound and Music tabs. The separate sound/music HUD buttons toggle
+playback rather than open more settings panels. Effects default on; quiet background music starts
+after a browser interaction. Explicit mute preferences remain respected. Close-up working machines
+have quiet ambience; selecting a machine gives a state-dependent cue.
+Editable sound files use declarative MML text under `~/.railix/sounds/`, never executable code or binary
+audio. Embedded defaults remain available independently of local files.
+Music scores under `~/.railix/music/` form a shuffled playlist. The first subfolder is the selectable
+music group; root music is Ungrouped. Embedded and local scores coexist, including identical filenames.
+Choose all tracks, a group or one track; **Event sounds** assigns effects to individual events.
+Choose a local version there to replace an embedded event sound. Eight embedded arrangements combine
+percussion, bass figures and melodic phrases, with quiet, electronic and swing material;
+musical preference remains subjective.
+Settings can create, edit and delete scores. **Install defaults** writes
+editable copies without replacing existing files. Reopening Settings refreshes the catalog without
+discarding an unfinished editor draft. Content revisions and a shared filesystem lock reject stale
+saves from another Creator or external edits observed before saving. A conflict keeps the draft;
+refresh the library and reselect the file to load its latest content before editing again.
+External editors do not share Creator's lock, so edits racing the filesystem replacement itself
+cannot be coordinated. Malformed files remain selectable for repair. Embedded scores
+are read-only originals; edit and save a local MML copy. Existing version-1 JSON scores remain readable
+and are not rewritten merely by opening the editor. Old `sounds/music/` files remain readable;
+new writes and installs use the separate `music/` root. MML overrides win over legacy JSON sources;
+deleting an override can reveal the preserved legacy source again.
+Play/Pause retains the same composition; Stop and hidden-page cleanup release its audio resources.
+Next and automatic completion advance the shuffled playlist. Instrument voices are reused across
+notes, and no per-Step sound source is retained. Audio is solely a Creator capability.
+Creating a missing music group uses a secure directory move. Filesystems that cannot move the
+temporary directory atomically report an error; create the group folder locally in that case.
+
+Each score has a name, tempo (40-240 BPM) and 1-8 parallel instrument lines. Before `|` are instrument,
+volume, attack and release; after it are notes `a`-`g`, rests `r`, octave `o`, default length `l`,
+chords in brackets and repeats `/: ... :/N`. An explicit `@` duration is measured in beats.
+Files are limited to 64 KiB and 256 expanded note events to bound synthesis work, not project size.
+Instruments are `sine`, `square`, `sawtooth`, `triangle`, `kick`, `snare` and `hat`.
+Optional `decay=.18 sustain=.2 cutoff=1800` before `|` controls tonal decay in seconds,
+the held amplitude fraction and filter frequency in Hz. Existing scores retain their envelope.
+Instrument presets are derived from the catalog, including these optional controls.
+Percussion decays within the note's duration; longer durations leave silence between hits.
+Kick pitch follows the note. Snare and hi-hat use fixed filtered noise, synthesized locally and
+shared within each audio context, not loaded from audio files.
+
+```text
+name: Arrival
+tempo: 120
+sine .3 .01 .1 | o4 l8 /: c e g e :/4
+triangle .15 .02 .2 | o3 [ceg]@8
+kick .4 .002 .15 | o2 /: c@2 :/4
+snare .15 .001 .09 | r@1 c@2 c@2 c@2 r@1
+```
+Reproducible CSS screenshots are written to `modules/railix-creator/target/screenshots/`
+by the browser tests; the older screenshots under `screenshots/` show the preceding renderer.
 One diagram shows pending changes, application-owned Example coverage, the selected route and
-actual execution metrics. Choose an Example above the selected Trigger or in its Examples tab;
-the choice remains highlighted while inspecting downstream Steps or application facts.
-Moving carriers on the conveyors reflect measured counter changes per second. Carrier
-density grows logarithmically from sparse to busy traffic; it is not one particle per request or
+actual execution metrics. Choose an Example beside the selected Trigger or in its Examples tab;
+the adjacent chooser is shown only where it fits without covering machines, labels or the HUD.
+The choice remains highlighted while inspecting downstream Steps or application facts.
+Moving carriers and belt sections reflect measured counter changes per second. Belt speed
+grows logarithmically from sparse to busy traffic; it is not one particle per request or
 a measurement of transit time. Motion stops when readings expire, metrics disappear, the page is
-hidden, or reduced motion is enabled. Lamps show current observed traffic or errors, not health or
-utilization. Regions report contained Step averages, not flow latency; there is no relative heat meter.
-Disabled metrics, idle Steps, and absent timing samples remain distinct. Configure opens the selected
-station's Inspector. Build status opens project/build paths, PID and application facts separately,
-without changing selection. Runtime metrics remain behind a disclosure; the bottom status rail
+hidden. Lamps show current observed traffic or errors, not health or utilization. Regions show the
+sum of individually sampled Step averages, not passage latency. Missing samples are not invented;
+the tooltip states how many Steps contributed. Background pages are independent of the traffic poll.
+Disabled metrics, idle Steps, and absent timing samples remain distinct. Clicking a station opens
+its Inspector. Build status opens project/build paths, PID and application facts separately,
+without changing selection. Runtime metrics separate App, JVM and System behind a disclosure; the bottom status rail
 shows compact application facts. Examples count in the same execution metrics as ordinary inputs;
-there is no excluded test counter or view-mode switch. A completed Example path is not ongoing traffic.
+there is no excluded test counter or view-mode switch. Example replay is a visual trace, not live traffic.
 Source/target selectors show the selected Example's actual values beside each field, including
 before/after writes. Missing fields and unreached Steps are distinct. Counter updates preserve
-unchanged Example values and focused controls in the dock.
+unchanged Example values and focused controls in Overview. Flow ends are recessed intakes.
+Replay reaches an intake only when a successful Example and a reached source's single exit establish
+the route. Ambiguous terminal routes remain unmarked; terminal throughput is not invented.
 Step and Group Appearance share rectangle, ellipse, triangle, and diamond shapes, width/height
 proportions, and rectangle corner rounding. Defaults are a ratio of 1 and 12% rounding; Reset
 removes the override. A ratio of 1 produces a square or circle. These settings
