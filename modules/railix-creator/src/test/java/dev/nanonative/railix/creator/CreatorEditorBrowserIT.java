@@ -7,6 +7,7 @@ import dev.nanonative.railix.core.value.RailixJson;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Files;
@@ -17,6 +18,7 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     @ParameterizedTest
@@ -482,21 +484,201 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    void originalMusicIsOptionalAndStopsOnHide() {
+    void musicPausesOnHideAndResumesTheSameSessionWithoutChangingPreferences() {
         openProject(fourStepProject());
         page.locator("#open-settings").click();
         page.locator("#settings-music-tab").click();
         page.waitForFunction("() => !document.querySelector('#music-play').disabled");
         assertThat(page.evaluate("() => Boolean(state.audio.musicContext)")).isEqualTo(true);
         page.waitForFunction("() => state.audio.musicContext?.state === 'running'");
-        final var context=page.evaluateHandle("() => state.audio.musicContext");
+        final var playback = page.evaluateHandle("""
+                () => ({context:state.audio.musicContext, session:state.audio.musicSession,
+                  track:state.audio.track, queue:JSON.stringify(state.audio.queue)})
+                """);
+        for (int visit = 0; visit < 3; visit++) {
+            page.evaluate("""
+                    () => { Object.defineProperty(document,'hidden',{configurable:true,value:true});
+                      document.dispatchEvent(new Event('visibilitychange')); }
+                    """);
+            page.waitForFunction("playback => playback.context.state !== 'running'", playback);
+            assertThat(page.evaluate("playback => playback.context.state", playback)).isEqualTo("suspended");
+            assertThat(page.evaluate("""
+                    async playback => {
+                      const time = playback.context.currentTime, timer = playback.session.timer;
+                      await new Promise(resolve => setTimeout(resolve, 600));
+                      return playback.context.currentTime === time && playback.session.timer === timer
+                        && state.audio.musicContext === playback.context && state.audio.musicSession === playback.session
+                        && state.audio.track === playback.track && JSON.stringify(state.audio.queue) === playback.queue
+                        && !playback.session.stopped && state.audio.preferences.music_enabled && state.settings.music_enabled;
+                    }
+                    """, playback)).isEqualTo(true);
+            final Object pausedAt = page.evaluate("playback => playback.context.currentTime", playback);
+            page.evaluate("() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); }");
+            page.waitForFunction("time => state.audio.musicContext?.state === 'running' && state.audio.musicContext.currentTime > time", pausedAt);
+            assertThat(page.evaluate("playback => state.audio.musicSession === playback.session", playback)).isEqualTo(true);
+        }
+        page.evaluate("() => window.dispatchEvent(new Event('pagehide'))");
+        page.waitForFunction("playback => playback.context.state === 'closed'", playback);
+        assertThat(page.evaluate("playback => playback.session.stopped && !state.audio.musicContext", playback)).isEqualTo(true);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void manualMusicPauseSurvivesTabChangesUntilPlayIsPressed() {
+        page.locator("#open-settings").click();
+        page.locator("#settings-music-tab").click();
+        page.waitForFunction("() => state.audio.musicContext?.state === 'running'");
+        page.locator("#music-play").click();
+        page.waitForFunction("() => state.audio.musicContext?.state === 'suspended' && !state.settingsWriting && !state.settingsTimer");
+        final var playback = page.evaluateHandle("() => ({context:state.audio.musicContext, session:state.audio.musicSession})");
+        assertThat(page.evaluate("""
+                async playback => {
+                  const time = playback.context.currentTime;
+                  Object.defineProperty(document, 'hidden', {configurable:true, value:true});
+                  document.dispatchEvent(new Event('visibilitychange'));
+                  delete document.hidden;
+                  document.dispatchEvent(new Event('visibilitychange'));
+                  await new Promise(resolve => setTimeout(resolve, 600));
+                  return playback.context.state === 'suspended' && playback.context.currentTime === time
+                    && state.audio.musicContext === playback.context && state.audio.musicSession === playback.session
+                    && !state.settings.music_enabled && !state.audio.preferences.music_enabled;
+                }
+                """, playback)).isEqualTo(true);
+        assertThat(page.locator("#music-play span").textContent()).isEqualTo("Play");
+        page.locator("#music-play").click();
+        page.waitForFunction("playback => state.audio.musicSession === playback.session && playback.context.state === 'running'", playback);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void stoppedMusicDoesNotRestartWhenTheTabReturns(final boolean stopWhileHidden) {
+        page.locator("#open-settings").click();
+        page.locator("#settings-music-tab").click();
+        page.waitForFunction("() => state.audio.musicContext?.state === 'running'");
+        if (!stopWhileHidden) page.locator("#music-stop").click();
         page.evaluate("""
-                () => { Object.defineProperty(document,'hidden',{configurable:true,value:true});
+                () => { Object.defineProperty(document, 'hidden', {configurable:true, value:true});
                   document.dispatchEvent(new Event('visibilitychange')); }
                 """);
-        page.waitForFunction("context => context.state === 'closed'",context);
-        assertThat(page.evaluate("() => state.audio.musicContext")).isNull();
-        page.evaluate("() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); }");
+        if (stopWhileHidden) page.locator("#music-stop").click();
+        assertThat(page.evaluate("""
+                async () => {
+                  delete document.hidden;
+                  document.dispatchEvent(new Event('visibilitychange'));
+                  await new Promise(resolve => setTimeout(resolve, 600));
+                  return !state.audio.musicContext && !state.audio.musicSession
+                    && !state.audio.preferences.music_enabled && !state.settings.music_enabled;
+                }
+                """)).isEqualTo(true);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    void hidingDuringMusicStartOrResumeLeavesNoHiddenScheduler(final boolean starting, final boolean returnBeforeReady) {
+        page.locator("#open-settings").click();
+        page.locator("#settings-music-tab").click();
+        page.waitForFunction("() => state.audio.musicContext?.state === 'running'");
+        page.locator(starting ? "#music-stop" : "#music-play").click();
+        page.evaluate("""
+                () => {
+                  const resume = AudioContext.prototype.resume;
+                  AudioContext.prototype.resume = function() {
+                    AudioContext.prototype.resume = resume;
+                    const ready = resume.call(this);
+                    return new Promise(resolve => { window.finishMusicResume = () => ready.then(resolve); });
+                  };
+                }
+                """);
+        page.locator("#music-play").click();
+        page.waitForFunction("() => window.finishMusicResume && state.audio.musicContext?.state === 'running'");
+        final var context = page.evaluateHandle("() => state.audio.musicContext");
+        page.evaluate("""
+                () => { Object.defineProperty(document, 'hidden', {configurable:true, value:true});
+                  document.dispatchEvent(new Event('visibilitychange')); }
+                """);
+        page.waitForFunction("context => context.state === 'suspended'", context);
+        if (returnBeforeReady) {
+            page.evaluate("() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); }");
+        }
+        page.evaluate("() => window.finishMusicResume()");
+        page.waitForFunction("() => state.audio.musicSession");
+        if (returnBeforeReady) {
+            page.waitForFunction("context => context.state === 'running'", context, new Page.WaitForFunctionOptions().setTimeout(3_000));
+        } else {
+            assertThat(page.evaluate("""
+                    async context => {
+                      const session = state.audio.musicSession, time = context.currentTime, timer = session.timer;
+                      await new Promise(resolve => setTimeout(resolve, 600));
+                      return context === state.audio.musicContext && context.state === 'suspended'
+                        && context.currentTime === time && session.timer === timer;
+                    }
+                    """, context)).isEqualTo(true);
+        }
+        page.evaluate("""
+                () => {
+                  for (const hidden of [false, true, false, true, false]) {
+                    Object.defineProperty(document, 'hidden', {configurable:true, value:hidden});
+                    document.dispatchEvent(new Event('visibilitychange'));
+                  }
+                  delete document.hidden;
+                }
+                """);
+        page.waitForFunction("context => context === state.audio.musicContext && context.state === 'running'", context);
+        page.locator("#music-stop").click();
+        page.waitForFunction("context => context.state === 'closed'", context);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void musicVolumeReachesFullOutputAndMutesWithoutStoppingPlayback() throws Exception {
+        page.locator("#open-settings").click();
+        page.locator("#settings-music-tab").click();
+        page.waitForFunction("() => state.audio.musicContext?.state === 'running'");
+        final var slider = page.locator("#music-volume");
+        assertThat(slider.inputValue()).isEqualTo("25");
+        assertThat(page.locator("#music-volume-value").textContent()).isEqualTo("25%");
+        slider.press("End");
+        page.waitForFunction("() => state.settings.music_volume === 1 && !state.settingsWriting && !state.settingsTimer");
+        page.waitForFunction("() => state.audio.musicGain.gain.value > .99");
+        assertThat(((Number) page.evaluate("() => state.audio.musicGain.gain.value")).doubleValue()).isCloseTo(1, within(.01));
+        assertThat(slider.inputValue()).isEqualTo("100");
+        assertThat(slider.getAttribute("aria-valuetext")).isEqualTo("100%");
+        assertThat(page.locator("#music-volume-value").textContent()).isEqualTo("100%");
+        final var context = page.evaluateHandle("() => state.audio.musicContext");
+        slider.press("Home");
+        page.waitForFunction("() => state.audio.musicGain.gain.value < .0001 && !state.settingsWriting && !state.settingsTimer");
+        assertThat(slider.inputValue()).isEqualTo("0");
+        assertThat(page.locator("#music-volume-value").textContent()).isEqualTo("0%");
+        assertThat(page.evaluate("context => context === state.audio.musicContext && context.state === 'running'", context)).isEqualTo(true);
+        assertThat(Files.readString(directory.resolve("railix-home/creator.settings.json"))).contains("\"music_volume\":0");
+        slider.press("End");
+        page.waitForFunction("() => state.audio.musicGain.gain.value > .99 && !state.settingsWriting && !state.settingsTimer");
+        page.reload();
+        page.locator("#open-settings").click();
+        page.locator("#settings-music-tab").click();
+        page.waitForFunction("() => document.querySelector('#music-volume').value === '100'");
+        assertThat(page.locator("#music-volume-value").textContent()).isEqualTo("100%");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {390, 1280})
+    void audioSlidersReachBothVisibleEnds(final int width) {
+        page.setViewportSize(width, 800);
+        page.locator("#open-settings").click();
+        for (final String kind : List.of("music", "effects")) {
+            page.locator("#settings-" + (kind.equals("music") ? "music" : "sound") + "-tab").click();
+            final var slider = page.locator("#" + kind + "-volume");
+            final var box = slider.boundingBox();
+            page.mouse().click(box.x + box.width - 2, box.y + box.height / 2);
+            assertThat(slider.inputValue()).isEqualTo("100");
+            assertThat(slider.getAttribute("aria-valuetext")).isEqualTo("100%");
+            page.mouse().click(box.x + 2, box.y + box.height / 2);
+            assertThat(slider.inputValue()).isEqualTo("0");
+            assertThat(slider.evaluate("el => getComputedStyle(el).padding")).isEqualTo("0px");
+        }
         assertThat(pageErrors).isEmpty();
     }
 
@@ -515,8 +697,11 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
             page.waitForFunction("name => state.audio.track?.score.name !== name && state.audio.musicSession", before);
             names.add((String) page.evaluate("() => state.audio.track.score.name"));
         }
-        assertThat(expectedNames).hasSizeGreaterThanOrEqualTo(5);
+        assertThat(expectedNames).hasSize(8);
         assertThat(names).containsExactlyInAnyOrderElementsOf(expectedNames);
+        final String last = (String) page.evaluate("() => state.audio.track.key");
+        page.locator("#music-next").click();
+        page.waitForFunction("key => state.audio.track?.key !== key && state.audio.musicSession", last);
         final List<List<Number>> lengths = (List<List<Number>>) page.evaluate("""
                 () => state.audio.music().map(entry => {
                   const beats = Math.max(...entry.score.tracks.map(track => state.audio.trackDuration(track.notes)));
@@ -524,9 +709,22 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
                 })
                 """);
         assertThat(lengths).allSatisfy(length -> {
-            assertThat(length.get(0).doubleValue()).as("At least sixteen four-beat bars at any tempo").isGreaterThanOrEqualTo(64d);
-            assertThat(length.get(1).doubleValue()).isLessThanOrEqualTo(90d);
+            assertThat(length.get(1).doubleValue()).as("Complete compositions, not preview loops").isBetween(180d, 300d);
         });
+        final List<List<Number>> melodies = (List<List<Number>>) page.evaluate("""
+                () => state.audio.music().map(entry => {
+                  const pitches=[];
+                  for (const note of state.audio.sequence(entry.score.tracks[0].notes)) {
+                    if (note.note !== null) pitches.push(note.note);
+                    if (pitches.length === 32) break;
+                  }
+                  // Compare the lead theme independently of tempo, timbre, transposition or octave.
+                  return pitches.map(pitch => ((pitch-pitches[0])%12+12)%12);
+                })
+                """);
+        assertThat(melodies).allSatisfy(melody -> assertThat(melody).hasSize(32));
+        assertThat(melodies).as("Each soundtrack has its own lead theme, not a retimed or transposed copy")
+                .doesNotHaveDuplicates();
         page.locator("#music-stop").click();
         page.locator("#sound-files > summary").click();
         final Number minimumContrast = (Number) page.evaluate("""
@@ -588,6 +786,36 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         assertThat(pageErrors).isEmpty();
     }
 
+    @Test
+    void musicAutomaticallyAdvancesAfterPauseAndWrapsWithoutRepeating() throws Exception {
+        final Path group = Files.createDirectories(directory.resolve("railix-home/music/short"));
+        for (final String name : List.of("Alpha", "Beta")) {
+            Files.writeString(group.resolve(name + ".mml"), "name: " + name + "\ntempo: 120\nsine .2 .01 .1 | c@4");
+        }
+        page.locator("#open-settings").click();
+        page.locator("#settings-music-tab").click();
+        page.waitForFunction("() => Array.from(document.querySelector('#music-group').options).some(option=>option.value==='group:short')");
+        page.locator("#music-group").selectOption("group:short");
+        page.locator("#music-play").click();
+        page.waitForFunction("() => state.audio.musicContext?.state === 'running' && state.audio.track?.group === 'short'");
+        final String first = (String) page.evaluate("() => state.audio.track.key");
+        page.locator("#music-play").click();
+        page.waitForFunction("() => state.audio.musicContext?.state === 'suspended'");
+        assertThat(page.evaluate("""
+                async () => {
+                  const context=state.audio.musicContext, time=context.currentTime, key=state.audio.track.key;
+                  await new Promise(resolve=>setTimeout(resolve,600));
+                  return context.currentTime===time && state.audio.track.key===key;
+                }
+                """)).isEqualTo(true);
+        page.locator("#music-play").click();
+        page.waitForFunction("key => state.audio.track?.key !== key && state.audio.musicSession", first);
+        page.waitForFunction("key => state.audio.track?.key === key && state.audio.musicSession", first);
+        page.locator("#music-stop").click();
+        assertThat(page.evaluate("() => state.audio.musicContext")).isNull();
+        assertThat(pageErrors).isEmpty();
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"kick", "snare", "hat"})
     void percussionScoresProduceShortDecayingHitsWithOneReusableVoice(final String instrument) {
@@ -641,52 +869,193 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
+    void longMusicSchedulesABoundedWindowAndKeepsPlayingAcrossRefills() {
+        final var result = (java.util.Map<?, ?>) page.evaluate("""
+                async () => {
+                  const response=await fetch('/api/sounds',{method:'POST',headers:mutationHeaders(),
+                    body:JSON.stringify({action:'preview',content:'name: Long\\ntempo: 120\\nsawtooth .4 .01 .1 | o3 /: /: a8 e8 a8 c8 :/16 :/16'})});
+                  if(!response.ok) return {status:response.status};
+                  const {score}=await response.json(), rate=16000, context=new OfflineAudioContext(1,rate*5,rate);
+                  const set=AudioParam.prototype.setValueAtTime, times=[];
+                  AudioParam.prototype.setValueAtTime=function(value,time){times.push(time);return set.call(this,value,time);};
+                  let session;
+                  try {
+                    session=state.audio.schedule(context,score,context.destination,1);
+                    const initialLatest=Math.max(...times), initialEvents=times.length;
+                    const refills=[1,2,3,4].map(time=>context.suspend(time).then(()=>{session.pump();return context.resume();}));
+                    const buffer=await context.startRendering();
+                    await Promise.all(refills);
+                    const samples=buffer.getChannelData(0);
+                    const rms=(from,to)=>Math.sqrt(samples.slice(from*rate,to*rate).reduce((sum,v)=>sum+v*v,0)/((to-from)*rate));
+                    state.audio.stopSession(session);
+                    const before=times.length;
+                    session.pump();
+                    return {status:response.status,initialLatest,initialEvents,first:rms(.1,.2),later:rms(4.1,4.2),
+                      writesAfterStop:times.length-before};
+                  } finally {AudioParam.prototype.setValueAtTime=set;state.audio.stopSession(session);}
+                }
+                """);
+        assertThat(result.get("status")).isEqualTo(200);
+        assertThat(((Number) result.get("initialLatest")).doubleValue()).isLessThan(3);
+        assertThat(((Number) result.get("initialEvents")).intValue()).isLessThan(100);
+        assertThat(((Number) result.get("first")).doubleValue()).isGreaterThan(.01);
+        assertThat(((Number) result.get("later")).doubleValue()).isGreaterThan(.01);
+        assertThat(((Number) result.get("writesAfterStop")).intValue()).isZero();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void delayedMusicRefillsRecoverActiveNotesWithoutMovingTheirEnd(final boolean loop) {
+        final var measured = (java.util.Map<?, ?>) page.evaluate("""
+                async loop => {
+                  const response=await fetch('/api/sounds',{method:'POST',headers:mutationHeaders(),
+                    body:JSON.stringify({action:'preview',content:'name: Recovery\\ntempo: 120\\nsine .3 .01 .1 | r@5 c@4 r@1\\nsine .3 .01 .1 | r@6 e@2 r@2'})});
+                  if(!response.ok) return {status:response.status};
+                  const {score}=await response.json(), rate=16000, context=new OfflineAudioContext(1,rate*10.5,rate);
+                  let completed=0;
+                  const session=state.audio.schedule(context,score,context.destination,1,()=>completed++,loop);
+                  const advances=[3.5,4.5,5.5,8.5,9.5,10].map(time=>context.suspend(time).then(()=>{session.pump();return context.resume();}));
+                  const rendered=await context.startRendering();
+                  await Promise.all(advances);
+                  const samples=rendered.getChannelData(0);
+                  const rms=(from,to)=>Math.sqrt(samples.slice(from*rate,to*rate).reduce((sum,v)=>sum+v*v,0)/((to-from)*rate));
+                  const result={status:response.status,recovered:rms(3.65,3.85),ended:rms(4.7,4.85),nextCycle:rms(8.65,8.85),completed};
+                  state.audio.stopSession(session);
+                  return result;
+                }
+                """, loop);
+        assertThat(measured.get("status")).isEqualTo(200);
+        assertThat(((Number) measured.get("recovered")).doubleValue()).isGreaterThan(.01);
+        assertThat(((Number) measured.get("ended")).doubleValue()).isLessThan(.0001);
+        assertThat(((Number) measured.get("nextCycle")).doubleValue() > .01).isEqualTo(loop);
+        assertThat(((Number) measured.get("completed")).intValue()).isEqualTo(loop ? 0 : 1);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"kick", "snare", "hat"})
+    void delayedMusicRefillsDiscardMissedPercussionWithoutLosingTheNextHit(final String waveform) {
+        final var measured = (java.util.Map<?, ?>) page.evaluate("""
+                async waveform => {
+                  const response=await fetch('/api/sounds',{method:'POST',headers:mutationHeaders(),
+                    body:JSON.stringify({action:'preview',content:`name: Percussion recovery\ntempo: 120\n${waveform} .5 .002 .12 | r@5 c@4 c@1`})});
+                  if(!response.ok) return {status:response.status};
+                  const {score}=await response.json(), rate=16000, context=new OfflineAudioContext(1,rate*5,rate);
+                  const session=state.audio.schedule(context,score,context.destination,1);
+                  const refill=context.suspend(3.5).then(()=>{session.pump();return context.resume();});
+                  const rendered=await context.startRendering();
+                  await refill;
+                  const samples=rendered.getChannelData(0);
+                  const rms=(from,to)=>Math.sqrt(samples.slice(from*rate,to*rate).reduce((sum,v)=>sum+v*v,0)/((to-from)*rate));
+                  state.audio.stopSession(session);
+                  return {status:response.status,missed:rms(3.51,3.64),next:rms(4.54,4.66)};
+                }
+                """, waveform);
+        assertThat(measured.get("status")).isEqualTo(200);
+        assertThat(((Number) measured.get("missed")).doubleValue()).isLessThan(.0001);
+        assertThat(((Number) measured.get("next")).doubleValue()).isGreaterThan(.0001);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void stereoInstrumentControlsRenderEchoesAndStopAllAudio() {
+        final var measured = (java.util.Map<?, ?>) page.evaluate("""
+                async () => {
+                  const response = await fetch('/api/sounds', {method:'POST',headers:mutationHeaders(),
+                    body:JSON.stringify({action:'preview',content:'name: Stereo\\ntempo: 120\\nsawtooth .5 .005 .06 decay=.07 sustain=.1 cutoff=2400 detune=7 drive=2 pan=-.6 echo=.3 | o4 a@.25 r@4 /: e@.25 r@.25 :/8'})});
+                  if (!response.ok) return {status:response.status};
+                  const {score}=await response.json(), rate=44100, context=new OfflineAudioContext(2,rate*2,rate);
+                  let oscillators=0;
+                  const createOscillator=context.createOscillator.bind(context);
+                  context.createOscillator=()=>{ oscillators++; return createOscillator(); };
+                  const session=state.audio.schedule(context,score,context.destination,1);
+                  const buffer=await context.startRendering(), left=buffer.getChannelData(0), right=buffer.getChannelData(1);
+                  const rms=(samples,from,to)=>Math.sqrt(samples.slice(from*rate,to*rate).reduce((sum,v)=>sum+v*v,0)/((to-from)*rate));
+                  const result={status:response.status,oscillators,left:rms(left,.05,.13),right:rms(right,.05,.13),
+                    gap:rms(left,.23,.3),echo:rms(left,.43,.51)+rms(right,.43,.51),
+                    peak:Math.max(...[left,right].map(samples=>samples.reduce((peak,v)=>Math.max(peak,Math.abs(v)),0)))};
+                  state.audio.stopSession(session);
+                  state.audio.stopSession(session);
+                  const silentContext=new OfflineAudioContext(2,rate,rate);
+                  const stopped=state.audio.schedule(silentContext,score,silentContext.destination,1);
+                  state.audio.stopSession(stopped);
+                  const silent=await silentContext.startRendering();
+                  result.stoppedPeak=Math.max(...[0,1].map(channel=>silent.getChannelData(channel).reduce((peak,v)=>Math.max(peak,Math.abs(v)),0)));
+                  return result;
+                }
+                """);
+        assertThat(measured.get("status")).isEqualTo(200);
+        assertThat(((Number) measured.get("oscillators")).intValue()).isEqualTo(2);
+        assertThat(((Number) measured.get("left")).doubleValue()).isGreaterThan(((Number) measured.get("right")).doubleValue() * 2);
+        assertThat(((Number) measured.get("gap")).doubleValue()).isLessThan(.001);
+        assertThat(((Number) measured.get("echo")).doubleValue()).isGreaterThan(.002);
+        assertThat(((Number) measured.get("peak")).doubleValue()).isBetween(.01, .95);
+        assertThat(((Number) measured.get("stoppedPeak")).doubleValue()).isZero();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
     void embeddedMusicRendersAudibleUnclippedReviewExcerpts() throws Exception {
         page.locator("#open-settings").click();
         page.locator("#settings-music-tab").click();
         page.waitForFunction("() => state.audio.music().length > 0");
         page.locator("#music-stop").click();
-        final List<java.util.Map<String, Object>> excerpts = (List<java.util.Map<String, Object>>) page.evaluate("""
-                async () => {
-                  const result=[];
-                  for (const entry of state.audio.music().filter(entry=>entry.builtin)) {
-                    const review = entry.id === 'music/foundry.mml';
+        page.locator("#music-volume").press("End");
+        final List<String> keys = (List<String>) page.evaluate("() => state.audio.music().filter(entry=>entry.builtin).map(entry=>entry.key)");
+        assertThat(keys).hasSize(8);
+        final boolean full = Boolean.getBoolean("railix.audio.review.full");
+        final Path output = Files.createDirectories(Path.of("target", "audio-review", full ? "full" : "excerpts"));
+        for (final String key : keys) {
+            final var excerpt = (java.util.Map<?, ?>) page.evaluate("""
+                async ([key,full]) => {
+                    const entry=state.audio.music().find(entry=>entry.key===key);
                     const durations = entry.score.tracks.map(track=>state.audio.trackDuration(track.notes));
-                    const seconds = review ? Math.max(...durations)*60/entry.score.tempo+.2 : 12;
-                    const rate=22050, context=new OfflineAudioContext(1,Math.ceil(rate*seconds),rate);
-                    const session=state.audio.schedule(context,entry.score,context.destination,review ? .5 : .05);
-                    const buffer=await context.startRendering(), samples=buffer.getChannelData(0);
+                    const seconds = full ? Math.max(...durations)*60/entry.score.tempo+2 : 32;
+                    const rate=full ? 44100 : 22050, context=new OfflineAudioContext(2,Math.ceil(rate*seconds),rate);
+                    const master=context.createGain();
+                    master.gain.value=state.audio.musicVolume();
+                    master.connect(context.destination);
+                    const session=state.audio.schedule(context,entry.score,master,1);
+                    const refills=[];
+                    for(let time=1;time<seconds;time++) refills.push(context.suspend(time).then(()=>{session.pump();return context.resume();}));
+                    const buffer=await context.startRendering(), channels=[buffer.getChannelData(0),buffer.getChannelData(1)];
+                    await Promise.all(refills);
                     let peak=0, power=0;
-                    const bytes=new Uint8Array(44+samples.length*2), view=new DataView(bytes.buffer);
+                    const bytes=new Uint8Array(44+buffer.length*4), view=new DataView(bytes.buffer);
                     const text=(at,value)=>[...value].forEach((char,i)=>view.setUint8(at+i,char.charCodeAt(0)));
                     text(0,'RIFF'); view.setUint32(4,bytes.length-8,true); text(8,'WAVE'); text(12,'fmt ');
-                    view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true);
-                    view.setUint32(24,rate,true); view.setUint32(28,rate*2,true); view.setUint16(32,2,true);
-                    view.setUint16(34,16,true); text(36,'data'); view.setUint32(40,samples.length*2,true);
-                    samples.forEach((value,i)=>{
+                    view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,2,true);
+                    view.setUint32(24,rate,true); view.setUint32(28,rate*4,true); view.setUint16(32,4,true);
+                    view.setUint16(34,16,true); text(36,'data'); view.setUint32(40,buffer.length*4,true);
+                    channels.forEach((samples,channel)=>samples.forEach((value,i)=>{
                       peak=Math.max(peak,Math.abs(value)); power+=value*value;
-                      view.setInt16(44+i*2,Math.round(Math.max(-1,Math.min(1,value))*32767),true);
-                    });
+                      view.setInt16(44+i*4+channel*2,Math.round(Math.max(-1,Math.min(1,value))*32767),true);
+                    }));
                     let binary='';
                     for(let i=0;i<bytes.length;i+=8192) binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
-                    result.push({name:entry.score.name,review,durations,content:entry.score.content,
-                      peak,rms:Math.sqrt(power/samples.length),wav:btoa(binary)});
+                    let minimumWindow=Infinity;
+                    for(let from=16;from<seconds-16;from+=16) {
+                      let sum=0;
+                      for(let i=from*rate;i<(from+8)*rate;i++) sum+=channels[0][i]**2+channels[1][i]**2;
+                      minimumWindow=Math.min(minimumWindow,Math.sqrt(sum/(16*rate)));
+                    }
                     state.audio.stopSession(session);
-                  }
-                  return result;
+                    master.disconnect();
+                    return {name:entry.score.name,durations,content:entry.score.content,seconds,minimumWindow,
+                      peak,rms:Math.sqrt(power/(buffer.length*2)),wav:btoa(binary)};
                 }
-                """);
-        assertThat(excerpts).hasSizeGreaterThanOrEqualTo(5);
-        final Path output = Files.createDirectories(Path.of("target", "audio-review"));
-        for (final var excerpt : excerpts) {
+                """, List.of(key, full));
             assertThat(((Number) excerpt.get("peak")).doubleValue()).isBetween(.001, .95);
-            assertThat(((Number) excerpt.get("rms")).doubleValue()).isGreaterThan(.0001);
+            assertThat(((Number) excerpt.get("rms")).doubleValue()).as("Audible music at 100% master volume: " + key).isGreaterThan(.02);
+            if (full) assertThat(((Number) excerpt.get("minimumWindow")).doubleValue()).as("No silent gaps after scheduler refills: " + key).isGreaterThan(.0001);
             final String name = excerpt.get("name").toString().toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9]+", "-");
             Files.write(output.resolve(name + ".wav"), java.util.Base64.getDecoder().decode(excerpt.get("wav").toString()));
-            if (Boolean.TRUE.equals(excerpt.get("review"))) {
-                assertThat((List<?>) excerpt.get("durations")).allSatisfy(value -> assertThat(((Number) value).doubleValue()).isEqualTo(64));
-                Files.writeString(output.resolve(name + ".mml"), excerpt.get("content").toString());
-            }
+            final var durations = (List<Number>) excerpt.get("durations");
+            assertThat(durations).allSatisfy(value -> assertThat(value.doubleValue()).isCloseTo(durations.getFirst().doubleValue(), org.assertj.core.data.Offset.offset(.000001)));
+            Files.writeString(output.resolve(name + ".mml"), excerpt.get("content").toString());
+            System.out.printf("Audio review: %s; %.2f s; peak %.4f; RMS %.4f%n", name, ((Number) excerpt.get("seconds")).doubleValue(),
+                    ((Number) excerpt.get("peak")).doubleValue(), ((Number) excerpt.get("rms")).doubleValue());
         }
         assertThat(pageErrors).isEmpty();
     }

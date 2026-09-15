@@ -47,18 +47,18 @@
       <label class="check-line"><span>Reduced motion</span><input id="reduced-motion" type="checkbox"></label><p id="settings-status" role="status"></p></section>
       <section id="settings-sound" role="tabpanel" aria-labelledby="settings-sound-tab" hidden>
       <label class="check-line"><span>Effects</span><input id="audio-effects" type="checkbox"></label>
-      <label for="effects-volume">Effects volume</label><input id="effects-volume" type="range" min="0" max="1" step=".01" value=".35">
+      <label for="effects-volume">Effects volume <output id="effects-volume-value" for="effects-volume" aria-hidden="true">35%</output></label><input id="effects-volume" type="range" min="0" max="100" step="1" value="35">
       <details id="effect-choices"><summary>Event sounds</summary><div></div></details>
       <details id="sound-files"><summary>Sound files</summary>
         <label for="sound-file">File</label><select id="sound-file"></select>
         <label for="sound-id">Name and group path</label><input id="sound-id" type="text" value="new.mml" spellcheck="false" aria-describedby="sound-path-help"><p id="sound-path-help">Effects use <code>name.mml</code>; music groups use <code>music/group/name.mml</code>.</p>
         <label for="sound-instrument">Instrument preset</label><select id="sound-instrument"><option value="">Keep instrument line</option></select>
         <label for="sound-score">MML score</label><textarea id="sound-score" rows="8" spellcheck="false" aria-describedby="mml-help"></textarea>
-        <p id="mml-help">Use <code>name:</code>, <code>tempo:</code>, then parallel lines: <code>sine .3 .01 .1 | t120 o4 l8 /: c e g e :/4</code>. Notes a-g, r rests, [ceg] chords, octave o, length l, and bounded repeats <code>:/n</code> are supported. Optional before <code>|</code>: <code>decay=.18 sustain=.2 cutoff=1800</code> controls decay seconds, held level and filter Hz.</p>
+        <p id="mml-help">Use <code>name:</code>, <code>tempo:</code>, then parallel lines: <code>sine .3 .01 .1 | t120 o4 l8 /: c e g e :/4</code>. Notes a-g, r rests, [ceg] chords, octave o, length l, and bounded repeats <code>:/n</code> are supported. Optional before <code>|</code>: <code>decay=.18 sustain=.2 cutoff=1800</code> controls decay seconds, held level and filter Hz. <code>detune=7 drive=2 pan=-.3 echo=.2</code> adds oscillator spread (cents, 0-30), saturation (0-8), stereo position (-1 to 1) and beat-synced echoes (0-.5).</p>
         <nav aria-label="Sound files"><button id="sound-preview" type="button">Preview</button><button id="sound-save" type="button">Save</button><button id="sound-delete" type="button">Delete</button><button id="sound-download" type="button">Install copy</button><button id="sound-defaults" type="button">Install defaults</button></nav>
       </details></section>
       <section id="settings-music" role="tabpanel" aria-labelledby="settings-music-tab" hidden>
-      <label for="music-volume">Music volume</label><input id="music-volume" type="range" min="0" max="1" step=".01" value=".25">
+      <label for="music-volume">Music volume <output id="music-volume-value" for="music-volume" aria-hidden="true">25%</output></label><input id="music-volume" type="range" min="0" max="100" step="1" value="25">
       <label for="music-group">Music</label><select id="music-group"></select>
       <nav aria-label="Music playback"><button id="music-play" type="button" disabled><i class="hud-symbol" data-symbol="play" aria-hidden="true"></i><span>Play</span></button><button id="music-stop" type="button"><i class="hud-symbol" data-symbol="stop" aria-hidden="true"></i>Stop</button><button id="music-next" type="button" disabled><i class="hud-symbol" data-symbol="next" aria-hidden="true"></i>Next</button></nav>
       </section>

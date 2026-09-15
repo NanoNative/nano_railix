@@ -1696,7 +1696,6 @@ public final class CreatorServer implements AutoCloseable {
         String name = "";
         int tempo = 120;
         final List<RailixValue> tracks = new ArrayList<>();
-        int noteCount = 0;
         for (final String raw : lines) {
             final String line = raw.strip();
             if (line.isEmpty() || line.startsWith("#")) continue;
@@ -1727,8 +1726,6 @@ public final class CreatorServer implements AutoCloseable {
                 throw new IllegalArgumentException("MML track tempo conflicts with the score tempo header.");
             }
             final List<RailixValue> notes = sequence.notes();
-            noteCount += mmlNoteCount(notes);
-            if (noteCount > MAX_SOUND_NOTES) throw new IllegalArgumentException("MML exceeds the " + MAX_SOUND_NOTES + "-note limit.");
             final Map<String, RailixValue> track = new LinkedHashMap<>(Map.of("waveform", RailixValue.string(instrument[0]),
                     "volume", RailixValue.number(java.math.BigDecimal.valueOf(volume)),
                     "attack", RailixValue.number(java.math.BigDecimal.valueOf(attack)),
@@ -1743,8 +1740,15 @@ public final class CreatorServer implements AutoCloseable {
                     case "decay" -> mmlDecimal(option[1], option[0], 0, 2);
                     case "sustain" -> mmlDecimal(option[1], option[0], 0, 1);
                     case "cutoff" -> mmlDecimal(option[1], option[0], 40, 16000);
-                    default -> throw new IllegalArgumentException("MML tone controls are decay, sustain and cutoff.");
+                    case "detune" -> mmlDecimal(option[1], option[0], 0, 30);
+                    case "drive" -> mmlDecimal(option[1], option[0], 0, 8);
+                    case "pan" -> mmlDecimal(option[1], option[0], -1, 1);
+                    case "echo" -> mmlDecimal(option[1], option[0], 0, .5);
+                    default -> throw new IllegalArgumentException("MML tone controls are decay, sustain, cutoff, detune, drive, pan and echo.");
                 };
+                if (option[0].equals("detune") && value > 0 && Set.of("snare", "hat").contains(instrument[0])) {
+                    throw new IllegalArgumentException("MML detune requires a pitched instrument.");
+                }
                 track.put(option[0], RailixValue.number(java.math.BigDecimal.valueOf(value)));
             }
             tracks.add(RailixValue.object(track));
@@ -1800,7 +1804,6 @@ public final class CreatorServer implements AutoCloseable {
                 continue;
             }
             notes.add(mmlNote(token, octave, length));
-            if (notes.size() > MAX_SOUND_NOTES) throw new IllegalArgumentException("MML exceeds the " + MAX_SOUND_NOTES + "-note limit.");
         }
         if (!repeats.isEmpty()) throw new IllegalArgumentException("MML repeat is missing its :/count closer.");
         if (notes.isEmpty()) throw new IllegalArgumentException("MML instrument lines require at least one note or rest.");
@@ -1834,19 +1837,6 @@ public final class CreatorServer implements AutoCloseable {
         if (pitches.size() > 1) values.put("chord", RailixValue.array(pitches.subList(1, pitches.size()).stream()
                 .<RailixValue>map(value -> RailixValue.number(java.math.BigDecimal.valueOf(value))).toList()));
         return RailixValue.object(values);
-    }
-
-    private static int mmlNoteCount(final List<RailixValue> notes) {
-        int count = 0;
-        for (final RailixValue value : notes) {
-            final RailixValue.ObjectValue node = (RailixValue.ObjectValue) value;
-            if (node.values().containsKey("repeat")) {
-                count += Math.multiplyExact((int) number(node, "repeat"),
-                        mmlNoteCount(((RailixValue.ArrayValue) node.values().get("notes")).values()));
-            } else count++;
-            if (count > MAX_SOUND_NOTES) return count;
-        }
-        return count;
     }
 
     private static int mmlPitch(final char note, final int shift, final int octave, final String token) {

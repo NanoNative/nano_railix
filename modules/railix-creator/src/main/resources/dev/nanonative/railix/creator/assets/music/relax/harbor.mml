@@ -1,8 +1,13 @@
-name: Harbor Glass
-tempo: 68
-triangle .16 .008 .16 | o4 b@4 a@1 g@3 r@8 b@4 a@1 g@3 r@8 g@3 b@1 e@4 r@8 e@2 g@2 c@4 r@8
-triangle .23 .004 .09 | o2 g@1.5 g@.5 r@2 g@4 g@1.5 g@.5 r@2 g@4 g@1.5 g@.5 r@2 g@4 e@1.5 e@.5 r@2 e@4 e@1.5 e@.5 r@2 e@4 e@1.5 e@.5 r@2 e@4 c@1.5 c@.5 r@2 c@4 c@1.5 c@.5 r@2 c@4
-sine .06 .06 .24 | o3 [gbd]@8 [gbd]@8 [gbd]@8 [egb]@8 [egb]@8 [egb]@8 [ceg]@8 [ceg]@8
-kick .16 .002 .16 | o2 /: c@8 :/8
-snare .08 .001 .09 | r@2 /: c@4 :/15 r@2
-hat .045 .001 .035 | /: c@4 c@4 :/8
+name: Do Not Wake the Race Condition
+tempo: 72
+# Ambient pulse. Sleeping code should stay asleep until morning.
+# Form in 4-bar phrases: intro 2, theme 2, answer 2,
+# layered theme 2, breakdown 2, bridge 2, return 2, outro 2.
+# Voices: lead, bass, harmony, answering arpeggio, kick, snare, hat.
+triangle .23 .05 .5 decay=.4 sustain=.25 cutoff=1400 detune=4 pan=.1 echo=.32 | /: r@16 :/2 /: o4 b@2 a@1 g@1 d@2 e@1 g@1 a@2 b@1 d@1 g@2 r@2 :/2 /: o4 e@2 g@1 b@1 a@2 g@2 f+@1 a@1 d@2 e@2 r@2 :/2 /: o4 b@2 a@1 g@1 d@2 e@1 g@1 a@2 b@1 d@1 g@2 r@2 :/2 /: r@16 :/2 /: o5 d@2 o4 b@1 a@1 g@2 e@2 c@2 e@1 g@1 a@2 g@2 :/2 o4 b@2 a@1 g@1 d@2 e@1 g@1 a@2 b@1 d@1 g@2 r@2 o5 d@2 o4 b@1 a@1 g@2 e@2 c@2 e@1 g@1 a@2 g@2 /: o4 g@4 r@12 :/2
+sine .4 .025 .3 decay=.4 sustain=.3 cutoff=400 | /: r@8 o2 g@4 g@4 :/2 /: o2 g@3 r@1 e@3 r@1 c@3 r@1 d@3 r@1 :/2 /: o2 c@3 r@1 d@3 r@1 g@3 r@1 e@3 r@1 :/2 /: o2 g@3 r@1 e@3 r@1 c@3 r@1 d@3 r@1 :/2 /: o2 g@4 r@12 :/2 /: o2 e@3 r@1 d@3 r@1 g@3 r@1 g@3 r@1 :/2 /: o2 g@3 r@1 e@3 r@1 c@3 r@1 d@3 r@1 :/2 /: o2 g@4 r@12 :/2
+sawtooth .085 .7 1.5 cutoff=380 detune=10 pan=-.2 echo=.22 | /: o3 [gbd]@16 :/2 /: o3 [gbd]@4 [egb]@4 [ceg]@4 [df+a]@4 :/2 /: o3 [ceg]@4 [df+a]@4 [gbd]@4 [egb]@4 :/2 /: o3 [gbd]@4 [egb]@4 [ceg]@4 [df+a]@4 :/2 /: o3 [egb]@8 [df+a]@8 :/2 /: o3 [egb]@4 [df+a]@4 [gbd]@4 [gbd]@4 :/2 /: o3 [gbd]@4 [egb]@4 [ceg]@4 [df+a]@4 :/2 /: o3 [gbd]@16 :/2
+sine .09 .02 .5 decay=.2 sustain=.12 cutoff=2000 pan=.5 echo=.3 | /: r@16 :/2 /: r@16 :/2 /: o5 c@.5 e@.5 g@.5 e@.5 r@1 c@1 d@.5 f+@.5 a@.5 f+@.5 r@1 d@1 g@.5 b@.5 d@.5 b@.5 r@1 g@1 e@.5 g@.5 b@.5 g@.5 r@1 e@1 :/2 /: o5 g@.5 b@.5 d@.5 b@.5 r@1 g@1 e@.5 g@.5 b@.5 g@.5 r@1 e@1 c@.5 e@.5 g@.5 e@.5 r@1 c@1 d@.5 f+@.5 a@.5 f+@.5 r@1 d@1 :/2 /: o5 g@2 r@14 :/2 /: o5 e@.5 g@.5 b@.5 g@.5 r@1 e@1 d@.5 f+@.5 a@.5 f+@.5 r@1 d@1 g@.5 b@.5 d@.5 b@.5 r@1 g@1 g@.5 b@.5 d@.5 b@.5 r@1 g@1 :/2 /: o5 g@.5 b@.5 d@.5 b@.5 r@1 g@1 e@.5 g@.5 b@.5 g@.5 r@1 e@1 c@.5 e@.5 g@.5 e@.5 r@1 c@1 d@.5 f+@.5 a@.5 f+@.5 r@1 d@1 :/2 /: r@16 :/2
+kick .48 .002 .16 cutoff=1200 drive=.6 | /: r@8 o2 c@4 c@4 :/2 /: o2 c@4 r@4 c@4 r@4 :/2 /: o2 c@4 r@4 c@4 r@4 :/2 /: o2 c@4 r@4 c@4 r@4 :/2 /: r@8 o2 c@4 c@4 :/2 /: o2 c@4 r@4 c@4 r@4 :/2 /: o2 c@4 r@4 c@4 r@4 :/2 /: o2 c@2 r@14 :/2
+snare .17 .001 .1 cutoff=1100 pan=.12 | /: r@16 :/2 /: r@3 c@1 r@7 c@1 r@4 :/2 /: r@3 c@1 r@7 c@1 r@4 :/2 /: r@3 c@1 r@7 c@1 r@4 :/2 /: r@16 :/2 /: r@3 c@1 r@7 c@1 r@4 :/2 /: r@3 c@1 r@7 c@1 r@4 :/2 /: r@16 :/2
+hat .045 .001 .035 pan=-.35 | /: r@16 :/2 /: /: r@1 c@1 r@2 :/4 :/2 /: /: r@1 c@1 r@2 :/4 :/2 /: /: r@1 c@1 r@2 :/4 :/2 /: r@16 :/2 /: /: r@1 c@1 r@2 :/4 :/2 /: /: r@1 c@1 r@2 :/4 :/2 /: r@16 :/2

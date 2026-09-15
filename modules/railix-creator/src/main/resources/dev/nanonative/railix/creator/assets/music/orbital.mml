@@ -1,8 +1,13 @@
-name: Orbital Assembly
-tempo: 108
-triangle .20 .008 .16 | o4 e@3 g@1 b@4 r@8 e@3 g@1 b@4 r@8 g@1 e@3 c@4 r@8 g@1 e@3 c@4 r@8 a@2 f@2 e@4 r@8 a@2 f@2 e@4 r@8
-triangle .23 .004 .09 | o2 e@1.5 e@.5 r@2 e@4 e@1.5 e@.5 r@2 e@4 e@1.5 e@.5 r@2 e@4 e@1.5 e@.5 r@2 e@4 c@1.5 c@.5 r@2 c@4 c@1.5 c@.5 r@2 c@4 c@1.5 c@.5 r@2 c@4 c@1.5 c@.5 r@2 c@4 d@1.5 d@.5 r@2 d@4 d@1.5 d@.5 r@2 d@4 d@1.5 d@.5 r@2 d@4 d@1.5 d@.5 r@2 d@4
-sine .06 .06 .24 | o3 [egb]@8 [egb]@8 [egb]@8 [egb]@8 [ceg]@8 [ceg]@8 [ceg]@8 [ceg]@8 [dfa]@8 [dfa]@8 [dfa]@8 [dfa]@8
-kick .45 .002 .16 | o2 /: c@3 c@1 c@4 :/12
-snare .18 .001 .09 | r@2 /: c@4 :/16 /: c@4 :/7 r@2
-hat .08 .001 .035 | /: c@2 c@2 c@2 c@2 :/12
+name: Wrong Database
+tempo: 110
+# Industrial breakbeat. Correct command. Catastrophic connection string.
+# Form in 4-bar phrases: intro 2, theme 4, answer 4,
+# layered theme 4, breakdown 2, bridge 3, return 4, outro 1.
+# Voices: lead, bass, harmony, answering arpeggio, kick, snare, hat.
+sawtooth .27 .007 .08 decay=.11 sustain=.18 cutoff=1600 detune=4 drive=3 pan=.12 echo=.16 | /: r@16 :/2 /: o3 e@.75 e@.25 g@1 a@.5 b@.5 e@1 o4 d@.5 e@.5 d@1 o3 b@1 a@1 g@.5 a@.5 b@1 a@.5 g@.5 e@1 d@1 e@.5 g@.5 e@2 :/4 /: o4 g@1 e@.5 d@.5 o3 b@1 g@1 a@.75 b@.25 o4 d@1 e@2 d@.5 e@.5 g@1 a@1 g@1 e@1 d@.5 o3 b@.5 a@1 e@1 :/4 /: o3 e@.75 e@.25 g@1 a@.5 b@.5 e@1 o4 d@.5 e@.5 d@1 o3 b@1 a@1 g@.5 a@.5 b@1 a@.5 g@.5 e@1 d@1 e@.5 g@.5 e@2 :/4 /: r@16 :/2 /: o4 e@.5 d@.5 o3 b@.5 a@.5 g@1 e@1 f+@1 a@1 b@.75 a@.25 f+@1 g@1 b@.5 o4 d@.5 e@2 d@1 o3 b@1 e@2 :/3 /: o3 e@.75 e@.25 g@1 a@.5 b@.5 e@1 o4 d@.5 e@.5 d@1 o3 b@1 a@1 g@.5 a@.5 b@1 a@.5 g@.5 e@1 d@1 e@.5 g@.5 e@2 o4 e@.5 d@.5 o3 b@.5 a@.5 g@1 e@1 f+@1 a@1 b@.75 a@.25 f+@1 g@1 b@.5 o4 d@.5 e@2 d@1 o3 b@1 e@2 :/2 o4 e@4 r@12
+sawtooth .52 .003 .07 decay=.1 sustain=.03 cutoff=480 drive=4 | /: r@8 o2 e@4 e@4 :/2 /: o2 e@.75 e@.25 b@1 e@2 c@.75 c@.25 g@1 c@2 g@.75 g@.25 d@1 g@2 d@.75 d@.25 a@1 d@2 :/4 /: o2 g@.75 g@.25 d@1 g@2 d@.75 d@.25 a@1 d@2 e@.75 e@.25 b@1 e@2 c@.75 c@.25 g@1 c@2 :/4 /: o2 e@.75 e@.25 b@1 e@2 c@.75 c@.25 g@1 c@2 g@.75 g@.25 d@1 g@2 d@.75 d@.25 a@1 d@2 :/4 /: o2 e@4 r@12 :/2 /: o2 c@.75 c@.25 g@1 c@2 d@.75 d@.25 a@1 d@2 e@.75 e@.25 b@1 e@2 e@.75 e@.25 b@1 e@2 :/3 /: o2 e@.75 e@.25 b@1 e@2 c@.75 c@.25 g@1 c@2 g@.75 g@.25 d@1 g@2 d@.75 d@.25 a@1 d@2 :/4 o2 e@4 r@12
+triangle .07 .16 .7 cutoff=950 pan=-.25 echo=.13 | /: o3 [egb]@16 :/2 /: o3 [egb]@4 [ceg]@4 [gbd]@4 [df+a]@4 :/4 /: o3 [gbd]@4 [df+a]@4 [egb]@4 [ceg]@4 :/4 /: o3 [egb]@4 [ceg]@4 [gbd]@4 [df+a]@4 :/4 /: o3 [ceg]@8 [df+a]@8 :/2 /: o3 [ceg]@4 [df+a]@4 [egb]@4 [egb]@4 :/3 /: o3 [egb]@4 [ceg]@4 [gbd]@4 [df+a]@4 :/4 o3 [egb]@16
+square .07 .008 .08 decay=.1 sustain=.03 cutoff=1600 pan=-.4 echo=.2 | /: r@16 :/2 /: r@16 :/4 /: o5 g@.5 b@.5 d@.5 b@.5 r@1 g@1 d@.5 f+@.5 a@.5 f+@.5 r@1 d@1 e@.5 g@.5 b@.5 g@.5 r@1 e@1 c@.5 e@.5 g@.5 e@.5 r@1 c@1 :/4 /: o5 e@.5 g@.5 b@.5 g@.5 r@1 e@1 c@.5 e@.5 g@.5 e@.5 r@1 c@1 g@.5 b@.5 d@.5 b@.5 r@1 g@1 d@.5 f+@.5 a@.5 f+@.5 r@1 d@1 :/4 /: o5 e@2 r@14 :/2 /: o5 c@.5 e@.5 g@.5 e@.5 r@1 c@1 d@.5 f+@.5 a@.5 f+@.5 r@1 d@1 e@.5 g@.5 b@.5 g@.5 r@1 e@1 e@.5 g@.5 b@.5 g@.5 r@1 e@1 :/3 /: o5 e@.5 g@.5 b@.5 g@.5 r@1 e@1 c@.5 e@.5 g@.5 e@.5 r@1 c@1 g@.5 b@.5 d@.5 b@.5 r@1 g@1 d@.5 f+@.5 a@.5 f+@.5 r@1 d@1 :/4 r@16
+kick .8 .002 .16 cutoff=1600 drive=1.4 | /: r@8 o2 c@4 c@4 :/2 /: o2 /: c@1 c@.5 r@.5 c@1.5 c@.5 :/4 :/4 /: o2 /: c@1 c@.5 r@.5 c@1.5 c@.5 :/4 :/4 /: o2 /: c@1 c@.5 r@.5 c@1.5 c@.5 :/4 :/4 /: r@8 o2 c@4 c@4 :/2 /: o2 /: c@1 c@.5 r@.5 c@1.5 c@.5 :/4 :/3 /: o2 /: c@1 c@.5 r@.5 c@1.5 c@.5 :/4 :/4 o2 c@2 r@14
+snare .38 .001 .11 drive=.7 pan=.08 | /: r@16 :/2 /: /: r@1 c@2 c@1 :/4 :/4 /: /: r@1 c@2 c@1 :/4 :/4 /: /: r@1 c@2 c@1 :/4 :/4 /: r@16 :/2 /: /: r@1 c@2 c@1 :/4 :/3 /: /: r@1 c@2 c@1 :/4 :/4 r@16
+hat .11 .001 .045 pan=-.35 echo=.12 | /: r@16 :/2 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/4 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/4 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/4 /: r@16 :/2 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/3 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/4 r@16
