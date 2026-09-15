@@ -573,9 +573,11 @@ marks; no game assets or simulation mechanics are imported.
 Audio is owned solely by Creator. Effects default on; quiet music waits for a user gesture and
 respects a persisted mute. Editable MML text and existing JSON inputs parse into one validated score
 model for selection effects, ambient loops and music; no code evaluation, binary media or second
-synthesizer is supported. Instruments reuse their voices throughout their notes. Hidden pages stop and
-release contexts; explicit Play resumes listening. Pause suspends the current music context without
-advancing the playlist. Settings edits bounded score files; the first music subfolder names its group.
+synthesizer is supported. Instruments reuse their voices throughout their notes. Hidden pages suspend
+the music context and its scheduler, preserving the track, position and shuffle queue without changing
+the playback preference. Returning resumes only enabled, non-manually-paused music. Effects and
+previews release their contexts on hide; Stop and page disposal also release music. Explicit Pause
+suspends music without advancing the playlist. Settings edits bounded score files; the first music subfolder names its group.
 `GET /api/sounds` lists scores, diagnostics and a revision; authenticated `POST /api/sounds` saves,
 deletes or installs defaults. Revisions hash the current local sources; mutations use a shared
 filesystem lock and reject stale revisions across Creator instances and external edits observed
@@ -587,14 +589,32 @@ directories are created by moving an owned temporary directory into the pinned p
 cross-filesystem moves fail explicitly instead of falling back to symlink-following path writes.
 Read and delete requests never create directories. Legacy score-to-text conversion is owned once by
 the server catalog boundary, shared by installation and editing; the browser only plays validated scores.
-Malformed local scores do not hide healthy entries. Score size, track count, notes, envelopes
-and note duration are bounded at ingress. These are audio resource bounds, not project-size limits.
+Malformed local scores do not hide healthy entries. Score size, track count, repeat depth/count,
+envelopes and note duration are bounded at ingress. MML repeats remain a compact tree: playback
+walks them lazily instead of expanding or capping the total played notes. Legacy version-1 JSON
+keeps its 256-note bound. These are audio resource bounds, not project-size limits.
+One scheduler uses the audio clock for music, previews and ambience, queues onsets only two seconds
+ahead and refills every 250 ms. A started note retains its full envelope. Late callbacks skip expired
+notes rather than producing a burst and resume the remainder of a still-active sustained note without
+moving its original end; missed percussion attacks are discarded. A stall beyond the lookahead can
+still interrupt audio before the callback recovers. The future event queue is bounded by this window;
+catching up after a foreground stall still traverses the elapsed notes.
+Pause suspends the clock and refill timer, and Resume restarts
+the same cursors. Looping tracks restart on a shared score boundary. Stop cancels the timer.
 Optional named MML controls `decay`, `sustain` and `cutoff` shape tonal envelopes and filtered
-timbres. Ingress rejects duplicate, unknown and nonfinite controls. One filter is retained per
-filtered voice, never created per note; scores without these controls keep their prior envelope.
-The listening sample is rendered from that same validated score and synthesizer, not a separate
-audio asset or alternate playback path.
+timbres; `detune`, `drive`, `pan` and `echo` add paired pitched oscillators, saturation, stereo
+placement and two finite beat-synced delay taps without feedback. Ingress rejects duplicate,
+unknown, out-of-range and nonfinite controls. Filters and oscillators are retained per voice;
+panning and delays are shared per track, never created per note. Echo routing reserves output
+headroom and completion includes its tail. Stop disconnects all voices and routing nodes.
+Scores without these controls keep their prior sound. No dependency is added.
+Listening checks render the same validated scores and scheduler using controlled offline-clock
+advancement, not a separate audio asset or alternate playback path. Eight full-length embedded
+instrumentals replace the short previews; their existing paths remain stable for saved selections.
 No per-Step audio source, media endpoint or audio code is added to the generated application.
+Volume controls display percentages while retaining the existing 0-1 preference values. Music uses
+that value directly as its master gain; score mixing already supplies headroom. No second attenuation
+cap is applied. Full-track render checks include the music master at 100%, not only the raw synth.
 
 Long sequential regions retain forward lanes; visual row folding and its special U-turn routing
 were removed after user review. Actual branches provide additional lanes. Partitioning retains

@@ -1094,7 +1094,7 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
             final var response = request(creator.baseUri(), "GET", "/api/sounds", "");
 
             assertThat(response.statusCode()).isEqualTo(200);
-            assertThat(response.body()).contains("Orbital Assembly", "Relay Garden", "Foundry Signal", "\"version\":2", "sounds/broken.mml")
+            assertThat(response.body()).contains("Wrong Database", "Temporary Forever", "Circuit Drive", "\"version\":2", "sounds/broken.mml")
                     .doesNotContain("legacy.wav");
         }
     }
@@ -1145,18 +1145,43 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
 
     @Test
     void mmlToneParametersRoundTripAndRejectInvalidOrDuplicateControls() throws Exception {
-        final String source = "name: Pluck\ntempo: 108\nsawtooth .2 .004 .12 decay=.18 sustain=.2 cutoff=1800 | o4 a4 e4";
+        final String controls = "decay=.18 sustain=.2 cutoff=1800 detune=7 drive=2 pan=-.3 echo=.2";
+        final String source = "name: Pluck\ntempo: 108\nsawtooth .2 .004 .12 " + controls + " | o4 a4 e4";
         try (CreatorServer creator = start(directory.resolve("project.json"))) {
             final String body = RailixJson.write(RailixValue.object(java.util.Map.of("action", RailixValue.string("preview"),
                     "content", RailixValue.string(source))));
             final var accepted = request(creator.baseUri(), "POST", "/api/sounds", body);
             assertThat(accepted.statusCode()).as(accepted.body()).isEqualTo(200);
-            assertThat(accepted.body()).contains("\"decay\":0.18", "\"sustain\":0.2", "\"cutoff\":1800");
+            assertThat(accepted.body()).contains("\"decay\":0.18", "\"sustain\":0.2", "\"cutoff\":1800",
+                    "\"detune\":7", "\"drive\":2", "\"pan\":-0.3", "\"echo\":0.2");
             for (final String invalid : List.of("decay=-1", "sustain=2", "cutoff=NaN", "cutoff=Infinity",
-                    "cutoff=0", "cutoff=16001", "cutoff=800 cutoff=1200", "unknown=1")) {
-                final String invalidBody = body.replace("decay=.18 sustain=.2 cutoff=1800", invalid);
+                    "cutoff=0", "cutoff=16001", "cutoff=800 cutoff=1200", "unknown=1", "detune=-1",
+                    "detune=31", "drive=9", "pan=1.1", "echo=.6", "pan=NaN", "echo=.1 echo=.2")) {
+                final String invalidBody = body.replace(controls, invalid);
                 assertThat(request(creator.baseUri(), "POST", "/api/sounds", invalidBody).statusCode()).as(invalid).isEqualTo(400);
             }
+            for (final String percussion : List.of("snare", "hat")) {
+                final var invalid = request(creator.baseUri(), "POST", "/api/sounds", body.replace("sawtooth", percussion));
+                assertThat(invalid.statusCode()).isEqualTo(400);
+                assertThat(invalid.body()).contains("detune requires a pitched instrument");
+            }
+        }
+    }
+
+    @Test
+    void longMmlScoresKeepRepeatsCompactWhenSavedAndLoaded() throws Exception {
+        final Path home = directory.resolve("home");
+        final String source = "name: Long arrangement\ntempo: 120\nsawtooth .2 .01 .1 | o4 /: /: c8 e8 g8 e8 :/16 :/16";
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final String body = RailixJson.write(RailixValue.object(java.util.Map.of("action", RailixValue.string("save"),
+                    "id", RailixValue.string("music/long.mml"), "content", RailixValue.string(source))));
+            final var saved = soundMutation(creator.baseUri(), body);
+            assertThat(saved.statusCode()).as(saved.body()).isEqualTo(200);
+            assertThat(Files.readString(home.resolve("music/long.mml"))).isEqualTo(source);
+            final var preview = request(creator.baseUri(), "POST", "/api/sounds",
+                    "{\"action\":\"preview\",\"content\":" + RailixJson.write(RailixValue.string(source)) + "}");
+            assertThat(preview.statusCode()).as(preview.body()).isEqualTo(200);
+            assertThat(preview.body()).contains("\"repeat\":16").hasSizeLessThan(1200);
         }
     }
 

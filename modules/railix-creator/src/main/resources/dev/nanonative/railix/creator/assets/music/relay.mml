@@ -1,8 +1,13 @@
-name: Relay Garden
-tempo: 96
-triangle .20 .008 .16 | o4 a@2 e@1 c@5 r@8 a@2 e@1 c@5 r@8 c@3 a@1 g@4 r@8 c@3 a@1 g@4 r@8 e@1 g@3 c@4 r@8 e@1 g@3 c@4 r@8
-triangle .23 .004 .09 | o2 a@1.5 a@.5 r@2 a@4 a@1.5 a@.5 r@2 a@4 a@1.5 a@.5 r@2 a@4 a@1.5 a@.5 r@2 a@4 f@1.5 f@.5 r@2 f@4 f@1.5 f@.5 r@2 f@4 f@1.5 f@.5 r@2 f@4 f@1.5 f@.5 r@2 f@4 c@1.5 c@.5 r@2 c@4 c@1.5 c@.5 r@2 c@4 c@1.5 c@.5 r@2 c@4 c@1.5 c@.5 r@2 c@4
-sine .06 .06 .24 | o3 [ace]@8 [ace]@8 [ace]@8 [ace]@8 [fac]@8 [fac]@8 [fac]@8 [fac]@8 [ceg]@8 [ceg]@8 [ceg]@8 [ceg]@8
-kick .45 .002 .16 | o2 /: c@4 c@4 :/12
-snare .18 .001 .09 | r@2 /: c@4 :/16 /: c@4 :/7 r@2
-hat .08 .001 .035 | /: c@2 c@2 c@2 c@2 :/12
+name: Temporary Forever
+tempo: 100
+# Warm downtempo funk. Temporary fix. Permanent resident.
+# Form in 4-bar phrases: intro 1, theme 4, answer 3,
+# layered theme 4, breakdown 2, bridge 3, return 4, outro 1.
+# Voices: lead, bass, harmony, answering arpeggio, kick, snare, hat.
+triangle .32 .006 .16 decay=.18 sustain=.14 cutoff=2800 detune=5 drive=.8 pan=-.1 echo=.22 | r@16 /: o4 a@.75 c@.25 e@1 g@.5 e@.5 c@1 a@1 e@.5 g@.5 a@1 r@1 c@.5 e@.5 g@1 e@1 c@1 d@.75 e@.25 g@1 a@2 :/4 /: o4 f@1 a@.5 c@.5 e@1 c@1 d@.5 e@.5 a@1 g@.5 e@.5 d@1 c@1 e@1 g@.75 a@.25 g@1 e@.5 d@.5 c@1 a@2 :/3 /: o4 a@.75 c@.25 e@1 g@.5 e@.5 c@1 a@1 e@.5 g@.5 a@1 r@1 c@.5 e@.5 g@1 e@1 c@1 d@.75 e@.25 g@1 a@2 :/4 /: r@16 :/2 /: o5 c@1 o4 b@.5 a@.5 g@1 e@1 f@1 a@1 g@.5 e@.5 d@1 e@1 g@.5 a@.5 o5 c@1 o4 a@1 g@1 e@1 a@2 :/3 /: o4 a@.75 c@.25 e@1 g@.5 e@.5 c@1 a@1 e@.5 g@.5 a@1 r@1 c@.5 e@.5 g@1 e@1 c@1 d@.75 e@.25 g@1 a@2 o5 c@1 o4 b@.5 a@.5 g@1 e@1 f@1 a@1 g@.5 e@.5 d@1 e@1 g@.5 a@.5 o5 c@1 o4 a@1 g@1 e@1 a@2 :/2 o4 a@4 r@12
+triangle .5 .004 .1 decay=.15 sustain=.08 cutoff=900 drive=1.6 | r@8 o2 a@4 a@4 /: o2 a@.75 a@.25 e@1 a@2 f@.75 f@.25 c@1 f@2 c@.75 c@.25 g@1 c@2 g@.75 g@.25 d@1 g@2 :/4 /: o2 c@.75 c@.25 g@1 c@2 g@.75 g@.25 d@1 g@2 a@.75 a@.25 e@1 a@2 f@.75 f@.25 c@1 f@2 :/3 /: o2 a@.75 a@.25 e@1 a@2 f@.75 f@.25 c@1 f@2 c@.75 c@.25 g@1 c@2 g@.75 g@.25 d@1 g@2 :/4 /: o2 a@4 r@12 :/2 /: o2 f@.75 f@.25 c@1 f@2 g@.75 g@.25 d@1 g@2 a@.75 a@.25 e@1 a@2 a@.75 a@.25 e@1 a@2 :/3 /: o2 a@.75 a@.25 e@1 a@2 f@.75 f@.25 c@1 f@2 c@.75 c@.25 g@1 c@2 g@.75 g@.25 d@1 g@2 :/4 o2 a@4 r@12
+sawtooth .075 .3 .9 cutoff=520 detune=9 pan=.3 echo=.16 | o3 [ace]@16 /: o3 [ace]@4 [fac]@4 [ceg]@4 [gbd]@4 :/4 /: o3 [ceg]@4 [gbd]@4 [ace]@4 [fac]@4 :/3 /: o3 [ace]@4 [fac]@4 [ceg]@4 [gbd]@4 :/4 /: o3 [fac]@8 [gbd]@8 :/2 /: o3 [fac]@4 [gbd]@4 [ace]@4 [ace]@4 :/3 /: o3 [ace]@4 [fac]@4 [ceg]@4 [gbd]@4 :/4 o3 [ace]@16
+triangle .12 .006 .12 decay=.1 sustain=.06 cutoff=2500 pan=.45 echo=.25 | r@16 /: r@16 :/4 /: o5 c@.5 e@.5 g@.5 e@.5 r@1 c@1 g@.5 b@.5 d@.5 b@.5 r@1 g@1 a@.5 c@.5 e@.5 c@.5 r@1 a@1 f@.5 a@.5 c@.5 a@.5 r@1 f@1 :/3 /: o5 a@.5 c@.5 e@.5 c@.5 r@1 a@1 f@.5 a@.5 c@.5 a@.5 r@1 f@1 c@.5 e@.5 g@.5 e@.5 r@1 c@1 g@.5 b@.5 d@.5 b@.5 r@1 g@1 :/4 /: o5 a@2 r@14 :/2 /: o5 f@.5 a@.5 c@.5 a@.5 r@1 f@1 g@.5 b@.5 d@.5 b@.5 r@1 g@1 a@.5 c@.5 e@.5 c@.5 r@1 a@1 a@.5 c@.5 e@.5 c@.5 r@1 a@1 :/3 /: o5 a@.5 c@.5 e@.5 c@.5 r@1 a@1 f@.5 a@.5 c@.5 a@.5 r@1 f@1 c@.5 e@.5 g@.5 e@.5 r@1 c@1 g@.5 b@.5 d@.5 b@.5 r@1 g@1 :/4 r@16
+kick .8 .002 .16 cutoff=1600 drive=1.4 | r@8 o2 c@4 c@4 /: o2 /: c@1.5 r@.5 c@.75 c@1.25 :/4 :/4 /: o2 /: c@1.5 r@.5 c@.75 c@1.25 :/4 :/3 /: o2 /: c@1.5 r@.5 c@.75 c@1.25 :/4 :/4 /: r@8 o2 c@4 c@4 :/2 /: o2 /: c@1.5 r@.5 c@.75 c@1.25 :/4 :/3 /: o2 /: c@1.5 r@.5 c@.75 c@1.25 :/4 :/4 o2 c@2 r@14
+snare .38 .001 .11 drive=.7 pan=.08 | r@16 /: /: r@1 c@2 c@1 :/4 :/4 /: /: r@1 c@2 c@1 :/4 :/3 /: /: r@1 c@2 c@1 :/4 :/4 /: r@16 :/2 /: /: r@1 c@2 c@1 :/4 :/3 /: /: r@1 c@2 c@1 :/4 :/4 r@16
+hat .11 .001 .045 pan=-.35 echo=.12 | r@16 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/4 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/3 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/4 /: r@16 :/2 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/3 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/4 r@16

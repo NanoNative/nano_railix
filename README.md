@@ -529,14 +529,17 @@ stays open while it or its native dropdown owns keyboard focus.
 playback rather than open more settings panels. Effects default on; quiet background music starts
 after a browser interaction. Explicit mute preferences remain respected. Close-up working machines
 have quiet ambience; selecting a machine gives a state-dependent cue.
+Volume controls show 0-100%; music at 100% uses the full mixed signal without an extra attenuation cap.
+The default music setting remains 25%, and existing saved levels are retained.
 Editable sound files use declarative MML text under `~/.railix/sounds/`, never executable code or binary
 audio. Embedded defaults remain available independently of local files.
 Music scores under `~/.railix/music/` form a shuffled playlist. The first subfolder is the selectable
 music group; root music is Ungrouped. Embedded and local scores coexist, including identical filenames.
 Choose all tracks, a group or one track; **Event sounds** assigns effects to individual events.
 Choose a local version there to replace an embedded event sound. Eight embedded arrangements combine
-percussion, bass figures and melodic phrases, with quiet, electronic and swing material;
-musical preference remains subjective.
+percussion, bass figures and melodic phrases across industrial, electro, trance, swing and quieter
+styles. Each lasts roughly 3.5 minutes, with sections and developer-humour titles rather than speech
+or borrowed samples. The eight text scores total about 26 KiB; musical preference remains subjective.
 Settings can create, edit and delete scores. **Install defaults** writes
 editable copies without replacing existing files. Reopening Settings refreshes the catalog without
 discarding an unfinished editor draft. Content revisions and a shared filesystem lock reject stale
@@ -548,7 +551,9 @@ are read-only originals; edit and save a local MML copy. Existing version-1 JSON
 and are not rewritten merely by opening the editor. Old `sounds/music/` files remain readable;
 new writes and installs use the separate `music/` root. MML overrides win over legacy JSON sources;
 deleting an override can reveal the preserved legacy source again.
-Play/Pause retains the same composition; Stop and hidden-page cleanup release its audio resources.
+Play/Pause retains the same composition. Hidden tabs suspend the music clock and scheduler,
+then resume the same track and position when visible; manual pause and mute remain respected.
+Effects and editor previews release their resources when hidden. Stop or closing the page releases music too.
 Next and automatic completion advance the shuffled playlist. Instrument voices are reused across
 notes, and no per-Step sound source is retained. Audio is solely a Creator capability.
 Creating a missing music group uses a secure directory move. Filesystems that cannot move the
@@ -557,14 +562,24 @@ temporary directory atomically report an error; create the group folder locally 
 Each score has a name, tempo (40-240 BPM) and 1-8 parallel instrument lines. Before `|` are instrument,
 volume, attack and release; after it are notes `a`-`g`, rests `r`, octave `o`, default length `l`,
 chords in brackets and repeats `/: ... :/N`. An explicit `@` duration is measured in beats.
-Files are limited to 64 KiB and 256 expanded note events to bound synthesis work, not project size.
+MML files are limited to 64 KiB; repeats use 1-16 passes and at most three nesting levels.
+Repeated notes are not expanded into an array or limited to 256 events. Playback schedules note
+onsets within a rolling two-second window, sharing the same clock across instruments. Pause freezes
+that clock; Stop cancels scheduling and releases voices. Legacy version-1 JSON retains its 256-note bound.
 Instruments are `sine`, `square`, `sawtooth`, `triangle`, `kick`, `snare` and `hat`.
 Optional `decay=.18 sustain=.2 cutoff=1800` before `|` controls tonal decay in seconds,
-the held amplitude fraction and filter frequency in Hz. Existing scores retain their envelope.
+the held amplitude fraction and filter frequency in Hz. Optional `detune=7 drive=2 pan=-.3 echo=.2`
+adds a paired oscillator spread in cents (0-30, pitched instruments only), saturation (0-8),
+stereo position (-1 left to 1 right) and two beat-synced echo taps (0-.5).
+These effects share reusable voices and per-track routing, not new sources per note.
+Scores without these controls keep their previous sound.
 Instrument presets are derived from the catalog, including these optional controls.
 Percussion decays within the note's duration; longer durations leave silence between hits.
 Kick pitch follows the note. Snare and hi-hat use fixed filtered noise, synthesized locally and
 shared within each audio context, not loaded from audio files.
+For full-length rendered listening checks, run `CreatorEditorBrowserIT#embeddedMusicRendersAudibleUnclippedReviewExcerpts`
+with `-Drailix.audio.review.full=true`; otherwise it renders short excerpts. Review WAV/MML files go
+under `modules/railix-creator/target/audio-review/`, not into the distributed Creator assets.
 
 ```text
 name: Arrival
@@ -761,6 +776,11 @@ the reusable Step template remain roadmap Item 4.
 The reactor has three production modules and no third-party Java runtime library.
 
 ## Pull Requests
+
+Start with [AGENTS.md](AGENTS.md) for the shared development workflow and project-local skills
+in [`.agents/skills/`](.agents/skills/). These cover Java/compiler work, CSS and Canvas UI,
+asset extensions, music/sound design, and verification. These ordinary repository files need no
+global skill installation and can also be read directly by tools without skill discovery.
 
 Import and build the root `pom.xml`; there is no second build system or module-specific setup.
 Change the smallest owning module: keep contracts and generated-application runtime capabilities in

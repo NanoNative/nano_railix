@@ -1,15 +1,13 @@
-name: Foundry Signal
-tempo: 108
-# 16 bars: two-bar entrance, eight-bar theme, four-bar response, two-bar ending.
-# Lead: a repeating A-minor motif with an answering phrase, not randomized pitches.
-triangle .30 .006 .11 decay=.16 sustain=.24 cutoff=2400 | r@8 o4 e8 a8 o5 c4 o4 b8 a8 g4 e4 g8 a8 e2 f8 a8 o5 c4 d8 c8 o4 a4 g4 e4 c2 o5 e8 d8 c4 o4 b8 a8 g4 a4 e4 c4 e4 f8 a8 o5 c4 o4 a4 g4 e4 g4 a2 o5 c4 e8 d8 c4 o4 a4 o5 d4 c4 o4 g2 a8 b8 o5 c4 d4 c4 o4 b4 g4 a2 r4 e4 a2 r@4
-# Bass: short, filtered attacks; the same pulse follows the chord progression.
-sawtooth .36 .005 .08 decay=.12 sustain=.12 cutoff=650 | r@8 o2 /: a@1.5 a@.5 e@2 :/2 /: f@1.5 f@.5 c@2 :/2 /: o3 c@1.5 c@.5 o2 g@2 :/2 /: g@1.5 g@.5 d@2 :/2 a@1.5 a@.5 e@2 f@1.5 f@.5 c@2 o3 c@1.5 c@.5 o2 g@2 g@1.5 g@.5 d@2 a@4 e@2 a@2
-# Warm chord bed: Am / F / C / G, with a resolved Am ending.
-triangle .13 .12 .4 decay=.4 sustain=.5 cutoff=1200 | o3 [ace]@8 [ace]@8 [fac]@8 [ceg]@8 [gbd]@8 [ace]@4 [fac]@4 [ceg]@4 [gbd]@4 [ace]@8
-# Half-time opening; full rhythm enters with the theme.
-kick .75 .002 .17 | o2 c@4 c@4 /: c@2 c@2 :/12 c@4 c@4
-# Backbeat on beats two and four, with space at the ending.
-snare .36 .001 .1 | r@9 /: c@2 :/16 /: c@2 :/8 r@7
-# A three-hit hat figure leaves a gap for the melody.
-hat .13 .001 .035 | r@8 /: c@1 c@1 c@2 :/12 r@8
+name: Circuit Drive - Friday Deploy
+tempo: 116
+# Cyber-electro. One small change. One very long weekend.
+# Form in 4-bar phrases: intro 1, theme 4, answer 4,
+# layered theme 4, breakdown 2, bridge 4, return 6, outro 1.
+# Voices: lead, bass, harmony, answering arpeggio, kick, snare, hat.
+sawtooth .32 .012 .09 decay=.12 sustain=.32 cutoff=2100 detune=7 drive=.8 pan=-.15 echo=.24 | r@16 /: o4 f+@.5 a@.5 b@1 o5 c+@1 o4 a@1 b@.5 a@.5 f+@1 e@1 f+@1 f+@.5 a@.5 b@1 o5 e@1 c+@1 c+@.5 o4 b@.5 a@1 f+@2 :/4 /: o4 d@1 f+@.5 a@.5 o5 c+@1 o4 b@1 a@.5 f+@.5 e@1 c+@1 e@1 e@.5 a@.5 b@1 o5 c+@1 e@1 e@.5 c+@.5 o4 b@1 a@2 :/4 /: o4 f+@.5 a@.5 b@1 o5 c+@1 o4 a@1 b@.5 a@.5 f+@1 e@1 f+@1 f+@.5 a@.5 b@1 o5 e@1 c+@1 c+@.5 o4 b@.5 a@1 f+@2 :/4 /: r@16 :/2 /: o5 f+@1 e@.5 c+@.5 o4 a@1 b@1 o5 c+@1 o4 b@1 a@.5 f+@.5 e@1 f+@1 a@1 o5 c+@1 e@1 c+@.5 o4 b@.5 a@1 f+@2 :/4 /: o4 f+@.5 a@.5 b@1 o5 c+@1 o4 a@1 b@.5 a@.5 f+@1 e@1 f+@1 f+@.5 a@.5 b@1 o5 e@1 c+@1 c+@.5 o4 b@.5 a@1 f+@2 o5 f+@1 e@.5 c+@.5 o4 a@1 b@1 o5 c+@1 o4 b@1 a@.5 f+@.5 e@1 f+@1 a@1 o5 c+@1 e@1 c+@.5 o4 b@.5 a@1 f+@2 :/3 o4 f+@4 r@12
+sawtooth .5 .004 .08 decay=.14 sustain=.06 cutoff=650 drive=2 | r@8 o2 f+@4 f+@4 /: o2 f+@.75 f+@.25 c+@1 f+@2 d@.75 d@.25 a@1 d@2 a@.75 a@.25 e@1 a@2 e@.75 e@.25 b@1 e@2 :/4 /: o2 a@.75 a@.25 e@1 a@2 e@.75 e@.25 b@1 e@2 f+@.75 f+@.25 c+@1 f+@2 d@.75 d@.25 a@1 d@2 :/4 /: o2 f+@.75 f+@.25 c+@1 f+@2 d@.75 d@.25 a@1 d@2 a@.75 a@.25 e@1 a@2 e@.75 e@.25 b@1 e@2 :/4 /: o2 f+@4 r@12 :/2 /: o2 d@.75 d@.25 a@1 d@2 e@.75 e@.25 b@1 e@2 f+@.75 f+@.25 c+@1 f+@2 f+@.75 f+@.25 c+@1 f+@2 :/4 /: o2 f+@.75 f+@.25 c+@1 f+@2 d@.75 d@.25 a@1 d@2 a@.75 a@.25 e@1 a@2 e@.75 e@.25 b@1 e@2 :/6 o2 f+@4 r@12
+sawtooth .09 .35 .6 decay=.6 sustain=.4 cutoff=700 detune=11 pan=.25 echo=.12 | o3 [f+ac+]@16 /: o3 [f+ac+]@4 [df+a]@4 [ac+e]@4 [eg+b]@4 :/4 /: o3 [ac+e]@4 [eg+b]@4 [f+ac+]@4 [df+a]@4 :/4 /: o3 [f+ac+]@4 [df+a]@4 [ac+e]@4 [eg+b]@4 :/4 /: o3 [df+a]@8 [eg+b]@8 :/2 /: o3 [df+a]@4 [eg+b]@4 [f+ac+]@4 [f+ac+]@4 :/4 /: o3 [f+ac+]@4 [df+a]@4 [ac+e]@4 [eg+b]@4 :/6 o3 [f+ac+]@16
+triangle .1 .01 .2 decay=.12 sustain=.1 cutoff=1900 pan=.35 echo=.2 | r@16 /: r@16 :/4 /: o5 a@.5 c+@.5 e@.5 c+@.5 r@1 a@1 e@.5 g+@.5 b@.5 g+@.5 r@1 e@1 f+@.5 a@.5 c+@.5 a@.5 r@1 f+@1 d@.5 f+@.5 a@.5 f+@.5 r@1 d@1 :/4 /: o5 f+@.5 a@.5 c+@.5 a@.5 r@1 f+@1 d@.5 f+@.5 a@.5 f+@.5 r@1 d@1 a@.5 c+@.5 e@.5 c+@.5 r@1 a@1 e@.5 g+@.5 b@.5 g+@.5 r@1 e@1 :/4 /: o5 f+@2 r@14 :/2 /: o5 d@.5 f+@.5 a@.5 f+@.5 r@1 d@1 e@.5 g+@.5 b@.5 g+@.5 r@1 e@1 f+@.5 a@.5 c+@.5 a@.5 r@1 f+@1 f+@.5 a@.5 c+@.5 a@.5 r@1 f+@1 :/4 /: o5 f+@.5 a@.5 c+@.5 a@.5 r@1 f+@1 d@.5 f+@.5 a@.5 f+@.5 r@1 d@1 a@.5 c+@.5 e@.5 c+@.5 r@1 a@1 e@.5 g+@.5 b@.5 g+@.5 r@1 e@1 :/6 r@16
+kick .8 .002 .16 cutoff=1600 drive=1.4 | r@8 o2 c@4 c@4 /: o2 /: c@1.5 c@1 c@1.5 :/4 :/4 /: o2 /: c@1.5 c@1 c@1.5 :/4 :/4 /: o2 /: c@1.5 c@1 c@1.5 :/4 :/4 /: r@8 o2 c@4 c@4 :/2 /: o2 /: c@1.5 c@1 c@1.5 :/4 :/4 /: o2 /: c@1.5 c@1 c@1.5 :/4 :/6 o2 c@2 r@14
+snare .38 .001 .11 drive=.7 pan=.08 | r@16 /: /: r@1 c@2 c@1 :/4 :/4 /: /: r@1 c@2 c@1 :/4 :/4 /: /: r@1 c@2 c@1 :/4 :/4 /: r@16 :/2 /: /: r@1 c@2 c@1 :/4 :/4 /: /: r@1 c@2 c@1 :/4 :/6 r@16
+hat .11 .001 .045 pan=-.35 echo=.12 | r@16 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/4 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/4 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/4 /: r@16 :/2 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/4 /: /: c@1 c@.5 r@.5 c@1 c@1 :/4 :/6 r@16

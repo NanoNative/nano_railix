@@ -24,18 +24,14 @@ class RailixAudio {
       this.change({effects:event.target.checked});
       void this.effects(event.target.checked);
     });
-    on(panel.querySelector('#effects-volume'), 'input', event => {
-      this.preferences.effects_volume = Number(event.target.value);
-      this.change({effects_volume:this.preferences.effects_volume});
-      this.near(this.nearby);
+    for (const kind of ['effects', 'music']) on(panel.querySelector(`#${kind}-volume`), 'input', event => {
+      const key = `${kind}_volume`;
+      this.preferences[key] = event.target.valueAsNumber / 100;
+      this.volumeLabel(event.target);
+      this.change({[key]:this.preferences[key]});
+      if (kind === 'music') this.setMusicVolume();
+      else this.near(this.nearby);
     });
-    on(panel.querySelector('#effects-volume'), 'change', event => this.change({effects_volume:Number(event.target.value)}));
-    on(panel.querySelector('#music-volume'), 'input', event => {
-      this.preferences.music_volume = Number(event.target.value);
-      this.change({music_volume:this.preferences.music_volume});
-      this.setMusicVolume();
-    });
-    on(panel.querySelector('#music-volume'), 'change', event => this.change({music_volume:Number(event.target.value)}));
     on(panel.querySelector('#music-group'), 'change', event => {
       if (event.target.value === this.preferences.music) return;
       this.preferences.music = event.target.value;
@@ -65,14 +61,20 @@ class RailixAudio {
     on(panel.querySelector('#sound-delete'), 'click', () => void this.remove());
     on(panel.querySelector('#sound-download'), 'click', () => void this.copy());
     on(panel.querySelector('#sound-defaults'), 'click', () => void this.mutate({action:'install-defaults'}));
-    on(document, 'visibilitychange', () => { if (document.hidden) this.stopAll(); });
+    on(document, 'visibilitychange', () => this.visibilityChanged());
     on(window, 'pagehide', () => this.dispose());
   }
 
   status(message) { this.panel.querySelector('#audio-status').textContent = message; }
-  effectsVolume() { return Number(this.panel.querySelector('#effects-volume').value) * .2; }
-  musicVolume() { return Number(this.panel.querySelector('#music-volume').value) * .2; }
+  effectsVolume() { return this.preferences.effects_volume * .2; }
+  musicVolume() { return this.preferences.music_volume; }
   change(values) { this.onChange({...values}); }
+
+  volumeLabel(input) {
+    const value = `${Math.round(input.valueAsNumber)}%`;
+    this.panel.querySelector(`#${input.id}-value`).value = value;
+    input.setAttribute('aria-valuetext', value);
+  }
 
   applyPreferences(values = {}) {
     const previousMusic = this.preferences.music;
@@ -88,8 +90,11 @@ class RailixAudio {
         .map(([event, key]) => [event, this.scoreKey(key)]))
     };
     this.panel.querySelector('#audio-effects').checked = this.preferences.effects;
-    this.panel.querySelector('#effects-volume').value = this.preferences.effects_volume;
-    this.panel.querySelector('#music-volume').value = this.preferences.music_volume;
+    for (const kind of ['effects', 'music']) {
+      const input = this.panel.querySelector(`#${kind}-volume`);
+      input.value = Math.round(this.preferences[`${kind}_volume`] * 100);
+      this.volumeLabel(input);
+    }
     this.enabled = this.preferences.effects;
     if (!this.enabled) void this.stopEffects();
     this.near(this.nearby);
@@ -464,6 +469,8 @@ class RailixAudio {
       this.musicPaused = false;
       this.button('Pause', 'pause');
       this.status(this.track.score.name);
+      if (document.hidden) await this.suspendMusic();
+      else if (context.state !== 'running') await this.resumeMusic();
     } catch (error) {
       if (generation === this.musicGeneration && !this.disposed) {
         this.stop();
@@ -498,25 +505,72 @@ class RailixAudio {
   }
 
   schedule(context, score, output, scale, complete, loop = false) {
-    const tracks = score.tracks.map(track => this.createVoice(context, track, output, this.voiceCount(track.notes)));
+    const start = context.currentTime + .04;
+    const tracks = score.tracks.map(track => ({...this.createVoice(context, track, output, this.voiceCount(track.notes), score.tempo),
+      notes:this.sequence(track.notes), at:start, cycle:0}));
     // Normalize the actual bounded chord width before output.
     const headroom = 1 / Math.max(1, score.tracks.reduce((sum, track) => sum + track.volume * this.voiceCount(track.notes), 0));
     const duration = Math.max(...score.tracks.map(track => this.trackDuration(track.notes))) * 60 / score.tempo;
-    const session = {context, voices:tracks.flatMap(track => track.voices), timer:0};
-    const cycle = start => {
+    const tail = !loop && score.tracks.some(track => track.echo > 0) ? 90 / score.tempo : 0;
+    const session = {context, voices:tracks.flatMap(track => track.voices), effects:tracks.flatMap(track => track.effects),
+      end:loop ? Infinity : start + duration + tail, timer:0};
+    // Keep score duration out of AudioParam queues. Repeats stay compact until consumed.
+    session.pump = () => {
+      clearTimeout(session.timer);
       if (session.stopped) return;
-      score.tracks.forEach((track, index) => this.scheduleTrack(tracks[index], track, score.tempo, start, scale * headroom));
-      session.end = start + duration;
-      session.timer = setTimeout(() => loop ? cycle(Math.max(session.end, context.currentTime))
-        : complete ? complete() : this.stopSession(session),
-      Math.max(10, (session.end - context.currentTime + (loop ? -.04 : .05)) * 1000));
+      const now = context.currentTime;
+      if (now >= session.end) {
+        this.stopSession(session);
+        complete?.();
+        return;
+      }
+      score.tracks.forEach((track, index) => {
+        const cursor = tracks[index];
+        const transient = ['kick','snare','hat'].includes(track.waveform);
+        while (cursor.at < now + 2) {
+          const next = cursor.notes.next();
+          if (next.done) {
+            cursor.at = loop ? start + ++cursor.cycle * duration : Infinity;
+            if (loop) cursor.notes = this.sequence(track.notes);
+            continue;
+          }
+          const length = next.value.duration * 60 / score.tempo;
+          const end = cursor.at + length, late = cursor.at < now, onset = late ? now + .01 : cursor.at;
+          // Recover sustained notes on the shared clock, never replay a missed drum attack.
+          if (onset < end && !(late && transient)) this.scheduleNote(cursor, track, next.value, onset, end - onset, scale * headroom);
+          cursor.at = end;
+        }
+      });
+      session.timer = setTimeout(session.pump, Math.min(250, Math.max(10, (session.end - now) * 1000)));
     };
-    cycle(context.currentTime + .04);
+    session.pump();
     return session;
   }
 
-  createVoice(context, track, output, count) {
-    return {voices:Array.from({length:count}, () => {
+  createVoice(context, track, output, count, tempo) {
+    const effects = [];
+    let destination = output;
+    if (track.pan || track.echo) {
+      const bus = context.createGain(), pan = context.createStereoPanner();
+      bus.gain.value = 1 / (1 + 1.5 * (track.echo || 0));
+      pan.pan.value = track.pan || 0;
+      bus.connect(pan).connect(output);
+      effects.push(bus, pan);
+      // Two finite, beat-synced taps, shared by every chord voice. No feedback loop.
+      if (track.echo) for (let tap = 1; tap <= 2; tap++) {
+        const seconds = tap * 45 / tempo;
+        const delay = context.createDelay(seconds), wet = context.createGain(), spread = context.createStereoPanner();
+        delay.delayTime.value = seconds;
+        wet.gain.value = track.echo / tap;
+        spread.pan.value = tap === 1 ? .65 : -.65;
+        bus.connect(delay).connect(wet).connect(spread).connect(output);
+        effects.push(delay, wet, spread);
+      }
+      destination = bus;
+    }
+    const curve = track.drive > 0 ? Float32Array.from({length:1025}, (_, index) =>
+      Math.tanh((1 + track.drive) * (index / 512 - 1)) / Math.tanh(1 + track.drive)) : null;
+    return {effects, voices:Array.from({length:count}, () => {
       const noise = track.waveform === 'snare' || track.waveform === 'hat';
       const voice = noise ? context.createBufferSource() : context.createOscillator(), gain = context.createGain();
       let filter;
@@ -543,12 +597,31 @@ class RailixAudio {
         if (!noise) filter.type = 'lowpass';
         filter.frequency.value = Math.min(track.cutoff, context.sampleRate / 2);
       }
-      if (filter) voice.connect(filter).connect(gain);
-      else voice.connect(gain);
+      let source = voice, layer, mix, shaper;
+      if (track.detune > 0) {
+        layer = context.createOscillator();
+        layer.type = voice.type;
+        voice.detune.value = -track.detune;
+        layer.detune.value = track.detune;
+        mix = context.createGain();
+        mix.gain.value = .5;
+        voice.connect(mix); layer.connect(mix);
+        source = mix;
+        layer.start();
+      }
+      if (curve) {
+        shaper = context.createWaveShaper();
+        shaper.curve = curve;
+        shaper.oversample = '2x';
+        source.connect(shaper);
+        source = shaper;
+      }
+      if (filter) source.connect(filter).connect(gain);
+      else source.connect(gain);
       gain.gain.value = 0;
-      gain.connect(output);
+      gain.connect(destination);
       voice.start();
-      return {voice, gain, filter};
+      return {voice, gain, filter, layer, mix, shaper};
     })};
   }
 
@@ -556,29 +629,22 @@ class RailixAudio {
     return Math.max(1, ...notes.map(note => note.repeat ? this.voiceCount(note.notes) : 1 + (note.chord?.length || 0)));
   }
 
-  scheduleTrack(target, track, tempo, start, scale) {
-    const beat = 60 / tempo;
-    const schedule = (notes, time) => {
-      for (const note of notes) {
-        if (note.repeat) {
-          for (let count = 0; count < note.repeat; count++) time = schedule(note.notes, time);
-          continue;
-        }
-      const duration = note.duration * beat;
-      const fadeIn = Math.min(track.attack, duration / 2);
-      const fadeOut = Math.min(track.release, duration / 2);
-      const primary = target.voices[0];
-      primary.gain.gain.setValueAtTime(0, time);
-      if (note.note !== null) {
-        this.scheduleVoice(primary, track, note.note, time, duration, fadeIn, fadeOut, scale);
-        (note.chord || []).forEach((chord, index) => this.scheduleVoice(target.voices[index + 1], track, chord, time, duration, fadeIn, fadeOut, scale));
-      }
-      primary.gain.gain.linearRampToValueAtTime(0, time + duration);
-      time += duration;
-      }
-      return time;
-    };
-    schedule(track.notes, start);
+  *sequence(notes) {
+    for (const note of notes) {
+      if (note.repeat) for (let count = 0; count < note.repeat; count++) yield* this.sequence(note.notes);
+      else yield note;
+    }
+  }
+
+  scheduleNote(target, track, note, time, duration, scale) {
+    const fadeIn = Math.min(track.attack, duration / 2), fadeOut = Math.min(track.release, duration / 2);
+    const primary = target.voices[0];
+    primary.gain.gain.setValueAtTime(0, time);
+    if (note.note !== null) {
+      this.scheduleVoice(primary, track, note.note, time, duration, fadeIn, fadeOut, scale);
+      (note.chord || []).forEach((chord, index) => this.scheduleVoice(target.voices[index + 1], track, chord, time, duration, fadeIn, fadeOut, scale));
+    }
+    primary.gain.gain.linearRampToValueAtTime(0, time + duration);
   }
 
   trackDuration(notes) {
@@ -588,14 +654,17 @@ class RailixAudio {
   scheduleVoice(target, track, note, time, duration, fadeIn, fadeOut, scale) {
     const frequency = 440 * 2 ** ((note - 69) / 12);
     if (target.voice.frequency) target.voice.frequency.setValueAtTime(frequency, time);
+    if (target.layer) target.layer.frequency.setValueAtTime(frequency, time);
     if (['kick','snare','hat'].includes(track.waveform)) {
       // A hit decays independently of the notated space until the next hit.
       const decay = Math.min(duration*.8, Math.max(.015,track.release));
       const attack = Math.min(fadeIn,.005,decay/2), level = track.volume*scale;
       if (level <= 0) return;
       if (track.waveform === 'kick') {
-        target.voice.frequency.setValueAtTime(frequency*3,time);
-        target.voice.frequency.exponentialRampToValueAtTime(Math.max(24,frequency*.7),time+decay);
+        for (const oscillator of [target.voice, target.layer].filter(Boolean)) {
+          oscillator.frequency.setValueAtTime(frequency*3,time);
+          oscillator.frequency.exponentialRampToValueAtTime(Math.max(24,frequency*.7),time+decay);
+        }
       }
       target.gain.gain.setValueAtTime(0,time);
       target.gain.gain.linearRampToValueAtTime(level,time+attack);
@@ -618,7 +687,7 @@ class RailixAudio {
   }
 
   async resumeMusic() {
-    if (!this.musicContext || !this.musicSession) return;
+    if (document.hidden || !this.musicContext || !this.musicSession) return;
     const context = this.musicContext;
     if (!this.preferences.music_enabled) {
       this.preferences.music_enabled = true;
@@ -627,11 +696,8 @@ class RailixAudio {
     this.musicPaused = false;
     try {
       await context.resume();
-      if (this.disposed || context !== this.musicContext || this.musicPaused || !this.musicSession) return;
-      this.musicSession.timer = setTimeout(
-        () => void this.nextTrack(),
-        Math.max(50, (this.musicSession.end - this.musicContext.currentTime + .05) * 1000)
-      );
+      if (this.disposed || document.hidden || context !== this.musicContext || this.musicPaused || !this.musicSession) return;
+      this.musicSession.pump();
       this.button('Pause', 'pause');
     } catch (_) { if (context === this.musicContext) { this.stop(); this.status('Music is unavailable in this browser.'); } }
   }
@@ -654,16 +720,30 @@ class RailixAudio {
 
   async pause() {
     if (!this.musicContext || !this.musicSession) return;
-    const context = this.musicContext;
-    clearTimeout(this.musicSession.timer);
     if (this.preferences.music_enabled) {
       this.preferences.music_enabled = false;
       this.change({music_enabled:false});
     }
     this.musicPaused = true;
     this.button('Play', 'play');
+    await this.suspendMusic();
+  }
+
+  async suspendMusic() {
+    const context = this.musicContext;
+    if (!context) return;
+    clearTimeout(this.musicSession?.timer);
     try { await context.suspend(); }
     catch (_) { if (context === this.musicContext) { this.stop(); this.status('Music is unavailable in this browser.'); } }
+  }
+
+  visibilityChanged() {
+    if (document.hidden) {
+      this.stopPreview();
+      void this.stopEffects();
+      // Freeze the score clock and scheduler, not the user's playback preference.
+      void this.suspendMusic();
+    } else if (!this.musicPaused && this.preferences.music_enabled) void this.resumeMusic();
   }
 
   stop() {
@@ -687,12 +767,17 @@ class RailixAudio {
     session.stopped = true;
     clearTimeout(session.timer);
     session.voices.forEach(voice => this.stopVoice(voice));
+    session.effects.forEach(node => node.disconnect());
   }
 
   stopVoice(voice) {
     if (!voice) return;
     voice.voice.stop();
     voice.voice.disconnect();
+    voice.layer?.stop();
+    voice.layer?.disconnect();
+    voice.mix?.disconnect();
+    voice.shaper?.disconnect();
     voice.filter?.disconnect();
     voice.gain.disconnect();
   }

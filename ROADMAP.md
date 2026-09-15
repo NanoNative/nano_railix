@@ -185,9 +185,12 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   Step at local 50%; leaving restores the enclosing camera/reference. A tall branching-group
   regression caught entry on the topmost branch instead of the origin and now passes.
   Focus keeps the Trigger Example chooser open across native-popup hover loss.
-  Creator-only MML tone controls add optional decay, sustain and cutoff; one 16-bar Foundry Signal
-  arrangement is available as an editable score and rendered listening sample; music quality
-  still needs listening acceptance. The approved building direction is now **Railix Foundry**,
+  Creator-only MML tone controls add optional decay, sustain, cutoff, detuning, saturation,
+  stereo placement and finite echoes. After approval of Circuit Drive's sound, eight roughly
+  3.5-minute instrumental arrangements replace the short previews, with developer-humour titles
+  and no speech samples. MML playback now consumes compact repeats through a rolling audio-clock
+  window instead of expanding/capping the total notes. Full-track musical acceptance remains open.
+  The approved building direction is now **Railix Foundry**,
   the embedded default; **Railix Classic** remains selectable. Both can be installed as editable
   CSS copies. One renderer supplies HQ, portal, routing switch, processor and bounded group-canopy
   solids. The shared HUD drops duplicate bevels and uses underlined Inspector tabs.
@@ -337,8 +340,9 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   Healthy sampled-time shading is blue, not warning yellow. Cargo and belt sections move for
   observed traffic or the selected Example; terminal intakes are recessed floor openings.
   Keyboard navigation preserves native text editing, IME and modified OS shortcuts.
-  Effects and quiet music default on after browser interaction, respect explicit mute and stop when
-  hidden. Runtime execution is independent of Creator audio and visualization.
+  Effects and quiet music default on after browser interaction and respect explicit mute.
+  Hidden tabs pause music in place and resume it on return unless manually paused or muted;
+  effects and previews stop. Runtime execution is independent of Creator audio and visualization.
   Stable world-coordinate conveyor identities avoid destroying/restarting belts on camera moves.
   Machine and conveyor materials use fixed geometry with compositor scaling; reveal transitions
   no longer change station size. Dense navigation remains incomplete as described above.

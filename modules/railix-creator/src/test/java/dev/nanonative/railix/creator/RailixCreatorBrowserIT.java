@@ -5125,11 +5125,16 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     void completedExampleTracePreservesTheOpenStepPicker() {
         addTrigger();
         waitForText("#build-state", "Built");
-        delayNextTrace();
+        page.waitForFunction("() => state.application.examples?.state === 'completed' && state.traceController === null");
+        final String previousPid = applicationPid();
         openInspectorTab("examples");
         examplePayload().fill("[\"delayed\"]");
         examplePayload().press("Tab");
-        waitForText("#build-state", "Built");
+        page.waitForFunction("previousPid => String(state.application.pid) !== previousPid"
+                + " && state.application.examples?.state === 'completed' && state.traceController === null", previousPid);
+        page.locator("[data-select-example='-1']").click();
+        delayNextTrace();
+        page.locator("[data-select-example='0']").click();
         page.waitForFunction("() => typeof window.__releaseTrace === 'function'");
         openInspectorTab("inspect");
         clickOverview("#add-next-step");
@@ -5137,6 +5142,9 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         page.locator("[data-add-step='value.to-json']").waitFor();
         assertThat(page.locator("[data-add-step='value.to-json']").count()).isEqualTo(1);
 
+        assertThat(page.evaluate("() => window.railixTraceAborted"))
+                .as("Opening the picker must not cancel the pending example trace")
+                .isEqualTo(false);
         page.evaluate("window.__releaseTrace()");
         page.waitForFunction("() => window.__traceCompleted === true");
         page.evaluate("""

@@ -35,4 +35,5 @@ out/
 # Local instructions
 CLAUDE.md
 AGENTS.md
+!/AGENTS.md
 .claude
