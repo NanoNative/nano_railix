@@ -154,6 +154,17 @@ final class TestStepHandlers {
         }
     }
 
+    static final class CompilationMustNotExecute implements StepHandler {
+        public CompilationMustNotExecute() {
+            throw new AssertionError("Compiler constructed a Step handler.");
+        }
+
+        @Override
+        public StepResult run(final StepInput input) {
+            throw new AssertionError("Compiler invoked a Step handler.");
+        }
+    }
+
     static final class InvalidString implements StepHandler {
         @Override
         public StepResult run(final StepInput input) {

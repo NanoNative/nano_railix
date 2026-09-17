@@ -30,12 +30,9 @@ out/
 /brainstorming/
 /railix.project.json
 /railix.creator.json
-.railix/run/
-.railix/build/
-.railix/cache/
-.railix/tmp/
+.railix/
 
-# AI
+# Local instructions
 CLAUDE.md
 AGENTS.md
 .claude

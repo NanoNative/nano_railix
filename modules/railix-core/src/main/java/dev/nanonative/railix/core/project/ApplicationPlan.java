@@ -10,16 +10,32 @@ import java.util.Map;
 import java.util.Optional;
 
 /** Immutable compiler plan consumed only by application source generation. */
-record ApplicationPlan(String projectId, List<NodePlan> nodes, List<TriggerPlan> triggers) {
+record ApplicationPlan(
+        String projectId,
+        List<NodePlan> nodes,
+        List<TriggerPlan> triggers,
+        List<ExamplePlan> examples
+) {
     static final int END = -1;
     static final int UNROUTED = -2;
 
     ApplicationPlan {
         nodes = List.copyOf(nodes);
         triggers = List.copyOf(triggers);
+        examples = List.copyOf(examples);
     }
 
     record TriggerPlan(int node, int start) {
+    }
+
+    record ExamplePlan(
+            String id,
+            String trigger,
+            String name,
+            int index,
+            RailixValue.ObjectValue context,
+            int triggerNode
+    ) {
     }
 
     record NodePlan(
@@ -30,6 +46,7 @@ record ApplicationPlan(String projectId, List<NodePlan> nodes, List<TriggerPlan>
             Map<String, Path> returns,
             int[] destinations,
             List<String> outcomes,
+            boolean metrics,
             int owner,
             String path
     ) {
@@ -76,9 +93,6 @@ record ApplicationPlan(String projectId, List<NodePlan> nodes, List<TriggerPlan>
     record CandidatesBinding(List<CandidatePlan> candidates, String path) implements Binding {
         CandidatesBinding {
             candidates = List.copyOf(candidates);
-            if (path == null || path.isBlank()) {
-                throw new IllegalArgumentException("Candidate input path must be supplied.");
-            }
         }
     }
 
@@ -95,12 +109,6 @@ record ApplicationPlan(String projectId, List<NodePlan> nodes, List<TriggerPlan>
             List<List<NestedStepPlan>> predicates
     ) {
         CandidatePlan {
-            if (source == null) {
-                throw new IllegalArgumentException("Candidate plan source must be supplied.");
-            }
-            if (outcome == null) {
-                throw new IllegalArgumentException("Candidate plan outcome cannot be Java null.");
-            }
             transforms = List.copyOf(transforms);
             predicates = predicates.stream().map(List::copyOf).toList();
         }
@@ -113,9 +121,6 @@ record ApplicationPlan(String projectId, List<NodePlan> nodes, List<TriggerPlan>
     ) implements Binding {
         StepsBinding {
             steps = List.copyOf(steps);
-            if (valueSource == null) {
-                throw new IllegalArgumentException("Nested Step value source cannot be Java null.");
-            }
         }
     }
 

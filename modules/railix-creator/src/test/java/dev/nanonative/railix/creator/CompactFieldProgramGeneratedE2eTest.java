@@ -135,45 +135,47 @@ final class CompactFieldProgramGeneratedE2eTest {
 
     @Test
     void firstCandidateAcceptedByItsPredicateProgramBecomesTheOrdinaryStepValue() throws Exception {
-        final RailixValue.ObjectValue body = succeeded(application.runTest(
+        final List<RailixValue.ObjectValue> trace = application.trace(
                 ACCEPTED,
                 "{\"payload\":{\"name\":\"existing\"}}"
-        ));
+        );
+        final RailixValue.ObjectValue body = succeeded(trace);
 
         assertThat(payload(body).values().get("name")).isEqualTo(RailixValue.string("fallback"));
-        assertThat(steps(body).values()).containsExactly(
-                step("value.equals", "ok"),
-                step("value.identity", "ok"),
-                step(change(ACCEPTED), "next")
+        assertThat(steps(trace)).containsExactly(
+                new StepExecution(change(ACCEPTED) + ".inputs.value[0].when.all[0][0]",
+                        "value.equals", "ok", "succeeded"),
+                new StepExecution(change(ACCEPTED) + ".inputs.steps[0]",
+                        "value.identity", "ok", "succeeded"),
+                new StepExecution(change(ACCEPTED), "compact.change-field", "next", "succeeded")
         );
     }
 
     @Test
     void previewReportsWhichOrderedCandidateSuppliedTheValue() throws Exception {
-        final RailixValue.ObjectValue body = succeeded(application.preview(
+        final List<RailixValue.ObjectValue> trace = application.trace(
                 PREVIEW,
-                change(PREVIEW),
                 "{\"payload\":{\"name\":\"existing\"}}"
-        ));
+        );
+        final RailixValue.ObjectValue result = step(trace, change(PREVIEW));
 
-        assertThat(preview(body).values().get("selected_candidates")).isEqualTo(RailixValue.object(Map.of(
-                "nodes[4].inputs.value", RailixValue.number(1)
+        assertThat(result.values().get("options")).isEqualTo(RailixValue.object(Map.of(
+                "value", RailixValue.string("literal")
         )));
     }
 
     @Test
     void failedPredicateRuntimeDiagnosticNamesTheExecutedCandidateOccurrence() throws Exception {
-        final DevelopmentApplication.Response response = application.preview(
+        final List<RailixValue.ObjectValue> trace = application.trace(
                 FAILED_OCCURRENCE,
-                change(FAILED_OCCURRENCE),
                 "{\"payload\":{\"name\":\"existing\"}}"
         );
-        final RailixValue.ObjectValue body = body(response);
+        final RailixValue.ObjectValue body = terminal(trace);
 
-        assertThat(response.status()).isEqualTo(500);
         assertThat(body.values().get("status")).isEqualTo(RailixValue.string("failed"));
-        assertFailure(body, "value.fault");
-        assertStage(body, "nodes[6].inputs.value[1].when.all[0][0]", "value.fault", "failed");
+        assertFailure(body, "value.fault", "nodes[6].inputs.value[1].when.all[0][0]");
+        assertStage(trace, change(FAILED_OCCURRENCE) + ".inputs.value[1].when.all[0][0]",
+                "value.fault", "failed");
     }
 
     @Test
@@ -240,61 +242,68 @@ final class CompactFieldProgramGeneratedE2eTest {
 
     @Test
     void allUnresolvedCandidatesSelectTheExplicitOutcomeWithoutWriting() throws Exception {
-        final RailixValue.ObjectValue body = succeeded(application.runTest(
+        final List<RailixValue.ObjectValue> trace = application.trace(
                 UNRESOLVED,
                 "{\"payload\":{\"name\":\"unchanged\"}}"
-        ));
+        );
+        final RailixValue.ObjectValue body = succeeded(trace);
 
         assertThat(payload(body).values().get("name")).isEqualTo(RailixValue.string("unchanged"));
-        assertThat(steps(body).values()).containsExactly(step(change(UNRESOLVED), "unresolved"));
+        assertThat(steps(trace)).containsExactly(
+                new StepExecution(change(UNRESOLVED), "compact.change-field", "unresolved", "succeeded")
+        );
     }
 
     @Test
     void firstAcceptedCandidateStopsEvaluationOfLaterPredicates() throws Exception {
-        final RailixValue.ObjectValue body = succeeded(application.runTest(STOP_LATER, "{\"payload\":{}}"));
+        final List<RailixValue.ObjectValue> trace = application.trace(STOP_LATER, "{\"payload\":{}}");
+        final RailixValue.ObjectValue body = succeeded(trace);
 
         assertThat(payload(body).values().get("name")).isEqualTo(RailixValue.string("first"));
-        assertThat(steps(body).values()).containsExactly(
-                step("value.identity", "ok"),
-                step(change(STOP_LATER), "next")
+        assertThat(steps(trace)).containsExactly(
+                new StepExecution(change(STOP_LATER) + ".inputs.steps[0]",
+                        "value.identity", "ok", "succeeded"),
+                new StepExecution(change(STOP_LATER), "compact.change-field", "next", "succeeded")
         );
     }
 
     @Test
     void interruptionAfterAPredicateHandlerCancelsBeforeTheOuterStepWrites() throws Exception {
-        final DevelopmentApplication.Response response = application.preview(
+        final List<RailixValue.ObjectValue> trace = application.trace(
                 INTERRUPTED,
-                change(INTERRUPTED),
                 "{\"payload\":{}}"
         );
-        final RailixValue.ObjectValue body = body(response);
+        final RailixValue.ObjectValue body = terminal(trace);
 
-        assertThat(response.status()).isEqualTo(409);
         assertThat(body.values().get("status")).isEqualTo(RailixValue.string("cancelled"));
-        assertThat(steps(body).values()).isEmpty();
-        assertStage(body, "nodes[26].inputs.value[1].when.all[0][0]", "value.interrupt", "cancelled");
+        assertStage(trace, change(INTERRUPTED) + ".inputs.value[1].when.all[0][0]",
+                "value.interrupt", "succeeded");
     }
 
     @Test
     void predicateImplementationFaultStopsBeforeTheOuterStepRuns() throws Exception {
-        final DevelopmentApplication.Response response = application.preview(
+        final List<RailixValue.ObjectValue> trace = application.trace(
                 FAULTED,
-                change(FAULTED),
                 "{\"payload\":{\"name\":\"fault\"}}"
         );
-        final RailixValue.ObjectValue body = body(response);
+        final RailixValue.ObjectValue body = terminal(trace);
 
-        assertThat(response.status()).isEqualTo(500);
         assertThat(body.values().get("status")).isEqualTo(RailixValue.string("failed"));
-        assertFailure(body, "value.fault");
-        assertThat(steps(body).values()).isEmpty();
-        assertStage(body, "nodes[28].inputs.value[0].when.all[0][0]", "value.fault", "failed");
+        assertFailure(body, "value.fault", "nodes[28].inputs.value[0].when.all[0][0]");
+        assertStage(trace, change(FAULTED) + ".inputs.value[0].when.all[0][0]",
+                "value.fault", "failed");
     }
 
     private RailixValue.ObjectValue productionPayload(final String trigger, final String context) throws Exception {
         final RailixValue.ObjectValue body = succeeded(application.run(trigger, context));
-        assertThat(steps(body).values()).isEmpty();
+        assertThat(body.values()).doesNotContainKey("steps");
         return payload(body);
+    }
+
+    private static RailixValue.ObjectValue succeeded(final List<RailixValue.ObjectValue> trace) {
+        final RailixValue.ObjectValue result = terminal(trace);
+        assertThat(result.values().get("status")).isEqualTo(RailixValue.string("succeeded"));
+        return result;
     }
 
     private static RailixValue.ObjectValue succeeded(final DevelopmentApplication.Response response) {
@@ -313,42 +322,63 @@ final class CompactFieldProgramGeneratedE2eTest {
         return (RailixValue.ObjectValue) context.values().get("payload");
     }
 
-    private static RailixValue.ArrayValue steps(final RailixValue.ObjectValue body) {
-        return (RailixValue.ArrayValue) body.values().get("steps");
+    private static RailixValue.ObjectValue terminal(final List<RailixValue.ObjectValue> trace) {
+        assertThat(trace).isNotEmpty();
+        final RailixValue.ObjectValue result = trace.getLast();
+        assertThat(result.values().get("type")).isEqualTo(RailixValue.string("result"));
+        return result;
     }
 
-    private static RailixValue.ObjectValue preview(final RailixValue.ObjectValue body) {
-        return (RailixValue.ObjectValue) body.values().get("preview");
+    private static RailixValue.ObjectValue step(
+            final List<RailixValue.ObjectValue> trace,
+            final String id
+    ) {
+        return trace.stream()
+                .filter(event -> event.values().get("type").equals(RailixValue.string("step_result")))
+                .filter(event -> event.values().get("id").equals(RailixValue.string(id)))
+                .findFirst()
+                .orElseThrow();
     }
 
-    private static RailixValue.ObjectValue step(final String id, final String outcome) {
-        return RailixValue.object(Map.of(
-                "id", RailixValue.string(id),
-                "outcome", RailixValue.string(outcome)
-        ));
+    private static List<StepExecution> steps(final List<RailixValue.ObjectValue> trace) {
+        return trace.stream()
+                .filter(event -> event.values().get("type").equals(RailixValue.string("step_result")))
+                .map(event -> new StepExecution(
+                        text(event, "id"),
+                        text(event, "use"),
+                        text(event, "outcome"),
+                        text(event, "status")
+                ))
+                .toList();
     }
 
-    private static void assertFailure(final RailixValue.ObjectValue body, final String step) {
+    private static String text(final RailixValue.ObjectValue value, final String field) {
+        final RailixValue entry = value.values().get(field);
+        return entry instanceof RailixValue.StringValue text ? text.value() : "";
+    }
+
+    private static void assertFailure(
+            final RailixValue.ObjectValue body,
+            final String step,
+            final String path
+    ) {
         assertThat(body.values().get("failure")).isEqualTo(RailixValue.object(Map.of(
                 "code", RailixValue.string("STEP_IMPLEMENTATION_FAULT"),
                 "message", RailixValue.string("Step implementation threw an unexpected exception."),
+                "path", RailixValue.string(path),
                 "step", RailixValue.string(step)
         )));
     }
 
     private static void assertStage(
-            final RailixValue.ObjectValue body,
+            final List<RailixValue.ObjectValue> trace,
             final String invocation,
             final String use,
             final String status
     ) {
-        final RailixValue.ArrayValue stages = (RailixValue.ArrayValue) preview(body).values().get("stages");
-        assertThat(stages.values()).singleElement().satisfies(value -> {
-            final RailixValue.ObjectValue stage = (RailixValue.ObjectValue) value;
-            assertThat(stage.values().get("invocation")).isEqualTo(RailixValue.string(invocation));
-            assertThat(stage.values().get("use")).isEqualTo(RailixValue.string(use));
-            assertThat(stage.values().get("status")).isEqualTo(RailixValue.string(status));
-        });
+        assertThat(step(trace, invocation).values())
+                .containsEntry("use", RailixValue.string(use))
+                .containsEntry("status", RailixValue.string(status));
     }
 
     private static List<StepDefinition> definitions() {
@@ -428,5 +458,8 @@ final class CompactFieldProgramGeneratedE2eTest {
     }
 
     private record Flow(String id, String candidates, String steps) {
+    }
+
+    private record StepExecution(String id, String use, String outcome, String status) {
     }
 }

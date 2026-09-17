@@ -60,7 +60,7 @@ final class GeneratedRuntimeBoundaryE2eTest {
                                 + "\"message\":\"Nested Step runtime.nested.depth rejects value: "
                                 + "Value exceeds maximum container depth 1.\","
                                 + "\"path\":\"nodes[2].inputs.steps[0]\"}],"
-                                + "\"status\":\"rejected\",\"steps\":[]}"
+                                + "\"status\":\"rejected\"}"
                 );
     }
 
@@ -81,7 +81,7 @@ final class GeneratedRuntimeBoundaryE2eTest {
                                 + "\"message\":\"Nested Step runtime.nested.bytes rejects value: "
                                 + "Canonical JSON exceeds 13 bytes.\","
                                 + "\"path\":\"nodes[4].inputs.steps[0]\"}],"
-                                + "\"status\":\"rejected\",\"steps\":[]}"
+                                + "\"status\":\"rejected\"}"
                 );
     }
 
@@ -101,8 +101,9 @@ final class GeneratedRuntimeBoundaryE2eTest {
                         "{\"failure\":{\"code\":\"STEP_OUTPUT_INVALID\","
                                 + "\"message\":\"Nested Step returned an incompatible value: "
                                 + "Value contains an unpaired Unicode surrogate.\","
+                                + "\"path\":\"nodes[6].inputs.steps[0]\","
                                 + "\"step\":\"runtime.nested.invalid-output\"},"
-                                + "\"status\":\"failed\",\"steps\":[]}"
+                                + "\"status\":\"failed\"}"
                 );
     }
 
@@ -119,7 +120,7 @@ final class GeneratedRuntimeBoundaryE2eTest {
                         "{\"diagnostics\":[{\"code\":\"RUN_RESULT_REQUIRED\","
                                 + "\"message\":\"Trigger result is missing: result.\","
                                 + "\"path\":\"context.result\"}],"
-                                + "\"status\":\"rejected\",\"steps\":[]}"
+                                + "\"status\":\"rejected\"}"
                 );
     }
 

@@ -50,8 +50,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class CreatorServer implements AutoCloseable {
     static final int MAX_CONCURRENT_REQUESTS = 64;
     static final int MAX_CONCURRENT_FORWARDS = 32;
+    static final int MAX_CONCURRENT_EXAMPLE_RESPONSES = 4;
     private static final String WEB_ROOT = "/dev/nanonative/railix/creator/web/";
-    private static final int MAX_PROJECT_BYTES = RailixData.DEFAULT_MAX_SOURCE_BYTES;
+    private static final int MAX_REQUEST_BYTES = RailixData.DEFAULT_MAX_SOURCE_BYTES;
+    private static final int MAX_SCENE_BYTES = 2 * RailixData.DEFAULT_MAX_SOURCE_BYTES;
     private static final Duration BODY_READ_TIMEOUT = Duration.ofSeconds(5);
     private static final Duration RESPONSE_DRAIN_TIMEOUT = Duration.ofSeconds(1);
     private static final String TOKEN_HEADER = "X-Railix-Creator-Token";
@@ -76,13 +78,15 @@ public final class CreatorServer implements AutoCloseable {
     private final Path creatorFile;
     private final ProjectLease lease;
     private final Object applicationLock = new Object();
+    private final Object sceneLock = new Object();
     private final Object buildLock = new Object();
     private final Object closeLock = new Object();
     private final CountDownLatch closed = new CountDownLatch(1);
     private final AtomicBoolean open = new AtomicBoolean(true);
     private final Semaphore requests = new Semaphore(MAX_CONCURRENT_REQUESTS);
     private final Semaphore forwarding = new Semaphore(MAX_CONCURRENT_FORWARDS);
-    private final Semaphore responses = new Semaphore(MAX_CONCURRENT_FORWARDS);
+    private final Semaphore exampleResponses = new Semaphore(MAX_CONCURRENT_EXAMPLE_RESPONSES);
+    private final Semaphore sceneObservationResponses = new Semaphore(2);
     private final String creatorToken;
     private DevelopmentApplication application;
     private DevelopmentApplication retirement;
@@ -96,10 +100,17 @@ public final class CreatorServer implements AutoCloseable {
     private boolean applicationClosed;
     private boolean leaseClosed;
     private String source;
+    // Persistence precedes activation, so canonical source can require a different artifact than the running child.
+    private String sourceArtifactKey;
     private RailixValue.ObjectValue creatorValue;
     private List<Diagnostic> creatorDiagnostics;
     private long nextGeneration;
     private long projectRevision;
+    private long sourceRevision;
+    private long creatorRevision;
+    private boolean deploymentPending;
+    private CreatorScene scene;
+    private CreatorEditor editor;
 
     private CreatorServer(
             final HttpServer server,
@@ -127,6 +138,7 @@ public final class CreatorServer implements AutoCloseable {
         this.lease = lease;
         this.application = application;
         this.source = source;
+        this.sourceArtifactKey = application.artifact().directory().getFileName().toString();
         this.creatorValue = creatorValue;
         this.creatorDiagnostics = List.copyOf(creatorDiagnostics);
         this.nextGeneration = nextGeneration;
@@ -200,6 +212,7 @@ public final class CreatorServer implements AutoCloseable {
                 persist(creatorFile, creatorResult.source());
             }
             application = DevelopmentApplication.start(1, absoluteProject, compiled);
+            application.activate();
             executor = Executors.newVirtualThreadPerTaskExecutor();
             bodyDeadlines = Executors.newSingleThreadScheduledExecutor(
                     Thread.ofPlatform().daemon().name("railix-creator-body-deadline-", 0).factory()
@@ -255,10 +268,25 @@ public final class CreatorServer implements AutoCloseable {
                 }
             }
             if (application != null) {
-                try {
-                    application.close();
-                } catch (final RuntimeException cleanup) {
-                    exception.addSuppressed(cleanup);
+                boolean stopped = false;
+                RuntimeException closeFailure = null;
+                for (int attempt = 0; attempt < 2 && !stopped; attempt++) {
+                    try {
+                        application.close();
+                        stopped = true;
+                    } catch (final RuntimeException cleanup) {
+                        closeFailure = closeFailure == null ? cleanup : merge(closeFailure, cleanup);
+                    }
+                }
+                if (!stopped && closeFailure != null) {
+                    exception.addSuppressed(closeFailure);
+                }
+                if (stopped && !application.artifact().reused()) {
+                    try {
+                        ApplicationBuilder.delete(application.artifact());
+                    } catch (final IOException cleanup) {
+                        exception.addSuppressed(cleanup);
+                    }
                 }
             }
             try {
@@ -311,8 +339,8 @@ public final class CreatorServer implements AutoCloseable {
             if (!serverClosed) {
                 boolean responsesDrained = false;
                 try {
-                    responsesDrained = responses.tryAcquire(
-                            MAX_CONCURRENT_FORWARDS,
+                    responsesDrained = exampleResponses.tryAcquire(
+                            MAX_CONCURRENT_EXAMPLE_RESPONSES,
                             RESPONSE_DRAIN_TIMEOUT.toNanos(),
                             TimeUnit.NANOSECONDS
                     );
@@ -326,7 +354,7 @@ public final class CreatorServer implements AutoCloseable {
                     failure = merge(failure, exception);
                 } finally {
                     if (responsesDrained) {
-                        responses.release(MAX_CONCURRENT_FORWARDS);
+                        exampleResponses.release(MAX_CONCURRENT_EXAMPLE_RESPONSES);
                     }
                 }
             }
@@ -403,7 +431,9 @@ public final class CreatorServer implements AutoCloseable {
         if (failure == null) {
             return next;
         }
-        failure.addSuppressed(next);
+        if (failure != next) {
+            failure.addSuppressed(next);
+        }
         return failure;
     }
 
@@ -471,27 +501,224 @@ public final class CreatorServer implements AutoCloseable {
         if ("/api/creator".equals(path)) {
             return creator(exchange);
         }
+        if ("/api/scene".equals(path)) {
+            return scene(exchange);
+        }
+        if ("/api/scene/observations".equals(path)) {
+            return sceneObservations(exchange);
+        }
         if ("/api/application".equals(path)) {
             return getOnly(exchange, json(200, application()));
+        }
+        if ("/api/metrics".equals(path)) {
+            return metrics(exchange, "");
+        }
+        if ("/api/metrics/catalog".equals(path)) {
+            return metrics(exchange, "");
+        }
+        if (path.startsWith("/api/metrics/nodes/")) {
+            final String node = path.substring("/api/metrics/nodes/".length());
+            return node.isBlank()
+                    ? json(404, RailixValue.object(Map.of("status", RailixValue.string("not-found"))))
+                    : metrics(exchange, node);
+        }
+        if ("/api/examples".equals(path) || path.startsWith("/api/examples/")) {
+            final String rawPath = exchange.getRequestURI().getRawPath();
+            return examples(exchange, rawPath.length() == "/api/examples".length()
+                    ? ""
+                    : rawPath.substring("/api/examples/".length()));
         }
         if ("/api/catalog".equals(path)) {
             return getOnly(exchange, json(200, catalog()));
         }
+        if ("/api/editor".equals(path)) {
+            if (!"GET".equals(exchange.getRequestMethod())) return methodNotAllowed();
+            synchronized (applicationLock) {
+                try {
+                    final Map<String, RailixValue> payload = new LinkedHashMap<>(projectPayloadLocked(false).values());
+                    payload.putAll(editorLocked().view(exchange.getRequestURI().getRawQuery()).values());
+                    return json(200, RailixValue.object(payload));
+                } catch (final java.util.NoSuchElementException failure) {
+                    return json(404, RailixValue.object(Map.of("message", RailixValue.string(failure.getMessage()))));
+                } catch (final IllegalArgumentException failure) {
+                    return json(400, RailixValue.object(Map.of("message", RailixValue.string(failure.getMessage()))));
+                }
+            }
+        }
         if ("/api/icons".equals(path)) {
             return getOnly(exchange, json(200, icons.listing()));
         }
-        if (path.startsWith("/api/run/")) {
-            return execute(exchange, path.substring("/api/run/".length()), false);
-        }
-        if (path.startsWith("/api/preview/")) {
-            return execute(exchange, path.substring("/api/preview/".length()), true);
+        if (path.startsWith("/api/")) {
+            return json(404, RailixValue.object(Map.of("status", RailixValue.string("not-found"))));
         }
         return resource(exchange, path);
+    }
+
+    private Response sceneObservations(final HttpExchange exchange) throws IOException {
+        if (!"GET".equals(exchange.getRequestMethod())) {
+            return methodNotAllowed();
+        }
+        if (!sceneObservationResponses.tryAcquire()) {
+            return unavailable("saturated");
+        }
+        try {
+            final Map<String, String> parameters = CreatorScene.observationParameters(exchange.getRequestURI().getRawQuery());
+            final CreatorScene snapshot;
+            final DevelopmentApplication deployed;
+            final long functionalRevision;
+            final long presentationRevision;
+            final long pid;
+            synchronized (sceneLock) {
+                final String project;
+                final RailixValue.ObjectValue metadata;
+                synchronized (applicationLock) {
+                    if (!open.get() || deploymentPending
+                            || !sourceArtifactKey.equals(application.artifact().directory().getFileName().toString())) {
+                        return unavailable(open.get() ? "application" : "closed");
+                    }
+                    deployed = application;
+                    project = source;
+                    metadata = creatorValue;
+                    functionalRevision = sourceRevision;
+                    presentationRevision = creatorRevision;
+                    pid = ((RailixValue.NumberValue) deployed.snapshot().values().get("pid")).value().longValueExact();
+                }
+                if (scene == null || !scene.matches(project, metadata)) {
+                    scene = new CreatorScene(project, metadata, catalog);
+                }
+                snapshot = scene;
+            }
+            if (!snapshot.observesRevision(parameters.get("revision"))) {
+                return json(409, RailixValue.object(Map.of("status", RailixValue.string("scene-revision-conflict"))));
+            }
+            final CreatorScene.Observation projection = snapshot.observationView(parameters);
+            try {
+                if (!forwarding.tryAcquire()) {
+                    return unavailable("saturated");
+                }
+                try {
+                    final long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+                    for (final String read : List.of("metrics", "examples")) {
+                        if (read.equals("metrics")) {
+                            final DevelopmentApplication.Response catalog = deployed.metricCatalog(deadline);
+                            if (!sceneObservationCurrent(deployed, functionalRevision, presentationRevision)) {
+                                return unavailable("application");
+                            }
+                            if (catalog.status() != 200) {
+                                projection.unavailable(read);
+                                continue;
+                            }
+                            projection.metricDefinitions((RailixValue.ObjectValue)
+                                    ((RailixJson.Parsed) RailixJson.parse(catalog.body())).value());
+                        }
+                        for (final RailixValue.ObjectValue query : projection.queries(read)) {
+                            if (System.nanoTime() >= deadline) return unavailable("observation-timeout");
+                            final DevelopmentApplication.ObservationResponse response = deployed.observationQuery(read, query, deadline);
+                            if (!sceneObservationCurrent(deployed, functionalRevision, presentationRevision) || response == null) {
+                                return unavailable("application");
+                            }
+                            if (response.status() == 202 || response.status() == 503) {
+                                projection.unavailable(read);
+                                break;
+                            }
+                            if (response.status() != 200) {
+                                return json(response.status(), RailixValue.object(Map.of(
+                                        "status", RailixValue.string("application-observation-failed"),
+                                        "reason", RailixValue.string(read)
+                                )));
+                            }
+                            final RailixJson.Result parsed = RailixJson.parse(utf8(response.body()));
+                            if (!(parsed instanceof RailixJson.Parsed json)
+                                    || !(json.value() instanceof RailixValue.ObjectValue document)
+                                    || !RailixValue.number(pid).equals(document.values().get("application_pid"))) {
+                                throw new IOException("Application observation does not identify the captured application.");
+                            }
+                            if (!projection.accept(read, query, document)) break;
+                        }
+                    }
+                } finally {
+                    forwarding.release();
+                }
+                final RailixValue.ObjectValue observation = projection.response(functionalRevision, pid);
+                final String body = RailixJson.write(observation, MAX_SCENE_BYTES).orElse(null);
+                if (!sceneObservationCurrent(deployed, functionalRevision, presentationRevision)) {
+                    return unavailable("application");
+                }
+                if (body == null) {
+                    return json(413, RailixValue.object(Map.of("status", RailixValue.string("scene-observations-too-large"))));
+                }
+                // Retain admission until the bounded response has drained, including slow clients.
+                send(exchange, new Response(200, "application/json; charset=utf-8", body.getBytes(StandardCharsets.UTF_8)));
+                return Response.committedResponse();
+            } catch (final IOException failure) {
+                if (!sceneObservationCurrent(deployed, functionalRevision, presentationRevision)) {
+                    return unavailable("application");
+                }
+                return json(502, RailixValue.object(Map.of(
+                        "status", RailixValue.string("invalid-application-observation"),
+                        "message", RailixValue.string(failure.getMessage())
+                )));
+            }
+        } catch (final java.util.NoSuchElementException failure) {
+            return json(404, RailixValue.object(Map.of("status", RailixValue.string("scene-observation-not-found"),
+                    "message", RailixValue.string(failure.getMessage()))));
+        } catch (final IllegalArgumentException failure) {
+            return json(400, RailixValue.object(Map.of("status", RailixValue.string("invalid-scene-query"),
+                    "message", RailixValue.string(failure.getMessage()))));
+        } finally {
+            sceneObservationResponses.release();
+        }
+    }
+
+    private boolean sceneObservationCurrent(final DevelopmentApplication deployed, final long functionalRevision,
+                                             final long presentationRevision) {
+        synchronized (applicationLock) {
+            return open.get() && !deploymentPending && application == deployed
+                    && sourceRevision == functionalRevision && creatorRevision == presentationRevision
+                    && sourceArtifactKey.equals(deployed.artifact().directory().getFileName().toString());
+        }
+    }
+
+    private Response scene(final HttpExchange exchange) {
+        if (!"GET".equals(exchange.getRequestMethod())) {
+            return methodNotAllowed();
+        }
+        final CreatorScene snapshot;
+        synchronized (sceneLock) {
+            final String project;
+            final RailixValue.ObjectValue metadata;
+            synchronized (applicationLock) {
+                project = source;
+                metadata = creatorValue;
+            }
+            if (scene == null || !scene.matches(project, metadata)) {
+                scene = new CreatorScene(project, metadata, catalog);
+            }
+            snapshot = scene;
+        }
+        try {
+            return RailixJson.write(snapshot.view(exchange.getRequestURI().getRawQuery()), MAX_SCENE_BYTES)
+                    .map(body -> new Response(200, "application/json; charset=utf-8", body.getBytes(StandardCharsets.UTF_8)))
+                    .orElseGet(() -> json(413, RailixValue.object(Map.of("status", RailixValue.string("scene-too-large")))));
+        } catch (final java.util.NoSuchElementException failure) {
+            return json(404, RailixValue.object(Map.of(
+                    "status", RailixValue.string("scene-focus-not-found"),
+                    "message", RailixValue.string(failure.getMessage())
+            )));
+        } catch (final IllegalArgumentException failure) {
+            return json(400, RailixValue.object(Map.of(
+                    "status", RailixValue.string("invalid-scene-query"),
+                    "message", RailixValue.string(failure.getMessage())
+            )));
+        }
     }
 
     private Response project(final HttpExchange exchange) throws IOException {
         if ("GET".equals(exchange.getRequestMethod())) {
             return json(200, projectPayload());
+        }
+        if ("PATCH".equals(exchange.getRequestMethod())) {
+            return edit(exchange, true);
         }
         if (!"POST".equals(exchange.getRequestMethod())) {
             return methodNotAllowed();
@@ -503,7 +730,7 @@ public final class CreatorServer implements AutoCloseable {
             }
             revision = ++projectRevision;
         }
-        final BodyRead body = body(exchange, MAX_PROJECT_BYTES);
+        final BodyRead body = body(exchange, MAX_REQUEST_BYTES);
         if (!body.diagnostics().isEmpty()) {
             return bodyResponse(body);
         }
@@ -521,14 +748,17 @@ public final class CreatorServer implements AutoCloseable {
         if (result instanceof CompileResult.Rejected rejected) {
             return json(422, diagnostics(rejected.diagnostics(), application()));
         }
-        return accept((CompileResult.Compiled) result, revision);
+        return accept((CompileResult.Compiled) result, revision, true);
     }
 
     private Response creator(final HttpExchange exchange) throws IOException {
+        if ("PATCH".equals(exchange.getRequestMethod())) {
+            return edit(exchange, false);
+        }
         if (!"POST".equals(exchange.getRequestMethod())) {
             return methodNotAllowed();
         }
-        final BodyRead body = body(exchange, MAX_PROJECT_BYTES);
+        final BodyRead body = body(exchange, MAX_REQUEST_BYTES);
         if (!body.diagnostics().isEmpty()) {
             return bodyResponse(body);
         }
@@ -542,6 +772,100 @@ public final class CreatorServer implements AutoCloseable {
                     ""
             )), application()));
         }
+        return saveCreator(metadata, true);
+    }
+
+    private Response edit(final HttpExchange exchange, final boolean project) throws IOException {
+        final BodyRead body = body(exchange, MAX_REQUEST_BYTES);
+        if (!body.diagnostics().isEmpty()) {
+            return bodyResponse(body);
+        }
+        final String edited;
+        final long revision;
+        try {
+            final RailixJson.Result parsed = RailixJson.parse(utf8(body.value()));
+            if (!(parsed instanceof RailixJson.Parsed valid)
+                    || !(valid.value() instanceof RailixValue.ObjectValue edit)
+                    || !edit.values().keySet().equals(Set.of("revision", "changes"))
+                    || !(edit.values().get("revision") instanceof RailixValue.NumberValue expected)
+                    || !(edit.values().get("changes") instanceof RailixValue.ObjectValue changes)) {
+                throw new IllegalArgumentException("Edit must contain a revision number and a changes object.");
+            }
+            synchronized (applicationLock) {
+                if (!open.get()) {
+                    return unavailable("closed");
+                }
+                if (expected.value().compareTo(java.math.BigDecimal.valueOf(
+                        project ? sourceRevision : creatorRevision)) != 0) {
+                    return json(409, RailixValue.object(Map.of(
+                            "status", RailixValue.string("edit-conflict"),
+                            "message", RailixValue.string("This document changed in another editor. Reload before saving; this edit was not applied.")
+                    )));
+                }
+                final RailixValue.ObjectValue document = project
+                        ? (RailixValue.ObjectValue) ((RailixJson.Parsed) RailixJson.parse(source)).value()
+                        : creatorValue;
+                final RailixValue.ObjectValue edits;
+                if (!project && changes.values().containsKey("prune_removed_steps")) {
+                    if (!RailixValue.bool(true).equals(changes.values().get("prune_removed_steps"))) {
+                        throw new IllegalArgumentException("prune_removed_steps must be true.");
+                    }
+                    final Map<String, RailixValue> fields = new LinkedHashMap<>(changes.values());
+                    fields.remove("prune_removed_steps");
+                    final Map<String, RailixValue> steps = new LinkedHashMap<>();
+                    final Set<String> current = ((RailixValue.ArrayValue) editorLocked().project().values().get("nodes")).values().stream()
+                            .map(value -> ((RailixValue.StringValue) ((RailixValue.ObjectValue) value).values().get("id")).value())
+                            .collect(java.util.stream.Collectors.toSet());
+                    ((RailixValue.ObjectValue) creatorValue.values().get("steps")).values().keySet().stream()
+                            .filter(id -> !current.contains(id)).forEach(id -> steps.put(id, RailixValue.nullValue()));
+                    if (fields.get("steps") instanceof RailixValue.ObjectValue explicit) steps.putAll(explicit.values());
+                    else if (fields.containsKey("steps")) throw new IllegalArgumentException("Step edits must be an object.");
+                    fields.put("steps", RailixValue.object(steps));
+                    edits = RailixValue.object(fields);
+                } else edits = project ? editorLocked().changes(changes) : changes;
+                final var updated = CreatorEditor.apply(document, edits, project);
+                edited = RailixJson.write(updated);
+                if (!project) {
+                    return saveCreator(edited, false);
+                }
+                revision = ++projectRevision;
+            }
+        } catch (final CharacterCodingException | IllegalArgumentException failure) {
+            return json(422, diagnostics(List.of(Diagnostic.atPath(
+                    "CREATOR_EDIT_INVALID",
+                    failure instanceof CharacterCodingException ? "Edit must be valid UTF-8." : failure.getMessage(),
+                    ""
+            )), application()));
+        }
+        final CompileResult result = ProjectCompiler.compileApplication(edited, catalog);
+        if (result instanceof CompileResult.Rejected rejected) {
+            final var document = (RailixValue.ObjectValue) ((RailixJson.Parsed) RailixJson.parse(edited)).value();
+            final var paths = java.util.regex.Pattern.compile("^(nodes|links)\\[(\\d+)]");
+            final var values = diagnosticValues(rejected.diagnostics()).values().stream().<RailixValue>map(value -> {
+                final Map<String, RailixValue> issue = new LinkedHashMap<>(((RailixValue.ObjectValue) value).values());
+                final String path = ((RailixValue.StringValue) issue.get("path")).value();
+                final var match = paths.matcher(path);
+                if (match.find()) {
+                    final var entries = (RailixValue.ArrayValue) document.values().get(match.group(1));
+                    final int index = Integer.parseInt(match.group(2));
+                    if (index < entries.values().size() && entries.values().get(index) instanceof RailixValue.ObjectValue entry) {
+                        final boolean node = match.group(1).equals("nodes");
+                        if (entry.values().get(node ? "id" : "from") instanceof RailixValue.StringValue id) {
+                            final int separator = id.value().lastIndexOf('.');
+                            issue.put("node", RailixValue.string(node ? id.value()
+                                    : separator > 0 ? id.value().substring(0, separator) : "app"));
+                        }
+                    }
+                }
+                return RailixValue.object(issue);
+            }).toList();
+            return json(422, RailixValue.object(Map.of("status", RailixValue.string("rejected"),
+                    "diagnostics", RailixValue.array(values), "application", application())));
+        }
+        return accept((CompileResult.Compiled) result, revision, false);
+    }
+
+    private Response saveCreator(final String metadata, final boolean fullDocument) throws IOException {
         synchronized (applicationLock) {
             final CreatorDocument.Result result = CreatorDocument.parse(metadata, source, catalog);
             if (!result.diagnostics().isEmpty()) {
@@ -557,47 +881,68 @@ public final class CreatorServer implements AutoCloseable {
                 )));
             }
             creatorValue = result.value();
+            creatorRevision++;
             creatorDiagnostics = List.of();
-            return json(200, projectPayloadLocked());
+            return json(200, projectPayloadLocked(fullDocument));
         }
     }
 
-    private Response accept(final CompileResult.Compiled compiled, final long revision) throws IOException {
+    private Response accept(final CompileResult.Compiled compiled, final long revision, final boolean fullDocument)
+            throws IOException {
         final String applicationKey = ApplicationBuilder.key(compiled);
         synchronized (buildLock) {
             final String cleanupPhase = cleanupRetirement();
-            final long generation;
-            synchronized (applicationLock) {
-                if (!open.get() || revision != projectRevision) {
-                    return supersededLocked();
-                }
-                if (!cleanupPhase.isEmpty()) {
-                    return cleanupPendingLocked();
-                }
-                if (application.artifact().directory().getFileName().toString().equals(applicationKey)
-                        && application.running()) {
-                    try {
-                        persist(projectFile, compiled.source());
-                    } catch (final IOException exception) {
-                        return json(500, RailixValue.object(Map.of(
-                                "status", RailixValue.string("failed"),
-                                "message", RailixValue.string("Project could not be persisted."),
-                                "application", applicationSnapshotLocked()
-                        )));
+            long generation = -1;
+            boolean reused = false;
+            boolean pending = false;
+            try {
+                synchronized (applicationLock) {
+                    if (!open.get() || revision != projectRevision) {
+                        return supersededLocked();
                     }
-                    source = compiled.source();
-                    return json(200, projectPayloadLocked());
+                    if (!cleanupPhase.isEmpty()) {
+                        return cleanupPendingLocked();
+                    }
+                    deploymentPending = true;
+                    pending = true;
+                    if (application.artifact().directory().getFileName().toString().equals(applicationKey)
+                            && application.running()) {
+                        try {
+                            persist(projectFile, compiled.source());
+                        } catch (final IOException exception) {
+                            return json(500, RailixValue.object(Map.of(
+                                    "status", RailixValue.string("failed"),
+                                    "message", RailixValue.string("Project could not be persisted."),
+                                    "application", applicationSnapshotLocked()
+                            )));
+                        }
+                        source = compiled.source();
+                        sourceArtifactKey = applicationKey;
+                        sourceRevision = revision;
+                        reused = true;
+                    } else {
+                        generation = nextGeneration++;
+                    }
                 }
-                generation = nextGeneration++;
+                if (reused) {
+                    return json(200, projectPayload(fullDocument));
+                }
+                return buildAndAccept(compiled, revision, generation, fullDocument);
+            } finally {
+                if (pending) {
+                    synchronized (applicationLock) {
+                        deploymentPending = false;
+                    }
+                }
             }
-            return buildAndAccept(compiled, revision, generation);
         }
     }
 
     private Response buildAndAccept(
             final CompileResult.Compiled compiled,
             final long revision,
-            final long generation
+            final long generation,
+            final boolean fullDocument
     ) throws IOException {
         final DevelopmentApplication candidate;
         try {
@@ -621,6 +966,7 @@ public final class CreatorServer implements AutoCloseable {
         }
         boolean superseded;
         IOException persistenceFailure = null;
+        IOException activationFailure = null;
         synchronized (applicationLock) {
             superseded = !open.get() || revision != projectRevision;
             if (!superseded) {
@@ -631,13 +977,25 @@ public final class CreatorServer implements AutoCloseable {
                 }
             }
             if (!superseded && persistenceFailure == null) {
-                final DevelopmentApplication previous = application;
-                retirement = previous;
-                retirementDeletesArtifact = !previous.artifact().directory()
-                        .equals(candidate.artifact().directory());
-                retirementPhase = "";
-                application = candidate;
                 source = compiled.source();
+                sourceArtifactKey = candidate.artifact().directory().getFileName().toString();
+                sourceRevision = revision;
+                try {
+                    candidate.activate();
+                } catch (final IOException exception) {
+                    activationFailure = exception;
+                }
+                if (activationFailure == null && !candidate.running()) {
+                    activationFailure = new IOException("Generated application stopped during activation.");
+                }
+                if (activationFailure == null) {
+                    final DevelopmentApplication previous = application;
+                    retirement = previous;
+                    retirementDeletesArtifact = !previous.artifact().directory()
+                            .equals(candidate.artifact().directory());
+                    retirementPhase = "";
+                    application = candidate;
+                }
             }
         }
         if (superseded) {
@@ -653,11 +1011,19 @@ public final class CreatorServer implements AutoCloseable {
             return json(500, RailixValue.object(Map.of(
                     "status", RailixValue.string("failed"),
                     "message", RailixValue.string("Project could not be persisted."),
+                "application", application()
+            )));
+        }
+        if (activationFailure != null) {
+            discard(candidate);
+            return json(503, RailixValue.object(Map.of(
+                    "status", RailixValue.string("failed"),
+                    "message", RailixValue.string("Generated application could not be activated."),
                     "application", application()
             )));
         }
         cleanupRetirement();
-        return json(200, projectPayload());
+        return json(200, projectPayload(fullDocument));
     }
 
     private void discard(final DevelopmentApplication candidate) {
@@ -683,7 +1049,7 @@ public final class CreatorServer implements AutoCloseable {
         try {
             pending.close();
         } catch (final RuntimeException failure) {
-            return markRetirement(pending, "termination");
+            return markRetirement(pending, "application-cleanup");
         }
         if (deleteArtifact) {
             try {
@@ -728,18 +1094,9 @@ public final class CreatorServer implements AutoCloseable {
         )));
     }
 
-    private Response execute(
-            final HttpExchange exchange,
-            final String suffix,
-            final boolean preview
-    ) throws IOException {
-        final String[] target = preview ? suffix.split("/", -1) : new String[]{suffix};
-        if (!"POST".equals(exchange.getRequestMethod())) {
+    private Response metrics(final HttpExchange exchange, final String node) throws IOException {
+        if (!"GET".equals(exchange.getRequestMethod())) {
             return methodNotAllowed();
-        }
-        final int targetSize = preview ? 2 : 1;
-        if (target.length != targetSize || Arrays.stream(target).anyMatch(String::isBlank)) {
-            return json(404, RailixValue.object(Map.of("status", RailixValue.string("not-found"))));
         }
         if (!open.get()) {
             return unavailable("closed");
@@ -748,39 +1105,97 @@ public final class CreatorServer implements AutoCloseable {
             return unavailable("saturated");
         }
         try {
-            if (!open.get()) {
-                return unavailable("closed");
+            final DevelopmentApplication deployed;
+            synchronized (applicationLock) {
+                deployed = application;
             }
-            final BodyRead body = body(exchange, RailixData.DEFAULT_MAX_SOURCE_BYTES);
-            if (!body.diagnostics().isEmpty()) {
-                return bodyResponse(body);
-            }
-            if (!open.get() || !responses.tryAcquire()) {
-                return unavailable("closed");
-            }
-            try {
-                if (!open.get()) {
-                    return unavailable("closed");
+            final DevelopmentApplication.Response response = "/api/metrics/catalog".equals(exchange.getRequestURI().getPath())
+                    ? deployed.metricCatalog() : node.isEmpty()
+                    ? deployed.metrics()
+                    : deployed.metrics(node);
+            synchronized (applicationLock) {
+                if (application != deployed) {
+                    return unavailable("application");
                 }
-                final DevelopmentApplication deployed;
-                synchronized (applicationLock) {
-                    deployed = application;
-                }
-                final DevelopmentApplication.Response response = preview
-                        ? deployed.preview(target[0], target[1], body.value(), true)
-                        : deployed.run(target[0], body.value(), true);
-                send(exchange, new Response(
-                        response.status(),
-                        "application/json; charset=utf-8",
-                        response.body().getBytes(StandardCharsets.UTF_8)
-                ));
-                return Response.committedResponse();
-            } finally {
-                responses.release();
             }
+            return new Response(
+                    response.status(),
+                    "application/json; charset=utf-8",
+                    response.body().getBytes(StandardCharsets.UTF_8)
+            );
+        } catch (final IOException failure) {
+            return json(502, RailixValue.object(Map.of(
+                    "status", RailixValue.string("invalid-application-metrics"),
+                    "message", RailixValue.string(failure.getMessage())
+            )));
         } finally {
             forwarding.release();
         }
+    }
+
+    private Response examples(final HttpExchange exchange, final String path) throws IOException {
+        if (!"GET".equals(exchange.getRequestMethod())) {
+            return methodNotAllowed();
+        }
+        if (!open.get()) {
+            return unavailable("closed");
+        }
+        if (!forwarding.tryAcquire()) {
+            return unavailable("saturated");
+        }
+        final boolean boundedSnapshot = boundedExampleSnapshot(path);
+        if (!boundedSnapshot && !exampleResponses.tryAcquire()) {
+            forwarding.release();
+            return unavailable("saturated");
+        }
+        try {
+            final DevelopmentApplication.ObservationResponse response;
+            try {
+                final DevelopmentApplication deployed;
+                synchronized (applicationLock) {
+                    if (deploymentPending) {
+                        return unavailable("application");
+                    }
+                    deployed = application;
+                }
+                try {
+                    response = deployed.examples(path);
+                } catch (final IOException failure) {
+                    synchronized (applicationLock) {
+                        if (application != deployed || deploymentPending) {
+                            return unavailable("application");
+                        }
+                    }
+                    throw failure;
+                }
+                if (response == null) {
+                    return unavailable("application");
+                }
+                synchronized (applicationLock) {
+                    if (application != deployed || deploymentPending) {
+                        return unavailable("application");
+                    }
+                }
+            } finally {
+                forwarding.release();
+            }
+            exchange.getResponseHeaders().set("Content-Type", response.contentType());
+            exchange.getResponseHeaders().set("Cache-Control", "no-store");
+            exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+            exchange.sendResponseHeaders(response.status(), response.body().length);
+            exchange.getResponseBody().write(response.body());
+            return Response.committedResponse();
+        } finally {
+            if (!boundedSnapshot) {
+                exampleResponses.release();
+            }
+        }
+    }
+
+    private static boolean boundedExampleSnapshot(final String path) {
+        return "status".equals(path)
+                || (!path.isBlank() && !"coverage".equals(path)
+                && !path.startsWith("steps/") && !path.endsWith("/view") && !path.contains("/steps/"));
     }
 
     private static Response unavailable(final String reason) {
@@ -791,38 +1206,38 @@ public final class CreatorServer implements AutoCloseable {
     }
 
     private RailixValue.ObjectValue projectPayload() throws IOException {
+        return projectPayload(true);
+    }
+
+    private RailixValue.ObjectValue projectPayload(final boolean fullDocument) throws IOException {
         synchronized (applicationLock) {
-            return projectPayloadLocked();
+            return projectPayloadLocked(fullDocument);
         }
     }
 
-    private RailixValue.ObjectValue projectPayloadLocked() throws IOException {
-        final RailixValue.ObjectValue project =
-                (RailixValue.ObjectValue) ((RailixJson.Parsed) RailixJson.parse(source)).value();
-        final RailixValue.ArrayValue nodes = (RailixValue.ArrayValue) project.values().get("nodes");
-        final long triggers = nodes.values().stream()
-                .filter(RailixValue.ObjectValue.class::isInstance)
-                .map(RailixValue.ObjectValue.class::cast)
-                .map(node -> node.values().get("use"))
-                .filter(RailixValue.StringValue.class::isInstance)
-                .map(RailixValue.StringValue.class::cast)
-                .map(RailixValue.StringValue::value)
-                .map(catalog::find)
-                .filter(java.util.Optional::isPresent)
-                .map(java.util.Optional::orElseThrow)
-                .filter(definition -> definition.kind() == StepDefinition.Kind.TRIGGER)
-                .count();
-        return RailixValue.object(Map.of(
-                "project", project,
-                "creator", creatorValue,
+    private RailixValue.ObjectValue projectPayloadLocked(final boolean fullDocument) throws IOException {
+        final CreatorEditor index = editorLocked();
+        final Map<String, RailixValue> payload = new LinkedHashMap<>(Map.of(
+                "revision", RailixValue.number(sourceRevision),
+                "creator_revision", RailixValue.number(creatorRevision),
                 "diagnostics", diagnosticValues(creatorDiagnostics),
                 "application", applicationSnapshotLocked(),
                 "workspace", RailixValue.object(Map.of(
                         "project_path", RailixValue.string(projectFile.toString()),
-                        "flow_count", RailixValue.number(triggers),
-                        "step_count", RailixValue.number(nodes.values().size())
+                        "flow_count", RailixValue.number(index.flowCount()),
+                        "step_count", RailixValue.number(index.stepCount())
                 ))
         ));
+        if (fullDocument) {
+            payload.put("project", index.project());
+            payload.put("creator", creatorValue);
+        }
+        return RailixValue.object(payload);
+    }
+
+    private CreatorEditor editorLocked() {
+        if (editor == null || !editor.matches(source, creatorValue)) editor = new CreatorEditor(source, creatorValue, catalog);
+        return editor;
     }
 
     private static String defaultProject(final Path project) {
@@ -848,11 +1263,10 @@ public final class CreatorServer implements AutoCloseable {
 
     private RailixValue.ObjectValue applicationSnapshotLocked() {
         final RailixValue.ObjectValue snapshot = application.snapshot();
-        if (retirement == null || retirementPhase.isEmpty()) {
-            return snapshot;
-        }
         final Map<String, RailixValue> values = new LinkedHashMap<>(snapshot.values());
-        values.put("retirement", retirementValueLocked());
+        if (retirement != null && !retirementPhase.isEmpty()) {
+            values.put("retirement", retirementValueLocked());
+        }
         return RailixValue.object(values);
     }
 
@@ -884,6 +1298,7 @@ public final class CreatorServer implements AutoCloseable {
             case "/", "/index.html" -> "index.html";
             case "/app.css" -> "app.css";
             case "/app.js" -> "app.js";
+            case "/world.js" -> "world.js";
             default -> "";
         };
         if (file.isEmpty()) {
@@ -993,11 +1408,9 @@ public final class CreatorServer implements AutoCloseable {
     }
 
     private boolean isMutation(final HttpExchange exchange, final String path) {
-        return "POST".equals(exchange.getRequestMethod())
+        return ("POST".equals(exchange.getRequestMethod()) || "PATCH".equals(exchange.getRequestMethod()))
                 && ("/api/project".equals(path)
-                || "/api/creator".equals(path)
-                || path.startsWith("/api/run/")
-                || path.startsWith("/api/preview/"));
+                || "/api/creator".equals(path));
     }
 
     private MutationAccess mutationAccess(final HttpExchange exchange) {
@@ -1100,12 +1513,8 @@ public final class CreatorServer implements AutoCloseable {
     }
 
     private static String readProject(final Path project) throws IOException {
-        if (Files.size(project) > MAX_PROJECT_BYTES) {
-            throw new IOException("Creator project exceeds the 1048576-byte limit.");
-        }
-        final byte[] source = Files.readAllBytes(project);
         try {
-            return utf8(source);
+            return Files.readString(project, StandardCharsets.UTF_8);
         } catch (final CharacterCodingException exception) {
             throw new IOException("Creator project is not valid UTF-8.", exception);
         }

@@ -263,6 +263,61 @@ final class StepDefinitionContractE2eTest {
         assertThat(input.defaultValue()).contains(RailixValue.number(5));
     }
 
+    @Test
+    void directJsonDefaultMakesTheInputOptional() {
+        final JsonInput input = new JsonInput(
+                STRING,
+                List.of(RailixValue.string("default")),
+                List.of(),
+                true
+        );
+
+        assertThat(input.required()).isFalse();
+    }
+
+    @Test
+    void directPathDefaultMakesTheInputOptional() {
+        final PathInput input = new PathInput(
+                READ,
+                List.of(path("context", "payload")),
+                true
+        );
+
+        assertThat(input.required()).isFalse();
+    }
+
+    @Test
+    void directOptionDefaultMakesTheInputOptional() {
+        final OptionsInput input = new OptionsInput(
+                List.of(Input.option("known")),
+                List.of("known"),
+                true
+        );
+
+        assertThat(input.required()).isFalse();
+    }
+
+    @Test
+    void directCandidateConstructionKeepsOrdinaryOutcomes() {
+        final CandidatesInput input = new CandidatesInput(
+                List.of(Input.option("known")
+                        .input("value", Input.json(ValueShape.ANY))
+                        .fromOwned("value")),
+                List.of("known")
+        );
+
+        assertThat(input.authoredOutcomes()).isFalse();
+        assertThat(input.defaultCandidate()).contains("known");
+    }
+
+    @Test
+    void numericRangeDoesNotAcceptAnotherValueShape() {
+        final JsonInput input = Input.json(NUMBER)
+                .between(RailixValue.number(0), RailixValue.number(10));
+
+        assertThat(input.withinRange(RailixValue.string("5"))).isFalse();
+    }
+
     private static Stream<Arguments> invalidContracts() {
         return Stream.of(
                 invalid("null option array", () -> Input.options((Option[]) null),
@@ -401,6 +456,9 @@ final class StepDefinitionContractE2eTest {
                         "Options input must declare at least one option."),
                 invalid("duplicate options", () -> Input.options(Input.option("same"), Input.option("same")),
                         "Option names must be distinct."),
+                invalid("multiple default options", () -> new OptionsInput(
+                                List.of(Input.option("known")), List.of("known", "known"), true),
+                        "Options input must declare zero or one default option."),
                 invalid("blank default option", () -> new OptionsInput(
                                 List.of(Input.option("known")), List.of(" "), true),
                         "Default option must be a non-blank string."),
@@ -423,6 +481,11 @@ final class StepDefinitionContractE2eTest {
                         "Option must declare zero or one value source."),
                 invalid("null option value sources", () -> new Option("choice", List.of(), null),
                         "Option must declare zero or one value source."),
+                invalid("null option input list", () -> new Option("choice", null, List.of()),
+                        "Definition values cannot be Java null."),
+                invalid("Java null option value source", () -> new Option(
+                                "choice", List.of(), java.util.Collections.singletonList(null)),
+                        "Option value source cannot be Java null."),
                 invalid("null option value source scope", () -> new StepDefinition.InputReference(null, "value"),
                         "Option value source scope cannot be Java null."),
                 invalid("null input type", () -> new StepDefinition.Field("input", null),
@@ -440,11 +503,6 @@ final class StepDefinitionContractE2eTest {
                                 .exampleTarget("target")
                                 .run(NEXT),
                         "Only Trigger Steps may declare an example target."),
-                invalid("Trigger example without target", () -> StepDefinition.named("example.trigger", "1")
-                                .kind(StepDefinition.Kind.TRIGGER)
-                                .example("case", RailixValue.object(Map.of()))
-                                .run(NEXT),
-                        "Trigger example templates require an example target."),
                 invalid("unknown Trigger example target", () -> StepDefinition.named("example.trigger", "1")
                                 .kind(StepDefinition.Kind.TRIGGER)
                                 .exampleTarget("missing")

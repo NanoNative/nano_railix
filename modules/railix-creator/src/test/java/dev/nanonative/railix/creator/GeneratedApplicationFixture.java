@@ -92,12 +92,19 @@ final class GeneratedApplicationFixture implements AutoCloseable {
         return request("/v1/run/" + trigger, context, true);
     }
 
-    DevelopmentApplication.Response preview(
-            final String trigger,
-            final String step,
-            final String context
-    ) throws IOException {
-        return request("/v1/preview/" + trigger + "/" + step, context, true);
+    List<RailixValue.ObjectValue> trace(final String trigger, final String context) throws IOException {
+        final DevelopmentApplication.Response response = traceResponse(trigger, context);
+        if (response.status() != 200) {
+            throw new IOException("Development trace request failed with HTTP " + response.status() + ".");
+        }
+        return response.body().lines()
+                .filter(line -> !line.isBlank())
+                .map(line -> (RailixValue.ObjectValue) ((RailixJson.Parsed) RailixJson.parse(line)).value())
+                .toList();
+    }
+
+    DevelopmentApplication.Response traceResponse(final String trigger, final String context) throws IOException {
+        return request("/v1/trace/" + trigger, context, true);
     }
 
     @Override

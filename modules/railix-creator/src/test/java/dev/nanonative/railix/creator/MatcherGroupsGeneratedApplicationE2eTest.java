@@ -228,35 +228,30 @@ final class MatcherGroupsGeneratedApplicationE2eTest {
     }
 
     @Test
-    void previewSeparatesSharedTransformAndMatcherStages() throws Exception {
-        final DevelopmentApplication.Response response = application.preview(
-                "structured",
-                probe("structured"),
-                context(Map.of())
-        );
+    void traceSeparatesSharedTransformAndMatcherStages() throws Exception {
+        final List<RailixValue.ObjectValue> trace = trace("structured", Map.of());
 
-        assertThat(response.status()).isEqualTo(200);
-        assertThat(stages(body(response))).containsExactly(
+        assertThat(stages(trace, "structured")).containsExactly(
                 new Stage(
-                        "matches[0][0].when.transforms",
-                        probePath("structured") + ".inputs.matches[0][0].when.transforms[0]",
+                        probe("structured") + ".inputs.matches[0][0].when.transforms[0]",
                         "text.length",
                         "succeeded",
-                        List.of(RailixValue.number(6))
+                        RailixValue.string("railix"),
+                        RailixValue.number(6)
                 ),
                 new Stage(
-                        "matches[0][0].when.all[0]",
-                        probePath("structured") + ".inputs.matches[0][0].when.all[0][0]",
+                        probe("structured") + ".inputs.matches[0][0].when.all[0][0]",
                         "number.greater-than",
                         "succeeded",
-                        List.of(RailixValue.bool(true))
+                        RailixValue.number(6),
+                        RailixValue.bool(true)
                 ),
                 new Stage(
-                        "matches[0][0].when.all[1]",
-                        probePath("structured") + ".inputs.matches[0][0].when.all[1][0]",
+                        probe("structured") + ".inputs.matches[0][0].when.all[1][0]",
                         "number.less-than",
                         "succeeded",
-                        List.of(RailixValue.bool(true))
+                        RailixValue.number(6),
+                        RailixValue.bool(true)
                 )
         );
     }
@@ -314,38 +309,40 @@ final class MatcherGroupsGeneratedApplicationE2eTest {
     @Test
     void nestedPredicateInvalidOutputRemainsFailed() throws Exception {
         assertFailed(
-                run("invalid-output", Map.of()),
+                trace("invalid-output", Map.of()),
                 new Failure(
                         "STEP_OUTPUT_INVALID",
                         "Nested Step did not return its one declared compatible value.",
                         "value.invalid"
                 ),
-                List.of(new StepExecution("value.equals", "ok"))
+                List.of(
+                        new StepExecution("value.equals", "ok"),
+                        new StepExecution("value.invalid", "ok")
+                )
         );
     }
 
     @Test
     void nestedPredicateInputRejectionRemainsRejected() throws Exception {
-        final DevelopmentApplication.Response response = run(
+        final List<RailixValue.ObjectValue> trace = trace(
                 "input-rejection",
                 Map.of("source", RailixValue.number(0))
         );
-        final RailixValue.ObjectValue result = body(response);
+        final RailixValue.ObjectValue result = terminal(trace);
 
-        assertThat(response.status()).isEqualTo(422);
         assertThat(text(result, "status")).isEqualTo("rejected");
         assertThat(diagnostics(result)).containsExactly(new Rejection(
                 "RUN_NESTED_INPUT_INCOMPATIBLE",
                 "Nested Step value.text-boolean requires string but receives number.",
                 probePath("input-rejection") + ".inputs.matches[0][0].when.all[0][0]"
         ));
-        assertThat(steps(result)).containsExactly(new StepExecution("value.non-boolean", "ok"));
+        assertThat(steps(trace)).containsExactly(new StepExecution("value.non-boolean", "ok"));
     }
 
     @Test
     void nestedPredicateFaultRemainsFailed() throws Exception {
         assertFailed(
-                run("predicate-fault", Map.of()),
+                trace("predicate-fault", Map.of()),
                 new Failure(
                         "STEP_IMPLEMENTATION_FAULT",
                         "Step implementation threw an unexpected exception.",
@@ -358,7 +355,7 @@ final class MatcherGroupsGeneratedApplicationE2eTest {
     @Test
     void structuredTransformFaultRemainsFailed() throws Exception {
         assertFailed(
-                run("transform-fault", Map.of()),
+                trace("transform-fault", Map.of()),
                 new Failure(
                         "STEP_IMPLEMENTATION_FAULT",
                         "Step implementation threw an unexpected exception.",
@@ -371,7 +368,7 @@ final class MatcherGroupsGeneratedApplicationE2eTest {
     @Test
     void additionalStructuredPredicateFaultRemainsFailed() throws Exception {
         assertFailed(
-                run("additional-fault", Map.of()),
+                trace("additional-fault", Map.of()),
                 new Failure(
                         "STEP_IMPLEMENTATION_FAULT",
                         "Step implementation threw an unexpected exception.",
@@ -387,14 +384,20 @@ final class MatcherGroupsGeneratedApplicationE2eTest {
     @Test
     void nestedPredicateInterruptionRemainsCancelled() throws Exception {
         assertCancelled(
-                run("predicate-interrupt", Map.of()),
-                List.of(new StepExecution("value.equals", "ok"))
+                trace("predicate-interrupt", Map.of()),
+                List.of(
+                        new StepExecution("value.equals", "ok"),
+                        new StepExecution("value.interrupt", "ok")
+                )
         );
     }
 
     @Test
     void structuredTransformInterruptionRemainsCancelled() throws Exception {
-        assertCancelled(run("transform-interrupt", Map.of()), List.of());
+        assertCancelled(
+                trace("transform-interrupt", Map.of()),
+                List.of(new StepExecution("value.interrupt", "ok"))
+        );
     }
 
     private void assertPresent(final RailixValue value) throws IOException {
@@ -407,44 +410,48 @@ final class MatcherGroupsGeneratedApplicationE2eTest {
             final boolean expected,
             final String... nestedSteps
     ) throws IOException {
-        final DevelopmentApplication.Response response = run(flow, payload);
-        final RailixValue.ObjectValue result = body(response);
+        final List<RailixValue.ObjectValue> trace = trace(flow, payload);
+        final RailixValue.ObjectValue result = terminal(trace);
         final List<StepExecution> expectedSteps = new ArrayList<>(nestedSteps.length + 1);
         for (final String nested : nestedSteps) {
             expectedSteps.add(new StepExecution(nested, "ok"));
         }
         expectedSteps.add(new StepExecution(probe(flow), "next"));
 
-        assertThat(response.status()).isEqualTo(200);
         assertThat(text(result, "status")).isEqualTo("succeeded");
         assertThat(match(result)).isEqualTo(RailixValue.bool(expected));
-        assertThat(steps(result)).containsExactlyElementsOf(expectedSteps);
+        assertThat(steps(trace)).containsExactlyElementsOf(expectedSteps);
     }
 
     private static void assertFailed(
-            final DevelopmentApplication.Response response,
+            final List<RailixValue.ObjectValue> trace,
             final Failure expected,
             final List<StepExecution> expectedSteps
     ) {
-        final RailixValue.ObjectValue result = body(response);
+        final RailixValue.ObjectValue result = terminal(trace);
         final RailixValue.ObjectValue failure = object(result, "failure");
 
-        assertThat(response.status()).isEqualTo(500);
         assertThat(text(result, "status")).isEqualTo("failed");
         assertThat(new Failure(text(failure, "code"), text(failure, "message"), text(failure, "step")))
                 .isEqualTo(expected);
-        assertThat(steps(result)).containsExactlyElementsOf(expectedSteps);
+        assertThat(steps(trace)).containsExactlyElementsOf(expectedSteps);
     }
 
     private static void assertCancelled(
-            final DevelopmentApplication.Response response,
+            final List<RailixValue.ObjectValue> trace,
             final List<StepExecution> expectedSteps
     ) {
-        final RailixValue.ObjectValue result = body(response);
+        final RailixValue.ObjectValue result = terminal(trace);
 
-        assertThat(response.status()).isEqualTo(409);
         assertThat(text(result, "status")).isEqualTo("cancelled");
-        assertThat(steps(result)).containsExactlyElementsOf(expectedSteps);
+        assertThat(steps(trace)).containsExactlyElementsOf(expectedSteps);
+    }
+
+    private List<RailixValue.ObjectValue> trace(
+            final String trigger,
+            final Map<String, RailixValue> payload
+    ) throws IOException {
+        return application.trace(trigger, context(payload));
     }
 
     private DevelopmentApplication.Response run(
@@ -474,6 +481,13 @@ final class MatcherGroupsGeneratedApplicationE2eTest {
         return (RailixValue.ObjectValue) ((RailixJson.Parsed) parsed).value();
     }
 
+    private static RailixValue.ObjectValue terminal(final List<RailixValue.ObjectValue> trace) {
+        assertThat(trace).isNotEmpty();
+        final RailixValue.ObjectValue result = trace.getLast();
+        assertThat(result.values().get("type")).isEqualTo(RailixValue.string("result"));
+        return result;
+    }
+
     private static RailixValue.ObjectValue object(final RailixValue.ObjectValue owner, final String field) {
         return (RailixValue.ObjectValue) owner.values().get(field);
     }
@@ -482,10 +496,14 @@ final class MatcherGroupsGeneratedApplicationE2eTest {
         return ((RailixValue.StringValue) owner.values().get(field)).value();
     }
 
-    private static List<StepExecution> steps(final RailixValue.ObjectValue result) {
-        return ((RailixValue.ArrayValue) result.values().get("steps")).values().stream()
-                .map(RailixValue.ObjectValue.class::cast)
-                .map(step -> new StepExecution(text(step, "id"), text(step, "outcome")))
+    private static List<StepExecution> steps(final List<RailixValue.ObjectValue> trace) {
+        return trace.stream()
+                .filter(event -> RailixValue.string("step_result").equals(event.values().get("type")))
+                .filter(event -> RailixValue.string("succeeded").equals(event.values().get("status")))
+                .map(event -> new StepExecution(
+                        text(event, "id").contains(".inputs.") ? text(event, "use") : text(event, "id"),
+                        text(event, "outcome")
+                ))
                 .toList();
     }
 
@@ -500,18 +518,20 @@ final class MatcherGroupsGeneratedApplicationE2eTest {
                 .toList();
     }
 
-    private static List<Stage> stages(final RailixValue.ObjectValue result) {
-        final RailixValue.ObjectValue preview = object(result, "preview");
-        return ((RailixValue.ArrayValue) preview.values().get("stages")).values().stream()
-                .map(RailixValue.ObjectValue.class::cast)
-                .map(stage -> new Stage(
-                        text(stage, "input"),
-                        text(stage, "invocation"),
-                        text(stage, "use"),
-                        text(stage, "status"),
-                        stage.values().containsKey("value")
-                                ? List.of(stage.values().get("value"))
-                                : List.of()
+    private static List<Stage> stages(
+            final List<RailixValue.ObjectValue> trace,
+            final String flow
+    ) {
+        final String prefix = probe(flow) + ".inputs.";
+        return trace.stream()
+                .filter(event -> RailixValue.string("step_result").equals(event.values().get("type")))
+                .filter(event -> text(event, "id").startsWith(prefix))
+                .map(event -> new Stage(
+                        text(event, "id"),
+                        text(event, "use"),
+                        text(event, "status"),
+                        object(event, "inputs").values().get("value"),
+                        object(event, "returns").values().get("value")
                 ))
                 .toList();
     }
@@ -612,11 +632,11 @@ final class MatcherGroupsGeneratedApplicationE2eTest {
     }
 
     private record Stage(
-            String input,
             String invocation,
             String use,
             String status,
-            List<RailixValue> values
+            RailixValue input,
+            RailixValue output
     ) {
     }
 }

@@ -20,10 +20,12 @@ import java.util.regex.Pattern;
 
 /** Parser and validator for presentation-only Creator metadata. */
 final class CreatorDocument {
-    static final String EMPTY = "{\"format\":1,\"groups\":[],\"steps\":{}}";
+    static final String EMPTY = "{\"format\":2,\"groups\":[],\"steps\":{}}";
     private static final Set<String> FIELDS = Set.of("format", "groups", "steps");
-    private static final Set<String> PRESENTATION_FIELDS = Set.of("name", "color", "icon", "outcomes");
-    private static final Set<String> GROUP_FIELDS = Set.of(
+    private static final Set<String> PRESENTATION_FIELDS = Set.of("name", "color", "icon", "outcomes", "group", "shape", "aspect", "roundness");
+    private static final Set<String> LEGACY_PRESENTATION_FIELDS = Set.of("name", "color", "icon", "outcomes");
+    private static final Set<String> GROUP_FIELDS = Set.of("id", "name", "color", "icon", "boundary", "shape", "aspect", "roundness");
+    private static final Set<String> LEGACY_GROUP_FIELDS = Set.of(
             "id", "name", "color", "icon", "occurrences"
     );
     private static final Set<String> OCCURRENCE_FIELDS = Set.of("id", "flow", "parent", "steps");
@@ -66,15 +68,23 @@ final class CreatorDocument {
             return Result.rejected(unknown.get());
         }
         if (!(document.values().get("format") instanceof RailixValue.NumberValue format)
-                || !BigDecimal.ONE.equals(format.value())) {
+                || !(BigDecimal.ONE.equals(format.value()) || BigDecimal.TWO.equals(format.value()))) {
             return Result.rejected(
                     "CREATOR_FORMAT_UNSUPPORTED",
-                    "Creator metadata format must be the number 1.",
+                    "Creator metadata format must be the number 1 or 2.",
                     "format"
             );
         }
         final RailixValue.ObjectValue project = project(projectSource);
-        final Graph graph = graph(project, catalog);
+        return BigDecimal.ONE.equals(format.value())
+                ? legacy(document, graph(project, catalog, true))
+                : current(document, graph(project, catalog, false));
+    }
+
+    private static Result current(
+            final RailixValue.ObjectValue document,
+            final Graph graph
+    ) {
         final RailixValue stepsValue = document.values().get("steps");
         if (!(stepsValue instanceof RailixValue.ObjectValue steps)) {
             return Result.rejected(
@@ -82,10 +92,6 @@ final class CreatorDocument {
                     "Creator steps must be an object.",
                     "steps"
             );
-        }
-        final Result stepResult = presentations(steps, graph);
-        if (!stepResult.diagnostics().isEmpty()) {
-            return stepResult;
         }
         final RailixValue groupsValue = document.values().get("groups");
         if (!(groupsValue instanceof RailixValue.ArrayValue groups)) {
@@ -95,12 +101,24 @@ final class CreatorDocument {
                     "groups"
             );
         }
-        final Result groupResult = groups(groups, graph);
+        final Set<String> groupIds = new LinkedHashSet<>();
+        final Result groupResult = currentGroups(groups, groupIds);
         if (!groupResult.diagnostics().isEmpty()) {
             return groupResult;
         }
+        final Result stepResult = presentations(steps, graph, groupIds, PRESENTATION_FIELDS);
+        if (!stepResult.diagnostics().isEmpty()) {
+            return stepResult;
+        }
+        return canonical(groups, steps);
+    }
+
+    private static Result canonical(
+            final RailixValue.ArrayValue groups,
+            final RailixValue.ObjectValue steps
+    ) {
         final Map<String, RailixValue> canonicalFields = new LinkedHashMap<>();
-        canonicalFields.put("format", RailixValue.number(1));
+        canonicalFields.put("format", RailixValue.number(2));
         canonicalFields.put("groups", groups);
         canonicalFields.put("steps", steps);
         final RailixValue.ObjectValue canonical = RailixValue.object(canonicalFields);
@@ -109,7 +127,9 @@ final class CreatorDocument {
 
     private static Result presentations(
             final RailixValue.ObjectValue steps,
-            final Graph graph
+            final Graph graph,
+            final Set<String> groups,
+            final Set<String> fields
     ) {
         for (final Map.Entry<String, RailixValue> entry : steps.values().entrySet()) {
             final String path = "steps." + entry.getKey();
@@ -129,7 +149,7 @@ final class CreatorDocument {
             }
             final Optional<Diagnostic> unknown = unknown(
                     presentation,
-                    PRESENTATION_FIELDS,
+                    fields,
                     "CREATOR_PRESENTATION_FIELD_UNKNOWN",
                     "Unknown presentation field: ",
                     path
@@ -145,8 +165,180 @@ final class CreatorDocument {
             if (diagnostic.isPresent()) {
                 return Result.rejected(diagnostic.get());
             }
+            final RailixValue group = presentation.values().get("group");
+            if (group != null) {
+                if (!(group instanceof RailixValue.StringValue groupId) || !validId(groupId.value())) {
+                    return Result.rejected(
+                            "CREATOR_STEP_GROUP_INVALID",
+                            "Step group must be a non-blank id up to 128 characters.",
+                            path + ".group"
+                    );
+                }
+                if (graph.kinds().get(entry.getKey()) != StepDefinition.Kind.STEP) {
+                    return Result.rejected(
+                            "CREATOR_STEP_GROUP_UNSUPPORTED",
+                            "Only ordinary Steps may belong to a Creator group.",
+                            path + ".group"
+                    );
+                }
+                if (!groups.contains(groupId.value())) {
+                    return Result.rejected(
+                            "CREATOR_STEP_GROUP_UNKNOWN",
+                            "Step group must reference a declared Creator group: " + groupId.value() + ".",
+                            path + ".group"
+                    );
+                }
+            }
         }
         return Result.accepted();
+    }
+
+    private static Result currentGroups(
+            final RailixValue.ArrayValue groups,
+            final Set<String> groupIds
+    ) {
+        for (int index = 0; index < groups.values().size(); index++) {
+            final String path = "groups[" + index + "]";
+            if (!(groups.values().get(index) instanceof RailixValue.ObjectValue group)) {
+                return Result.rejected("CREATOR_GROUP_OBJECT_REQUIRED", "Group must be an object.", path);
+            }
+            final Optional<Diagnostic> unknown = unknown(
+                    group, GROUP_FIELDS, "CREATOR_GROUP_FIELD_UNKNOWN", "Unknown group field: ", path
+            );
+            if (unknown.isPresent()) {
+                return Result.rejected(unknown.get());
+            }
+            final Read id = text(group, "id", path + ".id");
+            if (id.diagnostic().isPresent()) {
+                return Result.rejected(id.diagnostic().get());
+            }
+            if (!groupIds.add(id.value())) {
+                return Result.rejected(
+                        "CREATOR_GROUP_ID_DUPLICATE",
+                        "Group id is already declared: " + id.value() + ".",
+                        path + ".id"
+                );
+            }
+            final Optional<Diagnostic> presentation = presentation(group, path);
+            if (presentation.isPresent()) {
+                return Result.rejected(presentation.get());
+            }
+            final RailixValue boundary = group.values().get("boundary");
+            if (boundary != null && (!(boundary instanceof RailixValue.StringValue text)
+                    || !Set.of("solid", "dashed", "dotted").contains(text.value()))) {
+                return Result.rejected(
+                        "CREATOR_GROUP_BOUNDARY_INVALID",
+                        "Group boundary must be solid, dashed, or dotted.",
+                        path + ".boundary"
+                );
+            }
+        }
+        return Result.accepted();
+    }
+
+    private static Result legacy(
+            final RailixValue.ObjectValue document,
+            final Graph graph
+    ) {
+        final RailixValue stepsValue = document.values().get("steps");
+        if (!(stepsValue instanceof RailixValue.ObjectValue steps)) {
+            return Result.rejected(
+                    "CREATOR_STEPS_OBJECT_REQUIRED",
+                    "Creator steps must be an object.",
+                    "steps"
+            );
+        }
+        final Result stepResult = presentations(steps, graph, Set.of(), LEGACY_PRESENTATION_FIELDS);
+        if (!stepResult.diagnostics().isEmpty()) {
+            return stepResult;
+        }
+        final RailixValue groupsValue = document.values().get("groups");
+        if (!(groupsValue instanceof RailixValue.ArrayValue groups)) {
+            return Result.rejected(
+                    "CREATOR_GROUPS_ARRAY_REQUIRED",
+                    "Creator groups must be an array.",
+                    "groups"
+            );
+        }
+        final Result groupResult = legacyGroups(groups, graph);
+        return groupResult.diagnostics().isEmpty() ? migrate(groups, steps) : groupResult;
+    }
+
+    private static Result migrate(
+            final RailixValue.ArrayValue legacyGroups,
+            final RailixValue.ObjectValue legacySteps
+    ) {
+        final List<RailixValue> groups = new ArrayList<>();
+        final Map<String, LegacyOccurrence> occurrences = new LinkedHashMap<>();
+        for (final RailixValue value : legacyGroups.values()) {
+            final RailixValue.ObjectValue group = (RailixValue.ObjectValue) value;
+            final String groupId = textValue(group, "id");
+            final Map<String, RailixValue> fields = new LinkedHashMap<>();
+            for (final String field : List.of("id", "name", "color", "icon")) {
+                if (group.values().containsKey(field)) {
+                    fields.put(field, group.values().get(field));
+                }
+            }
+            groups.add(RailixValue.object(fields));
+            final RailixValue.ArrayValue groupOccurrences =
+                    (RailixValue.ArrayValue) group.values().get("occurrences");
+            for (final RailixValue occurrenceValue : groupOccurrences.values()) {
+                final RailixValue.ObjectValue occurrence = (RailixValue.ObjectValue) occurrenceValue;
+                final String id = textValue(occurrence, "id");
+                final RailixValue parentValue = occurrence.values().get("parent");
+                final String parent = parentValue instanceof RailixValue.StringValue text ? text.value() : "";
+                final RailixValue.ObjectValue assigned =
+                        (RailixValue.ObjectValue) occurrence.values().get("steps");
+                occurrences.put(id, new LegacyOccurrence(
+                        groupId,
+                        parent,
+                        assigned.values().values().stream()
+                                .map(RailixValue.StringValue.class::cast)
+                                .map(RailixValue.StringValue::value)
+                                .toList()
+                ));
+            }
+        }
+        final Map<String, Integer> depths = legacyDepths(occurrences);
+        final Map<String, LegacyMembership> memberships = new LinkedHashMap<>();
+        occurrences.forEach((id, occurrence) -> {
+            final int occurrenceDepth = depths.get(id);
+            occurrence.steps().forEach(step -> memberships.compute(step, (ignored, current) ->
+                    current == null || occurrenceDepth > current.depth()
+                            ? new LegacyMembership(occurrence.group(), occurrenceDepth)
+                            : current
+            ));
+        });
+        final Map<String, RailixValue> steps = new LinkedHashMap<>(legacySteps.values());
+        memberships.forEach((step, membership) -> {
+            final Map<String, RailixValue> presentation = new LinkedHashMap<>();
+            if (steps.get(step) instanceof RailixValue.ObjectValue existing) {
+                presentation.putAll(existing.values());
+            }
+            presentation.put("group", RailixValue.string(membership.group()));
+            steps.put(step, RailixValue.object(presentation));
+        });
+        return canonical(RailixValue.array(groups), RailixValue.object(steps));
+    }
+
+    private static Map<String, Integer> legacyDepths(final Map<String, LegacyOccurrence> occurrences) {
+        final Map<String, Integer> depths = new LinkedHashMap<>();
+        for (final String id : occurrences.keySet()) {
+            if (depths.containsKey(id)) {
+                continue;
+            }
+            final List<String> path = new ArrayList<>();
+            String current = id;
+            while (!current.isEmpty() && !depths.containsKey(current)) {
+                path.add(current);
+                current = occurrences.get(current).parent();
+            }
+            int depth = current.isEmpty() ? -1 : depths.get(current);
+            for (int index = path.size() - 1; index >= 0; index--) {
+                depths.put(path.get(index), ++depth);
+            }
+        }
+        return depths;
     }
 
     private static Result hierarchy(final Map<String, Occurrence> declared) {
@@ -161,11 +353,15 @@ final class CreatorDocument {
                 );
             }
         }
+        final Set<String> resolved = new LinkedHashSet<>();
         for (final Occurrence occurrence : declared.values()) {
-            final Set<String> seen = new LinkedHashSet<>();
+            if (resolved.contains(occurrence.id())) {
+                continue;
+            }
+            final Set<String> path = new LinkedHashSet<>();
             Occurrence current = occurrence;
-            while (!current.parent().isEmpty()) {
-                if (!seen.add(current.id())) {
+            while (!current.parent().isEmpty() && !resolved.contains(current.id())) {
+                if (!path.add(current.id())) {
                     return Result.rejected(
                             "CREATOR_OCCURRENCE_PARENT_CYCLE",
                             "Occurrence parents must not contain a cycle.",
@@ -174,6 +370,8 @@ final class CreatorDocument {
                 }
                 current = declared.get(current.parent());
             }
+            resolved.addAll(path);
+            resolved.add(current.id());
         }
         for (final Occurrence occurrence : declared.values()) {
             if (occurrence.parent().isEmpty()) {
@@ -204,7 +402,7 @@ final class CreatorDocument {
         return Result.accepted();
     }
 
-    private static Result groups(
+    private static Result legacyGroups(
             final RailixValue.ArrayValue groups,
             final Graph graph
     ) {
@@ -218,7 +416,7 @@ final class CreatorDocument {
                 return Result.rejected("CREATOR_GROUP_OBJECT_REQUIRED", "Group must be an object.", path);
             }
             final Optional<Diagnostic> unknown = unknown(
-                    group, GROUP_FIELDS, "CREATOR_GROUP_FIELD_UNKNOWN", "Unknown group field: ", path
+                    group, LEGACY_GROUP_FIELDS, "CREATOR_GROUP_FIELD_UNKNOWN", "Unknown group field: ", path
             );
             if (unknown.isPresent()) {
                 return Result.rejected(unknown.get());
@@ -488,6 +686,23 @@ final class CreatorDocument {
                     path + ".color"
             ));
         }
+        final RailixValue shape = value.values().get("shape");
+        if (shape != null && (!(shape instanceof RailixValue.StringValue text)
+                || !Set.of("rectangle", "ellipse", "triangle", "diamond").contains(text.value()))) {
+            return Optional.of(Diagnostic.atPath("CREATOR_PRESENTATION_SHAPE_INVALID",
+                    "Shape must be rectangle, ellipse, triangle, or diamond.", path + ".shape"));
+        }
+        for (final String field : List.of("aspect", "roundness")) {
+            final RailixValue setting = value.values().get(field);
+            final boolean aspect = "aspect".equals(field);
+            if (setting != null && (!(setting instanceof RailixValue.NumberValue number)
+                    || number.value().compareTo(BigDecimal.valueOf(aspect ? 0.5 : 0)) < 0
+                    || number.value().compareTo(BigDecimal.valueOf(aspect ? 4 : 50)) > 0)) {
+                return Optional.of(Diagnostic.atPath("CREATOR_PRESENTATION_GEOMETRY_INVALID",
+                        aspect ? "Width / height must be a number from 0.5 to 4."
+                                : "Corner rounding must be a number from 0 to 50 percent.", path + "." + field));
+            }
+        }
         final RailixValue icon = value.values().get("icon");
         if (icon != null) {
             final Optional<Diagnostic> diagnostic = icon(icon, path + ".icon");
@@ -612,7 +827,8 @@ final class CreatorDocument {
 
     private static Graph graph(
             final RailixValue.ObjectValue project,
-            final StepCatalog catalog
+            final StepCatalog catalog,
+            final boolean legacy
     ) {
         final Map<String, StepDefinition.Kind> kinds = new LinkedHashMap<>();
         final Map<String, String> uses = new LinkedHashMap<>();
@@ -623,10 +839,12 @@ final class CreatorDocument {
             final String use = ((RailixValue.StringValue) node.values().get("use")).value();
             final StepDefinition definition = catalog.find(use).orElseThrow();
             kinds.put(id, definition.kind());
-            uses.put(id, use);
-            final Map<String, String> slots = authoredOutcomeSlots(node, definition);
-            if (!slots.isEmpty()) {
-                outcomeSlots.put(id, slots);
+            if (legacy) {
+                uses.put(id, use);
+                final Map<String, String> slots = authoredOutcomeSlots(node, definition);
+                if (!slots.isEmpty()) {
+                    outcomeSlots.put(id, slots);
+                }
             }
         });
         final Map<String, List<String>> links = new LinkedHashMap<>();
@@ -640,18 +858,22 @@ final class CreatorDocument {
             final int separator = from.lastIndexOf('.');
             final String node = from.substring(0, separator);
             final String outcome = from.substring(separator + 1);
-            links.computeIfAbsent(node, ignored -> new ArrayList<>()).add(to);
             outgoing.computeIfAbsent(node, ignored -> new LinkedHashMap<>()).put(outcome, to);
-            if (!"end".equals(to)) {
-                incoming.computeIfAbsent(to, ignored -> new ArrayList<>()).add(node);
-                neighbors.computeIfAbsent(node, ignored -> new LinkedHashSet<>()).add(to);
-                neighbors.computeIfAbsent(to, ignored -> new LinkedHashSet<>()).add(node);
+            if (legacy) {
+                links.computeIfAbsent(node, ignored -> new ArrayList<>()).add(to);
+                if (!"end".equals(to)) {
+                    incoming.computeIfAbsent(to, ignored -> new ArrayList<>()).add(node);
+                    neighbors.computeIfAbsent(node, ignored -> new LinkedHashSet<>()).add(to);
+                    neighbors.computeIfAbsent(to, ignored -> new LinkedHashSet<>()).add(node);
+                }
             }
         });
         final Map<String, Set<String>> owners = new LinkedHashMap<>();
-        kinds.entrySet().stream()
-                .filter(entry -> entry.getValue() == StepDefinition.Kind.TRIGGER)
-                .forEach(trigger -> owners(trigger.getKey(), kinds, links, owners));
+        if (legacy) {
+            kinds.entrySet().stream()
+                    .filter(entry -> entry.getValue() == StepDefinition.Kind.TRIGGER)
+                    .forEach(trigger -> owners(trigger.getKey(), kinds, links, owners));
+        }
         return new Graph(kinds, uses, owners, neighbors, incoming, outgoing, outcomeSlots);
     }
 
@@ -727,6 +949,12 @@ final class CreatorDocument {
     }
 
     private record Read(String value, Optional<Diagnostic> diagnostic) {
+    }
+
+    private record LegacyOccurrence(String group, String parent, List<String> steps) {
+    }
+
+    private record LegacyMembership(String group, int depth) {
     }
 
     private record Graph(

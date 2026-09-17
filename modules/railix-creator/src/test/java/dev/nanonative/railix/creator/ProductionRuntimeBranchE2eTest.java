@@ -27,7 +27,7 @@ final class ProductionRuntimeBranchE2eTest {
             "dev.nanonative.railix.core.project.ProductionRuntimeBranchProbe";
 
     @Test
-    void everyDepthSevenBinaryRouteReachesItsUniqueLeafWithoutTrace(
+    void everyDepthSevenBinaryRouteReachesItsUniqueLeaf(
             @TempDir final Path workspace
     ) throws Exception {
         final Path application = workspace.resolve("application");
@@ -56,7 +56,6 @@ final class ProductionRuntimeBranchE2eTest {
         assertThat(metric(observed.output(), "calls")).isEqualTo(LEAVES);
         assertThat(metric(observed.output(), "unique")).isEqualTo(LEAVES);
         assertThat(metric(observed.output(), "mismatches")).isZero();
-        assertThat(metric(observed.output(), "traced")).isZero();
     }
 
     private static List<StepDefinition> definitions() {
@@ -161,7 +160,6 @@ final class ProductionRuntimeBranchE2eTest {
                         final RuntimeApplication application = RailixApplication.runtime();
                         final Set<String> unique = new HashSet<>();
                         long mismatches = 0;
-                        long traced = 0;
                         for (int index = 0; index < ROUTES; index++) {
                             final String route = Integer.toBinaryString(ROUTES + index).substring(1);
                             final WorkflowRuntime.SourceResult source = application.runSource(
@@ -177,17 +175,13 @@ final class ProductionRuntimeBranchE2eTest {
                                 } else {
                                     mismatches++;
                                 }
-                                if (!succeeded.steps().isEmpty()) {
-                                    traced++;
-                                }
                             } else {
                                 mismatches++;
                             }
                         }
                         System.out.print("BRANCH|calls=" + ROUTES
                                 + "|unique=" + unique.size()
-                                + "|mismatches=" + mismatches
-                                + "|traced=" + traced);
+                                + "|mismatches=" + mismatches);
                     }
                 }
                 """;

@@ -104,6 +104,16 @@ public final class StepInput {
         return Optional.ofNullable(values.get(name));
     }
 
+    /** Returns every resolved named value for this invocation as an immutable map. */
+    public Map<String, RailixValue> values() {
+        return values;
+    }
+
+    /** Returns every selected tagged option for this invocation as an immutable map. */
+    public Map<String, String> options() {
+        return options;
+    }
+
     public String string(final String name) {
         return switch (value(name)) {
             case RailixValue.StringValue string -> string.value();

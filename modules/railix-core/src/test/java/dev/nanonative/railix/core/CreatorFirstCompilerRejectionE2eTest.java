@@ -235,6 +235,18 @@ final class CreatorFirstCompilerRejectionE2eTest {
     }
 
     @Test
+    void omittedDefaultCandidateCompilesFromItsDeclaredParentInput() {
+        final StepDefinition defaulted = StepDefinition.named("example.step", "1")
+                .input("source", Input.json(ValueShape.NUMBER).defaultValue(RailixValue.number(1)))
+                .input("choice", Input.candidates(
+                        Input.option("current").fromParent("source")
+                ).defaultCandidate("current"))
+                .run(TestStepHandlers.PrimaryOutcome.class);
+
+        assertCompiled(simpleProject("example.step", "{}"), catalog(app(), trigger(), defaulted, primitive()));
+    }
+
+    @Test
     void malformedUnaryDefinitionIsRejectedInsideSteps() {
         final StepDefinition malformed = StepDefinition.named("example.primitive", "1")
                 .primaryOutcome("ok")
@@ -279,6 +291,42 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 .run(TestStepHandlers.OkIdentity.class);
 
         assertCompiled(nestedProject("\"Hello RAILIX\""), nestedCatalog(primitive));
+    }
+
+    @Test
+    void materializedTriggerExampleCannotExceedTheCanonicalContextLimit() {
+        final String value = "x".repeat(600_000);
+        final String source = baseProject(inputs()).replace(
+                examples(),
+                "[{\"name\":\"large\",\"payload\":\"" + value
+                        + "\",\"context\":{\"retained\":\"" + value + "\"}}]"
+        );
+
+        assertRejected(source, catalog(),
+                "PROJECT_TRIGGER_EXAMPLE_CONTEXT_TOO_LARGE", "nodes[1].examples[0]");
+    }
+
+    @Test
+    void triggerExampleTargetCannotIndexAnAuthoredObject() {
+        final StepDefinition targeted = StepDefinition.named("example.trigger", "1")
+                .kind(StepDefinition.Kind.TRIGGER)
+                .source("application.example")
+                .input("target", Input.path(WRITE).defaultValue(RailixValue.array(java.util.List.of(
+                        RailixValue.string("context"),
+                        RailixValue.string("payload"),
+                        RailixValue.string("items"),
+                        RailixValue.number(0)
+                ))))
+                .exampleTarget("target")
+                .run(TestStepHandlers.PrimaryOutcome.class);
+        final String source = baseProject(inputs()).replace(
+                examples(),
+                "[{\"name\":\"conflict\",\"payload\":\"value\","
+                        + "\"context\":{\"payload\":{\"items\":{}}}}]"
+        );
+
+        assertRejected(source, catalog(app(), targeted, step(), primitive()),
+                "PROJECT_TRIGGER_EXAMPLE_TARGET_CONFLICT", "nodes[1].examples[0].context");
     }
 
     @ParameterizedTest(name = "{0}")
@@ -438,6 +486,12 @@ final class CreatorFirstCompilerRejectionE2eTest {
                 new RejectionCase("projectIdMustBeSafe",
                         baseProject(inputs()).replace("generic-project", "Generic/Project"),
                         "PROJECT_ID_INVALID", "id"),
+                new RejectionCase("projectIdCannotExceedSixtyFourCharacters",
+                        baseProject(inputs()).replace("generic-project", "a".repeat(65)),
+                        "PROJECT_ID_INVALID", "id"),
+                new RejectionCase("projectIdCannotStartAfterLowercaseAscii",
+                        baseProject(inputs()).replace("generic-project", "{project"),
+                        "PROJECT_ID_INVALID", "id"),
                 new RejectionCase("projectIdCannotContainAnUnsafeInnerCharacter",
                         baseProject(inputs()).replace("generic-project", "generic_project"),
                         "PROJECT_ID_INVALID", "id"),
@@ -539,6 +593,12 @@ final class CreatorFirstCompilerRejectionE2eTest {
                         baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]",
                                 "[\"payload\",\"value\"]")),
                         "PROJECT_CONTEXT_PATH_ROOT_REQUIRED", "nodes[2].inputs.path[0]"),
+                new RejectionCase("pathInputCannotStartWithAnArrayIndex",
+                        baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]", "[0,\"value\"]")),
+                        "PROJECT_CONTEXT_PATH_ROOT_REQUIRED", "nodes[2].inputs.path[0]"),
+                new RejectionCase("pathInputCannotContainABlankField",
+                        baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]", "[\"context\",\"\"]")),
+                        "PROJECT_CONTEXT_PATH_ELEMENT_INVALID", "nodes[2].inputs.path[1]"),
                 new RejectionCase("pathInputMustContainOnlyFieldOrIndexSegments",
                         baseProject(inputs().replace("[\"context\",\"payload\",\"value\"]", "[\"context\",true]")),
                         "PROJECT_CONTEXT_PATH_ELEMENT_INVALID", "nodes[2].inputs.path[1]"),
@@ -684,6 +744,9 @@ final class CreatorFirstCompilerRejectionE2eTest {
                         "PROJECT_LINK_OBJECT_REQUIRED", "links[0]"),
                 new RejectionCase("linkMustUseNodeAndOutcomeSyntax",
                         baseProject(inputs()).replace("\"from\":\"app.start\"", "\"from\":\"app\""),
+                        "PROJECT_LINK_FROM_INVALID", "links[0].from"),
+                new RejectionCase("linkOutcomeCannotBeBlank",
+                        baseProject(inputs()).replace("\"from\":\"app.start\"", "\"from\":\"app.\""),
                         "PROJECT_LINK_FROM_INVALID", "links[0].from"),
                 new RejectionCase("unknownLinkFieldIsRejected",
                         baseProject(inputs()).replace(

@@ -15,7 +15,11 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * One explicit Step contract shared by Creator, compiler, and runtime.
+ * One explicit authoring contract consumed by Creator and the compiler.
+ *
+ * <p>The compiler lowers this definition into direct generated calls and constants. A built
+ * application contains no {@code StepDefinition} instance and does not inspect this contract at
+ * runtime.</p>
  *
  * <p>An ordinary Step may combine generic authored inputs without receiving special treatment from
  * the compiler or Creator:</p>
@@ -650,10 +654,10 @@ public final class StepDefinition {
             if (valueSources == null || valueSources.size() > 1) {
                 throw new IllegalArgumentException("Option must declare zero or one value source.");
             }
-            valueSources = List.copyOf(valueSources);
             if (valueSources.stream().anyMatch(source -> source == null)) {
                 throw new IllegalArgumentException("Option value source cannot be Java null.");
             }
+            valueSources = List.copyOf(valueSources);
         }
 
         /**
@@ -801,9 +805,6 @@ public final class StepDefinition {
         if (exampleTarget != null && kind != Kind.TRIGGER) {
             throw new IllegalArgumentException("Only Trigger Steps may declare an example target.");
         }
-        if (!examples.isEmpty() && exampleTarget == null) {
-            throw new IllegalArgumentException("Trigger example templates require an example target.");
-        }
         if (exampleTarget != null) {
             final Input target = inputs.stream()
                     .filter(field -> field.name().equals(exampleTarget))
@@ -943,7 +944,7 @@ public final class StepDefinition {
     }
 
     /**
-     * Initial editable examples Creator adds with a new Trigger node.
+     * Initial editable project Examples supplied when an author adds a new Trigger node.
      *
      * @return immutable Trigger example templates
      */
@@ -952,9 +953,9 @@ public final class StepDefinition {
     }
 
     /**
-     * Returns the writable PATH input where Creator places each example payload.
+     * Returns the writable PATH input overriding the default {@code context.payload} Example target.
      *
-     * @return declared Trigger example target, or empty when no example target exists
+     * @return declared Trigger Example target, or empty when {@code context.payload} is used
      */
     public Optional<String> exampleTarget() {
         return Optional.ofNullable(exampleTarget);
@@ -1065,10 +1066,10 @@ public final class StepDefinition {
     }
 
     /**
-     * One Trigger-provided Creator example template.
+     * One Trigger-provided starter template copied into a project when the Trigger is added.
      *
      * @param name editable example name
-     * @param payload JSON value placed at the Trigger's configured example target
+     * @param payload JSON value placed at the Trigger's configured or default Example target
      * @param context optional surrounding workflow context excluding reserved runtime values;
      *                an empty object means no authored context
      */
@@ -1298,10 +1299,10 @@ public final class StepDefinition {
         }
 
         /**
-         * Adds one initial editable example Creator copies into a new Trigger node.
+         * Adds one initial editable project Example for a new Trigger node.
          *
          * @param name editable example name
-         * @param payload JSON value Creator writes to the configured example target
+         * @param payload JSON value copied into the configured or default Example target
          * @return this builder
          */
         public Builder example(final String name, final RailixValue payload) {
@@ -1312,7 +1313,7 @@ public final class StepDefinition {
          * Adds one initial editable example with optional surrounding workflow context.
          *
          * @param name editable example name
-         * @param payload JSON value Creator writes to the configured example target
+         * @param payload JSON value copied into the configured or default Example target
          * @param context surrounding workflow context, or an empty object when none is needed
          * @return this builder
          */
@@ -1326,7 +1327,7 @@ public final class StepDefinition {
         }
 
         /**
-         * Names the writable PATH input that receives every Creator example payload.
+         * Names the writable PATH input overriding the default {@code context.payload} Example target.
          *
          * @param input declared writable PATH input name
          * @return this builder

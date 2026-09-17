@@ -560,20 +560,19 @@ final class PrimitiveGeneratedApplications implements AutoCloseable {
                 || !(value.value() instanceof RailixValue.ObjectValue body)) {
             throw new AssertionError("Generated primitive application returned invalid JSON: " + response.body());
         }
-        final List<RunResult.StepExecution> steps = steps(body);
         final String status = string(body, "status");
         return switch (status) {
-            case "succeeded" -> new RunResult.Succeeded(context(body, scenario), steps);
-            case "rejected" -> new RunResult.Rejected(diagnostics(body), steps);
+            case "succeeded" -> new RunResult.Succeeded(context(body, scenario));
+            case "rejected" -> new RunResult.Rejected(diagnostics(body));
             case "failed" -> {
                 final RailixValue.ObjectValue failure = object(body, "failure");
                 yield new RunResult.Failed(new RunFailure(
                         string(failure, "code"),
                         string(failure, "message"),
                         string(failure, "step")
-                ), steps);
+                ));
             }
-            case "cancelled" -> new RunResult.Cancelled(steps);
+            case "cancelled" -> new RunResult.Cancelled();
             default -> throw new AssertionError("Unknown generated primitive status: " + status + ".");
         };
     }
@@ -589,16 +588,6 @@ final class PrimitiveGeneratedApplications implements AutoCloseable {
                         string(value, "message"),
                         string(value, "path")
                 ))
-                .toList();
-    }
-
-    private static List<RunResult.StepExecution> steps(final RailixValue.ObjectValue body) {
-        if (!(body.values().get("steps") instanceof RailixValue.ArrayValue values)) {
-            return List.of();
-        }
-        return values.values().stream()
-                .map(RailixValue.ObjectValue.class::cast)
-                .map(value -> new RunResult.StepExecution(string(value, "id"), string(value, "outcome")))
                 .toList();
     }
 
@@ -839,12 +828,11 @@ final class PrimitiveGeneratedApplications implements AutoCloseable {
             final String payload = separator < 0 ? "" : output.substring(separator + 1);
             return switch (status) {
                 case "succeeded" -> new RunResult.Succeeded(
-                        RailixValue.object(Map.of("result", value(payload))),
-                        List.of()
+                        RailixValue.object(Map.of("result", value(payload)))
                 );
-                case "rejected" -> new RunResult.Rejected(diagnostics(value(payload)), List.of());
-                case "failed" -> new RunResult.Failed(failure(value(payload)), List.of());
-                case "cancelled" -> new RunResult.Cancelled(List.of());
+                case "rejected" -> new RunResult.Rejected(diagnostics(value(payload)));
+                case "failed" -> new RunResult.Failed(failure(value(payload)));
+                case "cancelled" -> new RunResult.Cancelled();
                 default -> throw new AssertionError(
                         "Unknown generated primitive source status: " + status + "."
                 );

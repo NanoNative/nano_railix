@@ -4,13 +4,10 @@ import dev.nanonative.railix.core.project.CompileResult;
 import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.project.ProjectCompiler;
 import dev.nanonative.railix.core.step.StepCatalog;
-import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.stdlib.StandardLibrary;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -80,16 +77,8 @@ public final class RailixMain {
         if (!Files.isRegularFile(project)) {
             throw new IOException("Cannot read project: " + project);
         }
-        if (Files.size(project) > RailixData.DEFAULT_MAX_SOURCE_BYTES) {
-            throw new IOException("Project exceeds the 1048576-byte limit.");
-        }
-        final byte[] source = Files.readAllBytes(project);
         try {
-            return StandardCharsets.UTF_8.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(source))
-                    .toString();
+            return Files.readString(project, StandardCharsets.UTF_8);
         } catch (final CharacterCodingException exception) {
             throw new IOException("Project is not valid UTF-8.", exception);
         }

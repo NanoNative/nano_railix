@@ -1,7 +1,12 @@
 package dev.nanonative.railix.creator;
 
 import dev.nanonative.railix.core.step.StepDefinition;
+import dev.nanonative.railix.core.value.RailixData;
+import dev.nanonative.railix.core.value.RailixJson;
+import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueShape;
+import dev.nanonative.railix.development.ExampleSuiteTestAccess;
+import dev.nanonative.railix.stdlib.StandardLibrary;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -10,9 +15,19 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import thirdparty.conformance.ChunkGateStepHandler;
 import thirdparty.conformance.DevelopmentRuntimeConformanceSteps;
+import thirdparty.conformance.ProcessTreeStepHandler;
 
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.UncheckedIOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -24,12 +39,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.BitSet;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+import java.util.jar.JarOutputStream;
 
 import static dev.nanonative.railix.core.step.StepDefinition.PathAccess.READ;
 import static dev.nanonative.railix.core.step.StepDefinition.PathAccess.READ_WRITE;
@@ -42,6 +62,11 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     private static final int MAX_CONTEXT_BYTES = 1_048_576;
     private static final int ADMISSION_LIMIT = 32;
+    private static final int TRACE_ADMISSION_LIMIT = 16;
+    private static final int BODY_ADMISSION_LIMIT = ADMISSION_LIMIT + TRACE_ADMISSION_LIMIT;
+    private static final int UNAUTHORIZED_BODY_ADMISSION_LIMIT = 4;
+    private static final int CANCELLATION_ADMISSION_LIMIT = 16;
+    private static final int METRIC_CARDINALITY_STEPS = 4_096;
     private static final String TOKEN = "development-runtime-token";
     private static final Duration WAIT = Duration.ofSeconds(20);
 
@@ -53,7 +78,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     void buildAndStartGeneratedApplication(@TempDir final Path workspace) throws Exception {
         build = DevelopmentRuntimeGeneratedProcess.build(
                 workspace,
-                project(),
+                project(workspace),
                 definitions(),
                 DevelopmentRuntimeConformanceSteps.Pass.class,
                 DevelopmentRuntimeConformanceSteps.Operation.class,
@@ -61,9 +86,14 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                 DevelopmentRuntimeConformanceSteps.Cancel.class,
                 DevelopmentRuntimeConformanceSteps.Append.class,
                 DevelopmentRuntimeConformanceSteps.Oversized.class,
+                DevelopmentRuntimeConformanceSteps.OversizedTrace.class,
                 DevelopmentRuntimeConformanceSteps.Block.class,
+                DevelopmentRuntimeConformanceSteps.IgnoreInterrupt.class,
+                DevelopmentRuntimeConformanceSteps.DelayedIgnoreInterrupt.class,
                 DevelopmentRuntimeConformanceSteps.Hold.class,
+                ProcessTreeStepHandler.class,
                 DevelopmentRuntimeConformanceSteps.NullApplicationMain.class,
+                DevelopmentRuntimeConformanceSteps.ProcessTreeMain.class,
                 DevelopmentRuntimeConformanceSteps.NoisyMain.class
         );
         shared = started();
@@ -83,6 +113,79 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
             final URI uri = child.awaitReady();
             assertThat(request(child, uri, TOKEN, "POST", "/v1/run/success", "{}", "true").statusCode())
                     .isEqualTo(200);
+        }
+    }
+
+    @Test
+    void automaticExamplesRemainDormantUntilTheCreatorActivatesTheApplication(@TempDir final Path workspace)
+            throws Exception {
+        final Path marker = workspace.resolve("example.marker");
+        final DevelopmentRuntimeGeneratedProcess.Build candidate = markerBuild(workspace, marker);
+
+        try (var child = DevelopmentRuntimeGeneratedProcess.launch(candidate).token(TOKEN)) {
+            final URI uri = child.awaitInactive();
+            final HttpResponse<String> response = request(
+                    child,
+                    uri,
+                    TOKEN,
+                    "GET",
+                    "/v1/examples/status",
+                    "",
+                    null
+            );
+            final RailixValue.ObjectValue status = object(response.body());
+
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(string(status, "state")).isEqualTo("queued");
+            assertThat(number(status, "completed")).isZero();
+            assertThat(marker).doesNotExist();
+
+            child.activate();
+            awaitContent(marker, "x", WAIT);
+        }
+    }
+
+    @Test
+    void ownerClosureBeforeActivationStopsWithoutExecutingExamples(@TempDir final Path workspace)
+            throws Exception {
+        final Path marker = workspace.resolve("example.marker");
+        final DevelopmentRuntimeGeneratedProcess.Build candidate = markerBuild(workspace, marker);
+
+        try (var child = DevelopmentRuntimeGeneratedProcess.launch(candidate).token(TOKEN)) {
+            child.awaitInactive();
+            final Path runtime = runtimeDirectory(candidate, child);
+            child.closeOwner();
+
+            assertThat(child.awaitExit()).isZero();
+            assertThat(runtime).doesNotExist();
+            assertThat(marker).doesNotExist();
+        }
+
+        try (var recovered = DevelopmentRuntimeGeneratedProcess.launch(candidate).token(TOKEN)) {
+            recovered.awaitReady();
+            awaitSignal(marker, WAIT);
+        }
+    }
+
+    @Test
+    void invalidActivationTokenIsRejectedBeforeExamplesExecute(@TempDir final Path workspace) throws Exception {
+        final Path marker = workspace.resolve("example.marker");
+        final DevelopmentRuntimeGeneratedProcess.Build candidate = markerBuild(workspace, marker);
+
+        try (var child = DevelopmentRuntimeGeneratedProcess.launch(candidate).token(TOKEN)) {
+            child.awaitInactive();
+            final Path runtime = runtimeDirectory(candidate, child);
+            child.input("ACTIVATE invalid-token\n".getBytes(StandardCharsets.UTF_8));
+
+            assertThat(child.awaitExit()).isEqualTo(2);
+            assertThat(child.error()).contains("Creator activation frame is invalid.");
+            assertThat(runtime).doesNotExist();
+            assertThat(marker).doesNotExist();
+        }
+
+        try (var recovered = DevelopmentRuntimeGeneratedProcess.launch(candidate).token(TOKEN)) {
+            recovered.awaitReady();
+            awaitSignal(marker, WAIT);
         }
     }
 
@@ -153,6 +256,264 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     }
 
     @Test
+    void developmentArtifactWithoutCompiledExamplesFailsBeforeReadiness(@TempDir final Path workspace)
+            throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build corrupt = withoutExampleManifest(build, workspace);
+        assertThat(corrupt.artifact().directory().getParent().resolveSibling("build.lock").startsWith(workspace))
+                .isTrue();
+        try (var child = DevelopmentRuntimeGeneratedProcess.launch(corrupt).token(TOKEN)) {
+            child.closeOwner();
+
+            assertThat(child.awaitExit()).isEqualTo(3);
+            assertThat(child.error()).contains("Compiled development Example manifest is missing.");
+        }
+    }
+
+    @Test
+    void oversizedCompiledExampleManifestFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(
+                workspace,
+                " ".repeat(4_194_305).getBytes(StandardCharsets.UTF_8),
+                "Compiled development Examples exceed 4194304 bytes."
+        );
+    }
+
+    @Test
+    void malformedCompiledExampleJsonFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, "{", "Compiled development Examples are invalid.");
+    }
+
+    @Test
+    void compiledExampleArrayRootFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, "[]", "Compiled development Examples are invalid.");
+    }
+
+    @Test
+    void compiledExampleFormatMustBeNumeric(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(
+                workspace,
+                "{\"format\":\"1\",\"node_count\":1,\"examples\":[]}",
+                "Compiled development Examples are invalid."
+        );
+    }
+
+    @Test
+    void compiledExampleNodeCountMustBeNumeric(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(
+                workspace,
+                "{\"format\":1,\"node_count\":\"1\",\"examples\":[]}",
+                "Compiled development Examples are invalid."
+        );
+    }
+
+    @Test
+    void compiledExamplesMustBeAnArray(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(
+                workspace,
+                "{\"format\":1,\"node_count\":1,\"examples\":{}}",
+                "Compiled development Examples are invalid."
+        );
+    }
+
+    @Test
+    void unsupportedCompiledExampleFormatFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(
+                workspace,
+                "{\"format\":2,\"node_count\":1,\"examples\":[]}",
+                "Compiled development Example format is unsupported."
+        );
+    }
+
+    @Test
+    void fractionalCompiledExampleNodeCountFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(
+                workspace,
+                "{\"format\":1,\"node_count\":0.5,\"examples\":[]}",
+                "Compiled development Example node count is invalid."
+        );
+    }
+
+    @Test
+    void negativeCompiledExampleNodeCountFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(
+                workspace,
+                "{\"format\":1,\"node_count\":-1,\"examples\":[]}",
+                "Compiled development Example node count is invalid."
+        );
+    }
+
+    @Test
+    void compiledExampleEntryMustBeAnObject(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(
+                workspace,
+                "{\"format\":1,\"node_count\":1,\"examples\":[null]}",
+                "Compiled development Example is invalid."
+        );
+    }
+
+    @Test
+    void compiledExampleContextMustBeAnObject(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("context", "[]"),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void compiledExampleIdentifierMustBeAString(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("id", "1"),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void compiledExampleTriggerMustBeAString(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("trigger", "1"),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void compiledExampleNameMustBeAString(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("name", "1"),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void compiledExampleIndexMustBeNumeric(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("index", "\"0\""),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void compiledExampleNodeMustBeNumeric(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("node", "\"0\""),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void blankCompiledExampleIdentifierFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("id", "\"\""),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void blankCompiledExampleTriggerFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("trigger", "\"\""),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void negativeCompiledExampleIndexFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("index", "-1"),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void negativeCompiledExampleNodeFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("node", "-1"),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void outOfRangeCompiledExampleNodeFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("node", "1"),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void duplicateCompiledExampleIdentifierFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        final String example = validExample();
+        assertInvalidExampleManifest(
+                workspace,
+                "{\"format\":1,\"node_count\":1,\"examples\":[" + example + "," + example + "]}",
+                "Compiled development Example is invalid."
+        );
+    }
+
+    @Test
+    void fractionalCompiledExampleIndexFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("index", "0.5"),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void fractionalCompiledExampleNodeFailsBeforeReadiness(@TempDir final Path workspace) throws Exception {
+        assertInvalidExampleManifest(workspace, exampleManifest("node", "0.5"),
+                "Compiled development Example is invalid.");
+    }
+
+    @Test
+    void nonCooperativeExampleTerminatesItsGeneratedProcessAfterTheGracePeriod(
+            @TempDir final Path workspace
+    ) throws Exception {
+        final Path gate = workspace.resolve("gate");
+        final DevelopmentRuntimeGeneratedProcess.Build timeoutBuild = DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                nonCooperativeExample(gate),
+                List.of(trigger("noncooperative", false), exampleGate()),
+                DevelopmentRuntimeConformanceSteps.Pass.class,
+                ChunkGateStepHandler.class
+        );
+
+        try (var child = DevelopmentRuntimeGeneratedProcess.launch(timeoutBuild).token(TOKEN)) {
+            child.awaitReady();
+            awaitSignal(gate.resolve("case-1.started"), Duration.ofSeconds(10));
+            awaitSignal(gate.resolve("case-1.interrupted"), Duration.ofSeconds(40));
+            awaitStopped(child.process(), Duration.ofSeconds(20));
+
+            assertThat(child.awaitExit()).isEqualTo(6);
+            assertThat(child.process().isAlive()).isFalse();
+        } finally {
+            Files.createDirectories(gate);
+            Files.writeString(gate.resolve("release"), "release", StandardCharsets.UTF_8);
+        }
+    }
+
+    @Test
+    void nonCooperativeHttpWorkerFailsGeneratedProcessShutdown(
+            @TempDir final Path workspace
+    ) throws Exception {
+        final Path gate = workspace.resolve("http-gate");
+        final Path release = gate.resolve("release");
+        Files.createDirectories(gate);
+        Files.writeString(release, "release", StandardCharsets.UTF_8);
+        final DevelopmentRuntimeGeneratedProcess.Build httpBuild = DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                nonCooperativeRun(gate),
+                List.of(trigger("noncooperative-http", false), exampleGate()),
+                DevelopmentRuntimeConformanceSteps.Pass.class,
+                ChunkGateStepHandler.class
+        );
+        CompletableFuture<HttpResponse<String>> request = null;
+
+        try (var child = DevelopmentRuntimeGeneratedProcess.launch(httpBuild).token(TOKEN)) {
+            final URI uri = child.awaitReady();
+            awaitExamples(child, uri, 1, WAIT);
+            Files.delete(release);
+            request = child.requestAsync(
+                    uri,
+                    TOKEN,
+                    "POST",
+                    "/v1/run/noncooperative-http",
+                    "{\"payload\":{\"case\":\"http-run\",\"root\":\""
+                            + escaped(gate.toString()) + "\"}}",
+                    "false"
+            );
+            awaitSignal(gate.resolve("http-run.started"), Duration.ofSeconds(10));
+
+            child.closeOwner();
+
+            awaitSignal(gate.resolve("http-run.interrupted"), Duration.ofSeconds(20));
+            awaitStopped(child.process(), Duration.ofSeconds(20));
+            assertThat(child.awaitExit()).isEqualTo(5);
+            assertThat(child.error()).contains("Development HTTP workers did not stop within one second.");
+        } finally {
+            if (request != null) {
+                request.cancel(true);
+            }
+            Files.createDirectories(gate);
+            Files.writeString(release, "release", StandardCharsets.UTF_8);
+        }
+    }
+
+    @Test
     void missingAuthorizationIsRejected() throws Exception {
         final HttpResponse<String> response = request(shared, sharedUri, null, "POST", "/v1/run/success", "{}", "true");
 
@@ -169,13 +530,1518 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     }
 
     @Test
-    void missingPreviewAuthorizationIsRejected() throws Exception {
+    void generatedApplicationOwnsAndRunsItsCompiledExamples() throws Exception {
+        final String snapshot = awaitExample(shared, sharedUri, "success:0", "succeeded");
+
+        assertThat(snapshot)
+                .contains("\"application_pid\":" + shared.process().pid())
+                .contains("\"id\":\"success:0\"")
+                .contains("\"trigger\":\"success\"")
+                .contains("\"name\":\"default\"");
+    }
+
+    @Test
+    void generatedApplicationServesCompactExampleStatusWithoutTheCaseInventory() throws Exception {
+        awaitExample(shared, sharedUri, "success:0", "succeeded");
+
         final HttpResponse<String> response = request(
-                shared, sharedUri, null, "POST", "/v1/preview/details/details-step", "{}", "true"
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/status", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body())
+                .contains("\"state\":\"completed\"")
+                .contains("\"revision\":")
+                .contains("\"total\":")
+                .doesNotContain("\"cases\"")
+                .doesNotContain("\"coverage_bits\"")
+                .doesNotContain("\"covered_steps\"")
+                .doesNotContain("\"id\":\"success:0\"");
+    }
+
+    @Test
+    void generatedApplicationServesExampleCoverageSeparatelyFromPollingStatus() throws Exception {
+        awaitExample(shared, sharedUri, "success:0", "succeeded");
+
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/coverage", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body())
+                .contains("\"application_pid\":" + shared.process().pid())
+                .contains("\"revision\":")
+                .contains("\"covered_steps\":")
+                .contains("\"coverage_bits\":")
+                .doesNotContain("\"cases\"")
+                .doesNotContain("\"storage_bytes\"");
+    }
+
+    @Test
+    void generatedApplicationMetricsIdentifyTheirOwningProcess() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/metrics/application", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body()).contains("\"application_pid\":" + shared.process().pid());
+    }
+
+    @Test
+    void generatedApplicationServesOneSelectedExampleWithoutTheSuiteInventory() throws Exception {
+        awaitExample(shared, sharedUri, "success:0", "succeeded");
+
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/success%3A0", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body())
+                .contains("\"id\":\"success:0\"")
+                .contains("\"status\":\"succeeded\"")
+                .doesNotContain("\"cases\"")
+                .doesNotContain("\"coverage_bits\"");
+    }
+
+    @Test
+    void generatedApplicationServesItsCompletedExampleTrace() throws Exception {
+        awaitExample(shared, sharedUri, "success:0", "succeeded");
+
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/success%3A0/view", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.headers().firstValue("Content-Type"))
+                .contains("application/json; charset=utf-8");
+        assertThat(response.body())
+                .contains("\"initial_context\"")
+                .contains("\"nodes\":[14]")
+                .contains("\"result\":{\"context\"")
+                .contains("\"status\":\"succeeded\"")
+                .doesNotContain("\"type\"");
+    }
+
+    @Test
+    void generatedApplicationProjectsOneStepFromItsCompletedExampleTrace() throws Exception {
+        awaitExample(shared, sharedUri, "success:0", "succeeded");
+
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/success%3A0/steps/14", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body())
+                .contains("\"id\":\"success-step\"")
+                .contains("\"input_context\"")
+                .contains("\"context\"")
+                .contains("\"stages\":[]")
+                .doesNotContain("\"changes\"")
+                .doesNotContain("\"type\"");
+    }
+
+    @Test
+    void generatedApplicationProjectsEveryNestedStageFromItsCompiledExample() throws Exception {
+        awaitExample(shared, sharedUri, "details:0", "succeeded");
+
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/details%3A0/steps/15", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body())
+                .contains("\"id\":\"details-step\"")
+                .contains("\"input\":\"operations\"")
+                .contains("\"invocation\":\"text.trim\"")
+                .contains("\"invocation\":\"text.lowercase\"")
+                .contains("\"value\":\"hello railix\"")
+                .doesNotContain("\"type\"");
+    }
+
+    @Test
+    void generatedApplicationProjectsTheFailedStepOutcomeFromItsCompiledExample() throws Exception {
+        awaitExample(shared, sharedUri, "failed:0", "failed");
+
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/failed%3A0/steps/16", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body())
+                .contains("\"id\":\"failed-step\"")
+                .contains("\"status\":\"failed\"")
+                .contains("\"input_context\"")
+                .contains("\"context\"")
+                .doesNotContain("\"code\"")
+                .doesNotContain("\"type\"");
+    }
+
+    @Test
+    void generatedApplicationProjectsAllExamplesForOneSelectedStep() throws Exception {
+        awaitExample(shared, sharedUri, "success:0", "succeeded");
+
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/steps/14", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body())
+                .contains("\"node\":14")
+                .contains("\"id\":\"success:0\"")
+                .contains("\"trigger\":\"success\"")
+                .contains("\"initial_context\"")
+                .contains("\"projection\":{")
+                .contains("\"id\":\"success-step\"")
+                .doesNotContain("\"type\"")
+                .doesNotContain("\"changes\"");
+    }
+
+    @Test
+    void unknownCompiledExampleIsNotFound() throws Exception {
+        assertExampleRouteNotFound("/v1/examples/unknown");
+    }
+
+    @Test
+    void siblingExamplesPrefixIsNotRoutedAsAnExampleEndpoint() throws Exception {
+        assertExampleRouteNotFound("/v1/examples-other");
+    }
+
+    @Test
+    void unknownCompiledExampleViewIsNotFound() throws Exception {
+        assertExampleRouteNotFound("/v1/examples/unknown/view");
+    }
+
+    @Test
+    void unknownCompiledExampleStepIsNotFound() throws Exception {
+        assertExampleRouteNotFound("/v1/examples/unknown/steps/15");
+    }
+
+    @Test
+    void compiledExampleStepOutsideTheGraphIsNotFound() throws Exception {
+        assertExampleRouteNotFound("/v1/examples/success%3A0/steps/999");
+    }
+
+    @Test
+    void negativeCompiledExampleStepIsNotFound() throws Exception {
+        assertExampleRouteNotFound("/v1/examples/success%3A0/steps/-1");
+    }
+
+    @Test
+    void blankCompiledExampleStepIdentifierIsNotFound() throws Exception {
+        assertExampleRouteNotFound("/v1/examples//steps/0");
+    }
+
+    @Test
+    void malformedCompiledExampleStepIsNotFound() throws Exception {
+        assertExampleRouteNotFound("/v1/examples/success%3A0/steps/not-a-number");
+    }
+
+    @Test
+    void aggregateExampleStepOutsideTheGraphIsNotFound() throws Exception {
+        assertExampleRouteNotFound("/v1/examples/steps/999");
+    }
+
+    @Test
+    void negativeAggregateExampleStepIsNotFound() throws Exception {
+        assertExampleRouteNotFound("/v1/examples/steps/-1");
+    }
+
+    @Test
+    void malformedAggregateExampleStepIsNotFound() throws Exception {
+        assertExampleRouteNotFound("/v1/examples/steps/not-a-number");
+    }
+
+    @Test
+    void compiledExampleTraceStopsAtItsSixtyFourMebibyteStorageLimit(
+            @TempDir final Path workspace
+    ) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build bounded = DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                largeTraceExamples("bounded-trace", 1, 40),
+                StandardLibrary.catalog()
+        );
+        try (var child = started(bounded)) {
+            final URI uri = child.awaitReady();
+            final String snapshot = awaitExamples(child, uri, 1, Duration.ofSeconds(60));
+            final RailixValue.ObjectValue summary = object(snapshot);
+            final RailixValue.ObjectValue example = values(snapshot, "cases").getFirst();
+            final Path trace = runtimeDirectory(bounded, child).resolve("0.ndjson");
+            final TraceEvidence evidence = traceEvidence(trace);
+
+            assertThat(number(summary, "failed")).isEqualTo(1);
+            assertThat(string(example, "status")).isEqualTo("failed");
+            assertThat(string(example, "message"))
+                    .isEqualTo("Example trace exceeded the 64 MiB storage limit.");
+            assertThat(number(example, "storage_bytes"))
+                    .isGreaterThan(60L * 1_024 * 1_024)
+                    .isLessThanOrEqualTo(ExampleSuiteTestAccess.MAX_EXAMPLE_BYTES);
+            assertThat(number(summary, "storage_bytes")).isEqualTo(number(example, "storage_bytes"));
+            assertThat(Files.size(trace)).isEqualTo(number(example, "storage_bytes"));
+            assertThat(evidence.terminals()).isEqualTo(1);
+            assertThat(evidence.last()).contains(
+                    "\"code\":\"TRACE_CASE_STORAGE_LIMIT\"",
+                    "\"message\":\"Example trace exceeded the 64 MiB storage limit.\"",
+                    "\"type\":\"trace_error\""
+            );
+        }
+    }
+
+    @Test
+    void concurrentCompiledExampleTracesStopAtTheAggregateStorageLimit(
+            @TempDir final Path workspace
+    ) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build bounded = DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                aggregateStorageExamples(),
+                List.of(aggregateStorageStep()),
+                DevelopmentRuntimeConformanceSteps.Oversized.class
+        );
+        try (var child = started(bounded)) {
+            final URI uri = child.awaitReady();
+            final String snapshot = awaitExamples(child, uri, 5, Duration.ofSeconds(120));
+            final RailixValue.ObjectValue summary = object(snapshot);
+            final List<RailixValue.ObjectValue> cases = values(snapshot, "cases");
+            final Path traces = runtimeDirectory(bounded, child);
+            final List<Path> files;
+            try (var paths = Files.list(traces)) {
+                files = paths.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith(".ndjson"))
+                        .toList();
+            }
+            final long physicalBytes = files.stream()
+                    .mapToLong(DevelopmentRuntimeGeneratedApplicationE2eTest::size)
+                    .sum();
+
+            assertThat(files).hasSize(5);
+            assertThat(number(summary, "storage_bytes"))
+                    .isGreaterThan(240L * 1_024 * 1_024)
+                    .isLessThanOrEqualTo(ExampleSuiteTestAccess.MAX_SUITE_BYTES);
+            assertThat(physicalBytes)
+                    .isEqualTo(number(summary, "storage_bytes"))
+                    .isLessThanOrEqualTo(ExampleSuiteTestAccess.MAX_SUITE_BYTES);
+            assertThat(number(summary, "failed")).isPositive();
+            assertThat(cases.stream()
+                    .map(value -> value.values().get("message"))
+                    .filter(RailixValue.StringValue.class::isInstance)
+                    .map(RailixValue.StringValue.class::cast)
+                    .map(RailixValue.StringValue::value))
+                    .contains("Example traces exceeded the 256 MiB suite storage limit.");
+            assertThat(cases).allSatisfy(example -> assertThat(number(example, "storage_bytes"))
+                    .isLessThanOrEqualTo(ExampleSuiteTestAccess.MAX_EXAMPLE_BYTES));
+            assertThat(files).allSatisfy(file -> {
+                final TraceEvidence evidence = traceEvidence(file);
+                assertThat(evidence.terminals()).isEqualTo(1);
+                assertThat(evidence.last()).containsAnyOf(
+                        "\"type\":\"result\"",
+                        "\"type\":\"trace_error\""
+                );
+            });
+            assertThat(files.stream().map(DevelopmentRuntimeGeneratedApplicationE2eTest::traceEvidence)
+                    .map(TraceEvidence::last))
+                    .anyMatch(line -> line.contains("\"code\":\"TRACE_SUITE_STORAGE_LIMIT\""));
+        }
+    }
+
+    @Test
+    void aggregateStepReplayRejectsRetainedExampleTracesAboveSixtyFourMebibytes(
+            @TempDir final Path workspace
+    ) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build bounded = DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                largeTraceExamples("bounded-replay", 2, 28),
+                StandardLibrary.catalog()
+        );
+        try (var child = started(bounded)) {
+            final URI uri = child.awaitReady();
+            final String snapshot = awaitExamples(child, uri, 2, Duration.ofSeconds(60));
+            final RailixValue.ObjectValue summary = object(snapshot);
+
+            assertThat(number(summary, "storage_bytes")).isGreaterThan(64L * 1_024 * 1_024);
+            assertThat(values(snapshot, "cases")).allSatisfy(example ->
+                    assertThat(number(example, "storage_bytes"))
+                            .isLessThanOrEqualTo(ExampleSuiteTestAccess.MAX_EXAMPLE_BYTES));
+
+            assertThat(request(
+                    child, uri, TOKEN, "GET", "/v1/examples/steps/2", "", null
+            )).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(413, "{\"diagnostics\":[{"
+                            + "\"code\":\"EXAMPLE_STEP_REPLAY_TOO_LARGE\","
+                            + "\"message\":\"Application Step Example replay exceeds the 67108864-byte limit.\","
+                            + "\"path\":\"\"}],\"status\":\"rejected\"}");
+        }
+    }
+
+    @Test
+    void aggregateStepProjectionRejectsAResponseAboveSixteenMebibytes(
+            @TempDir final Path workspace
+    ) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build bounded = DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                oversizedTraceExamples("bounded-projection", 8, 0),
+                List.of(aggregateStorageStep()),
+                DevelopmentRuntimeConformanceSteps.Oversized.class
+        );
+        try (var child = started(bounded)) {
+            final URI uri = child.awaitReady();
+            awaitExamples(child, uri, 8, Duration.ofSeconds(60));
+
+            assertThat(request(
+                    child, uri, TOKEN, "GET", "/v1/examples/steps/2", "", null
+            )).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(413, "{\"diagnostics\":[{"
+                            + "\"code\":\"EXAMPLE_STEP_PROJECTION_TOO_LARGE\","
+                            + "\"message\":\"Application Step Example projection exceeds the 16777216-byte limit.\","
+                            + "\"path\":\"\"}],\"status\":\"rejected\"}");
+        }
+    }
+
+    @Test
+    void aggregateProjectionLimitReleasesExampleReadAdmission(
+            @TempDir final Path workspace
+    ) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build bounded = DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                oversizedTraceExamples("projection-admission", 8, 0),
+                List.of(aggregateStorageStep()),
+                DevelopmentRuntimeConformanceSteps.Oversized.class
+        );
+        try (var child = started(bounded)) {
+            final URI uri = child.awaitReady();
+            awaitExamples(child, uri, 8, Duration.ofSeconds(60));
+
+            assertThat(request(
+                    child, uri, TOKEN, "GET", "/v1/examples/steps/2", "", null
+            ).statusCode()).isEqualTo(413);
+            assertThat(request(
+                    child, uri, TOKEN, "GET", "/v1/examples/status", "", null
+            ).statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void missingRetainedExampleTraceReturnsExplicitUnavailable(@TempDir final Path workspace) throws Exception {
+        final Path marker = workspace.resolve("example.marker");
+        final DevelopmentRuntimeGeneratedProcess.Build candidate = markerBuild(workspace, marker);
+
+        try (var child = started(candidate)) {
+            final URI uri = child.awaitReady();
+            awaitExamples(child, uri, 1, Duration.ofSeconds(60));
+            Files.delete(runtimeDirectory(candidate, child).resolve("0.ndjson"));
+
+            for (int attempt = 0; attempt < 2; attempt++) {
+                assertThat(request(
+                        child, uri, TOKEN, "GET", "/v1/examples/steps/2", "", null
+                )).extracting(HttpResponse::statusCode, HttpResponse::body)
+                        .containsExactly(503, "{\"reason\":\"trace\",\"status\":\"unavailable\"}");
+            }
+        }
+    }
+
+    @Test
+    void slowProjectionReaderRetainsSingleProjectionAllocationUntilTransportEnds(
+            @TempDir final Path workspace
+    ) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build projected = DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                largeTraceExamples("projection-owner-close", 1, 34),
+                StandardLibrary.catalog()
+        );
+        try (var child = started(projected)) {
+            final URI uri = child.awaitReady();
+            awaitExamples(child, uri, 1, Duration.ofSeconds(60));
+            final Path runtime = runtimeDirectory(projected, child);
+            final int port = uri.getPort();
+            final String path = "/v1/examples/steps/2";
+            final HttpResponse<InputStream> projection = child.requestStreamAsync(
+                    uri, TOKEN, "GET", path, "", null
+            ).get(WAIT.toMillis(), TimeUnit.MILLISECONDS);
+            try (InputStream body = projection.body()) {
+                assertThat(projection.statusCode()).isEqualTo(200);
+                assertThat(projection.headers().firstValueAsLong("Content-Length").orElseThrow())
+                        .isGreaterThan(1_048_576);
+
+                assertThat(request(
+                        child, uri, TOKEN, "GET", path, "", null
+                )).extracting(HttpResponse::statusCode, HttpResponse::body)
+                        .containsExactly(503, "{\"reason\":\"saturated\",\"status\":\"unavailable\"}");
+            }
+
+            assertThat(awaitManagementReadAvailable(child, uri, path).statusCode()).isEqualTo(200);
+            child.closeOwner();
+            assertThat(child.awaitExit()).isZero();
+            assertThat(child.process().isAlive()).isFalse();
+            assertThat(runtime).doesNotExist();
+            try (ServerSocket replacement = new ServerSocket()) {
+                replacement.setReuseAddress(true);
+                replacement.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port));
+                assertThat(replacement.isBound()).isTrue();
+            }
+        }
+    }
+
+    @Test
+    void boundedExampleSnapshotsRemainAvailableWhileTwoLargeResponsesAreBackpressured(
+            @TempDir final Path workspace
+    ) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build projected = DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                expandingContextExample(7),
+                List.of(aggregateStorageStep()),
+                DevelopmentRuntimeConformanceSteps.Oversized.class
+        );
+        try (var child = started(projected)) {
+            final URI uri = child.awaitReady();
+            awaitExamples(child, uri, 1, Duration.ofSeconds(60));
+            try (Socket aggregate = managementGet(uri, "/v1/examples/steps/8")) {
+                assertThat(readHeaders(aggregate.getInputStream())).startsWith("HTTP/1.1 200");
+                try (Socket view = managementGet(uri, "/v1/examples/command%3A0/steps/8")) {
+                    assertThat(readHeaders(view.getInputStream())).startsWith("HTTP/1.1 200");
+                    assertThat(request(
+                            child, uri, TOKEN, "GET", "/v1/examples/status", "", null
+                    ).statusCode()).isEqualTo(200);
+                    assertThat(request(
+                            child, uri, TOKEN, "GET", "/v1/examples/command%3A0", "", null
+                    ).statusCode()).isEqualTo(200);
+                }
+            }
+
+            assertThat(awaitManagementReadAvailable(
+                    child, uri, "/v1/examples/status"
+            ).statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void ownershipCloseReclaimsTwoBackpressuredExampleResponses(
+            @TempDir final Path workspace
+    ) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build projected = DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                expandingContextExample(7),
+                List.of(aggregateStorageStep()),
+                DevelopmentRuntimeConformanceSteps.Oversized.class
+        );
+        try (var child = started(projected)) {
+            final URI uri = child.awaitReady();
+            awaitExamples(child, uri, 1, Duration.ofSeconds(60));
+            try (Socket aggregate = managementGet(uri, "/v1/examples/steps/8")) {
+                assertThat(readHeaders(aggregate.getInputStream())).startsWith("HTTP/1.1 200");
+                try (Socket view = managementGet(uri, "/v1/examples/command%3A0/steps/8")) {
+                    assertThat(readHeaders(view.getInputStream())).startsWith("HTTP/1.1 200");
+
+                    child.closeOwner();
+
+                    assertThat(child.awaitExit()).isZero();
+                    assertThat(child.process().isAlive()).isFalse();
+                }
+            }
+        }
+    }
+
+    @Test
+    void generatedApplicationRejectsExampleReadsWithoutItsManagementToken() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, null, "GET", "/v1/examples", "", null
         );
 
         assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
                 .containsExactly(401, "{\"status\":\"unauthorized\"}");
+    }
+
+    @Test
+    void generatedApplicationExampleEndpointIsReadOnly() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "POST", "/v1/examples", "{}", null
+        );
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(405, "{\"status\":\"method-not-allowed\"}");
+    }
+
+    @Test
+    void missingTraceAuthorizationIsRejected() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, null, "POST", "/v1/trace/details", "{}", "true"
+        );
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(401, "{\"status\":\"unauthorized\"}");
+    }
+
+    @Test
+    void missingTraceExecutionIdentifierIsRejectedBeforeExecution() throws Exception {
+        final HttpResponse<String> response = shared.requestAsync(
+                sharedUri,
+                TOKEN,
+                "/v1/trace/success",
+                "{}",
+                null
+        ).get(WAIT.toMillis(), TimeUnit.MILLISECONDS);
+
+        assertThat(response.statusCode()).isEqualTo(422);
+        assertThat(response.body())
+                .contains("\"code\":\"TRACE_ID_INVALID\"")
+                .contains("\"path\":\"X-Railix-Trace-Id\"");
+    }
+
+    @Test
+    void invalidTraceExecutionIdentifierIsRejectedBeforeExecution() throws Exception {
+        final HttpResponse<String> response = shared.requestAsync(
+                sharedUri,
+                TOKEN,
+                "/v1/trace/success",
+                "{}",
+                "trace/id"
+        ).get(WAIT.toMillis(), TimeUnit.MILLISECONDS);
+
+        assertThat(response.statusCode()).isEqualTo(422);
+        assertThat(response.body()).contains("\"code\":\"TRACE_ID_INVALID\"");
+    }
+
+    @Test
+    void traceExecutionIdentifierAboveThePortableAsciiRangeIsRejectedBeforeExecution() throws Exception {
+        final HttpResponse<String> response = shared.requestAsync(
+                sharedUri,
+                TOKEN,
+                "/v1/trace/success",
+                "{}",
+                "trace{id"
+        ).get(WAIT.toMillis(), TimeUnit.MILLISECONDS);
+
+        assertThat(response.statusCode()).isEqualTo(422);
+        assertThat(response.body()).contains("\"code\":\"TRACE_ID_INVALID\"");
+    }
+
+    @Test
+    void oversizedTraceExecutionIdentifierIsRejectedBeforeExecution() throws Exception {
+        final HttpResponse<String> response = shared.requestAsync(
+                sharedUri,
+                TOKEN,
+                "/v1/trace/success",
+                "{}",
+                "x".repeat(129)
+        ).get(WAIT.toMillis(), TimeUnit.MILLISECONDS);
+
+        assertThat(response.statusCode()).isEqualTo(422);
+        assertThat(response.body()).contains("\"code\":\"TRACE_ID_INVALID\"");
+    }
+
+    @Test
+    void traceIdentifierAcceptsEveryDocumentedPortableCharacter() throws Exception {
+        final HttpResponse<String> response = shared.requestAsync(
+                sharedUri,
+                TOKEN,
+                "/v1/trace/success",
+                "{}",
+                "Trace_ID.09-"
+        ).get(WAIT.toMillis(), TimeUnit.MILLISECONDS);
+
+        assertThat(response.statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void missingTraceCancellationAuthorizationIsRejected() throws Exception {
+        final HttpResponse<String> response = request(
+                shared,
+                sharedUri,
+                null,
+                "DELETE",
+                "/v1/traces/not-active",
+                "",
+                null
+        );
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(401, "{\"status\":\"unauthorized\"}");
+    }
+
+    @Test
+    void unsupportedTraceCancellationMethodIsRejected() throws Exception {
+        final HttpResponse<String> response = request(
+                shared,
+                sharedUri,
+                TOKEN,
+                "POST",
+                "/v1/traces/not-active",
+                "{}",
+                null
+        );
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(405, "{\"status\":\"method-not-allowed\"}");
+    }
+
+    @Test
+    void unknownTraceCancellationIsNotFound() throws Exception {
+        final HttpResponse<String> response = request(
+                shared,
+                sharedUri,
+                TOKEN,
+                "DELETE",
+                "/v1/traces/not-active",
+                "",
+                null
+        );
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(404, "{\"status\":\"not-found\"}");
+    }
+
+    @Test
+    void blankTraceCancellationIdentifierIsNotFound() throws Exception {
+        final HttpResponse<String> response = request(
+                shared,
+                sharedUri,
+                TOKEN,
+                "DELETE",
+                "/v1/traces/",
+                "",
+                null
+        );
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(404, "{\"status\":\"not-found\"}");
+    }
+
+    @Test
+    void invalidTraceCancellationIdentifierIsNotFound() throws Exception {
+        final HttpResponse<String> response = request(
+                shared,
+                sharedUri,
+                TOKEN,
+                "DELETE",
+                "/v1/traces/trace/id",
+                "",
+                null
+        );
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(404, "{\"status\":\"not-found\"}");
+    }
+
+    @Test
+    void missingMetricsAuthorizationIsRejected() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, null, "GET", "/v1/metrics", "", null
+        );
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(401, "{\"status\":\"unauthorized\"}");
+    }
+
+    @Test
+    void unsupportedMetricsMethodIsRejected() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "POST", "/v1/metrics", "{}", null
+        );
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(405, "{\"status\":\"method-not-allowed\"}");
+    }
+
+    @Test
+    void unknownMetricsFormatIsNotFound() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/metrics/unknown", "", null
+        );
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(404, "{\"status\":\"not-found\"}");
+    }
+
+    @Test
+    void applicationMetricsEndpointOmitsPerFlowAndPerStepSeries() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/metrics/application", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body()).contains("\"flows\":[]", "\"steps\":[]", "\"process\":");
+    }
+
+    @Test
+    void nodeMetricsEndpointReturnsOnlyMatchingFlowAndStepSeries() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/metrics/nodes/success", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body())
+                .contains("\"flows\":[{\"id\":\"success\"", "\"steps\":[{\"id\":\"success\"")
+                .doesNotContain("\"id\":\"details\"");
+    }
+
+    @Test
+    void blankNodeMetricsPathIsNotFound() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/metrics/nodes/", "", null
+        );
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(404, "{\"status\":\"not-found\"}");
+    }
+
+    @Test
+    void metricCatalogDescribesTheCanonicalQueryAndExportFields() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/metrics/catalog", "", null
+        );
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue catalog = object(response.body());
+        final RailixValue.ObjectValue metrics = (RailixValue.ObjectValue) catalog.values().get("metrics");
+        final RailixValue.ObjectValue executions = (RailixValue.ObjectValue) metrics.values().get("executions");
+        final RailixValue.ObjectValue durationMaximum = (RailixValue.ObjectValue) metrics.values()
+                .get("duration_nanos_max");
+        final RailixValue.ObjectValue durationTotal = (RailixValue.ObjectValue) metrics.values()
+                .get("duration_nanos_total");
+        assertThat(number(catalog, "application_pid")).isEqualTo(shared.process().pid());
+        assertThat(executions.values())
+                .containsEntry("kind", RailixValue.string("counter"))
+                .containsEntry("aggregation", RailixValue.string("sum"));
+        assertThat(((RailixValue.ArrayValue) durationMaximum.values().get("scopes")).values())
+                .contains(RailixValue.string("application"), RailixValue.string("flow"), RailixValue.string("step"));
+        assertThat(durationMaximum.values())
+                .containsEntry("aggregation", RailixValue.string("max"));
+        assertThat(((RailixValue.ObjectValue) durationTotal.values().get("sampling")).values()).isNotEmpty();
+        assertThat(request(shared, sharedUri, TOKEN, "GET", "/v1/metrics/prometheus", "", null).body())
+                .contains("railix_flow_duration_seconds_max");
+        assertThat(request(shared, sharedUri, TOKEN, "GET", "/v1/metrics/influx", "", null).body())
+                .contains("duration_nanos_max=");
+    }
+
+    @Test
+    void metricQuerySelectsCanonicalColumnsAndPreservesMaximumsAndScopeAbsence() throws Exception {
+        awaitAutomaticExamples(shared, sharedUri);
+        final List<RailixValue.ObjectValue> steps = values(request(
+                shared, sharedUri, TOKEN, "GET", "/v1/metrics", "", null
+        ).body(), "steps");
+        final String query = """
+                {"steps":{"steps":[[0,%d]]},"flows":{"flow":"success"},"application":"application",
+                 "metrics":["executions","duration_nanos_max","in_flight"]}
+                """.formatted(steps.size() - 1);
+
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query", query, null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue result = object(response.body());
+        assertThat(result.values()).containsKeys("observed_at", "elapsed_nanos");
+        assertThat(number(result, "observed_at")).isPositive();
+        assertThat(number(result, "elapsed_nanos")).isGreaterThanOrEqualTo(0);
+        assertThat(queryGroup(response.body(), "steps").values())
+                .containsOnlyKeys("executions", "duration_nanos_max");
+        assertThat(number(queryGroup(response.body(), "steps"), "duration_nanos_max")).isEqualTo(steps.stream()
+                .map(step -> (RailixValue.ObjectValue) step.values().get("metrics"))
+                .mapToLong(metrics -> number(metrics, "duration_nanos_max"))
+                .max().orElseThrow());
+        assertThat(queryGroup(response.body(), "flow").values()).containsOnlyKeys(
+                "executions", "duration_nanos_max", "in_flight"
+        );
+        assertThat(queryGroup(response.body(), "application").values()).containsOnlyKeys(
+                "executions", "duration_nanos_max", "in_flight"
+        );
+    }
+
+    @Test
+    void metricQueryAggregatesDenseEnabledStepOrdinalsWithoutAddingFlowTotals() throws Exception {
+        awaitAutomaticExamples(shared, sharedUri);
+        final HttpResponse<String> snapshot = request(shared, sharedUri, TOKEN, "GET", "/v1/metrics", "", null);
+        assertThat(snapshot.statusCode()).isEqualTo(200);
+        final List<RailixValue.ObjectValue> steps = values(snapshot.body(), "steps");
+        assertThat(ids(snapshot.body(), "steps")).doesNotContain("details-step");
+        final String query = """
+                {"steps":{"all":[[0,%d]],"pair":[[0,0],[2,2]],"overlap":[[0,0],[2,2]],"empty":[]},
+                 "flows":{"trigger":"success"},"application":"app"}
+                """.formatted(steps.size() - 1);
+
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "POST", "/v1/metrics/query", query, null
+        );
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue result = object(response.body());
+        assertThat(result.values()).containsOnlyKeys("application_pid", "observed_at", "elapsed_nanos", "groups");
+        assertThat(number(result, "application_pid")).isEqualTo(shared.process().pid());
+        assertThat(((RailixValue.ObjectValue) result.values().get("groups")).values())
+                .containsOnlyKeys("all", "pair", "overlap", "empty", "trigger", "app");
+        assertQueryCounters(queryGroup(response.body(), "all"), steps);
+        assertQueryCounters(queryGroup(response.body(), "pair"), List.of(steps.getFirst(), steps.get(2)));
+        assertThat(queryGroup(response.body(), "overlap")).isEqualTo(queryGroup(response.body(), "pair"));
+        assertQueryCounters(queryGroup(response.body(), "empty"), List.of());
+        assertQueryCounters(queryGroup(response.body(), "trigger"), List.of(series(snapshot.body(), "flows", "success")));
+        assertQueryCounters(queryGroup(response.body(), "app"),
+                List.of((RailixValue.ObjectValue) object(snapshot.body()).values().get("application")));
+        assertThat(response.headers().firstValue("Cache-Control")).contains("no-store");
+        assertThat(response.headers().firstValue("Content-Type")).contains("application/json; charset=utf-8");
+        assertThat(response.body()).doesNotContain("process", "payload");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{", "[]", "null",
+            "{\"steps\":null,\"flows\":{}}",
+            "{\"steps\":{},\"flows\":[]}",
+            "{\"steps\":{},\"flows\":{},\"application\":null}",
+            "{\"steps\":{},\"flows\":{},\"application\":1}",
+            "{\"steps\":{},\"flows\":{},\"process\":null}",
+            "{\"steps\":{},\"flows\":{},\"process\":1}",
+            "{\"steps\":{},\"flows\":{},\"unknown\":true}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":null}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":\"executions\"}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":{}}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":[1]}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":[\" \"]}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":[\"unknown\"]}",
+            "{\"steps\":{},\"flows\":{},\"metrics\":[\"executions\",\"executions\"]}",
+            "{\"steps\":{},\"flows\":{\"x\":null}}",
+            "{\"steps\":{},\"flows\":{\"x\":[\"success\"]}}",
+            "{\"steps\":{},\"flows\":{\"x\":\"unknown-flow\"}}",
+            "{\"steps\":{\"x\":[]},\"flows\":{\"x\":\"success\"}}",
+            "{\"steps\":{\"x\":[]},\"flows\":{},\"application\":\"x\"}",
+            "{\"steps\":{},\"flows\":{\"x\":\"success\"},\"application\":\"x\"}",
+            "{\"steps\":{\"x\":[]},\"flows\":{},\"process\":\"x\"}",
+            "{\"steps\":{},\"flows\":{\"x\":\"success\"},\"process\":\"x\"}",
+            "{\"steps\":{},\"flows\":{},\"application\":\"x\",\"process\":\"x\"}",
+            "{\"steps\":{\"x\":[],\"x\":[]},\"flows\":{}}",
+            "{\"steps\":{},\"steps\":{},\"flows\":{}}",
+            "{\"steps\":{\"x\":null},\"flows\":{}}",
+            "{\"steps\":{\"x\":{}},\"flows\":{}}",
+            "{\"steps\":{\"x\":[0,1]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0,1,2]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[null,1]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[\"0\",1]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0.5,1]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[-1,0]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[1,0]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[1,1],[0,0]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0,1],[1,2]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0,0],[0,0]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0,2147483647]]},\"flows\":{}}",
+            "{\"steps\":{\"x\":[[0,2147483648]]},\"flows\":{}}"
+    })
+    void metricQueryRejectsMalformedRangesFieldsAndDuplicateGroups(final String query) throws Exception {
+        final HttpResponse<String> first = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query", query, null);
+        final HttpResponse<String> repeated = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query", query, null);
+
+        assertThat(first.statusCode()).as(first.body()).isEqualTo(400);
+        assertThat(repeated.statusCode()).isEqualTo(400);
+        assertThat(repeated.body()).isEqualTo(first.body());
+        assertThat(object(first.body()).values()).doesNotContainKey("groups");
+    }
+
+    @Test
+    void metricQueryRejectsTheFirstOrdinalBeyondTheDenseStepTable() throws Exception {
+        final String snapshot = request(shared, sharedUri, TOKEN, "GET", "/v1/metrics", "", null).body();
+        final int outside = values(snapshot, "steps").size();
+
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query",
+                "{\"steps\":{\"outside\":[[" + outside + "," + outside + "]]},\"flows\":{}}", null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+    }
+
+    @Test
+    void metricQuerySupportsEmptySelectionsAndProcessOnlyGroups() throws Exception {
+        final HttpResponse<String> empty = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query",
+                "{\"steps\":{\"empty\":[]},\"flows\":{},\"metrics\":[]}", null);
+        final HttpResponse<String> process = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query",
+                "{\"steps\":{},\"flows\":{},\"process\":\"runtime\"}", null);
+
+        assertThat(empty.statusCode()).as(empty.body()).isEqualTo(200);
+        assertThat(queryGroup(empty.body(), "empty").values()).isEmpty();
+        assertThat(process.statusCode()).as(process.body()).isEqualTo(200);
+        assertThat(queryGroup(process.body(), "runtime").values())
+                .containsKey("uptime_millis")
+                .doesNotContainKeys("executions", "in_flight", "duration_nanos_total");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/v1/metrics/query", "/v1/examples/query"})
+    void scopedQueryReturnsEmptyGroupsWithoutAnImplicitApplicationAggregate(final String path) throws Exception {
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", path, emptyQuery(path), null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue result = object(response.body());
+        assertThat(number(result, "application_pid")).isEqualTo(shared.process().pid());
+        assertThat(((RailixValue.ObjectValue) result.values().get("groups")).values()).isEmpty();
+        assertThat(result.values()).doesNotContainKeys("application", "example", "steps", "flows", "coverage_bits");
+        assertThat(response.headers().firstValue("Cache-Control")).contains("no-store");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/v1/metrics/query", "/v1/examples/query"})
+    void scopedQueryRequiresBearerAuthorization(final String path) throws Exception {
+        final HttpResponse<String> response = request(shared, sharedUri, null, "POST", path, emptyQuery(path), null);
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(401, "{\"status\":\"unauthorized\"}");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "/v1/metrics/query,GET", "/v1/metrics/query,PUT", "/v1/metrics/query,DELETE",
+            "/v1/examples/query,GET", "/v1/examples/query,PUT", "/v1/examples/query,DELETE"
+    })
+    void scopedQueryRejectsMethodsOtherThanPost(final String path, final String method) throws Exception {
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, method, path, "", null);
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(405, "{\"status\":\"method-not-allowed\"}");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/v1/metrics/query", "/v1/examples/query"})
+    void scopedQueryEnforcesTheExactOneMebibyteBodyLimitAndRecovers(final String path) throws Exception {
+        final String query = emptyQuery(path);
+        final String maximum = query + " ".repeat(MAX_CONTEXT_BYTES - query.length());
+
+        assertThat(request(shared, sharedUri, TOKEN, "POST", path, maximum, null).statusCode()).isEqualTo(200);
+        assertThat(request(shared, sharedUri, TOKEN, "POST", path, maximum + " ", null).statusCode()).isEqualTo(413);
+        assertThat(request(shared, sharedUri, TOKEN, "POST", path, query, null).statusCode()).isEqualTo(200);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/v1/metrics/query", "/v1/examples/query"})
+    void scopedQueryLimitsTotalGroupsTo4096AndRecovers(final String path) throws Exception {
+        final String groups = java.util.stream.IntStream.range(0, 4096)
+                .mapToObj(index -> "\"g" + index + "\":[]")
+                .collect(java.util.stream.Collectors.joining(","));
+        final String prefix = path.equals("/v1/metrics/query") ? "{\"flows\":{},\"steps\":{" : "{\"groups\":{";
+        final HttpResponse<String> maximum = request(shared, sharedUri, TOKEN, "POST", path, prefix + groups + "}}", null);
+
+        assertThat(maximum.statusCode()).as(maximum.body()).isEqualTo(200);
+        assertThat(((RailixValue.ObjectValue) object(maximum.body()).values().get("groups")).values()).hasSize(4096);
+        final HttpResponse<String> excess = request(
+                shared, sharedUri, TOKEN, "POST", path, prefix + groups + ",\"extra\":[]}}", null
+        );
+        assertThat(excess.statusCode()).as(excess.body()).isEqualTo(400);
+        assertThat(request(shared, sharedUri, TOKEN, "POST", path, emptyQuery(path), null).statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void metricQueryCountsFlowAndApplicationGroupsTowardsTheSameLimit() throws Exception {
+        final String groups = java.util.stream.IntStream.range(0, 4095)
+                .mapToObj(index -> "\"g" + index + "\":[]")
+                .collect(java.util.stream.Collectors.joining(","));
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/metrics/query",
+                "{\"steps\":{" + groups + "},\"flows\":{\"trigger\":\"success\"},\"application\":\"app\"}", null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+    }
+
+    @Test
+    void scopedQueryEnforcesTheExactRangeMemberWorkBudgetAcrossOverlappingGroups(@TempDir final Path workspace)
+            throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build candidate = DevelopmentRuntimeGeneratedProcess.build(
+                workspace, metricCardinalityProject(256), List.of(trigger("metrics", false), pass()),
+                DevelopmentRuntimeConformanceSteps.Pass.class
+        );
+        try (var child = started(candidate)) {
+            final URI uri = child.awaitReady();
+            awaitExamples(child, uri, 1, WAIT);
+            final String groups = java.util.stream.IntStream.range(0, 4096)
+                    .mapToObj(index -> "\"g" + index + "\":[[0,255]]")
+                    .collect(java.util.stream.Collectors.joining(","));
+            for (final String path : List.of("/v1/metrics/query", "/v1/examples/query")) {
+                final String prefix = path.equals("/v1/metrics/query") ? "{\"flows\":{},\"steps\":{" : "{\"groups\":{";
+                final String maximum = prefix + groups + "}}";
+                final HttpResponse<String> accepted = request(child, uri, TOKEN, "POST", path, maximum, null);
+                assertThat(accepted.statusCode()).as(accepted.body()).isEqualTo(200);
+                assertThat(((RailixValue.ObjectValue) object(accepted.body()).values().get("groups")).values()).hasSize(4096);
+
+                final String excess = maximum.replace("\"g0\":[[0,255]]", "\"g0\":[[0,256]]");
+                final HttpResponse<String> rejected = request(child, uri, TOKEN, "POST", path, excess, null);
+                assertThat(rejected.statusCode()).as(rejected.body()).isEqualTo(400);
+                assertThat(rejected.body()).contains("INVALID_QUERY", "Query ranges exceed the 1048576-member work limit.");
+                assertThat(request(child, uri, TOKEN, "POST", path, emptyQuery(path), null).statusCode()).isEqualTo(200);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/v1/metrics/query", "/v1/examples/query"})
+    void scopedQueryBodyDeadlineClosesIncompleteRequestsAndReleasesReaders(final String path) throws Exception {
+        try (Socket partial = partialRequest(sharedUri, path)) {
+            assertThat(request(shared, sharedUri, TOKEN, "POST", path, emptyQuery(path), null).statusCode()).isEqualTo(200);
+            assertThat(partial.getInputStream().read()).isEqualTo(-1);
+        }
+        assertThat(request(shared, sharedUri, TOKEN, "POST", path, emptyQuery(path), null).statusCode()).isEqualTo(200);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{", "[]", "null", "{\"groups\":null}", "{\"groups\":[]}",
+            "{\"groups\":{},\"example\":null}", "{\"groups\":{},\"example\":1}",
+            "{\"groups\":{},\"unknown\":true}", "{\"groups\":{},\"groups\":{}}",
+            "{\"groups\":{\"x\":[],\"x\":[]}}", "{\"groups\":{\"x\":null}}",
+            "{\"groups\":{\"x\":{}}}", "{\"groups\":{\"x\":[0,1]}}",
+            "{\"groups\":{\"x\":[[]]}}", "{\"groups\":{\"x\":[[0]]}}",
+            "{\"groups\":{\"x\":[[0,1,2]]}}", "{\"groups\":{\"x\":[[null,1]]}}",
+            "{\"groups\":{\"x\":[[\"0\",1]]}}", "{\"groups\":{\"x\":[[0,1.5]]}}",
+            "{\"groups\":{\"x\":[[-1,0]]}}", "{\"groups\":{\"x\":[[1,0]]}}",
+            "{\"groups\":{\"x\":[[1,1],[0,0]]}}", "{\"groups\":{\"x\":[[0,1],[1,2]]}}",
+            "{\"groups\":{\"x\":[[0,0],[0,0]]}}", "{\"groups\":{\"x\":[[0,2147483647]]}}",
+            "{\"groups\":{\"x\":[[0,2147483648]]}}"
+    })
+    void exampleQueryRejectsMalformedRangesFieldsAndDuplicateGroups(final String query) throws Exception {
+        final HttpResponse<String> first = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query", query, null);
+        final HttpResponse<String> repeated = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query", query, null);
+
+        assertThat(first.statusCode()).as(first.body()).isEqualTo(400);
+        assertThat(repeated.statusCode()).isEqualTo(400);
+        assertThat(repeated.body()).isEqualTo(first.body());
+        assertThat(object(first.body()).values()).doesNotContainKey("groups");
+    }
+
+    @Test
+    void exampleQueryRejectsTheFirstOrdinalBeyondTheCanonicalNodeTable() throws Exception {
+        final int outside = values(project(Path.of(".")), "nodes").size();
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query",
+                "{\"groups\":{\"outside\":[[" + outside + "," + outside + "]]}}", null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+    }
+
+    @Test
+    void exampleQueryDoesNotTurnAnUnknownSelectionIntoZeroMembership() throws Exception {
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query",
+                "{\"groups\":{\"all\":[[0,1]]},\"example\":\"missing:0\"}", null);
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(404, "{\"status\":\"not-found\"}");
+    }
+
+    @Test
+    void exampleQueryReturnsOnlyCoverageWhenNoSelectionWasRequested() throws Exception {
+        awaitAutomaticExamples(shared, sharedUri);
+        final RailixValue.ObjectValue coverage = object(request(
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/coverage", "", null
+        ).body());
+        final int last = values(project(Path.of(".")), "nodes").size() - 1;
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query",
+                "{\"groups\":{\"all\":[[0," + last + "]],\"empty\":[]}}", null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue result = object(response.body());
+        assertThat(result.values()).containsOnlyKeys("application_pid", "revision", "groups");
+        assertThat(number(result, "revision")).isEqualTo(number(coverage, "revision"));
+        assertThat(((RailixValue.ObjectValue) result.values().get("groups")).values()).containsOnlyKeys("all", "empty");
+        assertThat(queryGroup(response.body(), "all").values()).containsOnlyKeys("covered_count");
+        assertThat(queryGroup(response.body(), "empty").values()).containsOnlyKeys("covered_count");
+        assertThat(number(queryGroup(response.body(), "all"), "covered_count")).isEqualTo(number(coverage, "covered_steps"));
+        assertThat(number(queryGroup(response.body(), "empty"), "covered_count")).isZero();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"success:0,1,14", "details:0,2,15", "failed:0,4,16", "cancelled:0,5,17"})
+    void exampleQueryUsesCanonicalMembershipIncludingTriggersAndFailedSteps(
+            final String example, final int trigger, final int step
+    ) throws Exception {
+        awaitAutomaticExamples(shared, sharedUri);
+        final RailixValue.ObjectValue coverage = object(request(
+                shared, sharedUri, TOKEN, "GET", "/v1/examples/coverage", "", null
+        ).body());
+        final BitSet covered = BitSet.valueOf(Base64.getDecoder().decode(string(coverage, "coverage_bits")));
+        final int last = values(project(Path.of(".")), "nodes").size() - 1;
+        final String query = """
+                {"groups":{"all":[[0,%d]],"trigger":[[%d,%d]],"step":[[%d,%d]],
+                 "pair":[[%d,%d],[%d,%d]],"empty":[],"app":[[0,0]]},"example":"%s"}
+                """.formatted(last, trigger, trigger, step, step, trigger, trigger, step, step, example);
+
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query", query, null);
+
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final RailixValue.ObjectValue result = object(response.body());
+        assertThat(result.values()).containsOnlyKeys("application_pid", "revision", "groups", "example");
+        assertThat(((RailixValue.ObjectValue) result.values().get("groups")).values())
+                .containsOnlyKeys("all", "trigger", "step", "pair", "empty", "app");
+        assertThat(number(result, "application_pid")).isEqualTo(shared.process().pid());
+        assertThat(number(result, "revision")).isEqualTo(number(coverage, "revision"));
+        assertThat(string(result, "example")).isEqualTo(example);
+        assertThat(number(queryGroup(response.body(), "all"), "covered_count")).isEqualTo(covered.cardinality());
+        assertThat(number(queryGroup(response.body(), "all"), "selected_count")).isEqualTo(2);
+        for (final String id : List.of("trigger", "step")) {
+            assertThat(queryGroup(response.body(), id).values()).containsOnlyKeys("covered_count", "selected_count");
+            assertThat(number(queryGroup(response.body(), id), "covered_count")).isEqualTo(1);
+            assertThat(number(queryGroup(response.body(), id), "selected_count")).isEqualTo(1);
+        }
+        assertThat(number(queryGroup(response.body(), "pair"), "selected_count")).isEqualTo(2);
+        for (final String id : List.of("empty", "app")) {
+            assertThat(number(queryGroup(response.body(), id), "covered_count")).isZero();
+            assertThat(number(queryGroup(response.body(), id), "selected_count")).isZero();
+        }
+        assertThat(response.body()).doesNotContain("coverage_bits", "initial_context", "result", "cases", "step_start");
+    }
+
+    @Test
+    void exampleQuerySeparatesUnionCoverageFromTheSelectedBranch(@TempDir final Path workspace) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build candidate = DevelopmentRuntimeGeneratedProcess.build(workspace, """
+                {"format":1,"id":"query-branches","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"match","payload":[],"context":{"payload":{"value":"allow"}}},
+                    {"name":"otherwise","payload":[],"context":{"payload":{"value":"deny"}}}
+                  ]},
+                  {"id":"choice","use":"railix.choice","inputs":{"conditions":[[{
+                    "option":"field","inputs":{"field":["context","payload","value"]},
+                    "when":{"transforms":[],"all":[[{"use":"value.equals","inputs":{"expected":"allow"}}]]}
+                  }]]}},
+                  {"id":"matched","use":"railix.field-manipulation","inputs":{}},
+                  {"id":"otherwise","use":"railix.field-manipulation","inputs":{}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},{"from":"command.next","to":"choice"},
+                  {"from":"choice.match","to":"matched"},{"from":"choice.otherwise","to":"otherwise"},
+                  {"from":"matched.next","to":"end"},{"from":"otherwise.next","to":"end"}
+                ]}
+                """, StandardLibrary.catalog());
+        try (var child = started(candidate)) {
+            final URI uri = child.awaitReady();
+            awaitExamples(child, uri, 2, WAIT);
+            for (int selection = 0; selection < 2; selection++) {
+                final HttpResponse<String> response = request(child, uri, TOKEN, "POST", "/v1/examples/query",
+                        "{\"groups\":{\"branches\":[[3,4]],\"matched\":[[3,3]],\"otherwise\":[[4,4]]},"
+                                + "\"example\":\"command:" + selection + "\"}", null);
+
+                assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+                assertThat(number(queryGroup(response.body(), "branches"), "covered_count")).isEqualTo(2);
+                assertThat(number(queryGroup(response.body(), "branches"), "selected_count")).isEqualTo(1);
+                assertThat(number(queryGroup(response.body(), "matched"), "selected_count")).isEqualTo(1 - selection);
+                assertThat(number(queryGroup(response.body(), "otherwise"), "selected_count")).isEqualTo(selection);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void exampleQueryOmitsPendingSelectionUntilCompleted(
+            final boolean running, @TempDir final Path workspace
+    ) throws Exception {
+        final Path gate = Files.createDirectories(workspace.resolve("gate"));
+        final DevelopmentRuntimeGeneratedProcess.Build candidate = DevelopmentRuntimeGeneratedProcess.build(
+                workspace, nonCooperativeExample(gate).replace("\"id\":\"gate\",\"use\":\"development.runtime.example-gate\",\"inputs\":{}",
+                        "\"id\":\"gate\",\"use\":\"development.runtime.example-gate\",\"inputs\":{\"ignore_interrupt\":false}"),
+                List.of(trigger("noncooperative", false), exampleGate()),
+                DevelopmentRuntimeConformanceSteps.Pass.class, ChunkGateStepHandler.class
+        );
+        try (var child = started(candidate)) {
+            final URI uri = child.awaitInactive();
+            final String query = "{\"groups\":{\"all\":[[0,2]]},\"example\":\"noncooperative:0\"}";
+            try {
+                if (running) {
+                    child.activate();
+                    awaitSignal(gate.resolve("case-1.started"), WAIT);
+                }
+                final HttpResponse<String> pending = request(child, uri, TOKEN, "POST", "/v1/examples/query", query, null);
+                assertThat(pending.statusCode()).as(pending.body()).isEqualTo(200);
+                assertThat(object(pending.body()).values()).doesNotContainKey("example");
+                assertThat(((RailixValue.ObjectValue) object(pending.body()).values().get("groups")).values())
+                        .containsOnlyKeys("all");
+                assertThat(queryGroup(pending.body(), "all").values()).containsOnlyKeys("covered_count");
+                assertThat(number(queryGroup(pending.body(), "all"), "covered_count")).isZero();
+
+                Files.writeString(gate.resolve("release"), "released");
+                if (!running) child.activate();
+                awaitExamples(child, uri, 1, WAIT);
+                final HttpResponse<String> completed = request(child, uri, TOKEN, "POST", "/v1/examples/query", query, null);
+                assertThat(completed.statusCode()).as(completed.body()).isEqualTo(200);
+                assertThat(string(object(completed.body()), "example")).isEqualTo("noncooperative:0");
+                assertThat(number(object(completed.body()), "revision")).isGreaterThan(number(object(pending.body()), "revision"));
+                assertThat(number(queryGroup(completed.body(), "all"), "covered_count")).isEqualTo(2);
+                assertThat(number(queryGroup(completed.body(), "all"), "selected_count")).isEqualTo(2);
+            } finally {
+                Files.writeString(gate.resolve("release"), "released");
+            }
+        }
+    }
+
+    @Test
+    void exampleQueryReadsFrozenMembershipWithoutReplayingOrReexecutingTheTrace(@TempDir final Path workspace)
+            throws Exception {
+        final Path marker = workspace.resolve("example.marker");
+        final DevelopmentRuntimeGeneratedProcess.Build candidate = markerBuild(workspace, marker);
+        try (var child = started(candidate)) {
+            final URI uri = child.awaitReady();
+            final String inventory = awaitExamples(child, uri, 1, WAIT);
+            Files.delete(runtimeDirectory(candidate, child).resolve("0.ndjson"));
+            for (int attempt = 0; attempt < 2; attempt++) {
+                final HttpResponse<String> response = request(child, uri, TOKEN, "POST", "/v1/examples/query",
+                        "{\"groups\":{\"all\":[[0,2]]},\"example\":\"marker:0\"}", null);
+                assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+                assertThat(number(object(response.body()), "revision")).isEqualTo(number(object(inventory), "revision"));
+                assertThat(number(queryGroup(response.body(), "all"), "selected_count")).isEqualTo(2);
+                assertThat(number(queryGroup(response.body(), "all"), "covered_count")).isEqualTo(2);
+            }
+            assertThat(Files.readString(marker)).isEqualTo("x");
+            assertThat(request(child, uri, TOKEN, "GET", "/v1/examples/marker%3A0/view", "", null).statusCode()).isEqualTo(404);
+        }
+    }
+
+    @Test
+    void thirdMetricsReadIsRejectedWhileTwoLargeStreamsAreBackpressured(
+            @TempDir final Path workspace
+    ) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build metrics = DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                metricCardinalityProject(METRIC_CARDINALITY_STEPS),
+                List.of(trigger("metrics", false), pass()),
+                DevelopmentRuntimeConformanceSteps.Pass.class
+        );
+        try (var child = started(metrics)) {
+            final URI uri = child.awaitReady();
+            try (Socket first = managementGet(uri, "/v1/metrics/prometheus")) {
+                assertThat(readHeaders(first.getInputStream())).startsWith("HTTP/1.1 200");
+                try (Socket second = managementGet(uri, "/v1/metrics/prometheus")) {
+                    assertThat(readHeaders(second.getInputStream())).startsWith("HTTP/1.1 200");
+                    assertThat(request(
+                            child, uri, TOKEN, "GET", "/v1/metrics/application", "", null
+                    )).extracting(HttpResponse::statusCode, HttpResponse::body)
+                            .containsExactly(503, "{\"reason\":\"saturated\",\"status\":\"unavailable\"}");
+                }
+            }
+
+            assertThat(awaitManagementReadAvailable(
+                    child, uri, "/v1/metrics/application"
+            ).statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void ownershipCloseReclaimsTwoBackpressuredMetricResponses(
+            @TempDir final Path workspace
+    ) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build metrics = DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                metricCardinalityProject(METRIC_CARDINALITY_STEPS),
+                List.of(trigger("metrics", false), pass()),
+                DevelopmentRuntimeConformanceSteps.Pass.class
+        );
+        try (var child = started(metrics)) {
+            final URI uri = child.awaitReady();
+            try (Socket first = managementGet(uri, "/v1/metrics/prometheus")) {
+                assertThat(readHeaders(first.getInputStream())).startsWith("HTTP/1.1 200");
+                try (Socket second = managementGet(uri, "/v1/metrics/prometheus")) {
+                    assertThat(readHeaders(second.getInputStream())).startsWith("HTTP/1.1 200");
+
+                    child.closeOwner();
+
+                    assertThat(child.awaitExit()).isZero();
+                    assertThat(child.process().isAlive()).isFalse();
+                }
+            }
+        }
+    }
+
+    @Test
+    void automaticExamplesCountNormalMetricsFromTriggerOutput() throws Exception {
+        try (var child = started()) {
+            final URI uri = child.awaitReady();
+            awaitAutomaticExamples(child, uri);
+
+            assertExecutions(child, uri, 1);
+            final HttpResponse<String> response = request(
+                    child, uri, TOKEN, "GET", "/v1/metrics", "", null
+            );
+            assertThat(response.statusCode()).isEqualTo(200);
+            final String metrics = response.body();
+            assertThat(metric(metrics, "steps", "success", "executions")).isZero();
+            assertThat(metric(metrics, "flows", "success", "in_flight")).isZero();
+            assertThat(metric(metrics, "flows", "failed", "executions")).isEqualTo(1);
+            assertThat(metric(metrics, "flows", "failed", "errors")).isEqualTo(1);
+            assertThat(metric(metrics, "steps", "failed-step", "errors")).isEqualTo(1);
+            assertThat(metric(metrics, "flows", "cancelled", "executions")).isEqualTo(1);
+            assertThat(metric(metrics, "flows", "cancelled", "cancelled")).isEqualTo(1);
+            assertThat(metric(metrics, "flows", "cancelled", "errors")).isZero();
+            assertThat(metric(metrics, "steps", "cancelled-step", "cancelled")).isEqualTo(1);
+            assertThat(metric(metrics, "steps", "cancelled-step", "errors")).isZero();
+            assertThat(metric(metrics, "flows", "details", "executions")).isEqualTo(1);
+            assertThat(ids(metrics, "steps")).doesNotContain("details-step");
+
+            final HttpResponse<String> trace = request(
+                    child, uri, TOKEN, "GET", "/v1/examples/success%3A0/view", "", null
+            );
+            assertThat(trace.statusCode()).isEqualTo(200);
+            assertThat(trace.body()).contains("\"initial_context\"", "\"nodes\":[14]",
+                    "\"test\":true", "\"status\":\"succeeded\"");
+        }
+    }
+
+    @Test
+    void explicitTestRunCountsNormalMetricsExactlyOnce() throws Exception {
+        try (var child = started()) {
+            final URI uri = child.awaitReady();
+            awaitAutomaticExamples(child, uri);
+            final HttpResponse<String> response = request(
+                    child, uri, TOKEN, "POST", "/v1/run/success", "{}", "true"
+            );
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains("\"test\":true");
+
+            assertExecutions(child, uri, 2);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void developmentTraceCountsNormalMetricsExactlyOnce(final boolean test) throws Exception {
+        try (var child = started()) {
+            final URI uri = child.awaitReady();
+            awaitAutomaticExamples(child, uri);
+            final HttpResponse<String> response = request(
+                    child, uri, TOKEN, "POST", "/v1/trace/success", "{}", Boolean.toString(test)
+            );
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains("\"type\":\"step_result\"", "\"id\":\"success-step\"",
+                    "\"test\":" + test, "\"status\":\"succeeded\"");
+
+            assertExecutions(child, uri, 2);
+        }
+    }
+
+    @Test
+    void productionRunChangesOperationalMetricsExactlyOnce() throws Exception {
+        try (var child = started()) {
+            final URI uri = child.awaitReady();
+            awaitAutomaticExamples(child, uri);
+            assertThat(request(child, uri, TOKEN, "POST", "/v1/run/success", "{}", "false").statusCode())
+                    .isEqualTo(200);
+
+            assertExecutions(child, uri, 2);
+        }
+    }
+
+    @Test
+    void metricEndpointsExposeExactExecutionsAndSampledStepTimingWithoutStepInflight() throws Exception {
+        try (var child = started()) {
+            final URI uri = child.awaitReady();
+            awaitAutomaticExamples(child, uri);
+            for (int execution = 0; execution < 1_025; execution++) {
+                assertThat(request(
+                        child,
+                        uri,
+                        TOKEN,
+                        "POST",
+                        "/v1/run/success",
+                        "{}",
+                        "false"
+                ).statusCode()).isEqualTo(200);
+            }
+
+            final String json = request(child, uri, TOKEN, "GET", "/v1/metrics", "", null).body();
+            final RailixValue.ObjectValue step = series(json, "steps", "success-step");
+            final String prometheus = request(
+                    child,
+                    uri,
+                    TOKEN,
+                    "GET",
+                    "/v1/metrics/prometheus",
+                    "",
+                    null
+            ).body();
+            final String influx = request(
+                    child,
+                    uri,
+                    TOKEN,
+                    "GET",
+                    "/v1/metrics/influx",
+                    "",
+                    null
+            ).body();
+
+            assertThat(metric(json, "steps", "success-step", "executions")).isEqualTo(1_026);
+            assertThat(metric(json, "steps", "success-step", "duration_samples")).isEqualTo(2);
+            assertThat(((RailixValue.ObjectValue) step.values().get("metrics")).values())
+                    .doesNotContainKey("in_flight");
+            assertThat(prometheus)
+                    .contains(
+                            "railix_step_executions_total{project=\"development-runtime-conformance\","
+                                    + "step=\"success-step\"} 1026",
+                            "railix_step_duration_seconds_count{project=\"development-runtime-conformance\","
+                                    + "step=\"success-step\"} 2"
+                    )
+                    .doesNotContain("railix_step_in_flight");
+            assertThat(influx)
+                    .contains(
+                            "railix_step,project=development-runtime-conformance,step=success-step ",
+                            "executions=1026i",
+                            "duration_samples=2i"
+                    )
+                    .doesNotContain("railix_step_in_flight");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void cancelledRunIsClassifiedWithoutCountingAnError(final boolean test) throws Exception {
+        try (var child = started()) {
+            final URI uri = child.awaitReady();
+            awaitAutomaticExamples(child, uri);
+            assertThat(request(child, uri, TOKEN, "POST", "/v1/run/cancelled", "{}", Boolean.toString(test)).statusCode())
+                    .isEqualTo(409);
+
+            final String metrics = request(child, uri, TOKEN, "GET", "/v1/metrics", "", null).body();
+
+            assertThat(metric(metrics, "flows", "cancelled", "cancelled")).isEqualTo(2);
+            assertThat(metric(metrics, "flows", "cancelled", "errors")).isZero();
+            assertThat(metric(metrics, "steps", "cancelled-step", "cancelled")).isEqualTo(2);
+            assertThat(metric(metrics, "steps", "cancelled-step", "errors")).isZero();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void disabledStepIsAbsentFromMetricsAfterRealExecution(final boolean test) throws Exception {
+        try (var child = started()) {
+            final URI uri = child.awaitReady();
+            awaitAutomaticExamples(child, uri);
+            assertThat(request(
+                    child,
+                    uri,
+                    TOKEN,
+                    "POST",
+                    "/v1/run/details",
+                    "{\"payload\":{\"value\":\" RAILIX \"}}",
+                    Boolean.toString(test)
+            ).statusCode()).isEqualTo(200);
+
+            final String metrics = request(child, uri, TOKEN, "GET", "/v1/metrics", "", null).body();
+
+            assertThat(metric(metrics, "flows", "details", "executions")).isEqualTo(2);
+            assertThat(ids(metrics, "steps")).doesNotContain("details-step");
+        }
+    }
+
+    @Test
+    void prometheusMetricsEndpointExportsCumulativeSeries() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/metrics/prometheus", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.headers().firstValue("Content-Type"))
+                .contains("text/plain; version=0.0.4; charset=utf-8");
+        assertThat(response.body()).contains(
+                "railix_application_executions_total{project=\"development-runtime-conformance\"}",
+                "railix_flow_executions_total{project=\"development-runtime-conformance\",flow=\"success\"}",
+                "railix_step_executions_total{project=\"development-runtime-conformance\",step=\"success-step\"}"
+        );
+    }
+
+    @Test
+    void influxMetricsEndpointExportsLineProtocol() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "GET", "/v1/metrics/influx", "", null
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.headers().firstValue("Content-Type"))
+                .contains("text/plain; charset=utf-8");
+        assertThat(response.body()).contains(
+                "railix_application,project=development-runtime-conformance ",
+                "railix_flow,project=development-runtime-conformance,flow=success ",
+                "railix_step,project=development-runtime-conformance,step=success-step "
+        );
     }
 
     @Test
@@ -187,7 +2053,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(response.body())
                 .contains("\"payload\":\"input\"")
-                .contains("\"id\":\"success-step\",\"outcome\":\"next\"");
+                .doesNotContain("\"steps\"");
     }
 
     @Test
@@ -211,9 +2077,9 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     }
 
     @Test
-    void unsupportedPreviewMethodIsRejected() throws Exception {
+    void unsupportedTraceMethodIsRejected() throws Exception {
         final HttpResponse<String> response = request(
-                shared, sharedUri, TOKEN, "GET", "/v1/preview/details/details-step", "", "true"
+                shared, sharedUri, TOKEN, "GET", "/v1/trace/details", "", "true"
         );
 
         assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
@@ -239,9 +2105,9 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     }
 
     @Test
-    void incompletePreviewTargetIsNotFound() throws Exception {
+    void blankTraceTargetIsNotFound() throws Exception {
         final HttpResponse<String> response = request(
-                shared, sharedUri, TOKEN, "POST", "/v1/preview/details/", "{}", "true"
+                shared, sharedUri, TOKEN, "POST", "/v1/trace/", "{}", "true"
         );
 
         assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
@@ -273,7 +2139,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                 .containsExactly(
                         200,
                         "{\"context\":{\"runtime\":{\"test\":false,\"trigger\":\"success\"}},"
-                                + "\"status\":\"succeeded\",\"steps\":[]}"
+                                + "\"status\":\"succeeded\"}"
                 );
     }
 
@@ -287,7 +2153,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                 .containsExactly(
                         200,
                         "{\"context\":{\"runtime\":{\"test\":false,\"trigger\":\"success\"}},"
-                                + "\"status\":\"succeeded\",\"steps\":[]}"
+                                + "\"status\":\"succeeded\"}"
                 );
     }
 
@@ -323,7 +2189,30 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                         500,
                         "{\"failure\":{\"code\":\"STEP_IMPLEMENTATION_FAULT\","
                                 + "\"message\":\"Step implementation threw an unexpected exception.\","
-                                + "\"step\":\"failed-step\"},\"status\":\"failed\",\"steps\":[]}"
+                                + "\"step\":\"failed-step\"},\"status\":\"failed\"}"
+                );
+    }
+
+    @Test
+    void nestedFailedGeneratedResultIncludesItsStablePath() throws Exception {
+        final HttpResponse<String> response = request(
+                shared,
+                sharedUri,
+                TOKEN,
+                "POST",
+                "/v1/run/nested-failed",
+                "{\"payload\":{\"value\":\"input\"}}",
+                "true"
+        );
+
+        assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(
+                        500,
+                        "{\"failure\":{\"code\":\"STEP_IMPLEMENTATION_FAULT\","
+                                + "\"message\":\"Step implementation threw an unexpected exception.\","
+                                + "\"path\":\"nodes[27].inputs.operations[0]\","
+                                + "\"step\":\"development.runtime.nested-fault\"},"
+                                + "\"status\":\"failed\"}"
                 );
     }
 
@@ -334,37 +2223,37 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         );
 
         assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
-                .containsExactly(409, "{\"status\":\"cancelled\",\"steps\":[]}");
+                .containsExactly(409, "{\"status\":\"cancelled\"}");
     }
 
     @Test
-    void interruptedNestedStepRecordsExactlyOneTerminalCancellationStage() throws Exception {
+    void interruptedNestedStepRecordsExactlyOneNestedCancellation() throws Exception {
         final HttpResponse<String> response = request(
                 shared,
                 sharedUri,
                 TOKEN,
                 "POST",
-                "/v1/preview/nested-cancelled/nested-cancelled-step",
+                "/v1/trace/nested-cancelled",
                 "{\"payload\":{\"value\":\"input\"}}",
                 "true"
         );
 
-        assertThat(response.statusCode()).isEqualTo(409);
+        assertThat(response.statusCode()).isEqualTo(200);
         assertThat(response.body())
-                .contains("\"stages\":[{\"input\":\"operations\"")
-                .contains("\"status\":\"cancelled\",\"use\":\"development.runtime.nested-cancel\"}]")
-                .doesNotContain("}],{");
+                .contains("\"id\":\"nested-cancelled-step.inputs.operations[0]\"")
+                .contains("\"status\":\"cancelled\"");
+        assertThat(response.body().split("nested-cancelled-step.inputs.operations\\[0]", -1)).hasSize(3);
     }
 
     @Test
-    void observationExecutesARealSideEffectExactlyOnce(@TempDir final Path output) throws Exception {
+    void traceExecutesARealSideEffectExactlyOnce(@TempDir final Path output) throws Exception {
         final Path file = output.resolve("observed.txt");
         final HttpResponse<String> response = request(
                 shared,
                 sharedUri,
                 TOKEN,
                 "POST",
-                "/v1/preview/side-effect/side-effect-step",
+                "/v1/trace/side-effect",
                 "{\"payload\":{\"file\":\"" + escaped(file.toString()) + "\"}}",
                 "true"
         );
@@ -374,25 +2263,413 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     }
 
     @Test
-    void previewReturnsRealResolvedInputsStagesAndCandidates() throws Exception {
+    void traceStreamsItsFirstEventWhileTheStepIsStillRunning() throws Exception {
+        try (ServerSocket entered = signalServer(); var child = started()) {
+            final URI uri = child.awaitReady();
+            final String traceId = "trace-live-stream";
+            final CompletableFuture<HttpResponse<InputStream>> trace = child.requestStreamAsync(
+                    uri,
+                    TOKEN,
+                    "/v1/trace/block",
+                    "{\"payload\":{\"entered_port\":" + entered.getLocalPort() + "}}",
+                    traceId
+            );
+            acceptSignal(entered);
+            final HttpResponse<InputStream> response = trace.get(2, TimeUnit.SECONDS);
+            try (InputStream body = response.body();
+                 BufferedReader lines = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
+                final CompletableFuture<String> firstLine = new CompletableFuture<>();
+                Thread.ofVirtual().start(() -> {
+                    try {
+                        firstLine.complete(lines.readLine());
+                    } catch (final IOException exception) {
+                        firstLine.completeExceptionally(exception);
+                    }
+                });
+
+                assertThat(response.statusCode()).isEqualTo(200);
+                assertThat(firstLine.get(2, TimeUnit.SECONDS)).contains("\"type\":\"trace\"");
+            } finally {
+                request(child, uri, TOKEN, "DELETE", "/v1/traces/" + traceId, "", null);
+            }
+        }
+    }
+
+    @Test
+    void authenticatedCancellationInterruptsExactlyOneActiveTrace() throws Exception {
+        try (ServerSocket entered = signalServer(); var child = started()) {
+            final URI uri = child.awaitReady();
+            final String traceId = "trace-cancel-one";
+            final CompletableFuture<HttpResponse<String>> trace = child.requestAsync(
+                    uri,
+                    TOKEN,
+                    "/v1/trace/block",
+                    "{\"payload\":{\"entered_port\":" + entered.getLocalPort() + "}}",
+                    traceId
+            );
+            acceptSignal(entered);
+
+            final HttpResponse<String> cancellation = request(
+                    child,
+                    uri,
+                    TOKEN,
+                    "DELETE",
+                    "/v1/traces/" + traceId,
+                    "",
+                    null
+            );
+
+            assertThat(cancellation).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(200, "{\"status\":\"cancelled\"}");
+            assertThat(trace.get(WAIT.toMillis(), TimeUnit.MILLISECONDS).body())
+                    .contains("\"status\":\"cancelled\"");
+            assertThat(request(child, uri, TOKEN, "POST", "/v1/trace/success", "{}", "true").statusCode())
+                    .isEqualTo(200);
+        }
+    }
+
+    @Test
+    void cancelledBackpressuredTraceEndsWithValidHttpChunks() throws Exception {
+        try (var child = started(); Socket trace = new Socket()) {
+            final URI uri = child.awaitReady();
+            final String traceId = "trace-backpressure-cancel";
+            trace.setReceiveBufferSize(1_024);
+            trace.connect(new InetSocketAddress(InetAddress.getLoopbackAddress(), uri.getPort()), 1_000);
+            trace.setSoTimeout((int) WAIT.toMillis());
+            final byte[] body = "{\"payload\":{}}".getBytes(StandardCharsets.UTF_8);
+            trace.getOutputStream().write(("""
+                    POST /v1/trace/oversized HTTP/1.1\r
+                    Host: 127.0.0.1:%d\r
+                    Authorization: Bearer %s\r
+                    Content-Type: application/json\r
+                    X-Railix-Test: true\r
+                    X-Railix-Trace-Id: %s\r
+                    Content-Length: %d\r
+                    Connection: close\r
+                    \r
+                    """.formatted(uri.getPort(), TOKEN, traceId, body.length))
+                    .getBytes(StandardCharsets.US_ASCII));
+            trace.getOutputStream().write(body);
+            trace.getOutputStream().flush();
+
+            final InputStream input = trace.getInputStream();
+            final String headers = readHeaders(input);
+            assertThat(headers).startsWith("HTTP/1.1 200").containsIgnoringCase("Transfer-encoding: chunked");
+            final ByteArrayOutputStream chunks = new ByteArrayOutputStream();
+            while (chunks.toString(StandardCharsets.UTF_8).lines().count() < 2) {
+                chunks.write(readChunk(input));
+            }
+            final int blockedChunk = readChunkSize(input);
+            assertThat(blockedChunk).isGreaterThan(1_024);
+            final byte[] prefix = input.readNBytes(16);
+            assertThat(prefix).hasSize(16);
+
+            final HttpResponse<String> cancellation = request(
+                    child,
+                    uri,
+                    TOKEN,
+                    "DELETE",
+                    "/v1/traces/" + traceId,
+                    "",
+                    null
+            );
+            assertThat(cancellation).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(202, "{\"status\":\"cancellation-requested\"}");
+
+            chunks.write(prefix);
+            chunks.write(readExact(input, blockedChunk - prefix.length));
+            requireCrlf(input);
+            while (true) {
+                final int size = readChunkSize(input);
+                if (size == 0) {
+                    assertThat(readAsciiLine(input)).isEmpty();
+                    break;
+                }
+                chunks.write(readExact(input, size));
+                requireCrlf(input);
+            }
+            final List<RailixJson.Result> parsed = chunks.toString(StandardCharsets.UTF_8).lines()
+                    .map(RailixJson::parse)
+                    .toList();
+            assertThat(parsed).allSatisfy(event -> assertThat(event).isInstanceOf(RailixJson.Parsed.class));
+            final List<RailixValue.ObjectValue> events = parsed.stream()
+                    .map(RailixJson.Parsed.class::cast)
+                    .map(RailixJson.Parsed::value)
+                    .map(RailixValue.ObjectValue.class::cast)
+                    .toList();
+            assertThat(events).isNotEmpty();
+            assertThat(events.stream()
+                    .filter(event -> RailixValue.string("result").equals(event.values().get("type"))))
+                    .singleElement()
+                    .isSameAs(events.getLast());
+            assertThat(events.getLast().values())
+                    .containsEntry("type", RailixValue.string("result"))
+                    .containsEntry("status", RailixValue.string("cancelled"));
+            assertThat(request(child, uri, TOKEN, "POST", "/v1/trace/success", "{}", "true").statusCode())
+                    .isEqualTo(200);
+        }
+    }
+
+    @Test
+    void cancellationDoesNotClaimSuccessWhenTheStepCompletesNormallyAfterInterrupt() throws Exception {
+        try (ServerSocket entered = signalServer(); var child = started()) {
+            final URI uri = child.awaitReady();
+            final String traceId = "trace-ignore-interrupt";
+            final CompletableFuture<HttpResponse<String>> trace = child.requestAsync(
+                    uri,
+                    TOKEN,
+                    "/v1/trace/ignore-cancel",
+                    "{\"payload\":{\"entered_port\":" + entered.getLocalPort() + "}}",
+                    traceId
+            );
+            acceptSignal(entered);
+
+            final HttpResponse<String> cancellation = request(
+                    child,
+                    uri,
+                    TOKEN,
+                    "DELETE",
+                    "/v1/traces/" + traceId,
+                    "",
+                    null
+            );
+
+            assertThat(cancellation).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(409, "{\"status\":\"completed\"}");
+            assertThat(trace.get(WAIT.toMillis(), TimeUnit.MILLISECONDS).body())
+                    .contains("\"status\":\"succeeded\"");
+        }
+    }
+
+    @Test
+    void cancellationReturnsRequestedWhileAThirdPartyStepKeepsWorking() throws Exception {
+        try (ServerSocket entered = signalServer(); var child = started()) {
+            final URI uri = child.awaitReady();
+            final String traceId = "trace-delayed-interrupt";
+            final CompletableFuture<HttpResponse<String>> trace = child.requestAsync(
+                    uri,
+                    TOKEN,
+                    "/v1/trace/delayed-cancel",
+                    "{\"payload\":{\"entered_port\":" + entered.getLocalPort() + "}}",
+                    traceId
+            );
+            acceptSignal(entered);
+
+            final HttpResponse<String> cancellation = request(
+                    child,
+                    uri,
+                    TOKEN,
+                    "DELETE",
+                    "/v1/traces/" + traceId,
+                    "",
+                    null
+            );
+
+            assertThat(cancellation).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(202, "{\"status\":\"cancellation-requested\"}");
+            assertThat(trace.get(WAIT.toMillis(), TimeUnit.MILLISECONDS).body())
+                    .contains("\"status\":\"succeeded\"");
+        }
+    }
+
+    @Test
+    void repeatedCancellationOfTheSameWorkingTraceRemainsIdempotentlyRequested() throws Exception {
+        try (ServerSocket entered = signalServer(); var child = started()) {
+            final URI uri = child.awaitReady();
+            final String traceId = "trace-repeated-cancel";
+            final CompletableFuture<HttpResponse<String>> trace = child.requestAsync(
+                    uri,
+                    TOKEN,
+                    "/v1/trace/delayed-cancel",
+                    "{\"payload\":{\"entered_port\":" + entered.getLocalPort() + "}}",
+                    traceId
+            );
+            acceptSignal(entered);
+
+            final HttpResponse<String> first = request(
+                    child,
+                    uri,
+                    TOKEN,
+                    "DELETE",
+                    "/v1/traces/" + traceId,
+                    "",
+                    null
+            );
+            final HttpResponse<String> repeated = request(
+                    child,
+                    uri,
+                    TOKEN,
+                    "DELETE",
+                    "/v1/traces/" + traceId,
+                    "",
+                    null
+            );
+
+            assertThat(first).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(202, "{\"status\":\"cancellation-requested\"}");
+            assertThat(repeated).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(202, "{\"status\":\"cancellation-requested\"}");
+            assertThat(trace.get(WAIT.toMillis(), TimeUnit.MILLISECONDS).body())
+                    .contains("\"status\":\"succeeded\"");
+        }
+    }
+
+    @Test
+    void cancellationSeventeenIsRejectedWhileSixteenCancellationsAreActive() throws Exception {
+        try (ServerSocket entered = signalServer(CANCELLATION_ADMISSION_LIMIT);
+             ServerSocket cancelled = signalServer(CANCELLATION_ADMISSION_LIMIT);
+             var child = started()) {
+            final URI uri = child.awaitReady();
+            final List<CompletableFuture<HttpResponse<String>>> traces = new ArrayList<>();
+            for (int index = 0; index < CANCELLATION_ADMISSION_LIMIT; index++) {
+                traces.add(child.requestAsync(
+                        uri,
+                        TOKEN,
+                        "/v1/trace/delayed-cancel",
+                        "{\"payload\":{\"entered_port\":" + entered.getLocalPort()
+                                + ",\"cancelled_port\":" + cancelled.getLocalPort() + "}}",
+                        "cancel-saturation-" + index
+                ));
+            }
+            for (int index = 0; index < CANCELLATION_ADMISSION_LIMIT; index++) {
+                acceptSignal(entered);
+            }
+
+            final List<CompletableFuture<HttpResponse<String>>> cancellations = new ArrayList<>();
+            for (int index = 0; index < CANCELLATION_ADMISSION_LIMIT; index++) {
+                cancellations.add(child.requestAsync(
+                        uri,
+                        TOKEN,
+                        "DELETE",
+                        "/v1/traces/cancel-saturation-" + index,
+                        "",
+                        null
+                ));
+            }
+            for (int index = 0; index < CANCELLATION_ADMISSION_LIMIT; index++) {
+                acceptSignal(cancelled);
+            }
+
+            final HttpResponse<String> saturated = child.requestAsync(
+                    uri,
+                    TOKEN,
+                    "DELETE",
+                    "/v1/traces/cancel-saturation-0",
+                    "",
+                    null
+            ).get(2, TimeUnit.SECONDS);
+
+            assertThat(saturated).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(503, "{\"reason\":\"saturated\",\"status\":\"unavailable\"}");
+            for (final CompletableFuture<HttpResponse<String>> cancellation : cancellations) {
+                assertThat(cancellation.get(WAIT.toMillis(), TimeUnit.MILLISECONDS).statusCode()).isEqualTo(202);
+            }
+            for (final CompletableFuture<HttpResponse<String>> trace : traces) {
+                assertThat(trace.get(WAIT.toMillis(), TimeUnit.MILLISECONDS).body())
+                        .contains("\"status\":\"succeeded\"");
+            }
+        }
+    }
+
+    @Test
+    void duplicateActiveTraceIdentifierIsRejectedWithoutDisturbingItsOwner() throws Exception {
+        try (ServerSocket entered = signalServer(); var child = started()) {
+            final URI uri = child.awaitReady();
+            final String traceId = "trace-duplicate";
+            final CompletableFuture<HttpResponse<String>> owner = child.requestAsync(
+                    uri,
+                    TOKEN,
+                    "/v1/trace/block",
+                    "{\"payload\":{\"entered_port\":" + entered.getLocalPort() + "}}",
+                    traceId
+            );
+            acceptSignal(entered);
+
+            final HttpResponse<String> duplicate = child.requestAsync(
+                    uri,
+                    TOKEN,
+                    "/v1/trace/success",
+                    "{}",
+                    traceId
+            ).get(WAIT.toMillis(), TimeUnit.MILLISECONDS);
+
+            assertThat(duplicate).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(409, "{\"status\":\"conflict\"}");
+            assertThat(request(
+                    child,
+                    uri,
+                    TOKEN,
+                    "DELETE",
+                    "/v1/traces/" + traceId,
+                    "",
+                    null
+            ).statusCode()).isEqualTo(200);
+            assertThat(owner.get(WAIT.toMillis(), TimeUnit.MILLISECONDS).body())
+                    .contains("\"status\":\"cancelled\"");
+        }
+    }
+
+    @Test
+    void traceReturnsResolvedInputsNestedStepsAndContextChangesWithoutDuration() throws Exception {
         final HttpResponse<String> response = request(
                 shared,
                 sharedUri,
                 TOKEN,
                 "POST",
-                "/v1/preview/details/details-step",
+                "/v1/trace/details",
                 "{\"payload\":{\"value\":\" Hello RAILIX \"}}",
                 "true"
         );
 
         assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.headers().firstValue("Content-Type"))
+                .contains("application/x-ndjson; charset=utf-8");
         assertThat(response.body())
                 .contains("\"inputs\":{\"field\":\" Hello RAILIX \",\"value\":\" Hello RAILIX \"}")
-                .contains("\"selected_candidates\":{\"nodes[")
-                .contains("].inputs.value\":0}")
-                .contains("\"stages\":[{\"input\":\"operations\"")
+                .contains("\"id\":\"details-step.inputs.operations[0]\"")
                 .contains("\"use\":\"text.trim\"")
-                .contains("\"use\":\"text.lowercase\"");
+                .contains("\"id\":\"details-step.inputs.operations[1]\"")
+                .contains("\"use\":\"text.lowercase\"")
+                .contains("\"changes\"")
+                .doesNotContain("duration");
+    }
+
+    @Test
+    void traceReportsAnObjectReplacedByAScalarAsOneChangedField() throws Exception {
+        final HttpResponse<String> response = request(
+                shared,
+                sharedUri,
+                TOKEN,
+                "POST",
+                "/v1/trace/oversized",
+                "{\"payload\":{\"oversized\":{\"nested\":true}}}",
+                "true"
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body())
+                .contains("\"path\":[\"context\",\"payload\",\"oversized\"]")
+                .contains("\"kind\":\"changed\"")
+                .contains("\"before\":{\"nested\":true}");
+    }
+
+    @Test
+    void traceReportsAnArrayReplacedByAScalarAsOneChangedField() throws Exception {
+        final HttpResponse<String> response = request(
+                shared,
+                sharedUri,
+                TOKEN,
+                "POST",
+                "/v1/trace/oversized",
+                "{\"payload\":{\"oversized\":[1,2]}}",
+                "true"
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body())
+                .contains("\"path\":[\"context\",\"payload\",\"oversized\"]")
+                .contains("\"kind\":\"changed\"")
+                .contains("\"before\":[1,2]");
     }
 
     @Test
@@ -406,9 +2683,9 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     }
 
     @Test
-    void malformedPreviewJsonIsRejectedBeforeGeneratedExecution() throws Exception {
+    void malformedTraceJsonIsRejectedBeforeGeneratedExecution() throws Exception {
         final HttpResponse<String> response = request(
-                shared, sharedUri, TOKEN, "POST", "/v1/preview/details/details-step", "{", "true"
+                shared, sharedUri, TOKEN, "POST", "/v1/trace/details", "{", "true"
         );
 
         assertThat(response.statusCode()).isEqualTo(422);
@@ -457,13 +2734,29 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     }
 
     @Test
-    void oversizedGeneratedPreviewIsReplacedByABoundedProblem() throws Exception {
+    void largeTraceStreamsBoundedEventsWithoutBufferingTheWholeResponse() throws Exception {
         final HttpResponse<String> response = request(
-                shared, sharedUri, TOKEN, "POST", "/v1/preview/oversized/oversized-step", "{}", "true"
+                shared, sharedUri, TOKEN, "POST", "/v1/trace/oversized", "{}", "true"
         );
 
-        assertThat(response.statusCode()).isEqualTo(413);
-        assertThat(response.body()).contains("\"code\":\"PREVIEW_RESPONSE_TOO_LARGE\"");
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body())
+                .contains("\"id\":\"oversized-step\"")
+                .contains("\"status\":\"succeeded\"");
+    }
+
+    @Test
+    void oversizedTraceEventEndsTheStreamWithADeterministicTerminalError() throws Exception {
+        final HttpResponse<String> response = request(
+                shared, sharedUri, TOKEN, "POST", "/v1/trace/trace-too-large", "{}", "true"
+        );
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body())
+                .contains("\"type\":\"trace_error\"")
+                .contains("\"code\":\"TRACE_EVENT_TOO_LARGE\"")
+                .contains("\"status\":\"failed\"")
+                .doesNotContain("\"type\":\"result\"");
     }
 
     @Test
@@ -510,6 +2803,26 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
             assertThat(completed.get()).isTrue();
             assertThat(interrupted.get()).isTrue();
             assertThat(child.process().isAlive()).isFalse();
+        }
+    }
+
+    @Test
+    void harnessCloseReclaimsARealGeneratedProcessAndItsChild() throws Exception {
+        long childPid = -1;
+        try (var child = DevelopmentRuntimeGeneratedProcess.launchMain(
+                build,
+                DevelopmentRuntimeConformanceSteps.ProcessTreeMain.class.getName()
+        )) {
+            childPid = awaitOutputPid(child);
+
+            child.close();
+
+            assertThat(child.process().isAlive()).isFalse();
+            assertThat(awaitExit(childPid)).isTrue();
+        } finally {
+            if (childPid > 0) {
+                stopIfAlive(childPid);
+            }
         }
     }
 
@@ -773,6 +3086,44 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     }
 
     @Test
+    void ownershipEofTerminatesTheGeneratedStepsChildAndGrandchild(@TempDir final Path output) throws Exception {
+        final Path marker = output.resolve("process-tree.pids");
+        final var tree = processTreeBuild(output, marker, "established");
+        try (var child = started(tree)) {
+            child.awaitReady();
+            final List<Long> pids = awaitPids(marker, 2);
+
+            child.closeOwner();
+            assertThat(child.awaitExit()).isZero();
+            assertThat(pids).allSatisfy(pid -> assertThat(awaitExit(pid)).isTrue());
+        } finally {
+            stopRecordedPids(marker);
+        }
+    }
+
+    @Test
+    void ownershipEofForciblyTerminatesADescendantThatIgnoresGracefulTermination(
+            @TempDir final Path output
+    ) throws Exception {
+        final Path marker = output.resolve("ignore-termination.pids");
+        final var forced = processTreeBuild(output, marker, "ignore-termination");
+        try (var child = started(forced)) {
+            child.awaitReady();
+            final List<Long> pids = awaitPids(marker, 1);
+
+            child.closeOwner();
+
+            assertThat(child.awaitExit()).isZero();
+            assertThat(awaitPids(
+                    marker.resolveSibling(marker.getFileName() + ".terminating"), 1
+            )).containsExactlyElementsOf(pids);
+            assertThat(pids).allSatisfy(pid -> assertThat(awaitExit(pid)).isTrue());
+        } finally {
+            stopRecordedPids(marker);
+        }
+    }
+
+    @Test
     void requestThirtyThreeIsRejectedWhileThirtyTwoGeneratedExecutionsAreActive() throws Exception {
         try (ServerSocket entered = signalServer(ADMISSION_LIMIT + 1);
              ServerSocket release = signalServer(ADMISSION_LIMIT);
@@ -793,6 +3144,195 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
 
                 final HttpResponse<String> saturated = hold(child, uri, entered, release)
                         .get(2, TimeUnit.SECONDS);
+
+                assertThat(saturated).extracting(HttpResponse::statusCode, HttpResponse::body)
+                        .containsExactly(503, "{\"reason\":\"saturated\",\"status\":\"unavailable\"}");
+            } finally {
+                for (final Socket socket : releases) {
+                    socket.getOutputStream().write(1);
+                    socket.close();
+                }
+            }
+            for (final CompletableFuture<HttpResponse<String>> response : admitted) {
+                assertThat(response.get(WAIT.toMillis(), TimeUnit.MILLISECONDS).statusCode()).isEqualTo(200);
+            }
+        }
+    }
+
+    @Test
+    void incompleteBodiesCannotConsumeRunAdmissionAndAreClosedAtTheirDeadline() throws Exception {
+        try (var child = started()) {
+            final URI uri = child.awaitReady();
+            final List<Socket> partial = new ArrayList<>();
+            try {
+                for (int index = 0; index < ADMISSION_LIMIT; index++) {
+                    partial.add(partialRequest(uri, "/v1/run/success"));
+                }
+                Thread.sleep(500);
+
+                assertThat(request(child, uri, TOKEN, "POST", "/v1/run/success", "{}", "true")
+                        .statusCode()).isEqualTo(200);
+                for (final Socket socket : partial) {
+                    assertThat(socket.getInputStream().read()).isEqualTo(-1);
+                }
+                assertThat(request(child, uri, TOKEN, "POST", "/v1/run/success", "{}", "true")
+                        .statusCode()).isEqualTo(200);
+            } finally {
+                for (final Socket socket : partial) {
+                    socket.close();
+                }
+            }
+        }
+    }
+
+    @Test
+    void incompleteBodyFortyNineIsClosedWhileFortyEightReadersAreActive() throws Exception {
+        try (var child = started()) {
+            final URI uri = child.awaitReady();
+            final List<Socket> admitted = new ArrayList<>();
+            try {
+                for (int index = 0; index < BODY_ADMISSION_LIMIT; index++) {
+                    admitted.add(partialRequest(uri, "/v1/run/success"));
+                }
+                Thread.sleep(500);
+
+                try (Socket saturated = partialRequest(uri, "/v1/run/success")) {
+                    saturated.setSoTimeout(2_000);
+                    assertThat(saturated.getInputStream().read()).isEqualTo(-1);
+                }
+            } finally {
+                for (final Socket socket : admitted) {
+                    socket.close();
+                }
+            }
+            awaitSuccessfulRun(child, uri);
+        }
+    }
+
+    @Test
+    void invalidTokenBodiesCannotConsumeAuthenticatedBodyAdmission() throws Exception {
+        try (var child = started()) {
+            final URI uri = child.awaitReady();
+            final List<Socket> unauthorized = new ArrayList<>();
+            try {
+                for (int index = 0; index < UNAUTHORIZED_BODY_ADMISSION_LIMIT; index++) {
+                    unauthorized.add(partialRequest(uri, "/v1/run/success", "wrong"));
+                }
+                Thread.sleep(500);
+
+                assertThat(request(child, uri, TOKEN, "POST", "/v1/run/success", "{}", "true")
+                        .statusCode()).isEqualTo(200);
+                try (Socket saturated = partialRequest(uri, "/v1/run/success", "wrong")) {
+                    saturated.setSoTimeout(2_000);
+                    assertThat(saturated.getInputStream().read()).isEqualTo(-1);
+                }
+                for (final Socket socket : unauthorized) {
+                    assertThat(socket.getInputStream().read()).isEqualTo(-1);
+                }
+            } finally {
+                for (final Socket socket : unauthorized) {
+                    socket.close();
+                }
+            }
+        }
+    }
+
+    @Test
+    void missingTokenBodiesCannotConsumeAuthenticatedBodyAdmission() throws Exception {
+        try (var child = started()) {
+            final URI uri = child.awaitReady();
+            final List<Socket> unauthorized = new ArrayList<>();
+            try {
+                for (int index = 0; index < UNAUTHORIZED_BODY_ADMISSION_LIMIT; index++) {
+                    unauthorized.add(partialRequestWithoutToken(uri, "/v1/run/success"));
+                }
+                Thread.sleep(500);
+
+                assertThat(request(child, uri, TOKEN, "POST", "/v1/run/success", "{}", "true")
+                        .statusCode()).isEqualTo(200);
+                try (Socket saturated = partialRequestWithoutToken(uri, "/v1/run/success")) {
+                    saturated.setSoTimeout(2_000);
+                    assertThat(saturated.getInputStream().read()).isEqualTo(-1);
+                }
+                for (final Socket socket : unauthorized) {
+                    assertThat(socket.getInputStream().read()).isEqualTo(-1);
+                }
+            } finally {
+                for (final Socket socket : unauthorized) {
+                    socket.close();
+                }
+            }
+        }
+    }
+
+    @Test
+    void activeTraceDoesNotConsumeAnyOfTheThirtyTwoRunSlots() throws Exception {
+        try (ServerSocket entered = signalServer(ADMISSION_LIMIT + 2);
+             ServerSocket release = signalServer(ADMISSION_LIMIT + 1);
+             var child = started()) {
+            final URI uri = child.awaitReady();
+            final CompletableFuture<HttpResponse<String>> trace = hold(
+                    child, uri, entered, release, "/v1/trace/hold"
+            );
+            acceptSignal(entered);
+
+            final List<CompletableFuture<HttpResponse<String>>> runs = new ArrayList<>();
+            for (int index = 0; index < ADMISSION_LIMIT; index++) {
+                runs.add(hold(child, uri, entered, release));
+            }
+            for (int index = 0; index < ADMISSION_LIMIT; index++) {
+                acceptSignal(entered);
+            }
+
+            final List<Socket> releases = new ArrayList<>();
+            try {
+                for (int index = 0; index <= ADMISSION_LIMIT; index++) {
+                    releases.add(release.accept());
+                }
+                final HttpResponse<String> saturated = hold(child, uri, entered, release)
+                        .get(2, TimeUnit.SECONDS);
+                assertThat(saturated).extracting(HttpResponse::statusCode, HttpResponse::body)
+                        .containsExactly(503, "{\"reason\":\"saturated\",\"status\":\"unavailable\"}");
+            } finally {
+                for (final Socket socket : releases) {
+                    socket.getOutputStream().write(1);
+                    socket.close();
+                }
+            }
+
+            assertThat(trace.get(WAIT.toMillis(), TimeUnit.MILLISECONDS).statusCode()).isEqualTo(200);
+            for (final CompletableFuture<HttpResponse<String>> run : runs) {
+                assertThat(run.get(WAIT.toMillis(), TimeUnit.MILLISECONDS).statusCode()).isEqualTo(200);
+            }
+        }
+    }
+
+    @Test
+    void traceSeventeenIsRejectedWhileSixteenGeneratedTracesAreActive() throws Exception {
+        try (ServerSocket entered = signalServer(TRACE_ADMISSION_LIMIT + 1);
+             ServerSocket release = signalServer(TRACE_ADMISSION_LIMIT);
+             var child = started()) {
+            final URI uri = child.awaitReady();
+            final List<CompletableFuture<HttpResponse<String>>> admitted = new ArrayList<>();
+            for (int index = 0; index < TRACE_ADMISSION_LIMIT; index++) {
+                admitted.add(hold(child, uri, entered, release, "/v1/trace/hold"));
+            }
+            for (int index = 0; index < TRACE_ADMISSION_LIMIT; index++) {
+                acceptSignal(entered);
+            }
+            final List<Socket> releases = new ArrayList<>();
+            try {
+                for (int index = 0; index < TRACE_ADMISSION_LIMIT; index++) {
+                    releases.add(release.accept());
+                }
+
+                final HttpResponse<String> saturated = hold(
+                        child,
+                        uri,
+                        entered,
+                        release,
+                        "/v1/trace/hold"
+                ).get(2, TimeUnit.SECONDS);
 
                 assertThat(saturated).extracting(HttpResponse::statusCode, HttpResponse::body)
                         .containsExactly(503, "{\"reason\":\"saturated\",\"status\":\"unavailable\"}");
@@ -831,7 +3371,106 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     }
 
     private DevelopmentRuntimeGeneratedProcess.Child started() throws IOException {
-        return DevelopmentRuntimeGeneratedProcess.launch(build).token(TOKEN);
+        return started(build);
+    }
+
+    private static DevelopmentRuntimeGeneratedProcess.Child started(
+            final DevelopmentRuntimeGeneratedProcess.Build source
+    ) throws IOException {
+        return DevelopmentRuntimeGeneratedProcess.launch(source).token(TOKEN);
+    }
+
+    private void assertInvalidExampleManifest(
+            final Path workspace,
+            final String manifest,
+            final String message
+    ) throws Exception {
+        assertInvalidExampleManifest(workspace, manifest.getBytes(StandardCharsets.UTF_8), message);
+    }
+
+    private void assertInvalidExampleManifest(
+            final Path workspace,
+            final byte[] manifest,
+            final String message
+    ) throws Exception {
+        final DevelopmentRuntimeGeneratedProcess.Build corrupt = rewriteExampleManifest(
+                build,
+                workspace,
+                manifest,
+                "invalid-examples"
+        );
+        try (var child = DevelopmentRuntimeGeneratedProcess.launch(corrupt).token(TOKEN)) {
+            child.closeOwner();
+
+            assertThat(child.awaitExit()).isEqualTo(3);
+            assertThat(child.error()).contains(message);
+        }
+    }
+
+    private static String exampleManifest(final String field, final String value) {
+        final String example = "{\"context\":" + ("context".equals(field) ? value : "{}")
+                + ",\"id\":" + ("id".equals(field) ? value : "\"case:0\"")
+                + ",\"trigger\":" + ("trigger".equals(field) ? value : "\"case\"")
+                + ",\"name\":" + ("name".equals(field) ? value : "\"case\"")
+                + ",\"index\":" + ("index".equals(field) ? value : "0")
+                + ",\"node\":" + ("node".equals(field) ? value : "0") + "}";
+        return "{\"format\":1,\"node_count\":1,\"examples\":[" + example + "]}";
+    }
+
+    private static String validExample() {
+        return "{\"context\":{},\"id\":\"case:0\",\"trigger\":\"case\","
+                + "\"name\":\"case\",\"index\":0,\"node\":0}";
+    }
+
+    private static DevelopmentRuntimeGeneratedProcess.Build withoutExampleManifest(
+            final DevelopmentRuntimeGeneratedProcess.Build source,
+            final Path workspace
+    ) throws IOException {
+        return rewriteExampleManifest(source, workspace, null, "missing-examples");
+    }
+
+    private static DevelopmentRuntimeGeneratedProcess.Build rewriteExampleManifest(
+            final DevelopmentRuntimeGeneratedProcess.Build source,
+            final Path workspace,
+            final byte[] replacement,
+            final String fingerprint
+    ) throws IOException {
+        final Path directory = Files.createDirectories(workspace.resolve(".railix/build").resolve(fingerprint));
+        final Path jar = directory.resolve("application.jar");
+        try (JarFile input = new JarFile(source.artifact().jar().toFile());
+             JarOutputStream output = new JarOutputStream(Files.newOutputStream(jar))) {
+            for (final JarEntry entry : input.stream().toList()) {
+                final boolean exampleManifest = "META-INF/railix/examples.json".equals(entry.getName());
+                if (exampleManifest && replacement == null) {
+                    continue;
+                }
+                final JarEntry copy = new JarEntry(entry.getName());
+                copy.setTime(entry.getTime());
+                output.putNextEntry(copy);
+                if (exampleManifest) {
+                    output.write(replacement);
+                } else if (!entry.isDirectory()) {
+                    try (var bytes = input.getInputStream(entry)) {
+                        bytes.transferTo(output);
+                    }
+                }
+                output.closeEntry();
+            }
+        }
+        final ApplicationBuilder.Artifact original = source.artifact();
+        return new DevelopmentRuntimeGeneratedProcess.Build(
+                source.project(),
+                source.compiled(),
+                new ApplicationBuilder.Artifact(
+                        directory,
+                        original.source(),
+                        original.classes(),
+                        jar,
+                        fingerprint,
+                        Files.getLastModifiedTime(jar).toMillis(),
+                        false
+                )
+        );
     }
 
     private static HttpResponse<String> request(
@@ -846,16 +3485,109 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         return child.request(uri, token, method, path, body, test);
     }
 
+    private void assertExampleRouteNotFound(final String path) throws Exception {
+        assertThat(request(shared, sharedUri, TOKEN, "GET", path, "", null))
+                .extracting(HttpResponse::statusCode, HttpResponse::body)
+                .containsExactly(404, "{\"status\":\"not-found\"}");
+    }
+
+    private static String awaitExample(
+            final DevelopmentRuntimeGeneratedProcess.Child child,
+            final URI uri,
+            final String id,
+            final String status
+    ) throws Exception {
+        final long deadline = System.nanoTime() + WAIT.toNanos();
+        String snapshot = "";
+        do {
+            final HttpResponse<String> response = request(
+                    child, uri, TOKEN, "GET", "/v1/examples", "", null
+            );
+            assertThat(response.statusCode()).isEqualTo(200);
+            snapshot = response.body();
+            final boolean matched = values(snapshot, "cases").stream().anyMatch(value ->
+                    id.equals(((RailixValue.StringValue) value.values().get("id")).value())
+                            && status.equals(((RailixValue.StringValue) value.values().get("status")).value())
+            );
+            if (matched) {
+                return snapshot;
+            }
+            Thread.sleep(10);
+        } while (System.nanoTime() < deadline);
+        throw new AssertionError("Generated application Example did not reach " + status + ": " + snapshot);
+    }
+
+    private static String awaitExamples(
+            final DevelopmentRuntimeGeneratedProcess.Child child,
+            final URI uri,
+            final long completed,
+            final Duration timeout
+    ) throws Exception {
+        final long deadline = System.nanoTime() + timeout.toNanos();
+        String status = "";
+        do {
+            final HttpResponse<String> response = request(
+                    child, uri, TOKEN, "GET", "/v1/examples/status", "", null
+            );
+            assertThat(response.statusCode()).isEqualTo(200);
+            status = response.body();
+            final RailixValue.ObjectValue summary = object(status);
+            if (number(summary, "completed") == completed && "completed".equals(string(summary, "state"))) {
+                final HttpResponse<String> inventory = request(
+                        child, uri, TOKEN, "GET", "/v1/examples", "", null
+                );
+                assertThat(inventory.statusCode()).isEqualTo(200);
+                return inventory.body();
+            }
+            Thread.sleep(20);
+        } while (System.nanoTime() < deadline);
+        throw new AssertionError("Generated application Example suite did not complete: " + status);
+    }
+
+    private static void awaitAutomaticExamples(
+            final DevelopmentRuntimeGeneratedProcess.Child child,
+            final URI uri
+    ) throws Exception {
+        final HttpResponse<String> response = request(
+                child, uri, TOKEN, "GET", "/v1/examples/status", "", null
+        );
+        assertThat(response.statusCode()).isEqualTo(200);
+        awaitExamples(child, uri, number(object(response.body()), "total"), WAIT);
+    }
+
+    private static void assertExecutions(
+            final DevelopmentRuntimeGeneratedProcess.Child child,
+            final URI uri,
+            final long expected
+    ) throws Exception {
+        final HttpResponse<String> response = request(
+                child, uri, TOKEN, "GET", "/v1/metrics", "", null
+        );
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(metric(response.body(), "flows", "success", "executions")).isEqualTo(expected);
+        assertThat(metric(response.body(), "steps", "success-step", "executions")).isEqualTo(expected);
+    }
+
     private static CompletableFuture<HttpResponse<String>> hold(
             final DevelopmentRuntimeGeneratedProcess.Child child,
             final URI uri,
             final ServerSocket entered,
             final ServerSocket release
     ) {
+        return hold(child, uri, entered, release, "/v1/run/hold");
+    }
+
+    private static CompletableFuture<HttpResponse<String>> hold(
+            final DevelopmentRuntimeGeneratedProcess.Child child,
+            final URI uri,
+            final ServerSocket entered,
+            final ServerSocket release,
+            final String path
+    ) {
         return child.requestAsync(
                 uri,
                 TOKEN,
-                "/v1/run/hold",
+                path,
                 "{\"payload\":{\"entered_port\":" + entered.getLocalPort()
                         + ",\"release_port\":" + release.getLocalPort() + "}}"
         );
@@ -922,20 +3654,193 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         }
     }
 
+    private static Socket partialRequest(final URI uri, final String path) throws IOException {
+        return partialRequest(uri, path, TOKEN);
+    }
+
+    private static Socket partialRequest(
+            final URI uri,
+            final String path,
+            final String token
+    ) throws IOException {
+        return partialRequestWithAuthorization(uri, path, "Authorization: Bearer " + token + "\r\n");
+    }
+
+    private static Socket partialRequestWithoutToken(final URI uri, final String path) throws IOException {
+        return partialRequestWithAuthorization(uri, path, "");
+    }
+
+    private static Socket managementGet(final URI uri, final String path) throws IOException {
+        final Socket socket = new Socket();
+        try {
+            socket.setReceiveBufferSize(1_024);
+            socket.setSoTimeout((int) WAIT.toMillis());
+            socket.connect(new InetSocketAddress(InetAddress.getLoopbackAddress(), uri.getPort()), 1_000);
+            socket.getOutputStream().write(("GET " + path + " HTTP/1.1\r\n"
+                    + "Host: 127.0.0.1:" + uri.getPort() + "\r\n"
+                    + "Authorization: Bearer " + TOKEN + "\r\n"
+                    + "Connection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            return socket;
+        } catch (final IOException | RuntimeException failure) {
+            try {
+                socket.close();
+            } catch (final IOException cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private static HttpResponse<String> awaitManagementReadAvailable(
+            final DevelopmentRuntimeGeneratedProcess.Child child,
+            final URI uri,
+            final String path
+    ) throws IOException, InterruptedException {
+        final long deadline = System.nanoTime() + WAIT.toNanos();
+        HttpResponse<String> response;
+        do {
+            response = request(child, uri, TOKEN, "GET", path, "", null);
+            if (response.statusCode() == 200) {
+                return response;
+            }
+            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(503, "{\"reason\":\"saturated\",\"status\":\"unavailable\"}");
+            Thread.sleep(10);
+        } while (System.nanoTime() < deadline);
+        throw new IOException("Application management read remained saturated.");
+    }
+
+    private static Socket partialRequestWithAuthorization(
+            final URI uri,
+            final String path,
+            final String authorization
+    ) throws IOException {
+        final Socket socket = new Socket();
+        socket.setSoTimeout((int) WAIT.toMillis());
+        socket.connect(new InetSocketAddress(InetAddress.getLoopbackAddress(), uri.getPort()), 1_000);
+        socket.getOutputStream().write(("POST " + path + " HTTP/1.1\r\n"
+                + "Host: 127.0.0.1:" + uri.getPort() + "\r\n"
+                + authorization
+                + "Content-Type: application/json\r\n"
+                + "Content-Length: 100\r\n"
+                + "Connection: close\r\n\r\n{").getBytes(StandardCharsets.US_ASCII));
+        socket.getOutputStream().flush();
+        return socket;
+    }
+
+    private static String readHeaders(final InputStream input) throws IOException {
+        final ByteArrayOutputStream headers = new ByteArrayOutputStream();
+        int matched = 0;
+        while (headers.size() < 16_384) {
+            final int next = input.read();
+            if (next < 0) {
+                throw new IOException("HTTP response ended before its headers.");
+            }
+            headers.write(next);
+            matched = switch (matched) {
+                case 0 -> next == '\r' ? 1 : 0;
+                case 1 -> next == '\n' ? 2 : next == '\r' ? 1 : 0;
+                case 2 -> next == '\r' ? 3 : 0;
+                case 3 -> next == '\n' ? 4 : 0;
+                default -> matched;
+            };
+            if (matched == 4) {
+                return headers.toString(StandardCharsets.US_ASCII);
+            }
+        }
+        throw new IOException("HTTP response headers exceed 16384 bytes.");
+    }
+
+    private static byte[] readChunk(final InputStream input) throws IOException {
+        final int size = readChunkSize(input);
+        if (size == 0) {
+            throw new IOException("HTTP response ended before the expected data chunk.");
+        }
+        final byte[] chunk = readExact(input, size);
+        requireCrlf(input);
+        return chunk;
+    }
+
+    private static int readChunkSize(final InputStream input) throws IOException {
+        final String line = readAsciiLine(input);
+        final int extension = line.indexOf(';');
+        final String size = extension < 0 ? line : line.substring(0, extension);
+        try {
+            return Integer.parseInt(size, 16);
+        } catch (final NumberFormatException exception) {
+            throw new IOException("HTTP chunk size is invalid: " + line, exception);
+        }
+    }
+
+    private static String readAsciiLine(final InputStream input) throws IOException {
+        final ByteArrayOutputStream line = new ByteArrayOutputStream();
+        while (line.size() < 128) {
+            final int next = input.read();
+            if (next < 0) {
+                throw new IOException("HTTP chunked response ended before CRLF.");
+            }
+            if (next == '\r') {
+                if (input.read() != '\n') {
+                    throw new IOException("HTTP chunked response contains an invalid line ending.");
+                }
+                return line.toString(StandardCharsets.US_ASCII);
+            }
+            line.write(next);
+        }
+        throw new IOException("HTTP chunk line exceeds 128 bytes.");
+    }
+
+    private static byte[] readExact(final InputStream input, final int size) throws IOException {
+        final byte[] bytes = input.readNBytes(size);
+        if (bytes.length != size) {
+            throw new IOException("HTTP chunked response ended inside a chunk.");
+        }
+        return bytes;
+    }
+
+    private static void requireCrlf(final InputStream input) throws IOException {
+        if (input.read() != '\r' || input.read() != '\n') {
+            throw new IOException("HTTP chunk payload has no trailing CRLF.");
+        }
+    }
+
+    private static void awaitSuccessfulRun(
+            final DevelopmentRuntimeGeneratedProcess.Child child,
+            final URI uri
+    ) throws Exception {
+        final long deadline = System.nanoTime() + WAIT.toNanos();
+        do {
+            try {
+                if (request(child, uri, TOKEN, "POST", "/v1/run/success", "{}", "true")
+                        .statusCode() == 200) {
+                    return;
+                }
+            } catch (final IOException ignoredClosingBodies) {
+                // Retry until every closed partial body has released its reader slot.
+            }
+            Thread.sleep(20);
+        } while (System.nanoTime() < deadline);
+        throw new AssertionError("Generated application did not recover its request-body admission.");
+    }
+
     private static List<StepDefinition> definitions() {
         return List.of(
                 trigger("success", false),
                 trigger("details", false),
                 trigger("rejected", true),
                 trigger("failed", false),
+                trigger("nested-failed", false),
                 trigger("cancelled", false),
                 trigger("nested-cancelled", false),
                 trigger("side-effect", false),
                 trigger("oversized", false),
+                trigger("trace-too-large", false),
                 trigger("block", false),
+                trigger("ignore-cancel", false),
+                trigger("delayed-cancel", false),
                 trigger("hold", false),
-                StepDefinition.named("development.runtime.pass", "1")
-                        .run(DevelopmentRuntimeConformanceSteps.Pass.class),
+                pass(),
                 StepDefinition.named("development.runtime.operation", "1")
                         .input("field", StepDefinition.Input.path(READ_WRITE))
                         .input("value", StepDefinition.Input.candidates(
@@ -946,6 +3851,10 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                         ))
                         .run(DevelopmentRuntimeConformanceSteps.Operation.class),
                 StepDefinition.named("development.runtime.fault", "1")
+                        .run(DevelopmentRuntimeConformanceSteps.Fault.class),
+                StepDefinition.named("development.runtime.nested-fault", "1")
+                        .receive("value", ValueShape.ANY)
+                        .returns("value", ValueShape.ANY)
                         .run(DevelopmentRuntimeConformanceSteps.Fault.class),
                 StepDefinition.named("development.runtime.cancel", "1")
                         .run(DevelopmentRuntimeConformanceSteps.Cancel.class),
@@ -961,10 +3870,25 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                         .input("target", StepDefinition.Input.path(READ_WRITE)
                                 .defaultPath("context", "payload", "oversized"))
                         .run(DevelopmentRuntimeConformanceSteps.Oversized.class),
+                StepDefinition.named("development.runtime.oversized-trace", "1")
+                        .input("target", StepDefinition.Input.path(READ_WRITE)
+                                .defaultPath("context", "payload", "oversized"))
+                        .run(DevelopmentRuntimeConformanceSteps.OversizedTrace.class),
                 StepDefinition.named("development.runtime.block", "1")
                         .input("entered_port", StepDefinition.Input.path(READ)
                                 .defaultPath("context", "payload", "entered_port"))
                         .run(DevelopmentRuntimeConformanceSteps.Block.class),
+                StepDefinition.named("development.runtime.ignore-interrupt", "1")
+                        .input("entered_port", StepDefinition.Input.path(READ)
+                                .defaultPath("context", "payload", "entered_port"))
+                        .run(DevelopmentRuntimeConformanceSteps.IgnoreInterrupt.class),
+                StepDefinition.named("development.runtime.delayed-ignore-interrupt", "1")
+                        .input("entered_port", StepDefinition.Input.path(READ)
+                                .defaultPath("context", "payload", "entered_port"))
+                        .input("cancelled_port", StepDefinition.Input.path(READ)
+                                .defaultPath("context", "payload", "cancelled_port")
+                                .optional())
+                        .run(DevelopmentRuntimeConformanceSteps.DelayedIgnoreInterrupt.class),
                 StepDefinition.named("development.runtime.hold", "1")
                         .input("entered_port", StepDefinition.Input.path(READ)
                                 .defaultPath("context", "payload", "entered_port"))
@@ -984,7 +3908,213 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         return definition.run(DevelopmentRuntimeConformanceSteps.Pass.class);
     }
 
-    private static String project() {
+    private static StepDefinition pass() {
+        return StepDefinition.named("development.runtime.pass", "1")
+                .run(DevelopmentRuntimeConformanceSteps.Pass.class);
+    }
+
+    private static StepDefinition exampleGate() {
+        return StepDefinition.named("development.runtime.example-gate", "1")
+                .input("root", StepDefinition.Input.path(READ)
+                        .defaultPath("context", "payload", "root"))
+                .input("case", StepDefinition.Input.path(READ)
+                        .defaultPath("context", "payload", "case"))
+                .input("ignore_interrupt", StepDefinition.Input.json(ValueShape.BOOLEAN)
+                        .defaultValue(RailixValue.bool(true)))
+                .run(ChunkGateStepHandler.class);
+    }
+
+    private static StepDefinition aggregateStorageStep() {
+        return StepDefinition.named("development.runtime.aggregate-storage", "1")
+                .input("target", StepDefinition.Input.path(READ_WRITE)
+                        .defaultPath("context", "payload", "large"))
+                .run(DevelopmentRuntimeConformanceSteps.Oversized.class);
+    }
+
+    private static String nonCooperativeExample(final Path gate) {
+        return """
+                {"format":1,"id":"noncooperative-example","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"noncooperative","use":"development.runtime.trigger.noncooperative","inputs":{},
+                    "examples":[{"name":"case-1","payload":{"case":"case-1","root":"%s"}}]},
+                  {"id":"gate","use":"development.runtime.example-gate","inputs":{}}
+                ],"links":[
+                  {"from":"app.start","to":"noncooperative"},
+                  {"from":"noncooperative.next","to":"gate"},
+                  {"from":"gate.next","to":"end"}
+                ]}
+                """.formatted(escaped(gate.toString()));
+    }
+
+    private static String nonCooperativeRun(final Path gate) {
+        return """
+                {"format":1,"id":"noncooperative-http","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"noncooperative-http","use":"development.runtime.trigger.noncooperative-http","inputs":{},
+                    "examples":[{"name":"automatic","payload":{"case":"automatic","root":"%s"}}]},
+                  {"id":"gate","use":"development.runtime.example-gate","inputs":{}}
+                ],"links":[
+                  {"from":"app.start","to":"noncooperative-http"},
+                  {"from":"noncooperative-http.next","to":"gate"},
+                  {"from":"gate.next","to":"end"}
+                ]}
+                """.formatted(escaped(gate.toString()));
+    }
+
+    private static String largeTraceExamples(
+            final String id,
+            final int exampleCount,
+            final int stepCount
+    ) {
+        final String examples = java.util.stream.IntStream.range(0, exampleCount)
+                .mapToObj(index -> "{\"name\":\"large-" + index + "\",\"payload\":[\""
+                        + "x".repeat(900_000) + "\"]}")
+                .collect(java.util.stream.Collectors.joining(","));
+        final StringBuilder nodes = new StringBuilder("""
+                {"format":1,"id":"%s","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[%s]}
+                """.formatted(id, examples));
+        final StringBuilder links = new StringBuilder("""
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"lowercase-0"}
+                """);
+        for (int index = 0; index < stepCount; index++) {
+            nodes.append("""
+                    ,{"id":"lowercase-%d","use":"text.lowercase","inputs":{},
+                      "receives":{"value":["context","payload","arguments",0]},
+                      "returns":{"value":["context","payload","arguments",0]}}
+                    """.formatted(index));
+            links.append("""
+                    ,{"from":"lowercase-%d.ok","to":%s}
+                    """.formatted(
+                    index,
+                    index == stepCount - 1 ? "\"end\"" : "\"lowercase-" + (index + 1) + "\""
+            ));
+        }
+        return nodes.append(links).append("]}").toString();
+    }
+
+    private static String metricCardinalityProject(final int stepCount) {
+        final StringBuilder nodes = new StringBuilder("""
+                {"format":1,"id":"metric-cardinality","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"metrics","use":"development.runtime.trigger.metrics","inputs":{},
+                    "examples":[{"name":"default","payload":{}}]}
+                """);
+        final StringBuilder links = new StringBuilder("""
+                ],"links":[
+                  {"from":"app.start","to":"metrics"},
+                  {"from":"metrics.next","to":"metric-0"}
+                """);
+        for (int index = 0; index < stepCount; index++) {
+            nodes.append("""
+                    ,{"id":"metric-%d","use":"development.runtime.pass","inputs":{}}
+                    """.formatted(index));
+            links.append("""
+                    ,{"from":"metric-%d.next","to":%s}
+                    """.formatted(
+                    index,
+                    index == stepCount - 1 ? "\"end\"" : "\"metric-" + (index + 1) + "\""
+            ));
+        }
+        return nodes.append(links).append("]}").toString();
+    }
+
+    private static DevelopmentRuntimeGeneratedProcess.Build processTreeBuild(
+            final Path output, final Path marker, final String mode
+    ) throws IOException {
+        final String source = """
+                {"format":1,"id":"process-tree","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"process-tree","use":"development.runtime.trigger.process-tree",
+                    "inputs":{},"examples":[{"name":"default","payload":{"marker":"%s"}}]},
+                  {"id":"tree","use":"development.runtime.process-tree",
+                    "inputs":{"mode":"%s"}}
+                ],"links":[
+                  {"from":"app.start","to":"process-tree"},
+                  {"from":"process-tree.next","to":"tree"},
+                  {"from":"tree.next","to":"end"}
+                ]}
+                """.formatted(escaped(marker.toString()), mode);
+        return DevelopmentRuntimeGeneratedProcess.build(output, source, List.of(
+                trigger("process-tree", false),
+                StepDefinition.named("development.runtime.process-tree", "1")
+                        .input("mode", StepDefinition.Input.json(ValueShape.STRING))
+                        .input("marker", StepDefinition.Input.path(READ).defaultPath("context", "payload", "marker"))
+                        .run(ProcessTreeStepHandler.class)
+        ), DevelopmentRuntimeConformanceSteps.Pass.class, ProcessTreeStepHandler.class);
+    }
+
+    private static String aggregateStorageExamples() {
+        return oversizedTraceExamples("aggregate-storage-limit", 5, 25);
+    }
+
+    private static String oversizedTraceExamples(
+            final String id,
+            final int exampleCount,
+            final int stepCount
+    ) {
+        final String examples = java.util.stream.IntStream.range(0, exampleCount)
+                .mapToObj(index -> "{\"name\":\"case-" + index + "\",\"payload\":[]}")
+                .collect(java.util.stream.Collectors.joining(","));
+        final StringBuilder nodes = new StringBuilder("""
+                {"format":1,"id":"%s","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[%s]},
+                  {"id":"expand","use":"development.runtime.aggregate-storage","inputs":{}}
+                """.formatted(id, examples));
+        final StringBuilder links = new StringBuilder("""
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"expand"},
+                  {"from":"expand.next","to":%s}
+                """.formatted(stepCount == 0 ? "\"end\"" : "\"lowercase-0\""));
+        for (int index = 0; index < stepCount; index++) {
+            nodes.append("""
+                    ,{"id":"lowercase-%d","use":"text.lowercase","inputs":{},
+                      "receives":{"value":["context","payload","large"]},
+                      "returns":{"value":["context","payload","large"]}}
+                    """.formatted(index));
+            links.append("""
+                    ,{"from":"lowercase-%d.ok","to":%s}
+                    """.formatted(
+                    index,
+                    index == stepCount - 1 ? "\"end\"" : "\"lowercase-" + (index + 1) + "\""
+            ));
+        }
+        return nodes.append(links).append("]}").toString();
+    }
+
+    private static String expandingContextExample(final int stepCount) {
+        final StringBuilder nodes = new StringBuilder("""
+                {"format":1,"id":"example-admission","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},
+                    "examples":[{"name":"default","payload":[]}]}
+                """);
+        final StringBuilder links = new StringBuilder("""
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"expand-0"}
+                """);
+        for (int index = 0; index < stepCount; index++) {
+            nodes.append("""
+                    ,{"id":"expand-%d","use":"development.runtime.aggregate-storage",
+                      "inputs":{"target":["context","payload","large-%d"]}}
+                    """.formatted(index, index));
+            links.append("""
+                    ,{"from":"expand-%d.next","to":%s}
+                    """.formatted(
+                    index,
+                    index == stepCount - 1 ? "\"end\"" : "\"expand-" + (index + 1) + "\""
+            ));
+        }
+        return nodes.append(links).append("]}").toString();
+    }
+
+    private static String project(final Path workspace) {
         return """
                 {"format":1,"id":"development-runtime-conformance","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
@@ -998,8 +4128,11 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                   %s,
                   %s,
                   %s,
+                  %s,
+                  %s,
+                  %s,
                   {"id":"success-step","use":"development.runtime.pass","inputs":{}},
-                  {"id":"details-step","use":"development.runtime.operation","inputs":{
+                  {"id":"details-step","use":"development.runtime.operation","metrics":false,"inputs":{
                     "field":["context","payload","value"],
                     "value":[{"option":"current","inputs":{}}],
                     "operations":[
@@ -1016,8 +4149,17 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                   }},
                   {"id":"side-effect-step","use":"development.runtime.append","inputs":{}},
                   {"id":"oversized-step","use":"development.runtime.oversized","inputs":{}},
+                  {"id":"trace-too-large-step","use":"development.runtime.oversized-trace","inputs":{}},
                   {"id":"block-step","use":"development.runtime.block","inputs":{}},
-                  {"id":"hold-step","use":"development.runtime.hold","inputs":{}}
+                  {"id":"ignore-cancel-step","use":"development.runtime.ignore-interrupt","inputs":{}},
+                  {"id":"delayed-cancel-step","use":"development.runtime.delayed-ignore-interrupt","inputs":{}},
+                  {"id":"hold-step","use":"development.runtime.hold","inputs":{}},
+                  %s,
+                  {"id":"nested-failed-step","use":"development.runtime.operation","inputs":{
+                    "field":["context","payload","value"],
+                    "value":[{"option":"current","inputs":{}}],
+                    "operations":[{"use":"development.runtime.nested-fault","inputs":{}}]
+                  }}
                 ],"links":[
                   {"from":"app.start","to":"success"},
                   {"from":"success.next","to":"success-step"},
@@ -1030,6 +4172,9 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                   {"from":"app.start","to":"failed"},
                   {"from":"failed.next","to":"failed-step"},
                   {"from":"failed-step.next","to":"end"},
+                  {"from":"app.start","to":"nested-failed"},
+                  {"from":"nested-failed.next","to":"nested-failed-step"},
+                  {"from":"nested-failed-step.next","to":"end"},
                   {"from":"app.start","to":"cancelled"},
                   {"from":"cancelled.next","to":"cancelled-step"},
                   {"from":"cancelled-step.next","to":"end"},
@@ -1042,9 +4187,18 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                   {"from":"app.start","to":"oversized"},
                   {"from":"oversized.next","to":"oversized-step"},
                   {"from":"oversized-step.next","to":"end"},
+                  {"from":"app.start","to":"trace-too-large"},
+                  {"from":"trace-too-large.next","to":"trace-too-large-step"},
+                  {"from":"trace-too-large-step.next","to":"end"},
                   {"from":"app.start","to":"block"},
                   {"from":"block.next","to":"block-step"},
                   {"from":"block-step.next","to":"end"},
+                  {"from":"app.start","to":"ignore-cancel"},
+                  {"from":"ignore-cancel.next","to":"ignore-cancel-step"},
+                  {"from":"ignore-cancel-step.next","to":"end"},
+                  {"from":"app.start","to":"delayed-cancel"},
+                  {"from":"delayed-cancel.next","to":"delayed-cancel-step"},
+                  {"from":"delayed-cancel-step.next","to":"end"},
                   {"from":"app.start","to":"hold"},
                   {"from":"hold.next","to":"hold-step"},
                   {"from":"hold-step.next","to":"end"}
@@ -1056,15 +4210,263 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                 triggerNode("failed", "{}"),
                 triggerNode("cancelled", "{}"),
                 triggerNode("nested-cancelled", "{\"value\":\"input\"}"),
-                triggerNode("side-effect", "{\"file\":\"observed.txt\"}"),
+                triggerNode(
+                        "side-effect",
+                        "{\"file\":\"" + escaped(workspace.resolve("observed.txt").toString()) + "\"}"
+                ),
                 triggerNode("oversized", "{}"),
+                triggerNode("trace-too-large", "{}"),
                 triggerNode("block", "{\"entered_port\":1}"),
-                triggerNode("hold", "{\"entered_port\":1,\"release_port\":2}")
+                triggerNode("ignore-cancel", "{\"entered_port\":1}"),
+                triggerNode("delayed-cancel", "{\"entered_port\":1}"),
+                triggerNode("hold", "{\"entered_port\":1,\"release_port\":2}"),
+                triggerNode("nested-failed", "{\"value\":\"input\"}")
         );
+    }
+
+    private static String markerExample(final Path marker) {
+        return """
+                {"format":1,"id":"activation-boundary","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"marker","use":"development.runtime.trigger.marker","inputs":{},"examples":[
+                    {"name":"marker","payload":{"file":"%s"}}
+                  ]},
+                  {"id":"append","use":"development.runtime.append","inputs":{}}
+                ],"links":[
+                  {"from":"app.start","to":"marker"},
+                  {"from":"marker.next","to":"append"},
+                  {"from":"append.next","to":"end"}
+                ]}
+                """.formatted(escaped(marker.toString()));
+    }
+
+    private static DevelopmentRuntimeGeneratedProcess.Build markerBuild(
+            final Path workspace,
+            final Path marker
+    ) throws IOException {
+        return DevelopmentRuntimeGeneratedProcess.build(
+                workspace,
+                markerExample(marker),
+                List.of(
+                        trigger("marker", false),
+                        StepDefinition.named("development.runtime.append", "1")
+                                .input("file", StepDefinition.Input.path(READ)
+                                        .defaultPath("context", "payload", "file"))
+                                .run(DevelopmentRuntimeConformanceSteps.Append.class)
+                ),
+                DevelopmentRuntimeConformanceSteps.Pass.class,
+                DevelopmentRuntimeConformanceSteps.Append.class
+        );
+    }
+
+    private static List<Long> awaitPids(final Path marker, final int count) throws Exception {
+        final long deadline = System.nanoTime() + WAIT.toNanos();
+        List<String> values = List.of();
+        while (values.size() < count && System.nanoTime() < deadline) {
+            if (Files.isRegularFile(marker)) {
+                values = Files.readAllLines(marker, StandardCharsets.UTF_8).stream()
+                        .filter(value -> !value.isBlank())
+                        .toList();
+            }
+            if (values.size() < count) {
+                Thread.sleep(10);
+            }
+        }
+        assertThat(values).hasSize(count);
+        return values.stream().map(Long::parseLong).toList();
+    }
+
+    private static void awaitSignal(final Path signal, final Duration timeout) throws Exception {
+        final long deadline = System.nanoTime() + timeout.toNanos();
+        while (!Files.isRegularFile(signal) && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(signal).isRegularFile();
+    }
+
+    private static void awaitContent(final Path file, final String expected, final Duration timeout) throws Exception {
+        final long deadline = System.nanoTime() + timeout.toNanos();
+        String actual = "";
+        while (System.nanoTime() < deadline) {
+            if (Files.isRegularFile(file)) {
+                actual = Files.readString(file, StandardCharsets.UTF_8);
+                if (expected.equals(actual)) {
+                    return;
+                }
+            }
+            Thread.sleep(10);
+        }
+        assertThat(actual).isEqualTo(expected);
+    }
+
+    private static void awaitStopped(final Process process, final Duration timeout) throws Exception {
+        final long deadline = System.nanoTime() + timeout.toNanos();
+        while (process.isAlive() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(process.isAlive()).isFalse();
+    }
+
+    private static boolean awaitExit(final long pid) throws InterruptedException {
+        final long deadline = System.nanoTime() + WAIT.toNanos();
+        while (ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)
+                && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        return ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false) == false;
+    }
+
+    private static long awaitOutputPid(
+            final DevelopmentRuntimeGeneratedProcess.Child child
+    ) throws InterruptedException {
+        final long deadline = System.nanoTime() + WAIT.toNanos();
+        String value = "";
+        while (value.isEmpty() && System.nanoTime() < deadline) {
+            value = child.output().strip();
+            if (value.isEmpty()) {
+                Thread.sleep(10);
+            }
+        }
+        assertThat(value).containsOnlyDigits();
+        return Long.parseLong(value);
+    }
+
+    private static void stopIfAlive(final long pid) {
+        final var process = ProcessHandle.of(pid);
+        if (process.isEmpty() || !process.orElseThrow().isAlive()) {
+            return;
+        }
+        final ProcessHandle handle = process.orElseThrow();
+        handle.destroyForcibly();
+        try {
+            assertThat(awaitExit(pid)).isTrue();
+        } catch (final InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("Test process cleanup was interrupted: " + pid, exception);
+        }
+    }
+
+    private static void stopRecordedPids(final Path marker) throws IOException {
+        if (Files.isRegularFile(marker)) {
+            Files.readAllLines(marker).stream().filter(line -> !line.isBlank()).mapToLong(Long::parseLong)
+                    .forEach(DevelopmentRuntimeGeneratedApplicationE2eTest::stopIfAlive);
+        }
     }
 
     private static String escaped(final String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static Path runtimeDirectory(
+            final DevelopmentRuntimeGeneratedProcess.Build source,
+            final DevelopmentRuntimeGeneratedProcess.Child child
+    ) {
+        return source.artifact().jar().getParent()
+                .resolve(".railix-runtime")
+                .resolve(Long.toString(child.process().pid()));
+    }
+
+    private static TraceEvidence traceEvidence(final Path path) {
+        try (BufferedReader lines = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            String last = "";
+            long terminals = 0;
+            String line;
+            while ((line = lines.readLine()) != null) {
+                last = line;
+                if (line.contains("\"type\":\"result\"")
+                        || line.contains("\"type\":\"trace_error\"")) {
+                    terminals++;
+                }
+            }
+            return new TraceEvidence(last, terminals);
+        } catch (final IOException exception) {
+            throw new UncheckedIOException(exception);
+        }
+    }
+
+    private static long size(final Path path) {
+        try {
+            return Files.size(path);
+        } catch (final IOException exception) {
+            throw new UncheckedIOException(exception);
+        }
+    }
+
+    private static long number(final RailixValue.ObjectValue source, final String field) {
+        return ((RailixValue.NumberValue) source.values().get(field)).value().longValueExact();
+    }
+
+    private static String string(final RailixValue.ObjectValue source, final String field) {
+        return ((RailixValue.StringValue) source.values().get(field)).value();
+    }
+
+    private static String emptyQuery(final String path) {
+        return path.equals("/v1/metrics/query") ? "{\"steps\":{},\"flows\":{}}" : "{\"groups\":{}}";
+    }
+
+    private static RailixValue.ObjectValue queryGroup(final String source, final String id) {
+        return (RailixValue.ObjectValue) ((RailixValue.ObjectValue) object(source).values().get("groups"))
+                .values().get(id);
+    }
+
+    private static void assertQueryCounters(
+            final RailixValue.ObjectValue actual,
+            final List<RailixValue.ObjectValue> series
+    ) {
+        final List<String> counters = List.of(
+                "executions", "errors", "cancelled", "duration_nanos_total", "duration_nanos_max", "duration_samples"
+        );
+        assertThat(actual.values()).containsKeys(counters.toArray(String[]::new));
+        for (final String counter : counters) {
+            final java.util.stream.LongStream values = series.stream()
+                    .map(value -> (RailixValue.ObjectValue) value.values().get("metrics"))
+                    .mapToLong(value -> number(value, counter));
+            final long expected = counter.equals("duration_nanos_max") ? values.max().orElse(0) : values.sum();
+            assertThat(number(actual, counter)).as(counter).isEqualTo(expected);
+        }
+    }
+
+    private static long metric(
+            final String source,
+            final String group,
+            final String id,
+            final String name
+    ) {
+        return ((RailixValue.NumberValue) ((RailixValue.ObjectValue) series(source, group, id)
+                .values().get("metrics")).values().get(name)).value().longValueExact();
+    }
+
+    private static RailixValue.ObjectValue series(
+            final String source,
+            final String group,
+            final String id
+    ) {
+        return values(source, group).stream()
+                .filter(item -> id.equals(((RailixValue.StringValue) item.values().get("id")).value()))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private static List<String> ids(final String source, final String group) {
+        return values(source, group).stream()
+                .map(value -> ((RailixValue.StringValue) value.values().get("id")).value())
+                .toList();
+    }
+
+    private static List<RailixValue.ObjectValue> values(final String source, final String group) {
+        final RailixValue.ObjectValue root = object(source);
+        return ((RailixValue.ArrayValue) root.values().get(group)).values().stream()
+                .map(RailixValue.ObjectValue.class::cast)
+                .toList();
+    }
+
+    private static RailixValue.ObjectValue object(final String source) {
+        final RailixData.Result normalized = RailixData.normalize(
+                RailixData.Format.JSON,
+                source.getBytes(StandardCharsets.UTF_8)
+        );
+        assertThat(normalized).isInstanceOf(RailixData.Normalized.class);
+        return (RailixValue.ObjectValue) ((RailixData.Normalized) normalized).value();
     }
 
     private static String triggerNode(final String id, final String payload) {
@@ -1073,5 +4475,8 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                   {"name":"default","payload":%2$s}
                 ]}
                 """.formatted(id, payload);
+    }
+
+    private record TraceEvidence(String last, long terminals) {
     }
 }

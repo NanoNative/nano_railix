@@ -29,6 +29,7 @@ public final class ProcessTreeStepHandler implements StepHandler {
         switch (arguments[0]) {
             case "established" -> established(Long.parseLong(arguments[1]), Path.of(arguments[2]));
             case "after-exit" -> afterExit(Long.parseLong(arguments[1]), Path.of(arguments[2]));
+            case "ignore-termination" -> ignoreTermination(Path.of(arguments[2]));
             case "sleep" -> new CountDownLatch(1).await();
             default -> throw new IllegalArgumentException("Unknown process-tree mode: " + arguments[0]);
         }
@@ -47,6 +48,22 @@ public final class ProcessTreeStepHandler implements StepHandler {
         }
         final Process grandchild = start("sleep", parent, marker);
         write(marker, grandchild.pid());
+        new CountDownLatch(1).await();
+    }
+
+    private static void ignoreTermination(final Path marker) throws Exception {
+        final long pid = ProcessHandle.current().pid();
+        Runtime.getRuntime().addShutdownHook(Thread.ofPlatform().unstarted(() -> {
+            try {
+                write(marker.resolveSibling(marker.getFileName() + ".terminating"), pid);
+                new CountDownLatch(1).await();
+            } catch (final IOException exception) {
+                throw new IllegalStateException("Termination marker could not be written.", exception);
+            } catch (final InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        write(marker, pid);
         new CountDownLatch(1).await();
     }
 

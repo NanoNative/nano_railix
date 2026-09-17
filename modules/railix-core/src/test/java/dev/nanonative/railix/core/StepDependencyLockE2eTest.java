@@ -96,6 +96,14 @@ final class StepDependencyLockE2eTest {
     }
 
     @Test
+    void dependencyLockFormatMustFitASignedThirtyTwoBitInteger() throws Exception {
+        assertRejected(
+                root(RailixValue.number((long) Integer.MAX_VALUE + 1), array(), array()),
+                "lock.format must be a 32-bit integer."
+        );
+    }
+
+    @Test
     void dependencyLockRequiresExactRootFields() throws Exception {
         assertRejected(
                 RailixValue.object(Map.of(

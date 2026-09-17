@@ -58,7 +58,7 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
                     .doesNotContain("\"id\":\"command\"");
             assertThat(Files.readString(project)).contains("\"use\":\"railix.app\"");
             assertThat(Files.readString(directory.resolve("railix.creator.json")))
-                    .contains("\"format\":1", "\"groups\":[]", "\"steps\":{}");
+                    .contains("\"format\":2", "\"groups\":[]", "\"steps\":{}");
         }
     }
 
@@ -71,15 +71,15 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
 
         try (CreatorServer creator = start(project)) {
             final HttpResponse<String> workspace = request(creator.baseUri(), "GET", "/api/project", "");
-            final HttpResponse<String> run = request(creator.baseUri(), "POST", "/api/run/command", CONTEXT);
+            final HttpResponse<String> example = awaitExampleView(creator.baseUri(), "command:0");
 
             assertThat(workspace.statusCode()).isEqualTo(200);
             assertThat(workspace.body()).contains(
-                    "\"creator\":{\"format\":1,\"groups\":[],\"steps\":{}}",
+                    "\"creator\":{\"format\":2,\"groups\":[],\"steps\":{}}",
                     "\"code\":\"CREATOR_JSON_INVALID\""
             );
-            assertThat(run.statusCode()).isEqualTo(200);
-            assertThat(run.body()).contains("\"result\":\"hello railix\"");
+            assertThat(example.statusCode()).isEqualTo(200);
+            assertThat(example.body()).contains("\"result\":\"hello railix\"");
             assertThat(Files.readString(metadata)).isEqualTo("{");
         }
     }
@@ -100,22 +100,135 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
 
         try (CreatorServer creator = start(project)) {
             final HttpResponse<String> workspace = request(creator.baseUri(), "GET", "/api/project", "");
-            final HttpResponse<String> run = request(
-                    creator.baseUri(), "POST", "/api/run/command", "{\"payload\":{}}"
-            );
+            final HttpResponse<String> example = awaitExampleView(creator.baseUri(), "command:0");
 
             assertThat(workspace.statusCode()).isEqualTo(200);
             assertThat(workspace.body()).contains(
-                    "\"creator\":{\"format\":1,\"groups\":[],\"steps\":{}}",
+                    "\"creator\":{\"format\":2,\"groups\":[],\"steps\":{}}",
                     "\"code\":\"CREATOR_OCCURRENCE_RANGE_INVALID\"",
                     "\"id\":\"one\"",
                     "\"id\":\"two\"",
                     "\"id\":\"three\""
             );
-            assertThat(run.statusCode()).isEqualTo(200);
-            assertThat(run.body()).contains("\"status\":\"succeeded\"");
+            assertThat(example.statusCode()).isEqualTo(200);
+            assertThat(example.body()).contains("\"status\":\"succeeded\"");
             assertThat(Files.readString(metadata)).isEqualTo(invalid);
         }
+    }
+
+    @Test
+    void validFormatOneMetadataMigratesToFormatTwoWithoutRestartingTheApplication() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final Path metadata = directory.resolve("railix.creator.json");
+        Files.writeString(project, CreatorProjects.grouping(), StandardCharsets.UTF_8);
+        Files.writeString(metadata, """
+                {"format":1,"steps":{"lowercase-text":{"name":"Normalize text"}},"groups":[{
+                  "id":"normalize","name":"Normalize","color":"#147982",
+                  "occurrences":[{
+                    "id":"normalize-one","flow":"command","parent":null,
+                    "steps":{"lowercase":"lowercase-text","result":"return-text"}
+                  }]
+                }]}
+                """, StandardCharsets.UTF_8);
+
+        try (CreatorServer creator = start(project)) {
+            final long pid = number(application(creator.baseUri()), "pid");
+            final String migrated = Files.readString(metadata);
+
+            assertThat(migrated).contains(
+                    "\"format\":2",
+                    "\"id\":\"normalize\"",
+                    "\"group\":\"normalize\"",
+                    "\"name\":\"Normalize text\""
+            ).doesNotContain("occurrences", "normalize-one", "lowercase\":");
+            assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+        }
+    }
+
+    @Test
+    void deepestLegacyGroupWinsOverlappingStepMembershipDuringMigration() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final Path metadata = directory.resolve("railix.creator.json");
+        Files.writeString(project, CreatorProjects.grouping(), StandardCharsets.UTF_8);
+        Files.writeString(metadata, """
+                {"format":1,"steps":{},"groups":[
+                  {"id":"outer","name":"Outer","occurrences":[{
+                    "id":"outer-one","flow":"command","parent":null,
+                    "steps":{"lowercase":"lowercase-text","result":"return-text"}
+                  }]},
+                  {"id":"inner","name":"Inner","occurrences":[{
+                    "id":"inner-one","flow":"command","parent":"outer-one",
+                    "steps":{"lowercase":"lowercase-text"}
+                  }]}
+                ]}
+                """, StandardCharsets.UTF_8);
+
+        try (CreatorServer ignored = start(project)) {
+            final String migrated = Files.readString(metadata);
+
+            assertThat(migrated).contains(
+                    "\"id\":\"outer\"",
+                    "\"id\":\"inner\"",
+                    "\"lowercase-text\":{\"group\":\"inner\"}",
+                    "\"return-text\":{\"group\":\"outer\"}"
+            ).doesNotContain("occurrences", "outer-one", "inner-one");
+        }
+    }
+
+    @Test
+    void legacyGroupMigrationIsIndependentOfParentDeclarationOrder() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final Path metadata = directory.resolve("railix.creator.json");
+        Files.writeString(project, CreatorProjects.grouping(), StandardCharsets.UTF_8);
+        Files.writeString(metadata, """
+                {"format":1,"steps":{},"groups":[
+                  {"id":"inner","occurrences":[{
+                    "id":"inner-one","flow":"command","parent":"outer-one",
+                    "steps":{"lowercase":"lowercase-text"}
+                  }]},
+                  {"id":"outer","occurrences":[{
+                    "id":"outer-one","flow":"command","parent":null,
+                    "steps":{"lowercase":"lowercase-text","result":"return-text"}
+                  }]}
+                ]}
+                """, StandardCharsets.UTF_8);
+
+        try (CreatorServer ignored = start(project)) {
+            assertThat(Files.readString(metadata)).contains(
+                    "\"lowercase-text\":{\"group\":\"inner\"}",
+                    "\"return-text\":{\"group\":\"outer\"}"
+            ).doesNotContain("occurrences", "inner-one", "outer-one");
+        }
+    }
+
+    @Test
+    void deepLegacyHierarchyMigratesIterativelyToItsDeepestGroup() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final Path metadata = directory.resolve("railix.creator.json");
+        Files.writeString(project, CreatorProjects.grouping(), StandardCharsets.UTF_8);
+        Files.writeString(metadata, deepLegacyMetadata(512), StandardCharsets.UTF_8);
+
+        try (CreatorServer ignored = start(project)) {
+            assertThat(Files.readString(metadata)).contains(
+                    "\"id\":\"group-511\"",
+                    "\"lowercase-text\":{\"group\":\"group-511\"}"
+            ).doesNotContain("occurrences", "occurrence-511");
+        }
+    }
+
+    private static String deepLegacyMetadata(final int depth) {
+        final StringBuilder source = new StringBuilder("{\"format\":1,\"steps\":{},\"groups\":[");
+        for (int index = 0; index < depth; index++) {
+            if (index > 0) {
+                source.append(',');
+            }
+            source.append("{\"id\":\"group-").append(index)
+                    .append("\",\"occurrences\":[{\"id\":\"occurrence-").append(index)
+                    .append("\",\"flow\":\"command\",\"parent\":")
+                    .append(index == 0 ? "null" : "\"occurrence-" + (index - 1) + "\"")
+                    .append(",\"steps\":{\"lowercase\":\"lowercase-text\"}}]}");
+        }
+        return source.append("]}").toString();
     }
 
     @Test
@@ -143,20 +256,13 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
         final Path project = directory.resolve("railix.project.json");
         Files.writeString(project, CreatorProjects.grouping(), StandardCharsets.UTF_8);
         final String creatorSource = """
-                {"format":1,"steps":{"lowercase-text":{
-                  "name":"Normalize text","outcomes":{"next":"Continue"}
-                }},"groups":[{
+                {"format":2,"steps":{"lowercase-text":{
+                  "name":"Normalize text","outcomes":{"next":"Continue"},
+                  "group":"group-8494a3c7-bda5-4f72-96f8-1ca7d76ac7ec"
+                },"return-text":{"group":"group-8494a3c7-bda5-4f72-96f8-1ca7d76ac7ec"}},"groups":[{
                   "id":"group-8494a3c7-bda5-4f72-96f8-1ca7d76ac7ec",
                   "name":"Normalize and return",
-                  "occurrences":[{
-                    "id":"occurrence-1314a8b1-b71a-41f4-9560-f3df05dba801",
-                    "flow":"command",
-                    "parent":null,
-                    "steps":{
-                      "slot-lowercase":"lowercase-text",
-                      "slot-return":"return-text"
-                    }
-                  }]
+                  "boundary":"dashed"
                 }]}
                 """;
 
@@ -178,8 +284,9 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
                     "\"name\":\"Normalize text\"",
                     "\"outcomes\":{\"next\":\"Continue\"}",
                     "\"name\":\"Normalize and return\"",
-                    "\"slot-lowercase\":\"lowercase-text\""
-            );
+                    "\"group\":\"group-8494a3c7-bda5-4f72-96f8-1ca7d76ac7ec\"",
+                    "\"boundary\":\"dashed\""
+            ).doesNotContain("occurrences", "slot-lowercase");
             assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
             assertThat(request(creator.baseUri(), "GET", "/api/project", "").body())
                     .contains("\"creator\":", "\"group-8494a3c7-bda5-4f72-96f8-1ca7d76ac7ec\"");
@@ -243,6 +350,38 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
         }
     }
 
+    @Test
+    void creatorMetadataEndpointRejectsUnsupportedMethods() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("creator-method.json"))) {
+            final HttpResponse<String> response = request(
+                    creator.baseUri(),
+                    "GET",
+                    "/api/creator",
+                    ""
+            );
+
+            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(405, "{\"status\":\"method-not-allowed\"}");
+        }
+    }
+
+    @Test
+    void oversizedCreatorMetadataIsRejectedWithoutStoppingTheApplication() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("creator-oversized.json"))) {
+            final long pid = number(application(creator.baseUri()), "pid");
+            final HttpResponse<String> response = request(
+                    creator.baseUri(),
+                    "POST",
+                    "/api/creator",
+                    "x".repeat(1_048_577)
+            );
+
+            assertThat(response.statusCode()).isEqualTo(413);
+            assertThat(response.body()).contains("\"code\":\"REQUEST_TOO_LARGE\"");
+            assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+        }
+    }
+
     @ParameterizedTest(name = "{0}")
     @MethodSource("invalidCreatorMetadata")
     void creatorMetadataRejectionKeepsTheRunningApplication(
@@ -262,6 +401,8 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
                 Arguments.of("metadata must be an object", "[]", "CREATOR_OBJECT_REQUIRED", ""),
                 Arguments.of("steps must be an object", creatorMetadata("[]", "[]"), "CREATOR_STEPS_OBJECT_REQUIRED", "steps"),
                 Arguments.of("groups must be an array", creatorMetadata("{}", "{}"), "CREATOR_GROUPS_ARRAY_REQUIRED", "groups"),
+                Arguments.of("current steps must be an object", "{\"format\":2,\"steps\":[],\"groups\":[]}", "CREATOR_STEPS_OBJECT_REQUIRED", "steps"),
+                Arguments.of("current groups must be an array", "{\"format\":2,\"steps\":{},\"groups\":{}}", "CREATOR_GROUPS_ARRAY_REQUIRED", "groups"),
                 Arguments.of("Step presentation must be an object", creatorStep("true"), "CREATOR_PRESENTATION_OBJECT_REQUIRED", "steps.lowercase-text"),
                 Arguments.of("presentation name must be non-blank", creatorStep("{\"name\":\" \"}"), "CREATOR_PRESENTATION_NAME_INVALID", "steps.lowercase-text.name"),
                 Arguments.of("presentation color must use six hex digits", creatorStep("{\"color\":\"red\"}"), "CREATOR_PRESENTATION_COLOR_INVALID", "steps.lowercase-text.color"),
@@ -284,6 +425,16 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
                 Arguments.of("icon data must match media type", creatorIcon("{\"media_type\":\"image/svg+xml\",\"data\":\"PGJhZC8+\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon.data"),
                 Arguments.of("icon data is bounded", creatorIcon("{\"media_type\":\"image/png\",\"data\":\"" + Base64.getEncoder().encodeToString(new byte[65_537]) + "\"}"), "CREATOR_PRESENTATION_ICON_INVALID", "steps.lowercase-text.icon.data"),
                 Arguments.of("Step presentation rejects unknown fields", creatorStep("{\"noise\":true}"), "CREATOR_PRESENTATION_FIELD_UNKNOWN", "steps.lowercase-text.noise"),
+                Arguments.of("legacy Step presentation rejects format-two group assignment", "{\"format\":1,\"steps\":{\"lowercase-text\":{\"group\":\"group-one\"}},\"groups\":[]}", "CREATOR_PRESENTATION_FIELD_UNKNOWN", "steps.lowercase-text.group"),
+                Arguments.of("current group rejects unknown fields", "{\"format\":2,\"steps\":{},\"groups\":[{\"id\":\"group-one\",\"noise\":true}]}", "CREATOR_GROUP_FIELD_UNKNOWN", "groups[0].noise"),
+                Arguments.of("current group boundary is explicit", "{\"format\":2,\"steps\":{},\"groups\":[{\"id\":\"group-one\",\"boundary\":\"double\"}]}", "CREATOR_GROUP_BOUNDARY_INVALID", "groups[0].boundary"),
+                Arguments.of("current Step group must be an id", "{\"format\":2,\"steps\":{\"lowercase-text\":{\"group\":4}},\"groups\":[]}", "CREATOR_STEP_GROUP_INVALID", "steps.lowercase-text.group"),
+                Arguments.of("current Step group must exist", "{\"format\":2,\"steps\":{\"lowercase-text\":{\"group\":\"missing\"}},\"groups\":[]}", "CREATOR_STEP_GROUP_UNKNOWN", "steps.lowercase-text.group"),
+                Arguments.of("Trigger cannot join a current group", "{\"format\":2,\"steps\":{\"command\":{\"group\":\"group-one\"}},\"groups\":[{\"id\":\"group-one\"}]}", "CREATOR_STEP_GROUP_UNSUPPORTED", "steps.command.group"),
+                Arguments.of("current duplicate group ids", "{\"format\":2,\"steps\":{},\"groups\":[{\"id\":\"group-one\"},{\"id\":\"group-one\"}]}", "CREATOR_GROUP_ID_DUPLICATE", "groups[1].id"),
+                Arguments.of("current group must be an object", "{\"format\":2,\"steps\":{},\"groups\":[true]}", "CREATOR_GROUP_OBJECT_REQUIRED", "groups[0]"),
+                Arguments.of("current group id must be non-blank", "{\"format\":2,\"steps\":{},\"groups\":[{\"id\":\"\"}]}", "CREATOR_ID_INVALID", "groups[0].id"),
+                Arguments.of("current group color must use six hex digits", "{\"format\":2,\"steps\":{},\"groups\":[{\"id\":\"group-one\",\"color\":\"red\"}]}", "CREATOR_PRESENTATION_COLOR_INVALID", "groups[0].color"),
                 Arguments.of("group must be an object", creatorGroup("true"), "CREATOR_GROUP_OBJECT_REQUIRED", "groups[0]"),
                 Arguments.of("group id must be non-blank", creatorGroup("{\"id\":\"\",\"occurrences\":[true]}"), "CREATOR_ID_INVALID", "groups[0].id"),
                 Arguments.of("group color must use six hex digits", creatorGroup("{\"id\":\"group-one\",\"color\":\"red\",\"occurrences\":[]}"), "CREATOR_PRESENTATION_COLOR_INVALID", "groups[0].color"),
@@ -304,7 +455,7 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
                 Arguments.of("metadata rejects unknown top-level fields", "{\"format\":1,\"steps\":{},\"groups\":[],\"noise\":true}", "CREATOR_FIELD_UNKNOWN", "noise"),
                 Arguments.of("group rejects unimplemented global flag", creatorGroup("{\"id\":\"group-one\",\"global\":true,\"occurrences\":[]}"), "CREATOR_GROUP_FIELD_UNKNOWN", "groups[0].global"),
                 Arguments.of("group requires occurrences", creatorGroup("{\"id\":\"group-one\",\"occurrences\":[]}"), "CREATOR_GROUP_OCCURRENCES_REQUIRED", "groups[0].occurrences"),
-                Arguments.of("unsupported format", "{\"format\":2,\"steps\":{},\"groups\":[]}", "CREATOR_FORMAT_UNSUPPORTED", "format"),
+                Arguments.of("unsupported format", "{\"format\":3,\"steps\":{},\"groups\":[]}", "CREATOR_FORMAT_UNSUPPORTED", "format"),
                 Arguments.of("missing format", "{\"steps\":{},\"groups\":[]}", "CREATOR_FORMAT_UNSUPPORTED", "format"),
                 Arguments.of("presentation references unknown Step", "{\"format\":1,\"steps\":{\"missing\":{}},\"groups\":[]}", "CREATOR_STEP_UNKNOWN", "steps.missing"),
                 Arguments.of("duplicate group ids", """
@@ -429,7 +580,7 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
-    void creatorMetadataAcceptsAConnectedBranchRegionWithOneEntry() throws Exception {
+    void connectedLegacyBranchRegionMigratesToFlatStepAssignments() throws Exception {
         final Path project = directory.resolve("project.json");
         Files.writeString(project, branchGroupProject(), StandardCharsets.UTF_8);
 
@@ -448,11 +599,12 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
 
             assertThat(response.statusCode()).isEqualTo(200);
             assertThat(response.body()).contains(
+                    "\"format\":2",
                     "\"id\":\"group-one\"",
-                    "\"slot-choice\":\"choice\"",
-                    "\"slot-match\":\"matched\"",
-                    "\"slot-other\":\"otherwise\""
-            );
+                    "\"choice\":{\"group\":\"group-one\"}",
+                    "\"matched\":{\"group\":\"group-one\"}",
+                    "\"otherwise\":{\"group\":\"group-one\"}"
+            ).doesNotContain("occurrences", "slot-choice", "slot-match", "slot-other");
         }
     }
 
@@ -531,17 +683,12 @@ final class CreatorServerWorkspaceE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
-    void lowercaseExampleRunsThroughTheCreatorApplication() throws Exception {
+    void lowercaseExampleRunsInTheGeneratedApplicationAndIsVisibleThroughCreator() throws Exception {
         final Path project = directory.resolve("project.json");
         Files.copy(lowercaseExampleProject(), project);
 
         try (CreatorServer creator = start(project)) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/run/command",
-                    "{\"payload\":{\"arguments\":[\"Hello RAILIX\"]}}"
-            );
+            final HttpResponse<String> response = awaitExampleView(creator.baseUri(), "command:0");
 
             assertThat(response.statusCode()).isEqualTo(200);
             assertThat(response.body()).contains(
@@ -966,6 +1113,58 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
+    void applicationMetricsEndpointForwardsOnlyApplicationAndProcessSeries() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("project.json"))) {
+            final HttpResponse<String> response = request(creator.baseUri(), "GET", "/api/metrics", "");
+
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body())
+                    .contains("\"application\":{\"metrics\":", "\"process\":", "\"metric_counter_bytes\":")
+                    .contains("\"flows\":[]", "\"steps\":[]")
+                    .doesNotContain("payload", "context");
+        }
+    }
+
+    @Test
+    void selectedNodeMetricsEndpointForwardsOnlyTheMatchingFlowAndStep() throws Exception {
+        final Path project = directory.resolve("project.json");
+        Files.writeString(project, CreatorProjects.lowercaseCli(), StandardCharsets.UTF_8);
+
+        try (CreatorServer creator = start(project)) {
+            final HttpResponse<String> response = request(
+                    creator.baseUri(), "GET", "/api/metrics/nodes/command", ""
+            );
+
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body())
+                    .contains("\"flows\":[{\"id\":\"command\"", "\"steps\":[{\"id\":\"command\"")
+                    .doesNotContain("\"id\":\"lowercase\"");
+        }
+    }
+
+    @Test
+    void metricsEndpointRejectsMutationMethods() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("project.json"))) {
+            final HttpResponse<String> response = request(creator.baseUri(), "POST", "/api/metrics", "{}");
+
+            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(405, "{\"status\":\"method-not-allowed\"}");
+        }
+    }
+
+    @Test
+    void blankNodeMetricsPathIsNotFound() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("project.json"))) {
+            final HttpResponse<String> response = request(
+                    creator.baseUri(), "GET", "/api/metrics/nodes/", ""
+            );
+
+            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(404, "{\"status\":\"not-found\"}");
+        }
+    }
+
+    @Test
     void catalogDescribesTheGenericRecursiveStepInputGrammar() throws Exception {
         try (CreatorServer creator = start(directory.resolve("project.json"))) {
             final HttpResponse<String> response = request(creator.baseUri(), "GET", "/api/catalog", "");
@@ -1252,202 +1451,6 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
-    void runExampleExecutesMappedPrimitiveInChildApplication() throws Exception {
-        try (CreatorServer creator = startJourney()) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/run/command",
-                    CONTEXT
-            );
-
-            assertThat(response.statusCode()).isEqualTo(200);
-            assertThat(response.body()).isEqualTo(
-                    "{\"context\":{\"exit_code\":0,\"payload\":{\"arguments\":[\"Hello RAILIX\"]},"
-                            + "\"result\":\"hello railix\",\"runtime\":{\"test\":true,"
-                            + "\"trigger\":\"command\"}},\"status\":\"succeeded\",\"steps\":["
-                            + "{\"id\":\"lowercase-text\",\"outcome\":\"ok\"}]}"
-            );
-        }
-    }
-
-    @Test
-    void previewReturnsTheActualSourceFromTheChildApplication() throws Exception {
-        try (CreatorServer creator = startJourney()) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/preview/command/lowercase-text",
-                    CONTEXT
-            );
-
-            assertThat(response.body()).contains(
-                    "\"inputs\":{\"value\":\"Hello RAILIX\"}"
-            );
-        }
-    }
-
-    @Test
-    void previewReportsTheCandidateSelectedByTheChildApplication() throws Exception {
-        final Path project = directory.resolve("project.json");
-        Files.writeString(project, CreatorProjects.orderedCandidates(), StandardCharsets.UTF_8);
-
-        try (CreatorServer creator = start(project)) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/preview/command/change",
-                    "{\"payload\":{\"value\":\"existing\"}}"
-            );
-
-            assertThat(response.body()).contains(
-                    "\"selected_candidates\":{\"nodes[2].inputs.value\":1}"
-            );
-        }
-    }
-
-    @Test
-    void previewReturnsTheActualMappedPrimitiveOutputFromTheChildApplication() throws Exception {
-        try (CreatorServer creator = startJourney()) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/preview/command/lowercase-text",
-                    CONTEXT
-            );
-
-            assertThat(response.body()).contains(
-                    "\"result\":\"hello railix\"",
-                    "\"steps\":[{\"id\":\"lowercase-text\",\"outcome\":\"ok\"}]"
-            );
-        }
-    }
-
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("primitivePreviews")
-    void previewReturnsTheActualPrimitiveOutputFromTheChildApplication(
-            final String scenario,
-            final String step,
-            final String options,
-            final String value,
-            final String expected
-    ) throws Exception {
-        final HttpResponse<String> response = primitivePreview(step, options, value);
-
-        assertThat(response.statusCode()).isEqualTo(200);
-        assertThat(response.body()).contains(
-                "\"status\":\"succeeded\",\"use\":\"" + step + "\",\"value\":" + expected
-        );
-    }
-
-    private static Stream<Arguments> primitivePreviews() {
-        return Stream.of(
-                Arguments.of("starts with", "text.starts-with", "{\"prefix\":\"Nano\"}", "\"Nano Railix\"", "true"),
-                Arguments.of("ends with", "text.ends-with", "{\"suffix\":\"Railix\"}", "\"Nano Railix\"", "true"),
-                Arguments.of("value equals", "value.equals", "{\"expected\":{\"answer\":42}}", "{\"answer\":42}", "true"),
-                Arguments.of("list reverse", "list.reverse", "{}", "[1,2]", "[2,1]"),
-                Arguments.of("number to text", "number.to-text", "{}", "1.2300", "\"1.23\""),
-                Arguments.of("wrap null in list", "value.wrap-list", "{}", "null", "[null]"),
-                Arguments.of("canonical JSON text", "value.to-json", "{}", "{\"z\":2,\"a\":1}", "\"{\\\"a\\\":1,\\\"z\\\":2}\"")
-        );
-    }
-
-    @Test
-    void falliblePreviewCapturesTheInvalidNestedOutcomeAndCompletesTheFlow() throws Exception {
-        try (CreatorServer creator = startFallibleJourney()) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/preview/command/convert",
-                    "{\"payload\":{\"value\":\"not-a-number\"}}"
-            );
-
-            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
-                    .containsExactly(
-                            200,
-                            "{\"context\":{\"exit_code\":0,\"payload\":{\"value\":\"not-a-number\"},"
-                                    + "\"result\":\"not-a-number\",\"runtime\":{\"test\":true,"
-                                    + "\"trigger\":\"command\"}},"
-                                    + "\"preview\":{\"input_context\":{\"exit_code\":0,"
-                                    + "\"payload\":{\"value\":\"not-a-number\"},\"result\":null,"
-                                    + "\"runtime\":{\"test\":true,\"trigger\":\"command\"}},"
-                                    + "\"inputs\":{\"field\":\"not-a-number\","
-                                    + "\"value\":\"not-a-number\"},\"selected_candidates\":{"
-                                    + "\"nodes[2].inputs.value\":0},"
-                                    + "\"stages\":[{\"input\":\"steps\","
-                                    + "\"invocation\":\"nodes[2].inputs.steps[0]\",\"status\":\"invalid\","
-                                    + "\"use\":\"text.to-number\"}],\"step\":\"convert\"},"
-                                    + "\"status\":\"succeeded\",\"steps\":["
-                                    + "{\"id\":\"text.to-number\",\"outcome\":\"invalid\"},"
-                                    + "{\"id\":\"convert\",\"outcome\":\"next\"},"
-                                    + "{\"id\":\"number-result\",\"outcome\":\"next\"}]}"
-                    );
-        }
-    }
-
-    @Test
-    void fallibleRunFollowsNextInTheChildApplication() throws Exception {
-        try (CreatorServer creator = startFallibleJourney()) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/run/command",
-                    "{\"payload\":{\"value\":\"12.5\"}}"
-            );
-
-            assertThat(response.body()).contains(
-                    "\"payload\":{\"value\":12.5}",
-                    "\"result\":12.5",
-                    "{\"id\":\"text.to-number\",\"outcome\":\"ok\"}",
-                    "{\"id\":\"convert\",\"outcome\":\"next\"}"
-            );
-        }
-    }
-
-    @Test
-    void fallibleRunPreservesTheValueAndContinuesInTheChildApplication() throws Exception {
-        try (CreatorServer creator = startFallibleJourney()) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/run/command",
-                    "{\"payload\":{\"value\":\"not-a-number\"}}"
-            );
-
-            assertThat(response.body()).contains(
-                    "\"payload\":{\"value\":\"not-a-number\"}",
-                    "\"result\":\"not-a-number\"",
-                    "{\"id\":\"text.to-number\",\"outcome\":\"invalid\"}",
-                    "{\"id\":\"convert\",\"outcome\":\"next\"}",
-                    "{\"id\":\"number-result\",\"outcome\":\"next\"}"
-            );
-        }
-    }
-
-    @Test
-    void unknownPreviewStepIsRejectedByTheChildApplication() throws Exception {
-        try (CreatorServer creator = startJourney()) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/preview/command/missing",
-                    CONTEXT
-            );
-
-            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
-                    .containsExactly(
-                            422,
-                            "{\"diagnostics\":[{\"code\":\"PREVIEW_STEP_UNKNOWN\","
-                                + "\"message\":\"Step is not part of the selected Trigger branch: missing.\","
-                                + "\"path\":\"step\"}],\"preview\":{\"input_context\":{},\"inputs\":{},"
-                                + "\"selected_candidates\":{},\"stages\":[],"
-                                + "\"step\":\"missing\"},"
-                                    + "\"status\":\"rejected\",\"steps\":[]}"
-                    );
-        }
-    }
-
-    @Test
     void acceptedProjectChangeRollsDevelopmentApplication() throws Exception {
         try (CreatorServer creator = start(directory.resolve("project.json"))) {
             final RailixValue.ObjectValue before = application(creator.baseUri());
@@ -1565,18 +1568,13 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
                     "{}"
             );
             final RailixValue.ObjectValue after = application(creator.baseUri());
-            final HttpResponse<String> run = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/run/command",
-                    CONTEXT
-            );
+            final HttpResponse<String> example = awaitExampleView(creator.baseUri(), "command:0");
 
             assertThat(rejected.statusCode()).isEqualTo(422);
             assertThat(rejected.body()).contains("\"status\":\"rejected\"", "\"diagnostics\"");
             assertThat(string(after, "fingerprint")).isEqualTo(string(before, "fingerprint"));
             assertThat(number(after, "pid")).isEqualTo(number(before, "pid"));
-            assertThat(run.statusCode()).isEqualTo(200);
+            assertThat(example.statusCode()).isEqualTo(200);
         }
     }
 
@@ -1597,36 +1595,6 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
             assertThat(Files.readString(project)).isEqualTo(
                     RailixJson.write(payload.values().get("project"))
             );
-        }
-    }
-
-    @Test
-    void unknownTriggerIsRejectedByCompiledApplication() throws Exception {
-        try (CreatorServer creator = start(directory.resolve("project.json"))) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/run/missing",
-                    CONTEXT
-            );
-
-            assertThat(response.statusCode()).isEqualTo(422);
-            assertThat(response.body()).contains("\"code\":\"RUN_TRIGGER_UNKNOWN\"");
-        }
-    }
-
-    @Test
-    void malformedContextIsRejectedWithoutExecutingFlow() throws Exception {
-        try (CreatorServer creator = start(directory.resolve("project.json"))) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/run/command",
-                    "{"
-            );
-
-            assertThat(response.statusCode()).isEqualTo(422);
-            assertThat(response.body()).contains("\"status\":\"rejected\"");
         }
     }
 
@@ -1986,13 +1954,13 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
-    void oversizedExistingProjectCannotStartCreator() throws Exception {
+    void existingProjectIsNotLimitedByTheHttpRequestSize() throws Exception {
         final Path project = directory.resolve("project.json");
-        Files.writeString(project, "x".repeat(1_048_577), StandardCharsets.UTF_8);
+        Files.writeString(project, " ".repeat(1_048_577) + threeStepProject(), StandardCharsets.UTF_8);
 
-        assertThatThrownBy(() -> start(project))
-                .isInstanceOf(IOException.class)
-                .hasMessage("Creator project exceeds the 1048576-byte limit.");
+        try (CreatorServer creator = start(project)) {
+            assertThat(request(creator.baseUri(), "GET", "/api/project", "").statusCode()).isEqualTo(200);
+        }
     }
 
     @Test
@@ -2183,7 +2151,7 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
                     creator.baseUri(),
                     "POST",
                     "/api/creator",
-                    "{\"format\":1,\"groups\":[],\"steps\":{\"app\":{\"name\":\"Creator\"}}}"
+                    "{\"format\":2,\"groups\":[],\"steps\":{\"app\":{\"name\":\"Creator\"}}}"
             );
 
             assertThat(response.statusCode()).isEqualTo(500);
@@ -2223,121 +2191,54 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
-    void runEndpointRejectsUnsupportedMethod() throws Exception {
-        try (CreatorServer creator = start(directory.resolve("project.json"))) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "GET",
-                    "/api/run/command",
-                    ""
-            );
-
-            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
-                    .containsExactly(405, "{\"status\":\"method-not-allowed\"}");
-        }
-    }
-
-    @Test
-    void previewEndpointRejectsUnsupportedMethod() throws Exception {
-        try (CreatorServer creator = start(directory.resolve("project.json"))) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "GET",
-                    "/api/preview/command/lowercase-text",
-                    ""
-            );
-
-            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
-                    .containsExactly(405, "{\"status\":\"method-not-allowed\"}");
-        }
-    }
-
-    @Test
-    void blankRunTriggerIsNotFound() throws Exception {
-        try (CreatorServer creator = start(directory.resolve("project.json"))) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/run/",
-                    CONTEXT
-            );
-
-            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
-                    .containsExactly(404, "{\"status\":\"not-found\"}");
-        }
-    }
-
-    @Test
-    void nestedRunTriggerIsNotFound() throws Exception {
-        try (CreatorServer creator = start(directory.resolve("project.json"))) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/run/command/nested",
-                    CONTEXT
-            );
-
-            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
-                    .containsExactly(404, "{\"status\":\"not-found\"}");
-        }
-    }
-
-    @Test
-    void incompletePreviewPathIsNotFound() throws Exception {
-        try (CreatorServer creator = start(directory.resolve("project.json"))) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/preview/command",
-                    CONTEXT
-            );
-
-            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
-                    .containsExactly(404, "{\"status\":\"not-found\"}");
-        }
-    }
-
-    @Test
-    void nestedPreviewPathIsNotFound() throws Exception {
-        try (CreatorServer creator = start(directory.resolve("project.json"))) {
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/preview/command/lowercase-text/nested",
-                    CONTEXT
-            );
-
-            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
-                    .containsExactly(404, "{\"status\":\"not-found\"}");
-        }
-    }
-
-    @Test
-    void oversizedRunContextIsRejectedBeforeForwarding() throws Exception {
+    void creatorDoesNotExposeAnExecutionEndpoint() throws Exception {
         try (CreatorServer creator = start(directory.resolve("project.json"))) {
             final HttpResponse<String> response = request(
                     creator.baseUri(),
                     "POST",
                     "/api/run/command",
-                    "x".repeat(1_048_577)
+                    CONTEXT
             );
 
-            assertThat(response.statusCode()).isEqualTo(413);
-            assertThat(response.body()).contains("\"code\":\"REQUEST_TOO_LARGE\"");
+            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(404, "{\"status\":\"not-found\"}");
         }
     }
 
     @Test
-    void oversizedPreviewContextIsRejectedBeforeForwarding() throws Exception {
+    void creatorDoesNotExposeATraceExecutionEndpoint() throws Exception {
         try (CreatorServer creator = start(directory.resolve("project.json"))) {
             final HttpResponse<String> response = request(
                     creator.baseUri(),
                     "POST",
-                    "/api/preview/command/lowercase-text",
-                    "x".repeat(1_048_577)
+                    "/api/trace/command",
+                    CONTEXT
             );
 
-            assertThat(response.statusCode()).isEqualTo(413);
+            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(404, "{\"status\":\"not-found\"}");
+        }
+    }
+
+    @Test
+    void exampleRelayRejectsALiteralParentPathSegment() throws Exception {
+        try (CreatorServer creator = startJourney()) {
+            final String response = rawGet(creator.baseUri(), "/api/examples/../metrics");
+
+            assertThat(response)
+                    .contains(" 404 ", "{\"status\":\"not-found\"}")
+                    .doesNotContain("metric_counter_bytes");
+        }
+    }
+
+    @Test
+    void exampleRelayRejectsAnEncodedParentPathSegment() throws Exception {
+        try (CreatorServer creator = startJourney()) {
+            final String response = rawGet(creator.baseUri(), "/api/examples/%2e%2e/metrics");
+
+            assertThat(response)
+                    .contains(" 404 ", "{\"status\":\"not-found\"}")
+                    .doesNotContain("metric_counter_bytes");
         }
     }
 
@@ -2350,6 +2251,16 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
             assertThat(response.headers().firstValue("Content-Type"))
                     .contains("text/html; charset=utf-8");
             assertThat(response.body()).contains("<title>Railix Creator</title>");
+        }
+    }
+
+    @Test
+    void rootEmbedsItsFaviconWithoutASecondHttpRequest() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("project.json"))) {
+            final HttpResponse<String> response = request(creator.baseUri(), "GET", "/", "");
+
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains("<link rel=\"icon\" href=\"data:image/svg+xml;base64,");
         }
     }
 
@@ -2428,6 +2339,35 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
+    void browserOnlyRendersApplicationOwnedExampleViews() throws Exception {
+        try (CreatorServer creator = start(directory.resolve("project.json"))) {
+            final HttpResponse<String> response = request(
+                    creator.baseUri(),
+                    "GET",
+                    "/app.js",
+                    ""
+            );
+
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains(
+                    "fetch(\"/api/examples/status\"",
+                    "fetch(\"/api/examples/coverage\"",
+                    "function readExampleProjection(path, signal)"
+            ).doesNotContain(
+                    "step_start",
+                    "step_result",
+                    "trace_error",
+                    "readTraceProjection",
+                    "readSelectedStep",
+                    "applyTraceChanges",
+                    "exampleRoot(",
+                    "exampleContext(",
+                    "writePath("
+            );
+        }
+    }
+
+    @Test
     void staticResourceRejectsUnsupportedMethod() throws Exception {
         try (CreatorServer creator = start(directory.resolve("project.json"))) {
             final HttpResponse<String> response = request(
@@ -2453,38 +2393,20 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
-    void runToStoppedDevelopmentApplicationIsUnavailable() throws Exception {
+    void stoppedDevelopmentApplicationExamplesAreUnavailable() throws Exception {
         try (CreatorServer creator = startJourney()) {
             final long pid = number(application(creator.baseUri()), "pid");
             stop(pid);
 
             final HttpResponse<String> response = request(
                     creator.baseUri(),
-                    "POST",
-                    "/api/run/command",
-                    CONTEXT
+                    "GET",
+                    "/api/examples",
+                    ""
             );
 
             assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
-                    .containsExactly(503, "{\"status\":\"unavailable\"}");
-        }
-    }
-
-    @Test
-    void previewToStoppedDevelopmentApplicationIsUnavailable() throws Exception {
-        try (CreatorServer creator = startJourney()) {
-            final long pid = number(application(creator.baseUri()), "pid");
-            stop(pid);
-
-            final HttpResponse<String> response = request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/preview/command/lowercase-text",
-                    CONTEXT
-            );
-
-            assertThat(response).extracting(HttpResponse::statusCode, HttpResponse::body)
-                    .containsExactly(503, "{\"status\":\"unavailable\"}");
+                    .containsExactly(503, "{\"reason\":\"application\",\"status\":\"unavailable\"}");
         }
     }
 
@@ -2540,6 +2462,18 @@ abstract class CreatorServerE2eSupport {
         }
     }
 
+    static String rawGet(final URI baseUri, final String path) throws IOException {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(baseUri.getHost(), baseUri.getPort()));
+            socket.setSoTimeout((int) Duration.ofSeconds(15).toMillis());
+            socket.getOutputStream().write(("GET " + path + " HTTP/1.1\r\n"
+                    + "Host: " + baseUri.getHost() + ':' + baseUri.getPort() + "\r\n"
+                    + "X-Railix-Creator-Token: " + tokenOrIncorrect(baseUri) + "\r\n"
+                    + "Connection: close\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+            return new String(socket.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
     static HttpResponse<String> creatorMutation(
             final URI baseUri,
             final String contentType
@@ -2566,6 +2500,23 @@ abstract class CreatorServerE2eSupport {
         return (RailixValue.ObjectValue) object(
                 request(baseUri, "GET", "/api/application", "").body()
         );
+    }
+
+    static RailixValue.ObjectValue examples(final URI baseUri) throws Exception {
+        return object(request(baseUri, "GET", "/api/examples", "").body());
+    }
+
+    static HttpResponse<String> awaitExampleView(final URI baseUri, final String id) throws Exception {
+        final long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+        RailixValue.ObjectValue state;
+        do {
+            state = examples(baseUri);
+            if (number(state, "completed") == 1) {
+                return request(baseUri, "GET", "/api/examples/" + id + "/view", "");
+            }
+            Thread.sleep(20);
+        } while (System.nanoTime() < deadline);
+        throw new AssertionError("Example did not complete: " + state);
     }
 
     static RailixValue.ObjectValue object(final String source) {
@@ -2800,57 +2751,4 @@ abstract class CreatorServerE2eSupport {
         );
     }
 
-    CreatorServer startFallibleJourney() throws IOException {
-        final Path project = directory.resolve("project.json");
-        Files.writeString(project, CreatorProjects.fallibleNumber(), StandardCharsets.UTF_8);
-        return start(project);
-    }
-
-    HttpResponse<String> primitivePreview(
-            final String primitive,
-            final String inputs,
-            final String value
-    ) throws Exception {
-        final Path project = directory.resolve("project.json");
-        Files.writeString(project, primitiveProject(primitive, inputs, value), StandardCharsets.UTF_8);
-        try (CreatorServer creator = start(project)) {
-            return request(
-                    creator.baseUri(),
-                    "POST",
-                    "/api/preview/command/apply",
-                    "{\"payload\":{\"value\":" + value + "}}"
-            );
-        }
-    }
-
-    static String primitiveProject(
-            final String primitive,
-            final String inputs,
-            final String value
-    ) {
-        return """
-                {
-                  "format":1,
-                  "id":"creator-primitive-proof",
-                  "nodes":[
-                    {"id":"app","use":"railix.app","inputs":{}},
-                    {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{
-                      "name":"example","payload":[],"context":{"payload":{"value":%s}}
-                    }]},
-                    {"id":"apply","use":"railix.field-manipulation","inputs":{
-                      "field":["context","result"],
-                      "value":[{"option":"field","inputs":{
-                        "source":["context","payload","value"]
-                      }}],
-                      "steps":[{"use":"%s","inputs":%s}]
-                    }}
-                  ],
-                  "links":[
-                    {"from":"app.start","to":"command"},
-                    {"from":"command.next","to":"apply"},
-                    {"from":"apply.next","to":"end"}
-                  ]
-                }
-                """.formatted(value, primitive, inputs);
-    }
 }

@@ -2,6 +2,7 @@ package dev.nanonative.railix.creator;
 
 import dev.nanonative.railix.core.project.CompileResult;
 import dev.nanonative.railix.core.value.RailixData;
+import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 
 import java.io.ByteArrayOutputStream;
@@ -13,6 +14,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -29,14 +31,16 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
-/** One Creator-owned development JVM. */
+/** Creator-owned lifecycle handle for one application-owned development JVM. */
 final class DevelopmentApplication implements AutoCloseable {
     private static final int OUTPUT_LIMIT = 16_384;
     private static final int CONTROL_FRAME_LIMIT = 128;
     private static final int ACCEPT_POLL_MILLIS = 250;
     private static final int FRAME_READ_MILLIS = 1_000;
     private static final int RESPONSE_LIMIT = RailixData.DEFAULT_MAX_SOURCE_BYTES;
+    private static final int OBSERVATION_RESPONSE_LIMIT = RESPONSE_LIMIT * 16;
     private static final Duration READY_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(12);
@@ -44,6 +48,7 @@ final class DevelopmentApplication implements AutoCloseable {
     private final String token;
     private final Process process;
     private final OutputStream ownership;
+    private final Socket activationCallback;
     private final Thread outputThread;
     private final ApplicationBuilder.Artifact artifact;
     private final URI baseUri;
@@ -51,15 +56,19 @@ final class DevelopmentApplication implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Object requestLock = new Object();
     private final Object closeLock = new Object();
+    private final ReentrantLock catalogLock = new ReentrantLock();
+    private Response metricCatalog;
     private final Map<Long, ProcessHandle> ownedProcesses = new LinkedHashMap<>();
     private boolean cleanupComplete;
     private boolean drainAttempted;
+    private boolean activated;
     private int activeRequests;
 
     private DevelopmentApplication(
             final String token,
             final Process process,
             final OutputStream ownership,
+            final Socket activationCallback,
             final Thread outputThread,
             final ApplicationBuilder.Artifact artifact,
             final URI baseUri,
@@ -68,10 +77,12 @@ final class DevelopmentApplication implements AutoCloseable {
         this.token = token;
         this.process = process;
         this.ownership = ownership;
+        this.activationCallback = activationCallback;
         this.outputThread = outputThread;
         this.artifact = artifact;
         this.baseUri = baseUri;
         this.client = client;
+        process.onExit().thenRun(this::closeAfterExit);
     }
 
     static DevelopmentApplication start(
@@ -79,9 +90,11 @@ final class DevelopmentApplication implements AutoCloseable {
             final Path projectFile,
             final CompileResult.Compiled compiled
     ) throws IOException {
-        final ApplicationBuilder.Artifact artifact = ApplicationBuilder.build(projectFile, compiled);
+        final ApplicationBuilder.DevelopmentBuild publication = ApplicationBuilder.build(projectFile, compiled);
+        final ApplicationBuilder.Artifact artifact = publication.artifact();
         final String token = UUID.randomUUID().toString();
         Process process = null;
+        Socket activationCallback = null;
         Thread outputThread = null;
         HttpClient client = null;
         try (ServerSocket readiness = new ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))) {
@@ -97,67 +110,188 @@ final class DevelopmentApplication implements AutoCloseable {
             outputThread = Thread.ofVirtual().name("railix-development-output-" + generation).start(() ->
                     drain(owned, output)
             );
-            final int readyPort = awaitReady(readiness, token, owned, output);
-            final URI baseUri = URI.create("http://127.0.0.1:" + readyPort);
+            final Ready ready = awaitReady(readiness, token, owned, output);
+            activationCallback = ready.callback();
+            publication.close();
+            ApplicationBuilder.prune(artifact);
+            final URI baseUri = URI.create("http://127.0.0.1:" + ready.port());
             client = HttpClient.newBuilder().connectTimeout(REQUEST_TIMEOUT).build();
             return new DevelopmentApplication(
                     token,
                     process,
                     ownership,
+                    activationCallback,
                     outputThread,
                     artifact,
                     baseUri,
                     client
             );
         } catch (final IOException | RuntimeException | Error exception) {
-            rollback(process, outputThread, client, artifact, exception);
+            rollback(process, activationCallback, outputThread, client, publication, exception);
             throw exception;
         }
     }
 
-    Response run(final String trigger, final byte[] context, final boolean test) throws IOException {
-        return request("/v1/run/" + trigger, context, test);
+    DevelopmentApplication activate() throws IOException {
+        synchronized (closeLock) {
+            if (activated) {
+                return this;
+            }
+            if (closed.get() || !process.isAlive()) {
+                throw new IOException("Development application stopped before activation.");
+            }
+            ownership.write(("ACTIVATE " + token + "\n").getBytes(StandardCharsets.UTF_8));
+            ownership.flush();
+            activationCallback.setSoTimeout((int) READY_TIMEOUT.toMillis());
+            final String frame = readFrame(activationCallback.getInputStream());
+            final byte[] expected = ("ACTIVATED " + token).getBytes(StandardCharsets.UTF_8);
+            if (!MessageDigest.isEqual(expected, frame.getBytes(StandardCharsets.UTF_8))) {
+                throw new IOException("Development application returned an invalid activation frame.");
+            }
+            if (activationCallback.getInputStream().read() != -1) {
+                throw new IOException("Development application retained its activation callback.");
+            }
+            activationCallback.close();
+            if (!process.isAlive()) {
+                throw new IOException("Development application stopped during activation.");
+            }
+            activated = true;
+            return this;
+        }
     }
 
-    Response preview(
-            final String trigger,
-            final String step,
-            final byte[] context,
-            final boolean test
-    ) throws IOException {
-        return request("/v1/preview/" + trigger + "/" + step, context, test);
+    Response metrics() throws IOException {
+        return request(getMessage("/v1/metrics/application"));
     }
 
-    private Response request(final String path, final byte[] context, final boolean test) throws IOException {
+    Response metrics(final String node) throws IOException {
+        return request(getMessage("/v1/metrics/nodes/" + URLEncoder.encode(node, StandardCharsets.UTF_8)));
+    }
+
+    Response metricCatalog() throws IOException {
+        return metricCatalog(System.nanoTime() + REQUEST_TIMEOUT.toNanos());
+    }
+
+    Response metricCatalog(final long deadline) throws IOException {
+        try {
+            if (!catalogLock.tryLock(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
+                return new Response(503, "{\"status\":\"unavailable\",\"reason\":\"catalog-timeout\"}");
+            }
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return new Response(409, "{\"status\":\"cancelled\"}");
+        }
+        try {
+            if (metricCatalog != null) return metricCatalog;
+            final long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) return new Response(503, "{\"status\":\"unavailable\",\"reason\":\"catalog-timeout\"}");
+            final Response response = request(getMessage("/v1/metrics/catalog", Duration.ofNanos(remaining)));
+            if (response.status() == 200) {
+                final RailixJson.Result parsed = RailixJson.parse(response.body());
+                if (!(parsed instanceof RailixJson.Parsed json)
+                        || !(json.value() instanceof RailixValue.ObjectValue document)
+                        || !RailixValue.number(process.pid()).equals(document.values().get("application_pid"))
+                        || !(document.values().get("metrics") instanceof RailixValue.ObjectValue definitions)) {
+                    throw new IOException("Metric catalog does not identify the captured application.");
+                }
+                for (final var entry : definitions.values().entrySet()) {
+                    if (entry.getKey().isBlank()
+                            || !(entry.getValue() instanceof RailixValue.ObjectValue definition)
+                            || !(definition.values().get("aggregation") instanceof RailixValue.StringValue aggregation)
+                            || !java.util.Set.of("sum", "max", "none").contains(aggregation.value())) {
+                        throw new IOException("Metric definition has an invalid identifier or aggregation.");
+                    }
+                }
+                metricCatalog = response;
+            }
+            return response;
+        } finally {
+            catalogLock.unlock();
+        }
+    }
+
+    ObservationResponse observationQuery(final String read, final RailixValue.ObjectValue query,
+                                         final long deadline) throws IOException {
+        return observation(HttpRequest.newBuilder(baseUri.resolve("/v1/" + read + "/query"))
+                .header("Authorization", "Bearer " + token)
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofNanos(Math.max(1, deadline - System.nanoTime())))
+                .POST(HttpRequest.BodyPublishers.ofString(RailixJson.write(query)))
+                .build(), read);
+    }
+
+    ObservationResponse examples(final String path) throws IOException {
+        return observation(path.isEmpty() ? "/v1/examples" : "/v1/examples/" + path, "Example");
+    }
+
+    private ObservationResponse observation(final String path, final String subject) throws IOException {
+        return observation(getMessage(path), subject);
+    }
+
+    private ObservationResponse observation(final HttpRequest request, final String subject) throws IOException {
+        if (!acquire()) {
+            return null;
+        }
+        try {
+            return readResponse(request, OBSERVATION_RESPONSE_LIMIT, "Application " + subject);
+        } catch (final InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Application " + subject + " observation was interrupted.", exception);
+        } finally {
+            release();
+        }
+    }
+
+    private Response request(final HttpRequest request) throws IOException {
         if (!acquire()) {
             return new Response(503, "{\"status\":\"unavailable\"}");
         }
         try {
-            final HttpRequest request = HttpRequest.newBuilder(baseUri.resolve(path))
-                    .timeout(REQUEST_TIMEOUT)
-                    .header("Authorization", "Bearer " + token)
-                    .header("Content-Type", "application/json")
-                    .header("X-Railix-Test", Boolean.toString(test))
-                    .POST(HttpRequest.BodyPublishers.ofByteArray(context))
-                    .build();
-            try {
-                final HttpResponse<java.io.InputStream> response = client.send(
-                        request,
-                        HttpResponse.BodyHandlers.ofInputStream()
-                );
-                try (var body = response.body()) {
-                    final byte[] bytes = body.readNBytes(RESPONSE_LIMIT + 1);
-                    if (bytes.length > RESPONSE_LIMIT) {
-                        return new Response(502, "{\"status\":\"invalid\",\"message\":\"Application response exceeded 1048576 bytes.\"}");
-                    }
-                    return new Response(response.statusCode(), new String(bytes, StandardCharsets.UTF_8));
-                }
-            } catch (final InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                return new Response(409, "{\"status\":\"cancelled\"}");
-            }
+            final ObservationResponse response = readResponse(request, RESPONSE_LIMIT, "Application");
+            return new Response(response.status(), new String(response.body(), StandardCharsets.UTF_8));
+        } catch (final InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return new Response(409, "{\"status\":\"cancelled\"}");
         } finally {
             release();
+        }
+    }
+
+    private HttpRequest getMessage(final String path) {
+        return getMessage(path, REQUEST_TIMEOUT);
+    }
+
+    private HttpRequest getMessage(final String path, final Duration timeout) {
+        return HttpRequest.newBuilder(baseUri.resolve(path))
+                .header("Authorization", "Bearer " + token)
+                .timeout(timeout)
+                .GET()
+                .build();
+    }
+
+    private ObservationResponse readResponse(final HttpRequest request, final int limit, final String subject)
+            throws InterruptedException {
+        if (Thread.interrupted()) {
+            throw new InterruptedException();
+        }
+        final CompletableFuture<HttpResponse<byte[]>> pending = client.sendAsync(
+                request, HttpResponse.BodyHandlers.limiting(HttpResponse.BodyHandlers.ofByteArray(), limit));
+        final Duration timeout = request.timeout().orElse(REQUEST_TIMEOUT);
+        try {
+            // HttpRequest.timeout ends after headers; this deadline also covers the bounded body.
+            final HttpResponse<byte[]> response = pending.get(timeout.toNanos(), TimeUnit.NANOSECONDS);
+            return new ObservationResponse(response.statusCode(),
+                    response.headers().firstValue("Content-Type").orElse("application/json; charset=utf-8"),
+                    response.body());
+        } catch (final ExecutionException | TimeoutException failure) {
+            final String reason = failure instanceof TimeoutException
+                    ? "timed out after " + timeout.toMillis() + " ms."
+                    : "was incomplete or exceeded " + limit + " bytes.";
+            return new ObservationResponse(502, "application/json; charset=utf-8",
+                    ("{\"message\":\"" + subject + " response " + reason + "\","
+                            + "\"status\":\"invalid\"}").getBytes(StandardCharsets.UTF_8));
+        } finally {
+            pending.cancel(true);
         }
     }
 
@@ -202,11 +336,20 @@ final class DevelopmentApplication implements AutoCloseable {
                 return;
             }
             closed.set(true);
-            if (!drainAttempted) {
-                interrupted |= drainRequests();
-                drainAttempted = true;
-            }
             capture(process, ownedProcesses);
+            try {
+                client.shutdownNow();
+            } catch (final RuntimeException exception) {
+                failure = merge(failure, exception);
+            }
+            try {
+                activationCallback.close();
+            } catch (final IOException exception) {
+                failure = merge(failure, new IllegalStateException(
+                        "Development application activation callback did not close.",
+                        exception
+                ));
+            }
             try {
                 ownership.close();
             } catch (final IOException exception) {
@@ -215,17 +358,17 @@ final class DevelopmentApplication implements AutoCloseable {
                         exception
                 ));
             }
-            if (!terminate(process, ownedProcesses)) {
+            if (!drainAttempted) {
+                interrupted |= drainRequests();
+                drainAttempted = true;
+            }
+            final boolean processTerminated = terminate(process, ownedProcesses);
+            if (!processTerminated) {
                 failure = merge(failure, new IllegalStateException(
                         "Development application process " + process.pid() + " did not terminate."
                 ));
             }
             interrupted |= Thread.interrupted();
-            try {
-                client.shutdownNow();
-            } catch (final RuntimeException exception) {
-                failure = merge(failure, exception);
-            }
             try {
                 client.close();
             } catch (final RuntimeException exception) {
@@ -241,6 +384,15 @@ final class DevelopmentApplication implements AutoCloseable {
                         "Development application output reader did not terminate."
                 ));
             }
+            if (processTerminated) {
+                try {
+                    ApplicationBuilder.cleanRuntime(artifact);
+                } catch (final IOException exception) {
+                    failure = merge(failure, new IllegalStateException(
+                            "Generated application runtime files could not be deleted.", exception
+                    ));
+                }
+            }
             if (failure == null) {
                 cleanupComplete = true;
             }
@@ -251,6 +403,14 @@ final class DevelopmentApplication implements AutoCloseable {
         }
         if (failure != null) {
             throw failure;
+        }
+    }
+
+    private void closeAfterExit() {
+        try {
+            close();
+        } catch (final RuntimeException failure) {
+            System.err.println("Cannot clean stopped development application: " + failure.getMessage());
         }
     }
 
@@ -300,7 +460,7 @@ final class DevelopmentApplication implements AutoCloseable {
         );
     }
 
-    private static int awaitReady(
+    private static Ready awaitReady(
             final ServerSocket readiness,
             final String token,
             final Process process,
@@ -325,20 +485,23 @@ final class DevelopmentApplication implements AutoCloseable {
             )));
             try {
                 final Socket connection = readiness.accept();
-                try (connection) {
-                    if (!connection.getInetAddress().isLoopbackAddress()) {
-                        continue;
-                    }
+                boolean retained = false;
+                try {
                     connection.setSoTimeout((int) Math.max(1, Math.min(
                             FRAME_READ_MILLIS,
                             TimeUnit.NANOSECONDS.toMillis(remaining)
                     )));
                     final int port = readyPort(readFrame(connection.getInputStream()), expectedToken);
                     if (port > 0) {
-                        return port;
+                        retained = true;
+                        return new Ready(port, connection);
                     }
                 } catch (final IOException | RuntimeException ignoredInvalidFrame) {
                     // Invalid local callbacks cannot consume the one authenticated readiness slot.
+                } finally {
+                    if (!retained) {
+                        connection.close();
+                    }
                 }
             } catch (final SocketTimeoutException ignoredPoll) {
                 // Recheck deadline and child liveness.
@@ -348,18 +511,26 @@ final class DevelopmentApplication implements AutoCloseable {
 
     private static String readFrame(final InputStream input) throws IOException {
         final ByteArrayOutputStream frame = new ByteArrayOutputStream(CONTROL_FRAME_LIMIT);
+        boolean invalid = false;
         for (int index = 0; ; index++) {
             final int next = input.read();
             if (next < 0) {
                 throw new IOException("Readiness callback ended before a complete frame.");
             }
             if (next == '\n') {
+                if (invalid) {
+                    throw new IOException("Readiness callback frame is invalid.");
+                }
                 return frame.toString(StandardCharsets.UTF_8);
             }
-            if (index == CONTROL_FRAME_LIMIT || next < 0x20 || next > 0x7e) {
+            if (index > CONTROL_FRAME_LIMIT) {
                 throw new IOException("Readiness callback frame is invalid.");
             }
-            frame.write(next);
+            if (index == CONTROL_FRAME_LIMIT || next < 0x20 || next > 0x7e) {
+                invalid = true;
+            } else if (!invalid) {
+                frame.write(next);
+            }
         }
     }
 
@@ -515,11 +686,25 @@ final class DevelopmentApplication implements AutoCloseable {
 
     private static void rollback(
             final Process process,
+            final Socket activationCallback,
             final Thread outputThread,
             final HttpClient client,
-            final ApplicationBuilder.Artifact artifact,
+            final ApplicationBuilder.DevelopmentBuild publication,
             final Throwable failure
     ) {
+        final ApplicationBuilder.Artifact artifact = publication.artifact();
+        try {
+            publication.close();
+        } catch (final IOException cleanup) {
+            failure.addSuppressed(cleanup);
+        }
+        if (activationCallback != null) {
+            try {
+                activationCallback.close();
+            } catch (final IOException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+        }
         if (client != null) {
             try {
                 client.shutdownNow();
@@ -532,6 +717,7 @@ final class DevelopmentApplication implements AutoCloseable {
                 failure.addSuppressed(cleanup);
             }
         }
+        boolean terminated = process == null;
         if (process != null) {
             final Map<Long, ProcessHandle> owned = new LinkedHashMap<>();
             capture(process, owned);
@@ -540,7 +726,8 @@ final class DevelopmentApplication implements AutoCloseable {
             } catch (final IOException cleanup) {
                 failure.addSuppressed(cleanup);
             }
-            if (!terminate(process, owned)) {
+            terminated = terminate(process, owned);
+            if (!terminated) {
                 failure.addSuppressed(new IOException(
                         "Development application process " + process.pid() + " did not terminate."
                 ));
@@ -557,7 +744,14 @@ final class DevelopmentApplication implements AutoCloseable {
                 Thread.currentThread().interrupt();
             }
         }
-        if (!artifact.reused()) {
+        if (process != null && terminated) {
+            try {
+                ApplicationBuilder.cleanRuntime(artifact);
+            } catch (final IOException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+        }
+        if (terminated && !artifact.reused()) {
             try {
                 ApplicationBuilder.delete(artifact);
             } catch (final IOException cleanup) {
@@ -567,6 +761,12 @@ final class DevelopmentApplication implements AutoCloseable {
     }
 
     record Response(int status, String body) {
+    }
+
+    record ObservationResponse(int status, String contentType, byte[] body) {
+    }
+
+    private record Ready(int port, Socket callback) {
     }
 
     private record Join(boolean complete, boolean interrupted) {
