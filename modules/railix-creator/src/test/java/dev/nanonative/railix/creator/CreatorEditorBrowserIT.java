@@ -91,14 +91,17 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
                 }
                 """);
         page.mouse().click(point.get(0).doubleValue(),point.get(1).doubleValue());
+        page.waitForFunction("() => !state.editorController && state.selection.type === 'step'");
         page.locator("#inspector").waitFor();
         openInspectorTab("overview");
-        page.locator(".selection-portrait canvas").waitFor();
-        final double portraitWidth=page.locator(".selection-portrait canvas").boundingBox().width;
+        final double portraitWidth=((Number)page.waitForFunction("""
+                () => document.querySelector('.selection-portrait canvas')?.getBoundingClientRect().width || false
+                """).jsonValue()).doubleValue();
         page.locator("#zoom-in").click();
         awaitScene();
-        page.locator(".selection-portrait canvas").waitFor();
-        assertThat(page.locator(".selection-portrait canvas").boundingBox().width).isEqualTo(portraitWidth);
+        assertThat(((Number)page.waitForFunction("""
+                () => document.querySelector('.selection-portrait canvas')?.getBoundingClientRect().width || false
+                """).jsonValue()).doubleValue()).isEqualTo(portraitWidth);
         Files.writeString(theme.resolve("atlas.json"), """
                 {"version":1,"sprites":{"step":{"file":"../outside.svg","frames":1,"scale":1,"anchorX":0,"anchorY":0,"period":1000}}}
                 """);
@@ -1757,6 +1760,9 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         Files.writeString(sounds.resolve("working.json"), score.formatted(60));
         Files.writeString(sounds.resolve("uncovered.json"), score.formatted(36));
         openProject(choiceProject().replace("\"value\":\"deny\"", "\"value\":\"allow\""));
+        selectWorldNode("command");
+        page.locator("#dock-example").selectOption("0");
+        page.locator("#close-inspector").click();
         page.locator("#open-settings").click();
         page.locator("#settings-sound-tab").click();
         page.waitForFunction("() => !document.querySelector('#music-play').disabled");
@@ -1768,6 +1774,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         page.keyboard().press("Escape");
         page.evaluate("() => state.world.focus('matched')");
         awaitScene();
+        page.waitForFunction("() => document.querySelector('.machine[data-station-id=matched]')?.dataset.coverage === 'selected'");
         page.locator("[data-select-node=matched]").click();
         page.waitForFunction("() => Math.abs(state.audio.effectSession?.voices[0].voice.frequency.value - 261.6256) < .01");
         page.locator("#close-inspector").click();
