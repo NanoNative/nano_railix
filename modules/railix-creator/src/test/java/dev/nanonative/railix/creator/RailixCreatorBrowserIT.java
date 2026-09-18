@@ -455,6 +455,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
+    @Timeout(180)
     void editingOneOfSixThousandStepsTransfersOnlyThatStep() {
         openProject(deepBranchProject(6_000));
         selectWorldNode("step-3000");
