@@ -96,6 +96,8 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         page.locator(".selection-portrait canvas").waitFor();
         final double portraitWidth=page.locator(".selection-portrait canvas").boundingBox().width;
         page.locator("#zoom-in").click();
+        awaitScene();
+        page.locator(".selection-portrait canvas").waitFor();
         assertThat(page.locator(".selection-portrait canvas").boundingBox().width).isEqualTo(portraitWidth);
         Files.writeString(theme.resolve("atlas.json"), """
                 {"version":1,"sprites":{"step":{"file":"../outside.svg","frames":1,"scale":1,"anchorX":0,"anchorY":0,"period":1000}}}
@@ -1223,7 +1225,9 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
                   window.fetch = async (...args) => {
                     const response = await fetch.apply(window, args);
                     const url = new URL(String(args[0]), location.href);
-                    if (url.pathname === '/api/editor' && url.searchParams.get('node') === 'command') {
+                    // Hover reads omit group; hold only the actual selection response.
+                    if (url.pathname === '/api/editor' && url.searchParams.get('node') === 'command'
+                        && url.searchParams.has('group')) {
                       const body = await response.text();
                       response.text = async () => body;
                       window.editorStatus = response.status;
@@ -1238,7 +1242,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
             page.locator("[data-select-node=command]").click();
             page.waitForFunction("() => Boolean(window.releaseEditor)");
             assertThat(page.evaluate("() => window.editorStatus")).isEqualTo(200);
-            page.locator("#graph").click(new com.microsoft.playwright.Locator.ClickOptions().setPosition(8, 220));
+            clearWorldSelection();
             page.evaluate("() => window.restoreEditor()");
             page.waitForFunction("() => !state.editorController");
             assertThat(page.locator("#inspector").getAttribute("data-selection")).isBlank();
@@ -1481,7 +1485,8 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void minimapRetainsSelectionWhenTravellingAndClearsItOnDeselect() {
         openProject(choiceProject());
-        page.locator("[data-world-id=matched]").click();
+        selectWorldNode("matched");
+        awaitScene();
         com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.locator(".map-cells i[data-selected=true]")).hasCount(1);
         assertThat(page.locator(".map-cells i[data-selected=true]").evaluate("element=>getComputedStyle(element,'::after').content")).isEqualTo("none");
         final var outline = page.locator(".map-camera").boundingBox();
@@ -2086,6 +2091,8 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
         assertThat(page.evaluate("() => state.world.query")).isEqualTo(camera);
         page.locator("#dock-example").selectOption("1");
+        awaitScene();
+        assertThat(page.evaluate("() => state.world.query")).isEqualTo(camera);
         final var panel = page.locator("#trigger-example").boundingBox();
         final var trigger = page.locator("#world-plane .machine[data-station-id=command] .building-volume").first().boundingBox();
         assertThat(trigger.x).isCloseTo(before.x, org.assertj.core.data.Offset.offset(.5));
@@ -2279,7 +2286,8 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         waitForText("#build-state", "Built");
         clickOverview("#add-trigger");
         page.locator("[data-add-step='railix.trigger.cli']").click();
-        page.locator("#dock-example").waitFor();
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(
+                page.locator("#selection-overview .dock-heading small")).hasText("Trigger");
         clickOverview("#add-next-step");
         page.locator("#step-search").fill("field manipulation");
         page.locator("[data-add-step='railix.field-manipulation']").click();

@@ -3610,14 +3610,17 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
     @Test
     void reloadRestoresTheDeterministicFitInsteadOfPersistingTheCamera() {
         openProject(deepBranchProject(4));
-        final String fitted = canvasStyle();
+        awaitScene();
+        final String fitted = (String) page.evaluate("() => state.world.query");
         page.locator("#zoom-in").click();
         page.locator("#zoom-in").click();
-        waitForCanvasChange(fitted);
+        page.waitForFunction("fitted => state.world.query !== fitted", fitted);
 
         page.reload();
         waitForText("#build-state", "Built");
-        assertThat(canvasStyle()).isEqualTo(fitted);
+        awaitScene();
+        // Observation labels can change height without changing the camera.
+        assertThat(page.evaluate("() => state.world.query")).isEqualTo(fitted);
     }
 
     @Test
@@ -6433,7 +6436,7 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void awaitScene() {
-        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving !== 'true'");
+        page.waitForFunction("() => state.world && document.querySelector('#graph').dataset.cameraMoving !== 'true'");
         page.evaluate("""
                 async () => {
                   await state.world.refresh();
@@ -6445,6 +6448,13 @@ abstract class RailixCreatorBrowserSupport {
                   && document.querySelector('#graph').dataset.cameraMoving !== 'true'
                   && document.querySelector('#graph').dataset.sceneRevision === String(state.world.scene.revision)
                   && document.querySelectorAll('#world-labels > *').length > 0
+                """);
+        // A focus refresh can start a camera flight; fetch its final viewport before measuring it.
+        page.evaluate("""
+                async () => {
+                  await state.world.refresh();
+                  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                }
                 """);
     }
 
