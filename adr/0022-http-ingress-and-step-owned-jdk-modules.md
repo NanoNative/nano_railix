@@ -42,7 +42,9 @@ The implementation uses only JDK APIs and keeps HTTP transport code isolated in 
 
 The current HTTP layer is intentionally smaller than a framework. It supports JSON-first
 request and response bodies, string fallback for non-JSON UTF-8 bodies, multi-value headers, status
-mapping, invalid JSON/UTF-8 rejection, and a bounded body size.
+mapping, invalid JSON/UTF-8 rejection, and a 1 MiB limit for request bodies and client response
+bodies. Oversized client responses use the existing transport-failure result (status `0`).
+Interrupting the server closes its listener and cancels owned request tasks.
 
 ## Rejected Alternatives
 
@@ -51,5 +53,5 @@ mapping, invalid JSON/UTF-8 rejection, and a bounded body size.
 
 ## Deferred Decisions
 
-Route-level metadata, TLS, auth, streaming, multipart forms, request size configuration, raw response bodies 
-and JDK module metadata  for third-party Step bundles remain separate decisions.
+Route-level metadata, TLS, auth, streaming, multipart forms, request size configuration, raw response bodies
+and JDK module metadata for third-party Step bundles remain separate decisions.

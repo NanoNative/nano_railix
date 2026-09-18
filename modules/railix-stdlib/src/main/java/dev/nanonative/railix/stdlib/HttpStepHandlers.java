@@ -44,19 +44,39 @@ public final class HttpStepHandlers {
             return StepResult.outcome(input.primaryOutcome()).write("target", input.value("request"));
         }
 
+        /**
+         * Serves the application's HTTP source until the calling thread is interrupted.
+         *
+         * @param application compiled application; Java null is rejected
+         * @param host bind address; null or blank selects loopback
+         * @param port listening port from 0 through 65535; zero selects a free port
+         * @return 130 on interruption, or 2 when binding or port validation fails
+         * @throws IllegalArgumentException when the application is Java null
+         */
         public static int serve(final RuntimeApplication application, final String host, final int port) {
             if (application == null) {
                 throw new IllegalArgumentException("HTTP application cannot be Java null.");
             }
+            if (port < 0 || port > 65535) {
+                System.err.println("HTTP port must be from 0 through 65535.");
+                return 2;
+            }
             final String bindHost = host == null || host.isBlank() ? "127.0.0.1" : host;
             try {
                 final HttpServer server = HttpServer.create(new InetSocketAddress(bindHost, port), 0);
-                server.createContext("/", exchange -> handle(application, exchange));
-                server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
-                server.start();
-                System.out.println("Railix HTTP http://" + bindHost + ":" + server.getAddress().getPort() + "/");
-                Thread.currentThread().join();
-                return 0;
+                try (final var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                    try {
+                        server.createContext("/", exchange -> handle(application, exchange));
+                        server.setExecutor(executor);
+                        server.start();
+                        System.out.println("Railix HTTP http://" + bindHost + ":" + server.getAddress().getPort() + "/");
+                        Thread.currentThread().join();
+                        return 0;
+                    } finally {
+                        server.stop(0);
+                        executor.shutdownNow();
+                    }
+                }
             } catch (final InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 return 130;
@@ -172,8 +192,7 @@ public final class HttpStepHandlers {
     public static final class Client implements StepHandler {
         @Override
         public StepResult run(final StepInput input) throws InterruptedException {
-            try {
-                final java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
+            try (final var client = java.net.http.HttpClient.newHttpClient()) {
                 final RailixValue body = input.optionalValue("body").orElse(RailixValue.nullValue());
                 final String method = input.string("method").toUpperCase(java.util.Locale.ROOT);
                 final HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(input.string("url")))
@@ -193,7 +212,8 @@ public final class HttpStepHandlers {
                 }
                 final HttpResponse<String> response = client.send(
                         builder.build(),
-                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+                        HttpResponse.BodyHandlers.limiting(
+                                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8), HTTP_BODY_LIMIT)
                 );
                 return StepResult.outcome(input.primaryOutcome()).output("response", RailixValue.object(Map.of(
                         "status", RailixValue.number(response.statusCode()),

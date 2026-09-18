@@ -2,6 +2,8 @@ package dev.nanonative.railix.creator;
 
 import dev.nanonative.railix.core.project.CompileResult;
 import dev.nanonative.railix.core.project.ProjectCompiler;
+import dev.nanonative.railix.core.project.RuntimeApplication;
+import dev.nanonative.railix.core.project.WorkflowRuntime;
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.value.RailixJson;
@@ -10,6 +12,7 @@ import dev.nanonative.railix.core.value.ValueShape;
 import dev.nanonative.railix.development.ArtifactLease;
 import dev.nanonative.railix.stdlib.StandardLibrary;
 import dev.nanonative.railix.stdlib.StandardStepHandlers;
+import dev.nanonative.railix.stdlib.HttpStepHandlers;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
@@ -18,6 +21,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -492,14 +496,82 @@ final class GeneratedApplicationE2eTest {
         assertThat(result).isEqualTo(new ProcessResult(0, "\"--railix-http\""));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"-1", "65536", "not-a-port"})
+    void productionHttpLauncherRejectsInvalidPorts(final String port) throws Exception {
+        final String source = httpEchoProject();
+        final Path jar = productionArtifact(project(directory.resolve("invalid-port"), source), source).jar();
+
+        final ProcessResult result = runJar(jar, "--railix-http", "127.0.0.1", port);
+
+        assertThat(result.exitCode()).isEqualTo(2);
+        assertThat(result.output()).contains("HTTP port").doesNotContain("Exception", "\tat ");
+    }
+
+    @Test
+    void interruptedHttpServerReleasesItsListener() throws Exception {
+        final Process process = new ProcessBuilder(
+                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-cp", System.getProperty("java.class.path"), InterruptedHttpServer.class.getName()
+        ).redirectErrorStream(true).start();
+        try {
+            assertThat(process.waitFor(10, TimeUnit.SECONDS)).as("interrupted HTTP server exits").isTrue();
+            final String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertThat(process.exitValue()).as(output).isZero();
+            assertThat(output).contains("listener released");
+        } finally {
+            process.destroyForcibly();
+            assertThat(process.waitFor(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1048576, 1048577})
+    void productionHttpClientBoundsResponseBodies(final int size) throws Exception {
+        final var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            try (exchange) {
+                final byte[] bytes = "x".repeat(size).getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, bytes.length);
+                exchange.getResponseBody().write(bytes);
+            }
+        });
+        server.start();
+        try {
+            final String source = """
+                    {"format":1,"id":"http-client","nodes":[
+                      {"id":"app","use":"railix.app","inputs":{}},
+                      {"id":"cli","use":"railix.trigger.cli","inputs":{},"examples":[{"name":"default","payload":[]}]},
+                      {"id":"fetch","use":"railix.http.client","inputs":{"url":"http://127.0.0.1:%d/"},
+                       "receives":{"body":["context","result"]},"returns":{"response":["context","result"]}}
+                    ],"links":[{"from":"app.start","to":"cli"},{"from":"cli.next","to":"fetch"},
+                               {"from":"fetch.next","to":"end"}]}
+                    """.formatted(server.getAddress().getPort());
+            final Path jar = productionArtifact(project(directory.resolve("http-client"), source), source).jar();
+
+            final ProcessResult result = runJar(jar);
+
+            assertThat(result.exitCode()).isZero();
+            final var response = CreatorServerE2eSupport.object(result.output());
+            assertThat(response.values().get("status")).isEqualTo(RailixValue.number(size <= 1048576 ? 200 : 0));
+            if (size <= 1048576) {
+                assertThat(response.values().get("body")).isEqualTo(RailixValue.string("x".repeat(size)));
+            } else {
+                assertThat(((RailixValue.StringValue) response.values().get("body")).value().length()).isLessThan(1024);
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
     @Test
     void productionJarServesTheCompiledHttpFlow() throws Exception {
         final String source = httpEchoProject();
         final Path project = project(directory.resolve("http-echo"), source);
         final ApplicationBuilder.Artifact artifact = productionArtifact(project, source);
 
-        try (HttpProcess server = startHttpJar(artifact.jar())) {
-            final HttpResponse<String> response = HttpClient.newHttpClient().send(
+        try (HttpProcess server = startHttpJar(artifact.jar()); HttpClient client = HttpClient.newHttpClient()) {
+            final HttpResponse<String> response = client.send(
                     HttpRequest.newBuilder(server.uri().resolve("/echo?source=test"))
                             .timeout(Duration.ofSeconds(20))
                             .header("Content-Type", "application/json")
@@ -513,7 +585,7 @@ final class GeneratedApplicationE2eTest {
             assertThat(response.headers().allValues("x-railix-test"))
                     .containsExactly("first", "second");
 
-            final HttpResponse<String> invalidJson = HttpClient.newHttpClient().send(
+            final HttpResponse<String> invalidJson = client.send(
                     HttpRequest.newBuilder(server.uri().resolve("/echo"))
                             .timeout(Duration.ofSeconds(20))
                             .header("Content-Type", "application/json")
@@ -524,7 +596,7 @@ final class GeneratedApplicationE2eTest {
             assertThat(invalidJson.statusCode()).isEqualTo(400);
             assertThat(invalidJson.body()).contains("HTTP_JSON_INVALID");
 
-            final HttpResponse<String> oversized = HttpClient.newHttpClient().send(
+            final HttpResponse<String> oversized = client.send(
                     HttpRequest.newBuilder(server.uri().resolve("/echo"))
                             .timeout(Duration.ofSeconds(20))
                             .POST(HttpRequest.BodyPublishers.ofString("x".repeat(1024 * 1024 + 1)))
@@ -534,7 +606,7 @@ final class GeneratedApplicationE2eTest {
             assertThat(oversized.statusCode()).isEqualTo(413);
             assertThat(oversized.body()).contains("HTTP_BODY_TOO_LARGE");
 
-            final HttpResponse<String> invalidUtf8 = HttpClient.newHttpClient().send(
+            final HttpResponse<String> invalidUtf8 = client.send(
                     HttpRequest.newBuilder(server.uri().resolve("/echo"))
                             .timeout(Duration.ofSeconds(20))
                             .POST(HttpRequest.BodyPublishers.ofByteArray(new byte[] {(byte) 0xc3, 0x28}))
@@ -1836,15 +1908,18 @@ final class GeneratedApplicationE2eTest {
                 StandardCharsets.UTF_8
         ));
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            final String line = executor.submit(reader::readLine).get(20, TimeUnit.SECONDS);
-            if (line == null || !line.startsWith("Railix HTTP ")) {
+            try {
+                final String line = executor.submit(reader::readLine).get(20, TimeUnit.SECONDS);
+                if (line == null || !line.startsWith("Railix HTTP ")) {
+                    throw new IOException("Generated HTTP application did not report readiness: " + line);
+                }
+                return new HttpProcess(process, URI.create(line.substring("Railix HTTP ".length())));
+            } catch (final Exception failure) {
+                // Release readLine before closing its executor, including readiness timeouts.
                 process.destroyForcibly();
-                throw new IOException("Generated HTTP application did not report readiness: " + line);
+                process.waitFor(5, TimeUnit.SECONDS);
+                throw failure;
             }
-            return new HttpProcess(process, URI.create(line.substring("Railix HTTP ".length())));
-        } catch (final Exception failure) {
-            process.destroyForcibly();
-            throw failure;
         }
     }
 
@@ -1893,10 +1968,35 @@ final class GeneratedApplicationE2eTest {
     private record ProcessResult(int exitCode, String output) {
     }
 
+    public static final class InterruptedHttpServer {
+        public static void main(final String[] arguments) throws Exception {
+            final int port;
+            try (var socket = new java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())) {
+                port = socket.getLocalPort();
+            }
+            final RuntimeApplication application = new RuntimeApplication() {
+                @Override
+                public String projectId() { return "http-interruption"; }
+
+                @Override
+                public WorkflowRuntime.SourceResult runSource(final String source, final Map<String, RailixValue> values) {
+                    throw new AssertionError("No request should be dispatched by this shutdown check.");
+                }
+            };
+            Thread.currentThread().interrupt();
+            final int result = HttpStepHandlers.Trigger.serve(application, "127.0.0.1", port);
+            if (result != 130 || !Thread.interrupted()) throw new AssertionError("Cancellation must be preserved.");
+            try (var socket = new java.net.ServerSocket(port, 1, java.net.InetAddress.getLoopbackAddress())) {
+                System.out.println("listener released");
+            }
+        }
+    }
+
     private record HttpProcess(Process process, URI uri) implements AutoCloseable {
         @Override
-        public void close() {
+        public void close() throws InterruptedException {
             process.destroyForcibly();
+            assertThat(process.waitFor(5, TimeUnit.SECONDS)).as("HTTP child exits").isTrue();
         }
     }
 

@@ -2959,7 +2959,8 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         page.evaluate("() => state.world.fit()");
         awaitScene();
 
-        page.locator("#add-trigger").click();
+        clickOverview("#add-trigger");
+        assertThat(page.locator("[data-add-step='railix.trigger.http']").isEnabled()).isTrue();
         page.locator("#step-search").fill("cli");
         assertThat(page.locator("[data-add-step='railix.trigger.cli']").count()).isZero();
         assertThat(page.locator(".trigger-node").count()).isEqualTo(1);
