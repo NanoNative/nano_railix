@@ -1265,7 +1265,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         assertThat(page.locator("#open-settings").evaluate("element => getComputedStyle(element).color"))
                 .as("Unselected HUD controls retain readable foreground contrast")
                 .isEqualTo("rgb(220, 230, 227)");
-        page.locator("[data-world-id=one]").click();
+        selectWorldNode("one");
         final var configure = page.locator("#open-settings");
         assertThat(configure.textContent()).isBlank();
         assertThat(configure.getAttribute("title")).isEqualTo("Settings");

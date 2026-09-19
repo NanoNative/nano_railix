@@ -1446,6 +1446,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void gridKeepsItsDominantSpacingAcrossAZoomBoundary() {
         openProject(fourStepProject());
+        awaitScene();
         page.evaluate("() => state.world.zoom(.9999 / Number(new URLSearchParams(state.world.query).get('scale')))");
         awaitScene();
         final double before = ((Number) page.evaluate("() => parseFloat(getComputedStyle(document.querySelector('.world-floor')).getPropertyValue('--grid'))")).doubleValue();
