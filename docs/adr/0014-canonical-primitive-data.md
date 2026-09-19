@@ -46,11 +46,11 @@ format guessing, separate format-specific trees, and implicit lossy conversion a
 
 ## Evidence
 
-- [`RailixValue.java`](../modules/railix-core/src/main/java/dev/nanonative/railix/core/value/RailixValue.java)
-- [`RailixData.java`](../modules/railix-core/src/main/java/dev/nanonative/railix/core/value/RailixData.java)
-- [`RailixJson.java`](../modules/railix-core/src/main/java/dev/nanonative/railix/core/value/RailixJson.java)
-- [`RailixYaml.java`](../modules/railix-core/src/main/java/dev/nanonative/railix/core/value/RailixYaml.java)
-- [`RailixXml.java`](../modules/railix-core/src/main/java/dev/nanonative/railix/core/value/RailixXml.java)
+- [`RailixValue.java`](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/value/RailixValue.java)
+- [`RailixData.java`](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/value/RailixData.java)
+- [`RailixJson.java`](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/value/RailixJson.java)
+- [`RailixYaml.java`](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/value/RailixYaml.java)
+- [`RailixXml.java`](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/value/RailixXml.java)
 
 ## Deferred Decisions
 
