@@ -1,0 +1,9 @@
+{
+  "name":"Railix Foundry",
+  "defaultVariant":"canvas",
+  "variants":[
+    {"id":"canvas","name":"Renderer Canvas","description":"High-resolution shared graphics and animated transport, up to two pixels per screen point.","stylesheet":"variants/canvas/style.css","renderer":"canvas","atlas":"variants/canvas/atlas.json"},
+    {"id":"hq","name":"Renderer CSS","description":"Complete CSS materials and individually styleable building faces.","stylesheet":"variants/hq/style.css"}
+  ],
+  "files":["variants/canvas/app.png","variants/canvas/trigger.png","variants/canvas/step.png","variants/canvas/region.png","variants/canvas/branch.png","variants/canvas/scenery-ridge.png","variants/canvas/scenery-grove.png","variants/canvas/scenery-basin.png"]
+}

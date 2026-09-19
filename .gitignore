@@ -30,9 +30,11 @@ out/
 /brainstorming/
 /railix.project.json
 /railix.creator.json
+railix.creator.json
 .railix/
 
 # Local instructions
 CLAUDE.md
 AGENTS.md
+!/AGENTS.md
 .claude
