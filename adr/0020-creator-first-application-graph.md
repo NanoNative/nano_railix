@@ -244,17 +244,20 @@ deterministic temporary regions; those regions are not metadata.
 The continuous-world contract replaces scaling a complete DOM graph: zooming into a region reveals
 its recursively indexed children at stable coordinates in the same world. An aggregate is not a
 collapse control. The Creator server owns a derived scene index; viewport requests return bounded
-visible stations and rails. Native WebGL2 draws geometry, with a bounded DOM overlay for labels,
-keyboard focus, and selection. The previous all-card renderer is not retained as a fallback.
-Unsupported WebGL2 reports a visible capability error.
+visible stations and rails. CSS geometry or native Canvas sprites render a fixed orthographic world,
+with a bounded, screen-facing DOM overlay for labels, keyboard focus, and selection. The CSS camera
+matrix also determines hit-testing and inverse-projected viewport requests. The previous graphics
+renderer is not retained. CSS remains available without Canvas or WebGL support.
 Automatic corridors occupy compact outer footprints so nearby junctions and terminals remain
 readable. Membership edits and deletion retain a surviving selection as the navigation target.
-Appearance-only edits do not move the camera. Station labels take priority over route captions.
+Appearance-only edits do not move the camera. Selected stations and application/trigger labels have
+priority; route captions receive space before ordinary station details when possible.
 Invisible spatial-index containers preserve one affine layout transform instead of independently
 insetting child rows. This keeps a final Step and its terminal on the same horizontal lane.
-Step and Group metadata share optional `shape` (rectangle, ellipse, triangle, diamond), `aspect`
+Step and Group metadata share optional `shape` (rectangle, ellipse, triangle, diamond, hexagon,
+event, storage, subsystem), `aspect`
 (width / height from 0.5 to 4), and `roundness` (0 to 50 percent of the shorter rectangle side).
-Defaults remain implicit: rectangle, 2.625, and 0. Glyphs fit the same bounded station envelope;
+Defaults remain implicit: rectangle, 1, and 12. Glyphs fit the same bounded station envelope;
 expanded group boundaries still enclose their contents. Fill, outline, port intersections, and
 pointer hits use the same bounded contour; small shapes retain external accessible labels.
 Status marks fit an inscribed content rectangle, including narrow shapes, rather than using fixed
@@ -321,6 +324,9 @@ UTC observation time and monotonic elapsed time identify each read. The frontend
 counter deltas and derived rates/averages, not the producer or Creator Java backend. A new display
 of existing measurements requires no generated-artifact change. New instrumentation still does.
 Read-side descriptors do not change counter storage, generated Step calls or per-request recording.
+The App/JVM/System comparison matches metric identifiers after removing their scope prefix,
+together with their catalog unit. Unavailable cells stay empty; differing units and duplicate
+identities within one scope retain separate rows. JVM heap limits remain JVM measurements.
 
 Revealing a newly added Step uses the existing focus request directly, superseding an unfinished
 older focus. It does not wait for an unrelated scene refresh or add a second camera-state mechanism.
@@ -328,12 +334,14 @@ The route index aggregates connections between visible representatives and skips
 If the connection budget would be exceeded, the frontier coarsens and is queried again: connections
 are never truncated at a traversal count. Multiple hidden outcomes sharing one visible connection
 are unlabeled until zoom reveals them. This changes presentation only, not routing or execution.
-Motion uses fresh measured counter deltas, a logarithmically bounded rail density, and at most
-30 animated draws per second. Animation-only draws reuse the vertex buffer and labels, updating
-one shader uniform; no per-request object or execution path is added. A three-second freshness
-window prevents stalled polling from implying continuing traffic. Zero/unavailable rates, hidden
-pages, reduced motion, graphics-context loss and disposal stop motion. Selected Example paths
-remain independent of animation and sampled timing heat.
+Transport uses fresh measured counter deltas and logarithmically bounded carrier density in CSS
+transform animations; no per-request object or execution path is added. A three-second freshness
+window prevents stalled polling from implying continuing traffic. Hidden pages and disposal stop
+animation. The September 10 decision keeps operational motion independent of browser preferences;
+explicit Creator preferences for motion, locale and time display remain planned. Selected Example paths have separate blue replay motion, independent of
+traffic counters; `None` clears replay. Replay never invokes the application. Idle machines glow,
+known never-executed machines are dim, and unavailable or disabled metrics remain unknown rather
+than implying zero executions. App-to-Trigger connections represent power, not transport.
 On shared trunks, inactive rails are painted before active rails and the selected Example is
 painted last, so another branch cannot erase its path. This is paint priority, not an aggregate
 trunk counter or a per-request particle model.
@@ -350,9 +358,12 @@ Region counters sum contained Step series without adding flow totals again. Disa
 zero executions and absent duration samples are different states. Heat compares sampled mean
 duration within the visible scene; sampled averages are not percentiles and latency alone does not
 prove a bottleneck. Connection ingress is available only where the one-parent graph and enabled
-destination metrics establish it; terminal outcomes are not inferred. Connection width uses exact
-counter differences between two current-PID, current-viewport snapshots, never a retained Example path
-as continuing traffic. Portable icons are deduplicated in each visible scene, never repeated per node.
+destination metrics establish it; terminal throughput is not inferred. A successful selected Example
+can replay through a terminal when its reached source has exactly one outgoing connection. Multiple
+unknown terminal choices remain unknown; this presentation inference adds no runtime measurement.
+Transport speed responds logarithmically to exact counter differences between two current-PID,
+current-viewport snapshots, never counting a retained Example path as continuing traffic.
+Portable icons are deduplicated in each visible scene, never repeated per node.
 
 Examples enter at Trigger output and use ordinary compiled routing, handlers and metrics. The
 generator does not skip measurement based on the test flag. Optional tracing adds observation,
@@ -419,9 +430,331 @@ child PID, graph counts, and last successful build time.
 The current Creator authors every declared route of fixed- or authored-outcome ordinary control
 Steps. Layout follows deterministic declared-outcome depth-first order through an explicit
 traversal stack, so nesting depth does not consume the JavaScript call stack. One ephemeral camera
-provides continuous pan, cursor-anchored zoom, Fit, group focus, and scale-based detail. All add,
-edit, delete, grouping, and appearance controls live in the Inspector rather than graph nodes.
+provides continuous pan, cursor-anchored zoom, Home at the App at 50%, group focus, and scale-based detail. The canvas
+fills the workspace. Selecting a Step or group opens its Inspector. Overview shows the selection
+type, name, a building portrait, construction and available observations. The portrait reuses the
+machine geometry/material path at a fixed size, without a second scene, camera or ticker. Inputs,
+Appearance and Groups have separate tabs; Focus and Enter Group are header actions, Delete a footer
+action. Removing the icon chooser leaves stored icons readable and removes the boot-time icon catalog
+request. The footer abbreviates Example coverage to coverage and omits the normal observations
+connection message, retaining unavailable-state diagnostics. The searchable construction
+tray previews a connection without editing the project. Nodes contain no action buttons. Group
+selection is separate from Group Manager; camera focus and wheel zoom reveal the same nested graph.
+Collapsed stations use a stable layout-derived `station_scale`, calculated in the bounded Creator
+scene response separately from a group's content bounds. Shapes fit this footprint without a
+viewport-wide collision rescale or screen-size cap: culling a neighbor cannot resize an unchanged
+machine, and increasing camera scale visibly increases both machines and belts between detail levels.
+Top-level flows retain their natural compacted layout extent. The former 960-unit width and capped
+flow height shrank the flow independently of App and Trigger, producing inconsistent building sizes.
+Only nested group contents shrink within their parent footprint; spatial querying and recursive
+aggregation still bound the response when the outer world grows. No coordinates are persisted.
+The foundation fits a 136-unit maximum dimension before local station/camera scaling. Changing its
+contour does not change the building body's size; explicit aspect changes stay inside that frame.
+Foundry elevations derive from the shared body size, rather than independent fixed-height meshes.
+Focus frames the actual machine body with surrounding space, not only its compact layout bounds.
+Its one-shot scene response supplies the minimum scale required by every enclosing unentered region.
+Considering only the focused Part allowed a leaf to collapse back into its group when the following
+viewport request omitted `focus`. Entered regions still use the existing local 50% entry scale.
+CSS top and side surfaces are reused by visible identity and released when culled.
+Native controls own input; no independent rendering ticker or graphics framework is included.
+Neither surfaces nor camera state are persisted, and the generated application includes none of
+these Creator resources. Connection sockets and belt direction derive from the
+graph. Example selection is anchored beside its Trigger when an unobstructed position is available;
+values and counters update independently in Overview. Optional timing labels never take
+priority over selectable station names.
+Region expansion is driven by the readable size of its children, not the parent's longest edge.
+Automatic hierarchy partitions have up to eight children, rather than repeated binary partitions.
+Only the deepest expanded automatic boundaries are shown; named boundaries remain authored context.
+Counts of Steps and contained named-group occurrences come from the existing scene index, not runtime
+instrumentation or new persisted metadata. Radar follows the camera using a
+fixed cell budget and existing topology; it does not acquire global metrics. Keyboard commands are
+scoped away from text editing, composition and OS modifiers. Search options use arrows and native
+button activation. This applies the contextual controls and removal of duplicate entrypoints from
+[Factorio's GUI review](https://www.factorio.com/blog/post/fff-363), and the attribute/comparison/value
+structure of [Finder criteria](https://support.apple.com/en-gb/guide/mac-help/mh15155/mac), without
+introducing another saved model or a Choice-specific execution path.
+The world and label surfaces use non-scrollable clipping; browser focus scrolling must not move
+the diagram independently of the camera or displace its controls.
 Diagnostics and malformed route states appear on their owning node, outcome, or group.
+Containing-region IDs derive from existing scene parent links, not a second membership model.
+Pending edits and diagnostics propagate to the containing occurrence, not every use of a group name.
+The Inspector scrolls its fields independently of its fixed navigation, tabs and Close control.
+Selection may be empty. Floor clicks cancel pending selection loads and remove
+both Step and group highlights; pan gestures do not. Escape dismisses the topmost open control before
+the Inspector and selection. Example choice remains independent, and the existing metrics poll reads
+application counters when no individual Step is selected. Navigation retains the same application's
+latest process snapshot until its next read; failures or a different application PID invalidate it.
+HUD controls use a shared CSS material and one non-semantic symbol element with pseudo-elements;
+native buttons retain labels, focus, disabled and pressed behavior. State-specific styling wins over
+the base material. This adds fixed HUD geometry, not per-Step objects, timers, or graphic dependencies.
+Settings and Locate use symbols with accessible names/tooltips. A single Settings entrypoint opens
+Appearance, Sound and Music tabs, not the selected Step. Sound/music HUD controls toggle playback.
+One CSS cursor leaf follows mouse
+input over the world only; it adds no animation loop and is released with the renderer. Material
+depth uses a lit edge and dark return, not stacked outlines. Replay changes chevron color/motion,
+not its directional geometry. Tread seams and chevrons use the track pseudo-elements; one additional
+strip per visible run supplies raised cargo roofs and their visible return face. Hidden faces are
+omitted for the fixed camera. A world-coordinate phase keeps collinear spans continuous, and all
+layers advance together. Long physical runs are clipped to the camera vicinity without changing
+their topology or world phase. Idle/working illumination animates opacity on a decorative leaf,
+not border colors on machine materials. CSS stepped easing limits transport updates to approximately
+24 per second, power pulses to 10 and idle glow to 5; transport layers share the same cadence and phase.
+This reduces repeated composition without a JavaScript ticker or disabling operational motion.
+Label collision indexing also clips its cell ranges to the viewport: an enlarged off-screen machine
+must not allocate cells for its entire projected body. These are visible-work bounds, not Step limits.
+Group reveals use a 180 ms translation-only transition; camera input cancels only the tracked
+active reveals, without querying animations for every machine. Station size does not change during
+these transitions. Machine meshes and conveyor materials retain fixed geometry and scale uniformly
+in X, Y and Z with the camera; camera changes do not rebuild side faces or resize tread textures.
+Camera-only frames now transform one `.world-factory` inside `#world-plane`, retaining casing,
+socket and conveyor materials. Themes must use descendant selectors rather than assuming these
+objects are direct plane children, and preserve this wrapper's 3D transform hierarchy.
+The cache contains only the bounded scene and a 25% viewport margin on each side. New geometry,
+appearance updates, detail changes, leaving the margin or crossing a scale octave reconcile it;
+identical scene responses do not. Screen-space labels, picking, terrain and the camera-dependent
+insertion preview stay current without moving every factory material. There is no idle render loop,
+new dependency, persisted layout or generated-application cost.
+Only casing faces facing the fixed CSS camera are allocated. Conveyor and socket identities use world coordinates,
+not screen coordinates, so a pan/zoom does not destroy and recreate their animations.
+Shared-bus normalization applies only to parallel inlet/outlet legs, classified from source route
+coordinates. Lateral L outlets keep their own destination legs; projected floating-point equality
+must not decide topology. The native multi-outcome example exposed this rounding-dependent defect
+even when the smaller connection fixtures passed.
+Joined intervals include through-ports in their T/L masks and
+retain selected rim colors. Belt overruns hide beneath casings and junctions; sockets do not paint
+opaque strips over the transport. Shape changes adjust socket contacts, not the layout's branch axis.
+None of this adds per-request objects, generated-application instrumentation or persisted geometry.
+The visual vocabulary follows the consistent-control and in-context-action principles in
+[Factorio's GUI design](https://www.factorio.com/blog/post/fff-238) and
+[GUI tileset](https://www.factorio.com/blog/post/fff-243), without importing game assets.
+
+Creator owns recursive local theme discovery under its home `themes` directory and the Settings
+selector. Theme, reduced motion and audio preferences live in `creator.settings.json` under Creator
+home, shared across projects. The embedded theme and scores remain selectable/downloadable even if
+local files use the same names. Catalog keys distinguish embedded and local scores; event mappings
+and playlists use those keys rather than frontend file lists. `GET/POST /api/settings` uses content
+revisions, bounded reads, atomic replacement and a nonblocking file lock for competing Creator writers.
+Conflicts are explicit, not silent last-writer wins. Settings are read at startup/menu opening, not
+polled. There is no lock, asset, endpoint or settings logic in generated applications. Historical
+project theme metadata is preserved but not used for global selection. `created_at` remains only in
+Creator metadata. New projects receive the date; existing unknown dates are not invented. Scene decoration
+is deterministic from this seed, viewport-bound and never persisted. CSS is loaded as text under
+a same-origin page policy; no remote imports/assets, script evaluation, or symlink traversal are allowed.
+Groups remain visual summaries of underlying Step metrics, never runtime spans or execution units.
+Group timing is the sum of individual sampled means, not the pooled total/sample ratio and not a
+measured passage. Creator reads at most 512 member series per page through the application's existing
+metric query. A counter-index cursor binary-searches interval membership, avoiding rescanning all
+members for every page. Only visible groups retain one partial scalar sum and sample count; pages
+are sequential with a 100 ms yield, separate from traffic observations, and complete sums refresh
+after ten seconds. Scene revision and application PID invalidate them. Missing samples stay explicit.
+
+The minimap reuses one coarse scene per revision, bins it into at most 32 by 20 CSS cells, and moves
+the existing camera. Its read has a five-second deadline and bounded retry, independent of traffic.
+Machine centers and routed belt segments have distinct cell geometry. Current viewport observations
+and known diagnostics provide state overlays; unobserved areas remain neutral. Selection retains
+one world position/identity and colors its cell, without a second selection box or navigation history.
+Red is reserved for real errors; timing uses blue
+logarithmic shading, not a utilization or bottleneck claim. No extra metrics poll or generated-app
+change is required. It never materializes the full functional graph or persists a second layout.
+Scenery uses seeded multi-cell districts (ridges, groves, basins) and the machine projection;
+distance thins a fixed lattice without reseeding positions. The existing coarse overview supplies
+world-space factory plots and transport clearance once per scene revision. Expanding a group or
+changing visible labels cannot evict a structure, and close zoom no longer deletes all scenery.
+Relief is culled by its projected bounds, including structures whose origin is just outside the view.
+Continuous ground regions fade at detail boundaries; their
+density follows viewport area and their individual CSS surface stays below 2048 pixels, not a
+project-size limit. Only the visible triangular faces of the terrain peaks are
+rendered for the fixed camera. Districts and exclusion are presentation, never functional obstacles.
+This adopts coherent terrain and exclusion passes from [Factorio terrain generation](https://www.factorio.com/blog/post/fff-401)
+and [Age of Empires tree placement](https://support.ageofempires.com/hc/en-us/articles/5026862103188-Placing-Trees).
+The [Factorio map-color work](https://www.factorio.com/blog/post/fff-332) supports distinct entity/transport
+marks; no game assets or simulation mechanics are imported.
+
+Audio is owned solely by Creator. Effects default on; quiet music waits for a user gesture and
+respects a persisted mute. Editable MML text and existing JSON inputs parse into one validated score
+model for selection effects, ambient loops and music; no code evaluation, binary media or second
+synthesizer is supported. Instruments reuse their voices throughout their notes. Hidden pages suspend
+the music context and its scheduler, preserving the track, position and shuffle queue without changing
+the playback preference. Returning resumes only enabled, non-manually-paused music. Effects and
+previews release their contexts on hide; Stop and page disposal also release music. Explicit Pause
+suspends music without advancing the playlist. Settings edits bounded score files; the first music subfolder names its group.
+`GET /api/sounds` lists scores, diagnostics and a revision; authenticated `POST /api/sounds` saves,
+deletes or installs defaults. Revisions hash the current local sources; mutations use a shared
+filesystem lock and reject stale revisions across Creator instances and external edits observed
+before saving. An unsaved browser draft retains the revision it loaded, even when the catalog
+refreshes. Reselecting a file explicitly loads its latest content before editing again.
+Pinned directory handles, no-follow reads and atomic replacement avoid path traversal and partial
+updates. Default installation uses CREATE_NEW, never replacing a user's file. Missing music-group
+directories are created by moving an owned temporary directory into the pinned parent; unsupported
+cross-filesystem moves fail explicitly instead of falling back to symlink-following path writes.
+Read and delete requests never create directories. Legacy score-to-text conversion is owned once by
+the server catalog boundary, shared by installation and editing; the browser only plays validated scores.
+Malformed local scores do not hide healthy entries. Score size, track count, repeat depth/count,
+envelopes and note duration are bounded at ingress. MML repeats remain a compact tree: playback
+walks them lazily instead of expanding or capping the total played notes. Legacy version-1 JSON
+keeps its 256-note bound. These are audio resource bounds, not project-size limits.
+One scheduler uses the audio clock for music, previews and ambience, queues onsets only two seconds
+ahead and refills every 250 ms. A started note retains its full envelope. Late callbacks skip expired
+notes rather than producing a burst and resume the remainder of a still-active sustained note without
+moving its original end; missed percussion attacks are discarded. A stall beyond the lookahead can
+still interrupt audio before the callback recovers. The future event queue is bounded by this window;
+catching up after a foreground stall still traverses the elapsed notes.
+Pause suspends the clock and refill timer, and Resume restarts
+the same cursors. Looping tracks restart on a shared score boundary. Stop cancels the timer.
+Optional named MML controls `decay`, `sustain` and `cutoff` shape tonal envelopes and filtered
+timbres; `detune`, `drive`, `pan` and `echo` add paired pitched oscillators, saturation, stereo
+placement and two finite beat-synced delay taps without feedback. Ingress rejects duplicate,
+unknown, out-of-range and nonfinite controls. Filters and oscillators are retained per voice;
+panning and delays are shared per track, never created per note. Echo routing reserves output
+headroom and completion includes its tail. Stop disconnects all voices and routing nodes.
+Scores without these controls keep their prior sound. No dependency is added.
+Listening checks render the same validated scores and scheduler using controlled offline-clock
+advancement, not a separate audio asset or alternate playback path. Eight full-length embedded
+instrumentals replace the short previews; their existing paths remain stable for saved selections.
+No per-Step audio source, media endpoint or audio code is added to the generated application.
+Volume controls display percentages while retaining the existing 0-1 preference values. Music uses
+that value directly as its master gain; score mixing already supplies headroom. No second attenuation
+cap is applied. Full-track render checks include the music master at 100%, not only the raw synth.
+
+Long sequential regions retain forward lanes; visual row folding and its special U-turn routing
+were removed after user review. Actual branches provide additional lanes. Partitioning retains
+consecutive Steps; spatial sorting must not invent cross-region traffic. Internal padding is applied
+once, not accumulated at each partition. Content extents and collapsed station footprints are distinct.
+Choice sockets face opposite lateral lanes, centred on the immediate destination stations rather
+than weighted by downstream leaf counts.
+
+Explicitly entered regions are transient camera scopes. The existing scene query accepts `inside`;
+the same interval index bounds membership and routing without a second graph. Small scopes expand
+their automatic partitions, while large scopes retain the existing visible-work budgets. The scene
+provides one entry station, independent of viewport culling. Its station scale defines the group's
+local zoom reference: entry frames that station at 50%, not all contents at an absolute world scale.
+Zoom-out preserves the scope; leaving restores the parent camera and reference. Framing excludes
+the HUD/Inspector, reuses the Trigger popover's control bounds and examines only the fixed UI
+obstacles, never every Step. No scope is persisted.
+Trigger hover reads only its editor neighborhood after a short dwell, aborts stale reads, and never
+changes selection or executes an Example. A focused chooser retains ownership across native popup
+hover loss; blur returns ownership to the normal hover lifecycle. Cargo uses `overflow: clip` on the belt run: raised faces
+remain 3D, but animated overlength cannot spill outside the transport surface.
+
+The Foundry and Classic themes share one scene, transport and camera renderer. Foundry replaces
+icon plates with bounded CSS solids selected by existing node kinds and routing outcomes; a group
+contains three symbolic decorations regardless of its Step count. No theme changes the functional
+graph, metrics or generated artifact. Built-in CSS is copied through the existing local-theme boundary;
+local files with matching IDs replace catalog entries, not duplicate them. An embedded catalog supplies
+variant names and defaults. Optional sibling JSON descriptors provide the same metadata for local CSS;
+variant stylesheets are not also listed as standalone themes. Base and variant links are staged together
+before replacing the active pair. Relative PNG/SVG resources use native stylesheet URL resolution.
+Authenticated catalog discovery grants a separate read-only asset cookie, scoped to the asset route;
+the existing header token remains required for other APIs and all writes. No functional artifact changes.
+Installation uses create-new writes and never replaces local work. Discovery occurs on Settings refresh,
+not on rendering frames or each asset request; assets use bounded, symlink-free reads. Theme changes refresh the
+camera/material projection without restarting the application. Higher decorative faces use browser
+surface picking even after pointer capture returns the event to the canvas. The theme declares a
+conservative height envelope for culling; no per-machine layout reads are added to camera frames.
+Foundry transport follows whole connection paths through elbows, clipped only beyond the viewport
+overscan. Per-run loops visibly teleported parcels at intermediate junctions and were removed.
+The three visible cube faces are projected once from the fixed camera into one CSS gradient surface;
+generated CSS transform keyframes retain the path and speed without per-frame JS work. Parcel count
+depends on visible path length (64 material units per parcel), not request rate. Loop endpoints extend
+under stations, rather than ending in the exposed belt span. CSS owns motion and pauses through the
+existing observation/replay/visibility controls. No runtime metric or endpoint is introduced.
+Native review found high renderer/GPU-process CPU with motion enabled, despite good frame times.
+The renderer now separates ground transport, screen-space cargo and raised stations into independent
+compositing contexts. The outer world is flat; the ground and building layers each retain real CSS
+extrusions under the same `--world-camera` projection. Cargo is projected once when preparing its
+path, instead of sharing 3D depth sorting with every building face. Buildings cover arrivals at their
+casings, and expanded group boundaries remain on the ground. This ordered-layer contract does not
+model elevated belts crossing over buildings. No per-frame JavaScript, per-Step wrappers, persistent
+coordinates or generated-application code are added. Four additional containers serve the whole
+visible scene; stable parts move between layers on region expansion and all layers release on disposal.
+Disposal also clears container references: removing the root from the document alone retained detached
+parcels and machines while the old renderer remained reachable. A weak-reference/forced-GC regression
+checks release after the browser has processed detachment, with the disposed renderer still alive.
+Camera batches transform all three layers together; the parcel translation includes the camera's
+projection origin so zoom and pan cannot detach cargo from its conveyors.
+Viewport queries include the ground beneath elevated roofs and the foundation overhang, scaled to
+visible station units (the nearest known station when crossing empty ground), not the top-level unit.
+Only the bounded scene is examined, without DOM layout reads. Top-level overhang at deep zoom queried
+thousands of offscreen Steps and could hide the focused leaf behind constrained aggregates. The
+6,003-node public browser navigation regression now retains focus after the camera settles; 60 measured
+navigation requests had p95 1.795 ms and at most 155 world/label DOM elements in its visited views.
+Ground-only queries lost a still-visible group during a large wheel zoom, preventing entry; roof
+overhang remains necessary and is covered by the existing real-wheel regression.
+Explicit promotion, per-building isolation wrappers and mask-free gradient triangulation did not
+produce sufficient overall improvement in the probes and were not retained. Traced compositing costs
+improved with layer separation. A short native sample with Example replay enabled measured 36-42%
+CPU for the shared graphics process and 15-30% for the page renderer; these are not GPU utilization
+figures or a matched before/after thermal test. Dense-scene and sustained fan behavior remain unproven;
+reduced motion is not a performance fix. Foundry Portals and Groups share the existing body-size
+rule; Portal upright and field heights are proportional to that size instead of a separate oversized mesh.
+The initial shell-only PNG probe reduced CSS compositing cost but did not meet smooth-frame targets.
+It is superseded by production-selectable Renderer Canvas (default) and Renderer CSS, each at high
+quality without additional quality tiers. Their existing descriptor IDs are `canvas` and `hq`.
+One scene, camera, routing, observation and interaction owner remains in RailixWorld;
+RailixCanvas only draws the bounded visible jobs. No PixiJS, custom executable renderer, runtime
+endpoint or generated-application asset is added.
+
+Canvas decodes PNG/SVG once per theme load, builds shared bitmaps and alpha picking masks, and caches
+ground and building layers. One requestAnimationFrame loop paints treads, continuous route parcels,
+switch frames and powered lights. It stops on hidden pages, empty views or disposal. Group borders use a constant
+screen-space stroke, not the aggregate's station scale. The Inspector uses the loaded sprite without
+another animation loop. Static caches and all bitmap references are released on theme replacement.
+Each drawing surface has an 8-megapixel budget; Renderer Canvas uses up to two pixels per CSS point.
+Arbitrary CSS cannot alter pixels inside a sprite; materials, shared foundations and HUD stay CSS-themed.
+Sprite images must be authored for the fixed theme camera. PNG/SVG are asset formats, not separate engines.
+Foundry scenery also uses the atlas: three static plot images replace repeated CSS faces in Canvas
+variants and are painted into the existing ground cache before transport. World-seeded placement,
+clearance and viewport thinning remain owned by RailixWorld; no scene model, extra drawing surface,
+animation loop or persisted geometry is introduced. Missing scenery sprites keep the CSS fallback.
+The images add 234,681 encoded bytes and 1,555,605 decoded pixels (5.93 MiB RGBA, excluding masks and
+browser copies). These are shared per motif, not allocated per environment building.
+
+The historical four-variant public-renderer comparison included terrain, labels, HUD and real camera calls, with
+128 visible processors, six environment plots and identical transport input. Headless Chrome 152 on this Apple M1 Max used
+ANGLE Metal at 1920x1080 and device pixel ratio 2. Two forward/reverse rounds per variant and phase
+recorded 100 frames (first 20 omitted from interval statistics), page/process CPU deltas and surfaces:
+
+| Variant | Active p95 frame interval | Renderer CPU | Graphics-process CPU | Idle p95 |
+| --- | --- | --- | --- | --- |
+| CSS Standard | 83.4-100.0 ms | 73.5-74.1% | 123.4-124.8% | 50.1-66.7 ms |
+| CSS High detail | 83.4-100.0 ms | 73.9-74.9% | 121.4-123.7% | 50.0-50.1 ms |
+| Canvas Standard | 16.7 ms | 17.4-22.0% | 15.2-16.8% | 16.7-16.8 ms |
+| Canvas High resolution | 16.8 ms | 15.8-17.3% | 14.9-16.6% | 16.8 ms |
+
+CPU percentages are normalized CPU seconds per wall second (100% is one core), not GPU utilization.
+Canvas uses 2.02/8.08 million pixels per surface here, about 23.1/92.5 MiB RGBA across three surfaces,
+excluding browser copies, bitmap storage and other page elements. Both retain operational animation.
+The same short navigation probe measured p95 200-450 ms for CSS, 16.7 ms for Canvas Standard and 16.8 ms for
+Canvas HQ; these single navigation rounds include reconciliation cost and do not establish an HQ
+speed advantage. Standard used less surface memory; those lower-quality options were subsequently
+removed at the user's request. Renderer Canvas corresponds to Canvas High resolution, Renderer CSS
+to CSS High detail. The remaining Canvas choice prioritizes Retina sharpness, not minimum memory.
+No sustained thermal, Safari/Firefox, million-Step or application-throughput certification follows.
+
+Latest scenery-atlas evidence: `/private/tmp/railix-scenery-retina-package-smoke.log` and
+`/private/tmp/railix-scenery-retina.jsonl`. The initial building-only run remains in
+`/private/tmp/railix-renderer-retina.jsonl`. Reproduce with
+`-Drailix.renderer.comparison=true -Drailix.browser.dpr=2` and
+`CreatorWorldBrowserIT#compareProductionVariantsWith128VisibleStations`. The comparison now discovers
+the current descriptor choices; it no longer runs the removed Standard variants.
+The original captured sprite strips can be reproduced separately with `railix.sprite.export=true`;
+no screenshot converter runs in the shipped Creator.
+Group entry closes Inspector consistently for wheel, double-click and explicit entry. A responsive
+Inspector may appear under the pointer after the first click; the browser's second-click count and
+original selection point preserve that one gesture without delaying ordinary selection. Desktop and
+narrow-screen regressions also verify that subsequent Inspector tab clicks retain their own behavior.
+
+Embedded `assets/themes/<theme>/`, `assets/sounds/` and `assets/music/<group>/` mirror the same
+relative paths under Railix home. The minimal theme catalog references each theme's own descriptor;
+the sound catalog references canonical score paths. Matching user files override individual resources,
+missing files retain embedded defaults, and installs never overwrite edits. Old mixed music folders
+and JSON scores remain read-only sources; new writes use the separate MML roots. Preferences and
+derived caches do not enter the functional project.
+The packaged-Creator extension regression starts without system Java, then adds nested CSS/PNG themes
+and sound/music MML files, edits them and rereads them through public HTTP routes. The application PID,
+functional project and Creator JAR remain unchanged. Project-local asset-root precedence is not added.
+The bounded minimap retains four
+direction bits per occupied cell so terminal marks do not imply extra branches.
 
 ### CLI Trigger
 

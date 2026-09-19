@@ -1,0 +1,3 @@
+name: Uncovered group
+tempo: 100
+sine 0.24 0.01 0.16 | o2 a@0.16 o3 e@0.16 o2 g@0.2

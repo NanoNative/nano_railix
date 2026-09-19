@@ -1,6 +1,6 @@
 # Railix II Roadmap
 
-Updated: 2026-09-10
+Updated: 2026-09-14
 
 ## Product Goal
 
@@ -76,15 +76,338 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   September 7 checkpoint, not a new certification of the scaling work below.
 - Current technical delivery: **Compiler and observation scaling; 3/3 scoped gates verified
   (100%; 0% left), locally accepted 2026-09-08. No renderer replacement is included.**
-- Scoped observation ingestion is complete. Streamed project/source processing remains open.
-  Feature work remains **5.6 Merge/fan-in, then Split and bounded Loop**.
+- Current UI preparation: **Complete scene connections and scoped application observations;
+  3/3 gates verified (100%; 0% left), locally accepted 2026-09-08. No renderer replacement is included.**
+  Streamed project/source
+  processing remains a separate million-Step compilation requirement. Feature work remains
+  **5.6 Merge/fan-in, then Split and bounded Loop**.
 - Core/base certification checkpoint: **Complete, 6/6 gates (100%; 0% left)**
 - Feature roadmap: **resumed after the 2026-08-13 core/base clean gate passed**
 - Retained incomplete item: **3. Primitive Contract And Standard Library, 4/6 complete
   (67%); 33% left**
 - Retained incomplete item: **6. Live Runtime, Operations, Bounded Work, And Permissions,
   1/6 complete (17%); 83% left**
-- Latest technical verification: **Generic Metric Contract (2026-09-10)**.
+- Previous renderer verification: **PixiJS factory renderer (2026-09-09), scoped gates verified.**
+- Current UI work: **CSS Factory World, `feature/css-factory-world`; visual acceptance pending.**
+  Accepted checkpoint counts are unchanged. Publication verification completed on **2026-09-14**;
+  the user authorized commit and push of this UI branch.
+  **Publication checkpoint:** 2,512 Java tests passed; the desktop browser suite was verified in
+  batches with corrected-case reruns (608 cases, including two expected opt-in skips). The final
+  mobile gate passed all 28 cases at 320 pixels; package and runtime-soak verification passed all
+  43 cases. The million-call runtime fixture completed with a 64 MiB heap. This is not million-Step
+  or million-request-per-second certification. Native packaging passed. Review fixed cross-Creator
+  sound-edit conflicts, stale sound-editor revisions, mismatched App/JVM/System comparison rows,
+  and missing branch labels; desktop-only assumptions in responsive tests were corrected.
+  No dependencies or generated-application changes were added. The native complex-example review
+  confirmed the metrics comparison, Home/footer/HUD, local 50% group entry, zoom-out retaining the
+  group and visible moving parcels. It reported no browser errors; project, Creator metadata and
+  application JAR hashes were unchanged. Subjective music quality and sustained thermal behavior
+  remain unverified. The initial `clean verify` was interrupted in the browser phase; later batches
+  and corrections establish this checkpoint, not an uninterrupted full-CI or aggregate coverage result.
+  Evidence: `/private/tmp/railix-ui-publication-final-verify.log`,
+  `/private/tmp/railix-ui-publication-remaining-verify.log`, `/private/tmp/railix-publication-corrections.log`,
+  `/private/tmp/railix-publication-step-labels.log`, `/private/tmp/railix-publication-final-package.log`,
+  `/private/tmp/railix-publication-package-mobile.log` (package/soak gate), and
+  `/private/tmp/railix-publication-responsive-verified.log` (final mobile gate).
+  **2026-09-12 theme variants:** embedded Foundry Standard/High detail and Classic, optional local
+  descriptors and relative CSS/PNG/SVG assets, non-overwriting installation, shared building frame,
+  and the Running HUD row are implemented. The generated application is unchanged. The initial
+  shell-only PNG experiment did not meet smooth-frame targets; the production Canvas delivery below
+  supersedes it. See ADR 0020 for measurements and limits.
+  **Verification completed 2026-09-13:** 65 scene cases, 18 theme HTTP cases, 12 targeted World cases,
+  three Settings browser cases at both 1280 and 390 pixels, and the 6,003-node/60-navigation regression
+  pass. Theme switching preserves the running application's PID and project; native packaging passes.
+  A leaf-focus/overscan defect found during review is fixed, as is literal `+` handling in asset paths.
+  Evidence: `/private/tmp/railix-theme-final-verification.log`, `/private/tmp/railix-theme-mobile-final.log`,
+  `/private/tmp/railix-focus-viewport.log`; the earlier broad renderer run is not a new full-CI certificate.
+  The native complex-example preview was restarted; project, Creator metadata and application JAR hashes
+  were unchanged. Its then-pending native visual check is superseded by the modular-renderer review below.
+  **2026-09-13 Overview:** type/name and shared-renderer building portrait, removal of the icon chooser
+  while retaining stored icons, and concise coverage/connection status pass 11 targeted desktop cases
+  and three cases at 390 pixels. Native packaging passes; the preview's three content hashes remain
+  unchanged. Evidence: `/private/tmp/railix-overview-final.log`, `/private/tmp/railix-overview-mobile.log`.
+  GPU utilization and automatic Example-input proposals are not implemented.
+  **2026-09-13 modular renderer: Implemented; visual acceptance pending.** Foundry exposes
+  Renderer Canvas (default) and Renderer CSS through the same Settings selector, each at high quality.
+  The earlier Standard variants have been removed; existing `canvas` and `hq` selections retain their IDs.
+  The two-choice selection, high-resolution Canvas default and saved CSS preference pass desktop/narrow
+  regressions. Nineteen scoped settings, extension, group-navigation and motion cases plus a packaged
+  extension check pass in `/private/tmp/railix-renderer-names-package.log` and
+  `/private/tmp/railix-renderer-names-smoke.log`. The running complex preview shows both exact labels;
+  project, metadata and generated application hashes remain unchanged. Full CI was not rerun.
+  Embedded `assets/themes/<theme>/`, `assets/sounds/` and `assets/music/<group>/` mirror Railix-home
+  extension paths; per-file overrides retain embedded fallbacks. Separate MML roots are canonical;
+  old mixed music folders and JSON scores remain read-only fallback sources. There is no project-local
+  asset-root precedence, new graphics dependency or generated-application change.
+  The production-renderer comparison uses 128 visible processors with active transport, 1920x1080,
+  DPR 2 and Chrome 152/ANGLE Metal on M1 Max. Canvas p95 frame intervals are 16.7-16.8 ms versus
+  100 ms for CSS, with substantially lower renderer/graphics-process CPU. High resolution uses four
+  times the drawing-surface memory of the former Standard tier for Retina sharpness. This does not
+  certify sustained thermals, other browsers, million-Step projects or application throughput.
+  **Verification:** 229 HTTP/workspace cases passed; Settings switching and PNG/SVG load/fallback
+  browser cases passed, including two variant cases at 390 pixels. Three freshly packaged-Creator
+  cases verify extensions without rebuilding/system Java and owned-process cleanup. The broad run's
+  remaining audio-test tab-selection failure was corrected and passed its targeted rerun. Group
+  outlines and empty-view animation-loop regressions also passed after their fixes. Zoom, motion,
+  hidden-page suspension and visible raised parcels have browser checks; full CI was not rerun.
+  Evidence: `/private/tmp/railix-modular-themes-package.log`, `/private/tmp/railix-native-package-final.log`,
+  `/private/tmp/railix-native-mobile-final.log`, `/private/tmp/railix-modular-native-package-smoke.log`;
+  measurements: `/private/tmp/railix-renderer-retina.jsonl`. ADR 0020 records reproduction and limits.
+  Final gesture review fixed the Inspector remaining open on group entry and intercepting the second
+  click on narrow screens. Four desktop/narrow gesture cases, including normal Inspector interaction,
+  pass in `/private/tmp/railix-final-gesture-package.log`; packaging succeeds. Eight other final
+  variant/zoom/motion cases passed in `/private/tmp/railix-modular-final-package.log`. Its four gesture
+  failures were a test selector for an unavailable Appearance tab on automatic sections, corrected
+  to the existing Groups tab before the passing rerun.
+  Two final packaged extension/cleanup checks pass in `/private/tmp/railix-modular-packaged-final.log`.
+  The earlier native complex-example check used Canvas Standard: 128-Step double-click entry at 50%, Home,
+  wheel zoom and visible replay parcels were inspected. No page errors or leftover test processes
+  were found. Functional project, Creator metadata and application JAR hashes remain unchanged.
+  **2026-09-13 scenery atlas: Implemented.** Renderer Canvas reuses three embedded environment images
+  through the existing atlas, resource overrides and static ground cache; CSS variants and atlases
+  without scenery entries keep their CSS environment. Coverage is plain percentage text without a bar.
+  Scoped verification covers 21 functional cases across targeted runs, Retina pixel/zoom/reload checks,
+  editable-theme installation and packaged extension loading. Two stale test assumptions were corrected:
+  selecting empty corners of isometric bounding boxes, and clicking through an open Inspector.
+  Evidence: `/private/tmp/railix-scenery-final-package.log` (17 initial passes),
+  `/private/tmp/railix-scenery-reviewed-package.log` (four corrected cases and packaging),
+  `/private/tmp/railix-scenery-retina-verified.log` (two Retina cases). The 128-processor comparison,
+  now with six image-backed environment plots, retains 16.7-16.8 ms Canvas p95 versus 83-100 ms CSS;
+  raw evidence is `/private/tmp/railix-scenery-retina.jsonl`. The packaged extension check passes in
+  `/private/tmp/railix-scenery-retina-package-smoke.log`; its two stricter scenery-test fixture failures
+  are superseded by the Retina rerun above. Browser screenshots were inspected; direct inspection of
+  the refreshed complex preview was blocked by the locked Mac. Its three content hashes are unchanged.
+  No full-CI, sustained-thermal or million-Step certification is claimed.
+  **Resumed on 2026-09-11 with permission to continue beyond the 10% usage remainder.**
+  That checkpoint was uncommitted. Inspector navigation/footer/Groups tab, radar selection and rhythmic
+  editable music have scoped tests. The remaining dense-navigation work is **Partial**.
+  **Latest user review:** straight chains replace serpentine packing. Group entry frames the first
+  Step at local 50%; leaving restores the enclosing camera/reference. A tall branching-group
+  regression caught entry on the topmost branch instead of the origin and now passes.
+  Focus keeps the Trigger Example chooser open across native-popup hover loss.
+  Creator-only MML tone controls add optional decay, sustain, cutoff, detuning, saturation,
+  stereo placement and finite echoes. After approval of Circuit Drive's sound, eight roughly
+  3.5-minute instrumental arrangements replace the short previews, with developer-humour titles
+  and no speech samples. MML playback now consumes compact repeats through a rolling audio-clock
+  window instead of expanding/capping the total notes. Full-track musical acceptance remains open.
+  The approved building direction is now **Railix Foundry**,
+  the embedded default; **Railix Classic** remains selectable. Both can be installed as editable
+  CSS copies. One renderer supplies HQ, portal, routing switch, processor and bounded group-canopy
+  solids. The shared HUD drops duplicate bevels and uses underlined Inspector tabs.
+  Scoped Foundry verification covers 65 Creator cases across world, editor and theme-protocol
+  checks. The broad run caught a narrow HUD overflow and an obsolete tab-style expectation;
+  their fixes passed the subsequent 15-case packaging run (1m54s). Six final interaction/rendering
+  checks passed in 38s. Logs: `/private/tmp/railix-foundry-package.log`,
+  `/private/tmp/railix-foundry-final.log`, `/private/tmp/railix-foundry-boundaries.log`.
+  The 128-Step navigation probe renders nine visible machines/174 plane descendants, with
+  18.1 ms frame p95 and 0.1 ms command p95; this does not close the dense 128-visible-machine issue.
+  Native review with the existing 143-node project confirmed both themes, group entry at 50%
+  and restoration of the enclosing view. Project/metadata/generated-JAR hashes are unchanged.
+  Full clean verification was not rerun; visual acceptance remains with the user.
+  **Foundry transport/radar correction:** the user review rejected the gap between the target image
+  and the retained conveyors, cargo and radar. Foundry now has finite-path three-faced cargo, conveyor
+  return walls, smaller direction marks and a round radar with directional endpoints. A browser visual
+  probe exposed flattening caused by the old clipping ancestor; finite cargo paths replace that clip
+  without allowing packages outside the run. Distant transport remains a tiled material. The 25-case
+  scoped package run passed in 2m41s (`/private/tmp/railix-foundry-transport-package.log`). This is not
+  acceptance of target-image fidelity or completion of the dense 128-visible-machine performance work.
+  Native review also exposed ignored nested keyframes: a running animation name alone did not prove
+  parcel movement. The new position-change regression failed, then passed with top-level keyframes.
+  Final package: 10 cases passed in 1m28s (`/private/tmp/railix-foundry-motion-final.log`). The active
+  renderer probe at rates 1, 100 and 1,000,000 retained 22 cubes/192 plane elements and 16.7ms frame p95;
+  these are renderer inputs, not application-throughput or dense-world certification.
+  Native verification of the 143-node project confirms changing cube positions on the selected
+  `express-batch` path and the round radar. Functional project, presentation metadata and generated-JAR
+  hashes remain unchanged. Rounded routes and full target-image detailing are not implemented here.
+  **Subsequent user review supersedes the performance impression above:** packets looped at every
+  run and the laptop's renderer/GPU-process CPU remained excessive. Whole-connection paths replace
+  those loops; a camera-projected CSS surface replaces three moving faces per packet. Portal bodies
+  now fill their foundations and the default Choice has a T footprint and raised moving tongue.
+  Old Trigger/Choice shape overrides were removed only from the review example with user permission.
+  Large animated-view CPU is still unresolved. Do not use frame p95 alone as an efficiency gate;
+  the subsequent layer-separation implementation is described below.
+  Local correction verification: 13 Creator cases and native packaging passed in 2m28s
+  (`/private/tmp/railix-paths-buildings-review.log`); the functional project and generated application
+  JAR hashes are unchanged. Temporary profiling code was removed. Reduced motion is used only as
+  a review-preview mitigation pending the renderer decision, not as a performance fix.
+  **Renderer correction (2026-09-12):** after the allowance pause, Portals and Groups now
+  share the existing body-size rule. Portal heights are proportional, not independent 84-unit uprights.
+  Ground transport, projected parcels and raised buildings use three compositing contexts without
+  changing the project, authored shape overrides or generated binary. Four containers are added per
+  renderer, not per Step; no graphics dependency or per-frame JavaScript loop is introduced.
+  The comparable 120-frame Chromium trace reduced accumulated `DirectRenderer::DrawRenderPass`
+  duration from 270,094 to 146,121 microseconds (`/private/tmp/railix-renderer-trace.log` and
+  `/private/tmp/railix-renderer-layers.log`). These nested event durations are not whole-process CPU
+  percentages. Per-building isolation and mask-free parcel triangulation were measured and removed;
+  temporary profiling code is not retained. The 22-case camera/transport/group regression run passes
+  (`/private/tmp/railix-renderer-regressions.log`); the 128-Step navigation sample has nine visible
+  machines and 18 ms frame p95. This does not certify 128 simultaneously detailed animated machines.
+  Five focused World cases and one theme-switch case also pass (`/private/tmp/railix-renderer-alignment.log`),
+  including a geometric check of parcel feet against actual conveyor projections after zoom/pan.
+  Initial scoped package verification passed 27 Creator cases plus the 8 core / 72 standard-library
+  baseline cases in 4m28s (`/private/tmp/railix-renderer-final-package.log`). Review also fixed retained
+  detached scene containers: the weak-reference GC test fails with the old references and passes
+  after disposal releases them and the browser processes detachment. An existing selection test now
+  waits for the asynchronously loaded Inspector, not just an already-selected ID. No product delay
+  was added. Full clean verification was not repeated.
+  Native review subsequently resumed with motion enabled. It exposed a second size cause: the
+  fixed 960-unit flow width and capped height compressed ordinary stations while leaving App and
+  Trigger full-sized. The natural compacted extent replaces that compression, with no endpoint or
+  persistence changes. Its API regression fails at roughly 0.63 station scale before the fix and
+  passes at 1.0 after it; all 64 scene cases pass. Two full-branch tests now query the full scene
+  rather than assuming every branch fits their former 1000-unit viewport.
+  A strong wheel zoom also exposed ground-only culling of still-visible elevated roofs. Viewport
+  queries now include the elevation and foundation overhang in the current group's local unit.
+  Four focused wheel/camera/parcel/128-Step cases pass (`/private/tmp/railix-roof-viewport.log`).
+  The narrow 390px parcel geometry check excludes offscreen overruns beneath culled machines;
+  every zoom must still test exposed onscreen parcels within the unchanged 1px tolerance.
+  Final native packaging passes 91 Creator cases (64 scene, 26 renderer, one theme editor) plus the
+  8 core / 72 standard-library baseline cases in 4m43s
+  (`/private/tmp/railix-renderer-complete-package.log`). Four additional 390px browser cases pass
+  (`/private/tmp/railix-renderer-mobile-complete.log`); wheel entry uses successive real gestures
+  because a narrow viewport starts farther from the detail boundary. The same wheel test also passes
+  again on desktop (`/private/tmp/railix-renderer-desktop-wheel-final.log`). Native review confirms entry
+  at the first of 128 Steps with local 50% zoom. The temporary viewport override was removed.
+  A nine-second native sample at 1280x900, 70% zoom, with Example replay and 27 parcels active records
+  35.5-42.1% CPU for the shared graphics process, 15.0-30.0% for the page renderer, 1.5-2.1% for Creator
+  and 0.3-0.7% for its generated application (`/private/tmp/railix-native-active-cpu.log`). This is not
+  GPU utilization or a matched comparison to the earlier 128% / 40% large-view readings. Sustained
+  thermal behavior and dense-scene capacity remain unproven. The inspection worker itself developed
+  high CPU/memory use and was reset before measurements and after UI checks. Reduced motion stays off;
+  the project, visual metadata and generated application JAR are unchanged.
+  At that checkpoint, branch `feature/css-factory-world` remained unpublished. The September 14
+  publication request subsequently authorized commit and push after verification.
+  Uniform three-axis scaling now keeps casing depth and core elevation proportional to zoom;
+  the regression failed before the correction. Belt materials retain fixed dimensions, and the
+  fixed CSS camera no longer allocates hidden casing faces. No visible Steps were removed.
+  A separate Choice defect was reproduced in the native complex example: a lateral L outlet was
+  incorrectly normalized as a central bus, with projected-coordinate rounding toggling the mistake.
+  Bus classification now uses the source route's inlet/outlet orientation. The Standard branch
+  was checked at the same camera position before and after the fix, including animated example
+  packages and the selected T-junction. The strengthened multi-outlet regression checks the
+  destination span rather than just its corner; it fails on the old classifier at outlet `two`.
+  Dense navigation p95 was 312 ms at the initial baseline, 175 ms at the previous pause, 142 ms
+  after depth/material-state correction and approximately 83 ms with normalized belt materials.
+  Hidden-face removal reduced plane descendants from 3122 to 2354; all 128 Steps remain visible.
+  These are headless measurements on a shared host, not a smooth-rendering or hardware FPS guarantee.
+  **Camera batching implemented with user approval:** one preserve-3D wrapper moves the bounded
+  visible factory. A camera-only regression went from 56 material writes to zero. Identical scene
+  responses reuse geometry; viewport overscan and scale/detail rebasing bound cached surfaces.
+  Shapes, picking, terrain, labels and insertion previews retain their coordinate contracts.
+  No renderer dependency, runtime change or hidden fallback was added. Custom themes must retain
+  the wrapper's 3D hierarchy and use descendant selectors (see ADR 0020).
+  The fresh pre-batch 128-Step run measured 91 ms frame p95 and 547 ms total JavaScript for 60
+  navigation frames; the broad batched run measured 98 ms p95 and 194 ms JavaScript, with 2355
+  descendants and all 128 Steps still rendered. Other batched runs ranged from 81 to 102 ms p95.
+  Script/style work is lower, but smooth dense navigation is **not demonstrated**; frame-pipeline
+  profiling remains open. Evidence: `/private/tmp/railix-camera-batch-red.log` and
+  `/private/tmp/railix-camera-batch-review.log` (41 rendering cases passed, packaging passed).
+  Final camera/theme/insertion verification passed 8 cases and packaging in
+  `/private/tmp/railix-camera-batch-final-green.log`. The camera mutation probe now uses controlled
+  renderer observations so unrelated asynchronous metrics cannot invalidate the measurement.
+  The 6003-Step navigation case also passed: 20 measured requests after 12 warmup requests,
+  308 maximum world/label DOM elements and 1.96 ms scene-request p95; this is not a frame-rate
+  or long-duration leak proof (`/private/tmp/railix-camera-batch-final.log`).
+  Evidence: `/private/tmp/railix-depth-belts-red.log`, `/private/tmp/railix-depth-dense.log`,
+  `/private/tmp/railix-belt-material-red.log`, `/private/tmp/railix-belt-material-dense.log`,
+  `/private/tmp/railix-depth-review-package.log`, `/private/tmp/railix-lateral-branch-fixed.log`,
+  `/private/tmp/railix-lateral-destination-red.log`. The broader scoped run passed 26 world and
+  8 editor/audio browser cases: `/private/tmp/railix-stable-junctions-review.log`.
+  The strengthened destination regression and three related render checks then passed with
+  packaging in `/private/tmp/railix-lateral-destination-green.log`; `git diff --check` passed.
+  Full `clean verify` and cross-browser performance qualification were not run.
+  Native review now runs the corrected package at `http://127.0.0.1:65121/` with the existing
+  `/private/tmp/railix-review-20260907/railix.project.json`, not the old preview.
+  The batched package was checked there at whole-group and close zoom, then on the selected
+  Standard path through its T/L outlets. Project, Creator metadata and generated JAR hashes
+  stayed unchanged; test browsers and test JVMs were gone after verification.
+  Eight embedded music scores were rendered into 12-second review excerpts under Creator's
+  `target/audio-review/`; all are audible signal-wise and unclipped. Native start/next/stop and
+  preserved mute were checked. Musical quality has not received a human listening acceptance.
+  No new generated-application endpoint, dependency or runtime path was added.
+  Creator supports recursive local CSS themes, portable appearance metadata, seeded world scenery,
+  power conduits, optional Example selection/replay, and known never-executed Step styling.
+  Appearance changes do not rebuild the application. Groups remain visual: their timing is the sum
+  of sampled Step means, not measured passage latency. App/JVM/System metrics remain separate.
+  One right-hand radar/HUD replaces the bottom dock.
+  Clicking opens the selected Step/group Inspector. Focus and group navigation sit beside Close;
+  Delete is a labeled-for-accessibility trash control at the bottom. Overview owns construction and observations;
+  Inputs, Appearance, Examples and Groups remain separate. Selection uses a shared accent except
+  for issues; expanded boundaries retain group colors. Automatic expansion waits for readable
+  children and retains the deepest automatic-region boundaries. Field/comparison/value stays primary in
+  conditions; optional calculations and comparison extensions use native disclosures.
+  Camera-aware radar distinguishes transport/machines, selection and known health/coverage.
+  Healthy sampled-time shading is blue, not warning yellow. Cargo and belt sections move for
+  observed traffic or the selected Example; terminal intakes are recessed floor openings.
+  Keyboard navigation preserves native text editing, IME and modified OS shortcuts.
+  Effects and quiet music default on after browser interaction and respect explicit mute.
+  Hidden tabs pause music in place and resume it on return unless manually paused or muted;
+  effects and previews stop. Runtime execution is independent of Creator audio and visualization.
+  Stable world-coordinate conveyor identities avoid destroying/restarting belts on camera moves.
+  Machine and conveyor materials use fixed geometry with compositor scaling; reveal transitions
+  no longer change station size. Dense navigation remains incomplete as described above.
+  Eight music arrangements now use bass figures and melodic phrases with locally synthesized
+  kick/snare/hi-hat instruments. Public MML parsing, actual audio envelopes, voice reuse and
+  playlist traversal have scoped tests; musical acceptance remains with the user.
+  Selected terminal replay is shown only for an unambiguous successful exit; ambiguous terminal
+  branches remain unmarked, and no terminal throughput is invented.
+  World-space scenery clearance and close-up continuity are independent of label placement.
+  Step appearance edits leave siblings, functional JSON and application PID unchanged.
+  No new dependency, generated-application endpoint, runtime code or persisted layout was added.
+  Full `clean verify` and fresh overall coverage were not run for this correction.
+  **Belt/zoom correction:** the bounded scene derives a stable station scale separately from group
+  content bounds. Viewport-wide collision rescaling is removed; shape changes adjust socket contacts,
+  not branch axes. T/L junctions include through-ports and retain selected rims. Collinear treads share
+  a world-space phase; cargo paints above arrows, both move with the plates, and excess transport
+  hides beneath casings rather than opaque socket strips. No per-request browser objects were added.
+  Navigation checks compare against the actual camera scale and allow empty-space views.
+  **Implemented:** Creator-wide theme, motion and audio preferences. **Planned:** language and local
+  time display. Preferences belong to Creator, not the compiled functional project.
+  **September 11 settings/group correction:** embedded themes/scores coexist with local files and
+  are downloadable; preferences use revision-checked global settings rather than project metadata.
+  Sound/music HUD shortcuts, Trigger-hover Example selection, clipped raised cargo and explicit
+  group exit are implemented. Small entered groups expose all Steps and stay open on zoom-out.
+  Long chains retain forward lanes after user review removed serpentine packing and U-turn routing.
+  Group entry starts at the first Step at local 50%, not a fit of every Step. Choice outlets are
+  symmetric around their immediate destination stations; subtrees do not bias the split.
+  Content padding does not accumulate or enlarge machine casings.
+  **September 11 correction, implemented; visual acceptance pending:** normal machine/belt scaling,
+  eight-child automatic overviews, 180 ms group reveals and Home at App/50% replace capped station
+  size and repeated binary partition boxes. The 143-node review project contains 128 real sequential
+  numeric transformations, not 128 user groups. Automatic-section Overview identifies Step and named-group counts.
+  Settings separates Appearance, Sound and Music; playback buttons do not reopen Settings.
+  MML text scores feed the existing synthesizer; old JSON scores remain readable. Default installation
+  never overwrites local edits. No executable score code, binary media, runtime dependency or generated-app
+  endpoint is added. Review addresses shuffle advancement, preview cancellation, muted reloads,
+  bounded voices, Settings clipping/contrast and an unbounded off-screen label collision grid.
+  Current geometry verification passed 62 scene, 44 observation and six navigation/transport cases.
+  The final 6,003-node/60-navigation probe measured 3.390 ms viewport-request p95, at most 330 world/label
+  DOM elements and a 162,324-byte post-GC heap delta; no workers or detached script states.
+  The 20,000-node probe measured 107.151 ms indexing and 0.108 ms query p95. These remain advisory,
+  not dense-viewport, million-Step or leak-free certification. Full `clean verify` and overall coverage
+  were not rerun. Settings/audio verification passed 119 protocol cases and six browser journeys,
+  followed by a native-package run covering two protocol and four browser cases after simplifying
+  legacy conversion and HUD state reflection. These are overlapping verification runs, not additive
+  coverage totals. Regressions first confirmed stale audio starts, read/delete directory side effects,
+  overlapping region machines, exterior U-turn culling and HUD-obscured group contents.
+  The subsequent native package passed five HUD-fit/navigation/large-scene browser cases. Camera
+  fitting excludes controls without changing persisted geometry; sound and music volume changes
+  no longer redraw the diagram. New Music drafts inherit the selected music group.
+  Final package verification passed the new grouped Music save/preview cleanup, persisted mute and
+  legacy-score editing browser journeys, plus 80 upstream cases. No commit or push was performed.
+  In the native 823-pixel-wide review tab, stepped CSS cadence reduced an idle overview sample from
+  23.4% renderer / 74.5% GPU-process CPU to 11.4% / 16.5%; the generated app sample was 0.3%.
+  Selected-path close-up samples were 13.9% / 21.1%. These are process CPU readings, not GPU utilization
+  or isolated benchmarks; the shared browser GPU process measured about 2.8% with the preview blank.
+  **Implemented:** the metrics table aligns matching catalog identifiers and units
+  across App/JVM/System rather than zipping unrelated lists; unavailable cells remain empty.
+  Desktop and 320px regressions cover CPU alignment and unfamiliar catalog measurements with differing
+  units. JVM heap limits are not host memory, and no App/JVM CPU split or scheduler-thread count is
+  inferred from a shared process counter. Group-count default symbols remain a suggestion, not shipped.
+- UI delivery: **Factory-machine target not yet accepted.** User review
+  rejected the initial presentation as a repaint. The machine-and-conveyor replacement below is running
+  in the native Creator with the complex example. This does not change the accepted Item 5 or
+  overall roadmap count.
 
 Completion percentages count accepted checkpoints, not lines written. A roadmap item reaches 100%
 only after its public acceptance gate, coverage report, complexity audit, stability checks,
@@ -101,7 +424,7 @@ documentation, and screenshot are complete.
 - deterministic diagnostics and canonical JSON writing;
 - Creator-owned rolling child-process lifecycle whose generated development application owns
   Example execution, traces, metrics, and management endpoints;
-- no third-party runtime dependency.
+- no third-party Java runtime or graphics-framework dependency; Creator renders its viewport in CSS.
 
 Anything that cannot serve the accepted Creator-first graph is removed rather than wrapped.
 
@@ -379,7 +702,7 @@ Checkpoints:
 
    One functional project file remains canonical. Only authored group/presentation choices may
    persist separately. Hierarchy, coordinates, scene data, camera, and automatic regions are
-   derived. Native WebGL2 renders visible stations and rails with bounded accessible DOM labels.
+   derived. WebGL2 renders visible stations and rails with bounded accessible DOM labels.
    Application observations never change geometry. Example execution stays in the built app.
    Live heat must use actual sampled timing, not invented p95 or an unproven bottleneck label.
 
@@ -486,8 +809,8 @@ test/browser workers. Expected permission-denial tests still report cleanup fail
 successful retry. Browser suites and full coverage certification were not rerun for this batch.
 
 Remaining before million-Step acceptance: streamed functional JSON and generated compilation
-units; incremental structural indexing; chunked Example manifests and trace access; scoped or
-incremental metric ingestion; and hierarchical route aggregation instead of traversal cutoffs.
+units; incremental structural indexing; chunked Example manifests and indexed trace-detail access.
+The following UI preparation replaces full metric ingestion and route traversal cutoffs.
 The current 32,768-character per-Step lowering and 4 MiB Example-manifest bounds remain explicit.
 Hardware-limited project capacity is the target, not a claim established by the 16,385-Step proof.
 PixiJS or another renderer is not part of this delivery.
@@ -550,6 +873,163 @@ detail remain listed above. Explicit application metric totals still scan flow c
 queries snapshot the union bitmap. Full CI duration was measured, not reduced by this checkpoint.
 No renderer migration, commit or push is included in this delivery.
 
+### Factory Canvas Presentation
+
+Status: **Implemented with scoped verification; UX acceptance pending.**
+
+The initial presentations were rejected as repaints. On 2026-09-08 the user approved the generated
+factory-machine target image and its implementation, without committing or pushing. Overall roadmap
+acceptance counts remain unchanged; implementation is not a substitute for visual acceptance.
+
+The replacement has four technical gates:
+
+1. Canvas-first construction: contextual bottom dock, searchable placement tray, on-demand Inspector,
+   accessible App/build HUD, and compact application status. Construction builds the real application.
+2. Application-owned Example selection above its Trigger, with input/output summaries in the dock,
+   without re-execution or rebuilding. Unchanged values and focused controls survive counter updates.
+3. Layered machines with faceplates, sockets and broad segmented conveyors with rounded orthogonal
+   corners. Carrier density uses measured traffic, and sampled-duration heat preserves authored
+   colors. Groups and Steps share a collision-limited footprint; authored shapes remain supported.
+4. Continuous group zoom, bounded viewport work, responsive controls, native packaging, screenshots,
+   review and owned-process cleanup. No persisted camera, geometry or insertion preview.
+
+The September 9 renderer replaces direct WebGL resource management with locally bundled PixiJS
+8.20.1 and its CSP extension (MIT). Existing scene, catalog, camera and semantic-zoom contracts remain.
+Two meshes draw conveyors and overlays; visible Sprites share baked machine textures by shape and
+resolution. Offscreen Sprites and unused textures are released; disposal also releases geometry,
+shaders and the renderer. Pixi housekeeping runs with explicit frames, not an independent idle ticker.
+The two unmodified vendor scripts total 834,616 bytes. No new Java module, production type, npm build,
+CDN, alternate renderer, protocol-specific behavior, artificial traffic or reward system was added.
+Traffic density is logarithmic, not one particle per request. Traffic-only frames reuse geometry and
+labels; idle, stale, hidden and reduced-motion states stop animation. Group counters aggregate
+contained Steps and do not claim flow latency. Neighbor checks use repaint-local spatial buckets,
+not the traffic animation loop; worst-case buckets can still require pairwise checks.
+
+The Pixi review corrected backward static chevrons, joined conveyor corners without overlapping
+segment fans, and retained authored shapes and shape-aware selection. The final pixel regression
+fails against the old chevron direction and passes after correction. Pixel probes use Pixi extraction
+and reject blank buffers; they do not run in the application. Traffic probes wait for initial viewport
+fitting, and mobile shape probes close the Inspector before clicking the actual canvas.
+
+Verification uses `./mvnw -pl modules/railix-creator -am test` with explicit `-Dtest` selectors,
+`-Drailix.test.forks=2 -Djacoco.skip=true`; mobile adds `-Drailix.browser.viewport.width=320`:
+
+- The full **45-case renderer run** passed 43 cases and exposed two test-probe defects, not a wholly
+  green build (`/tmp/railix-pixi-final-world-package.log`, 7:40). After correction, all **10 affected
+  arrow, traffic and lifecycle cases plus Maven native packaging passed** in
+  `/tmp/railix-pixi-package-green.log` (2:03). Together the runs cover all 45 renderer cases.
+- **Eight desktop Editor cases and two generated-artifact boundary cases passed** in
+  `/tmp/railix-pixi-editor.log` (1:37). The artifact cases passed again in the full renderer run:
+  generated production JARs contain neither Creator/Pixi assets nor development/trace surfaces.
+- **Eight mobile Editor and three native-launcher cases passed** in
+  `/tmp/railix-pixi-mobile-native.log`; four additional desktop-only shape probes initially failed
+  behind the mobile Inspector. After correcting their setup, all **five mobile canvas cases passed**
+  in `/tmp/railix-pixi-mobile-shapes-final.log` (57 seconds), and all **four desktop shape cases passed**
+  in `/tmp/railix-pixi-desktop-shapes-final.log` (54 seconds). One superseded probe run was stopped;
+  it is not counted as evidence. The shape tests now join the responsive CI selection.
+- Each scoped reactor run also passed **8 core and 72 standard-library cases**. Reruns are not
+  additional coverage. Full `clean verify` and coverage were not rerun. Earlier Java coverage was
+  95.53% lines / 90.82% branches, not a fresh or JavaScript coverage measurement.
+
+The September 9 real 6,003-node desktop navigation check measured advisory p95 viewport response of
+**1.256 ms** and CPU Pixi submission of **0.900 ms**, with at most 21 scene glyphs, 60 route segments
+and 44 label DOM elements. Post-GC heap samples were 5,226,556, 5,272,756, 5,386,656 and 5,475,232 bytes
+after 0, 20, 40 and 60 measured navigations. These are not GPU-completion timings, leak proof or
+million-Step/application-throughput certification. The raw report is `target/world-measurements-1280.txt`
+under the Creator module. The preceding 20,000-Step scene check was not rerun for this renderer-only change.
+The 143-node review project is unchanged and is open
+in the rebuilt native Creator. Real application screenshots show the
+[overview](screenshots/factory-workshop.png), [construction tray](screenshots/factory-workshop-construction.png)
+and [nested detail](screenshots/factory-workshop-detail.png).
+
+The Pixi iteration adds **64 net owned lines to the existing world renderer**, separately from its
+vendor assets and the preceding uncommitted UI work. Review covered resource ownership and browser
+probes. The native review uses
+the unchanged 143-node project with five application-owned Examples. All three screenshots above
+were refreshed from that actual application and visually checked, not generated mockups.
+
+September 9 navigation follow-up: **scoped verification passed; subsequent HUD decision accepted below.**
+Regression tests reproduce viewport observation flashing, a twofold grid-density jump, and inverted
+inner conveyor faces. The fixes retain one bounded observation snapshot across unchanged scene
+identities, blend adjacent grid scales, reconnect elbows to authored shapes, reserve belt clearance,
+and use shallow S-bends without degenerate join normals. The renderer changes add 22 net owned lines.
+Polling also duplicated an already-pending selected-Step read; identical in-flight reads are now reused.
+
+The HTTP 503 investigation found small Example status/metadata reads sharing expensive projection
+admission. Runtime snapshots now have a separate four-response budget; inventory, coverage, queries,
+views and Step projections keep the existing heavy budgets. Creator retains global request bounds
+and the four-response heavy-output budget through slow-client writes. A relative `steps/<node>`
+classification error found during review is covered too. Overload still returns 503; no retry loop,
+unlimited admission or fabricated success was introduced. Historical browser logs cannot identify
+which layer rejected each request. Regression failures were reproduced before their fixes, including
+two selected-Step requests where one was expected and snapshot reads returning 503 under real
+slow-client backpressure. Scoped Maven packaging passed all **51 renderer cases and 8 App/API cases**
+in nine minutes (`/tmp/railix-navigation-final-package.log`). A second run passed **5 mobile canvas
+cases and 3 native-launcher cases** in one minute (`/tmp/railix-navigation-mobile-native.log`). Each
+reactor run also passed the same 8 core and 72 standard-library baseline cases; repeated runs are
+not additional coverage. Native jlink/jpackage output was rebuilt and started with the unchanged
+143-node review project and its five application-owned Examples.
+
+With other review views open, 20 real zoom/pan cycles and an Example selection produced **172 API
+responses, all HTTP 200, and no JavaScript errors** in the observed browser. Actual screenshots in
+`output/playwright/navigation-belt-detail.png` and `navigation-branch-detail.png` show the corrected
+S-bend and wide-choice docking. Route labels still need more contrast and separation from belts.
+Task-owned test processes and the disconnected browser daemon were stopped; the native Creator
+and its owned application remain running. Project and presentation-file hashes are unchanged.
+
+The refreshed 6,003-node navigation report measured advisory p95 viewport response **1.202 ms**
+and CPU Pixi submission **1.100 ms**, with at most 21 glyphs, 60 route segments and 32 label DOM
+children. Post-GC heap samples after 0/20/40/60 measured navigations were 5,232,924, 5,329,948,
+5,405,460 and 5,498,780 bytes. This is not GPU completion, leak proof, million-Step certification
+or a fresh coverage measurement. Full `clean verify` was not rerun. The renderer gained 22 net
+owned lines in this follow-up; no dependency or production-flow execution path was added.
+
+September 9 connection-grid follow-up: **design accepted; scoped verification complete.**
+Custom exterior shapes now share square symbol areas. Linear trigger connections follow the actual
+entry axis; shared ports form continuous T/L conveyor networks rather than overlapping individual
+casings. Shared-port geometry comes from the graph, never proximity alone. Band markings remain
+perpendicular on long junction runs. These are view-only connections, not new Split/Merge semantics.
+
+The relative orange meter is removed: sampled average duration is not utilization. Duration now
+shares the station's name label; group values explicitly say Step average, not flow latency. Lamps
+indicate current observed traffic or errors rather than treating historical execution as health.
+Configure is the general Inspector entry, build status opens separate contextual details without
+changing selection, and Example selection remains at the Trigger. This applies the contextual
+controls and explicit action labels in [Shapez 2 Devlog 014](https://store.steampowered.com/news/posts/?appgroupname=shapez.io&appids=1318690&enddate=1708614153&feed=steam_community_announcements)
+and consistent state displays in [Factorio FFF-363](https://www.factorio.com/blog/post/fff-363).
+
+Regression tests reproduced distorted symbols, absent stable timing labels, the ambiguous orange
+meter, wrong HUD destinations, skewed junction markings, and the complex graph's 7.414-unit trigger
+offset before fixes. Simpler scene fixtures already passed and were not counted as regression proof.
+The broad scoped run covered 55 scene, 59 renderer and 65 editor cases. It exposed an idle repaint
+and three outdated or unsynchronized browser-test assumptions, not a clean full-suite pass.
+The idle repaint came from repeatedly hiding an already-detached Example anchor; unchanged
+status reads now do no drawing. Test probes now scan the full belt, await the applied camera
+response, and establish keyboard/pointer ownership before checking placement handoff.
+Targeted corrections pass, including four App/build-fact cases. Native Maven packaging with five
+320-pixel HUD cases passed in 67 seconds (`/tmp/railix-grid-package-verified.log`); three packaged
+launcher cases without external Java plus two desktop HUD cases passed in 38 seconds
+(`/tmp/railix-grid-native-smoke.log`). The two idle/placement regressions pass together
+(`/tmp/railix-grid-controls-final.log`). Each reactor run also passed the same 8 core and 72
+standard-library baseline cases; repeated runs are not additional coverage. Full `clean verify`
+and the entire broad suite were not repeated after these corrections.
+
+The 6,003-node review measurement recorded p95 viewport response 1.440 ms and CPU Pixi submission
+1.000 ms, with at most 21 glyphs, 60 route segments and 35 label DOM elements. Post-GC heap samples
+after 0/20/40/60 navigations were 5,247,980, 5,339,188, 5,437,476 and 5,543,288 bytes. These are
+advisory measurements, not GPU-completion timings, leak proof or million-Step certification.
+The existing renderer grew by 52 net owned lines in this follow-up; no runtime dependency,
+persisted layout, Step kind, or application execution path was added.
+
+The rebuilt native Creator runs the unchanged 143-node review project with five application-owned
+Examples. The final screenshot session observed 81 API responses, all HTTP 200, and no JavaScript
+errors. Existing overview/construction/detail documentation images were refreshed from the real app.
+Project and presentation-file hashes are unchanged. Task-owned test browsers and temporary review
+JVMs are closed; only the native review Creator and its owned application remain running.
+The Mac was locked, so the user's existing browser tab could not be switched automatically.
+Visual acceptance, Item 5.6, million-Step compilation and fresh full coverage remain outstanding.
+Publication is now authorized as a separate factory-UI branch above the shared metric contract.
+
 ### Generic Metric Contract
 
 Status: **Implemented; shared HTTP/browser contract verified in both branch variants.**
@@ -578,6 +1058,13 @@ Verification on September 10 used Maven with at most two concurrent test forks:
   Includes seven rejected/recoverable catalog cases, 44 scene-observation cases and four
   metric Inspector/cache browser cases. Descriptor validation runs once before caching,
   not again on every scene poll.
+- Factory UI integration and native packaging: 323 Creator cases plus the same 80 upstream
+  cases passed in 17:37. Includes 59 World, 65 Editor, 33 Workspace, 55 scene, 103 generated
+  Example-suite, four production-artifact isolation and four focused composition/workbench cases.
+  This is scoped verification, not a fresh full `clean verify` or a UI acceptance decision.
+- Three final native-package smoke cases passed: Creator plus owned application starts without
+  system Java, application-owned Examples are observable, and stopping the executable terminates
+  both processes. The focused Maven run including the same 80 upstream cases took 11.234 seconds.
 - The 20,000-Step derived-scene check measured 0.173 ms p95 viewport/query preparation;
   real 6,002-node observation polls measured 39.571/37.621 ms p95 without/with an Example.
   These advisory measurements do not certify million-Step compilation, request throughput or leaks.
