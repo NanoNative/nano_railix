@@ -4151,12 +4151,15 @@ async function requestSelectedTrace() {
     state.traceCasesPid = Number(stepCases.application_pid);
     state.traceContext = observation.context;
     const selected = state.traceCases.find(candidate => candidate.id === example.id);
+    const matchesBuilt = JSON.stringify(operation) === JSON.stringify(
+      state.builtProject?.nodes.find(candidate => candidate.id === operation.id));
     state.traceStep = state.selection.type === "step"
+        && matchesBuilt
         && observation.context === "input"
         && plainObject(selected?.projection)
       ? selected.projection
       : null;
-    state.previewCases = observation.context === "input"
+    state.previewCases = matchesBuilt && observation.context === "input"
       ? state.traceCases.flatMap(candidate => plainObject(candidate.projection)
       ? [{
         ...candidate.projection,

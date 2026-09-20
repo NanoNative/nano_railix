@@ -475,19 +475,29 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                     const viewport=document.querySelector('#graph').getBoundingClientRect();
                     const casings=[...document.querySelectorAll('.machine')].map(machine=>machine.getBoundingClientRect());
                     const scale=new DOMMatrix(getComputedStyle(document.querySelector('.world-cargo')).transform).m11;
+                    const parcels=[...document.querySelectorAll('.cargo-item')];
+                    const animations=parcels.flatMap(item=>item.getAnimations());
+                    animations.forEach(animation=>animation.pause());
                     let checked=0;
-                    for (const item of document.querySelectorAll('.cargo-item')) {
-                      const route=item.parentElement, style=getComputedStyle(route);
-                      const unit=parseFloat(style.scale)*scale, origin=style.getPropertyValue('--cargo-origin').split(',').map(parseFloat);
-                      const rect=item.getBoundingClientRect(), p=[rect.x-origin[0]*unit,rect.y-origin[1]*unit];
-                      if (p[0]<viewport.x || p[0]>viewport.right || p[1]<viewport.y || p[1]>viewport.bottom) continue;
-                      if (casings.some(box=>p[0]>=box.x && p[0]<=box.right && p[1]>=box.y && p[1]<=box.bottom)) continue;
-                      checked++;
-                      const distance=Math.min(...lines.map(([a,b])=>{
-                        const dx=b[0]-a[0],dy=b[1]-a[1],t=Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/(dx*dx+dy*dy)));
-                        return Math.hypot(p[0]-a[0]-t*dx,p[1]-a[1]-t*dy);
-                      }));
-                      if (distance>1) failures.push({zoom,distance});
+                    // Sample a complete cycle instead of an instant when every parcel may be inside a machine.
+                    for (let phase=0;phase<16;phase++) {
+                      animations.forEach(animation=>{
+                        const timing=animation.effect.getTiming();
+                        animation.currentTime=timing.delay+Number(timing.duration)*phase/16;
+                      });
+                      for (const item of parcels) {
+                        const route=item.parentElement, style=getComputedStyle(route);
+                        const unit=parseFloat(style.scale)*scale, origin=style.getPropertyValue('--cargo-origin').split(',').map(parseFloat);
+                        const rect=item.getBoundingClientRect(), p=[rect.x-origin[0]*unit,rect.y-origin[1]*unit];
+                        if (p[0]<viewport.x || p[0]>viewport.right || p[1]<viewport.y || p[1]>viewport.bottom) continue;
+                        if (casings.some(box=>p[0]>=box.x && p[0]<=box.right && p[1]>=box.y && p[1]<=box.bottom)) continue;
+                        checked++;
+                        const distance=Math.min(...lines.map(([a,b])=>{
+                          const dx=b[0]-a[0],dy=b[1]-a[1],t=Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/(dx*dx+dy*dy)));
+                          return Math.hypot(p[0]-a[0]-t*dx,p[1]-a[1]-t*dy);
+                        }));
+                        if (distance>1) failures.push({zoom,phase,distance});
+                      }
                     }
                     if (!checked) failures.push({zoom,error:'No exposed parcel tested'});
                   }
@@ -1436,6 +1446,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void gridKeepsItsDominantSpacingAcrossAZoomBoundary() {
         openProject(fourStepProject());
+        awaitScene();
         page.evaluate("() => state.world.zoom(.9999 / Number(new URLSearchParams(state.world.query).get('scale')))");
         awaitScene();
         final double before = ((Number) page.evaluate("() => parseFloat(getComputedStyle(document.querySelector('.world-floor')).getPropertyValue('--grid'))")).doubleValue();

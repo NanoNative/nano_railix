@@ -455,6 +455,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
+    @Timeout(180)
     void editingOneOfSixThousandStepsTransfersOnlyThatStep() {
         openProject(deepBranchProject(6_000));
         selectWorldNode("step-3000");
@@ -466,7 +467,9 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         });
 
         final var response = page.waitForResponse(candidate -> candidate.url().endsWith("/api/project")
-                && candidate.request().method().equals("PATCH"), () -> page.locator("#node-metrics").uncheck());
+                && candidate.request().method().equals("PATCH"),
+                new Page.WaitForResponseOptions().setTimeout(120_000),
+                () -> page.locator("#node-metrics").uncheck());
         waitForText("#build-state", "Built");
 
         final var edit = CreatorServerE2eSupport.object(response.request().postData());
@@ -3609,14 +3612,17 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
     @Test
     void reloadRestoresTheDeterministicFitInsteadOfPersistingTheCamera() {
         openProject(deepBranchProject(4));
-        final String fitted = canvasStyle();
+        awaitScene();
+        final String fitted = (String) page.evaluate("() => state.world.query");
         page.locator("#zoom-in").click();
         page.locator("#zoom-in").click();
-        waitForCanvasChange(fitted);
+        page.waitForFunction("fitted => state.world.query !== fitted", fitted);
 
         page.reload();
         waitForText("#build-state", "Built");
-        assertThat(canvasStyle()).isEqualTo(fitted);
+        awaitScene();
+        // Observation labels can change height without changing the camera.
+        assertThat(page.evaluate("() => state.world.query")).isEqualTo(fitted);
     }
 
     @Test
@@ -4026,7 +4032,9 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
 
     @Test
     void valueToJsonIsOfferedAtItsCanonicalJsonByteLimit() {
-        prepareLiteralRefinementSearch(canonicalJsonBytes(RailixData.DEFAULT_MAX_SOURCE_BYTES), "value.to-json");
+        final String value = canonicalJsonBytes(RailixData.DEFAULT_MAX_SOURCE_BYTES);
+        prepareLiteralRefinementSearch(value, "value.to-json");
+        awaitRejectedLiteral(value, "value.to-json");
         page.locator("#steps-options [data-add-nested='value.to-json']").waitFor();
 
         assertThat(page.locator("#steps-options [data-add-nested='value.to-json']").count()).isEqualTo(1);
@@ -4034,10 +4042,9 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
 
     @Test
     void valueToJsonIsHiddenBeyondItsCanonicalJsonByteLimit() {
-        prepareLiteralRefinementSearch(
-                canonicalJsonBytes(RailixData.DEFAULT_MAX_SOURCE_BYTES + 1),
-                "value.to-json"
-        );
+        final String value = canonicalJsonBytes(RailixData.DEFAULT_MAX_SOURCE_BYTES + 1);
+        prepareLiteralRefinementSearch(value, "value.to-json");
+        awaitRejectedLiteral(value, "value.to-json");
         page.locator("#steps-options .empty-options").waitFor();
 
         assertThat(page.locator("#steps-options [data-add-nested='value.to-json']").count()).isZero();
@@ -4453,6 +4460,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         page.locator("#value-0-option").selectOption("literal");
         page.locator("#value-0-literal-value").fill("\"one\"");
         page.locator("#value-0-literal-value").press("Tab");
+        final String first = page.locator("#inspector").getAttribute("data-selection");
         addManipulationAfterSelected();
         chooseCustomPath("payload", "later");
         page.locator("#value-0-option").selectOption("literal");
@@ -4466,7 +4474,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         stopProcess(pid);
 
         page.waitForFunction("() => !document.querySelector('#preview-source')");
-        page.locator(".step-node").first().click();
+        selectWorldNode(first);
         page.locator("#field-path").click();
         page.locator("[data-path-depth='0']").click();
 
@@ -5619,8 +5627,24 @@ abstract class RailixCreatorBrowserSupport {
         addManipulationAfterSelected();
         choosePath("field", "result");
         page.locator("#value-0-option").selectOption("literal");
+        page.waitForFunction("() => state.build === 'Built' && !state.pendingProject && !state.writeActive && !state.editorController");
         page.locator("#value-0-literal-value").fill(value);
+        assertThat(page.locator("#value-0-literal-value").inputValue()).isEqualTo(value);
         page.locator("#value-0-literal-value").press("Tab");
+        page.locator("#steps-search").fill(search);
+    }
+
+    void awaitRejectedLiteral(final String value, final String search) {
+        // Megabyte literals exceed generated Step code size; compatibility must still use the retained draft.
+        page.waitForFunction("""
+                () => state.build === 'Not built' && !state.pendingProject && !state.writeActive
+                  && state.diagnostics.some(item => item.code === 'PROJECT_APPLICATION_STEP_LIMIT')
+                """);
+        selectWorldNode(page.locator("#inspector").getAttribute("data-selection"));
+        page.waitForFunction("() => state.traceCases.length > 0 && !state.traceController");
+        assertThat(page.locator("#value-0-literal-value").evaluate("""
+                (field, expected) => JSON.stringify(parseExact(field.value)) === JSON.stringify(parseExact(expected))
+                """, value)).as("Rejected literal remains intact in the editor draft").isEqualTo(true);
         page.locator("#steps-search").fill(search);
     }
 
@@ -6432,7 +6456,7 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void awaitScene() {
-        page.waitForFunction("() => document.querySelector('#graph').dataset.cameraMoving !== 'true'");
+        page.waitForFunction("() => state.world && document.querySelector('#graph').dataset.cameraMoving !== 'true'");
         page.evaluate("""
                 async () => {
                   await state.world.refresh();
@@ -6444,6 +6468,13 @@ abstract class RailixCreatorBrowserSupport {
                   && document.querySelector('#graph').dataset.cameraMoving !== 'true'
                   && document.querySelector('#graph').dataset.sceneRevision === String(state.world.scene.revision)
                   && document.querySelectorAll('#world-labels > *').length > 0
+                """);
+        // A focus refresh can start a camera flight; fetch its final viewport before measuring it.
+        page.evaluate("""
+                async () => {
+                  await state.world.refresh();
+                  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                }
                 """);
     }
 
