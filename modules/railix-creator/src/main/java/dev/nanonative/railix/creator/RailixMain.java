@@ -17,8 +17,12 @@ import java.util.List;
 /** Starts Railix Creator. Generated project applications are independent executable JARs. */
 public final class RailixMain {
     private static final int DEFAULT_PORT = 0;
+    private static final int DEFAULT_HTTP_PORT = 8080;
     private static final String CREATOR_USAGE = "Usage: railix creator [project-file] [port]";
-    private static final String USAGE = CREATOR_USAGE + "\n       railix run [arguments...]";
+    private static final String SERVE_USAGE = "Usage: railix serve [port]";
+    private static final String USAGE = CREATOR_USAGE + "\n"
+            + "       railix run [arguments...]\n"
+            + "       railix serve [port]";
 
     private RailixMain() {
     }
@@ -36,14 +40,15 @@ public final class RailixMain {
         }
         return switch (arguments[0]) {
             case "creator" -> creator(arguments);
-            case "run" -> runApplication(arguments);
+            case "run" -> runApplication(List.of(arguments).subList(1, arguments.length), false);
+            case "serve" -> serveApplication(arguments);
             default -> reject("Unknown Railix command: " + arguments[0] + ".");
         };
     }
 
-    private static int runApplication(final String[] arguments) {
-        final Path project = Path.of("railix.project.json");
+    private static int runApplication(final List<String> arguments, final boolean http) {
         try {
+            final Path project = Path.of("railix.project.json");
             final String source = readApplicationProject(project);
             final Path absoluteProject = project.toAbsolutePath().normalize();
             final Path dependencyLock = absoluteProject.resolveSibling("railix.dependencies.lock.json");
@@ -58,18 +63,38 @@ public final class RailixMain {
                 final Diagnostic diagnostic = rejected.diagnostics().getFirst();
                 return reject(diagnostic.code() + " " + diagnostic.path() + " " + diagnostic.message());
             }
-            final Path jar = ApplicationBuilder.buildProduction(
-                    absoluteProject,
-                    (CompileResult.Compiled) result
-            ).jar();
+            final CompileResult.Compiled compiled = (CompileResult.Compiled) result;
+            if (http && catalog.definitions().stream()
+                    .filter(definition -> definition.source()
+                            .map(value -> value.name().equals("application.http")).orElse(false))
+                    .flatMap(definition -> catalog.implementation(definition.id()).stream())
+                    .noneMatch(compiled.applicationDependencies()::contains)) {
+                return reject("RUN_SOURCE_UNKNOWN source Project has no Trigger for source: application.http.");
+            }
+            final Path jar = ApplicationBuilder.buildProduction(absoluteProject, compiled).jar();
             final List<String> command = new ArrayList<>();
             command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
             command.add("-jar");
             command.add(jar.toString());
-            command.addAll(List.of(arguments).subList(1, arguments.length));
+            command.addAll(arguments);
             return waitFor(new ProcessBuilder(command).inheritIO().start());
         } catch (final IOException exception) {
             return reject(exception.getMessage());
+        }
+    }
+
+    private static int serveApplication(final String[] arguments) {
+        if (arguments.length > 2) {
+            return reject(SERVE_USAGE);
+        }
+        try {
+            final int port = arguments.length > 1 ? Integer.parseInt(arguments[1]) : DEFAULT_HTTP_PORT;
+            if (port < 0 || port > 65535) {
+                return reject("HTTP port must be from 0 through 65535.");
+            }
+            return runApplication(List.of("--railix-http", "127.0.0.1", Integer.toString(port)), true);
+        } catch (final NumberFormatException exception) {
+            return reject("HTTP port must be a number.");
         }
     }
 

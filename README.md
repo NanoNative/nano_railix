@@ -165,13 +165,27 @@ Project persistence, structural compilation, development-application replacement
 execution are automatic. The built development application starts its own compiled Examples; the
 compiler and Creator never execute Step handlers.
 
+## HTTP Examples
+
+Serve the [HTTP example](examples/auth-http-app/README.md) on loopback:
+
+```sh
+(cd examples/auth-http-app && "$RAILIX" serve 8080)
+```
+
+The [proxy example](examples/auth-proxy-http-app/README.md) demonstrates one built application
+calling another with an HTTP Client Step. See the [HTTP contract](docs/specs/system-model.md#http-trigger-and-client)
+for request/response mapping and current limitations, and [ADR 0023](docs/adr/0023-http-ingress-and-step-owned-jdk-modules.md)
+for the scoped launcher and module-declaration decision. TLS and authentication policy are not
+provided by this minimal transport.
+
 ## Modules
 
 - `railix-core`: canonical values, Step contracts, project validation, Java application generation,
   generated-application runtime contracts, stateless workflow execution, and the development
   capabilities packaged only into development artifacts.
-- `railix-stdlib`: App, CLI Trigger, Field Manipulation, Filter, Choice, Switch, and built-in total
-  or explicitly fallible unary Steps.
+- `railix-stdlib`: App, CLI Trigger, HTTP Trigger, HTTP Client, Field Manipulation, Filter, Choice,
+  Switch, and built-in total or explicitly fallible unary Steps.
 - `railix-creator`: Creator HTTP/UI, project build and rolling child-JVM lifecycle, read-only
   management proxies, launcher, and executable shaded JAR.
 

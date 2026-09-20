@@ -432,6 +432,36 @@ an invented loop or broadcast.
 and numeric `context.exit_code` controls process status. Defaults are JSON `null` and `0`, producing
 silent success when the flow writes neither. Interactive terminal sessions are not inferred.
 
+## HTTP Trigger And Client
+
+The initial HTTP slice supplies singleton `railix.trigger.http` for source `application.http`
+and ordinary `railix.http.client`. [ADR 0023](../adr/0023-http-ingress-and-step-owned-jdk-modules.md)
+records its scope. `railix serve [port]` builds the current project and launches its HTTP server
+on loopback; the generated HTTP application's entrypoint is `--railix-http [host] [port]`.
+Projects without HTTP ingress are rejected by `serve`; CLI-only generated applications retain
+ordinary CLI argument handling and omit the HTTP handler.
+
+An HTTP request provides `method`, `path`, raw `query`, multi-value `headers` and `body` to the
+Trigger's target. `application/json` request bodies are parsed (case-insensitive, ignoring media-type
+parameters), non-JSON UTF-8 bodies become strings, and empty
+bodies become JSON null. Invalid JSON/UTF-8 and requests exceeding 1 MiB are rejected before Flow
+execution. Trigger response slots map ordinary context values to `body`, `headers` and `status`;
+non-null response bodies are JSON-encoded. The HTTP Client accepts authored URL, method and
+headers plus a body binding, and returns a response object with status, headers and parsed JSON
+or text body. Header values must be strings or arrays containing only strings; invalid values
+produce HTTP `500` for server responses and status `0` without sending a client request.
+Client responses also have a 1 MiB limit; transport failures return status `0`.
+
+This is a built-in HTTP launch path, not the generic third-party Trigger/resource lifecycle
+planned in SYS-009. TLS, authentication policy, streaming, multipart bodies, configurable limits
+and production admission budgets remain unsupported. Interruption releases the server listener
+and cancels its owned request tasks. The public verification boundary is the built application
+in [GeneratedApplicationE2eTest](../../modules/railix-creator/src/test/java/dev/nanonative/railix/creator/GeneratedApplicationE2eTest.java).
+
+Step-owned JDK module declarations currently reach `javac` through platform catalog metadata.
+They are not automatic per-Step detection or Creator capability icons under CR-004/CR-005;
+third-party manifest metadata and final minimal-runtime closure remain separate planned work.
+
 ## Planned Environment Builds
 
 Final environment applications will derive direct Step calls, dependencies, JDK modules, `jlink`,

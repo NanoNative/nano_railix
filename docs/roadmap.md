@@ -119,7 +119,12 @@ to Item 4.
 
 ## 4. Triggers, I/O Steps, And Dependencies
 
-Status: **Planned**
+Status: **Partial: initial HTTP slice; remaining scope planned**
+
+The [initial HTTP contract](specs/system-model.md#http-trigger-and-client) covers the built-in
+HTTP Trigger/client and generated launcher. Its scoped decision is [ADR 0023](adr/0023-http-ingress-and-step-owned-jdk-modules.md).
+This is not acceptance of generic Trigger lifecycle integration, production ingress hardening or
+the remaining protocols below.
 
 Goal: provide practical application boundaries while preserving one flat graph.
 
