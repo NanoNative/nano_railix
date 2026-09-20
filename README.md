@@ -54,6 +54,9 @@ New requirements go in their owning spec rather than being copied into every doc
 Application -> CLI Trigger -> Lowercase -> End
 ```
 
+The [canonical lowercase project](examples/lowercase-app/railix.project.json) is a
+ready-to-open example of this flow.
+
 Today `railix.project.json` contains the flat graph and Trigger Examples;
 `railix.creator.json` is optional presentation only. The accepted future design moves
 Example inputs and expectations together into `railix.examples.json`. That migration
@@ -194,8 +197,8 @@ Each behavior or rejection belongs in its own highest-practical public-entrypoin
 run `./mvnw test`; before requesting review, run `./mvnw clean verify`. Run
 `scripts/coverage.sh` only when updating the advisory coverage report. Do not commit `target`,
 `.railix`, IDE state, local project files, or `brainstorming`; all are ignored. GitHub Actions
-runs the same clean verification for every pull request, so the local and hosted acceptance
-commands are identical.
+runs the same clean verification for every pull request, with two test forks to fit the
+hosted runner's resource budget. The acceptance suites are unchanged.
 
 ## Support And Verification
 
