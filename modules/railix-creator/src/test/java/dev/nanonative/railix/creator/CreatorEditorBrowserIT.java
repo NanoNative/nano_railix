@@ -1133,6 +1133,27 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         assertThat(pageErrors).isEmpty();
     }
 
+    @Test
+    void reloadedMusicSelectionDiscardsThePreviousShuffleQueue() throws Exception {
+        page.locator("#open-settings").click();
+        page.locator("#settings-music-tab").click();
+        page.waitForFunction("() => state.audio.musicContext?.state === 'running' && state.audio.queue.length > 0");
+        final String track = (String) page.evaluate("() => state.audio.track.key");
+        page.keyboard().press("Escape");
+        page.waitForFunction("() => !state.settingsWriting && !state.settingsTimer");
+        final String settings = (String) page.evaluate("""
+                track => JSON.stringify({...state.settings, music:'track:' + track})
+                """, track);
+        Files.writeString(directory.resolve("railix-home/creator.settings.json"), settings);
+        page.locator("#open-settings").click();
+        page.waitForFunction("track => state.audio.preferences.music === 'track:' + track", track);
+        page.locator("#settings-music-tab").click();
+        page.locator("#music-play").click();
+        page.waitForFunction("() => state.audio.musicContext?.state === 'running'");
+        assertThat(page.evaluate("() => state.audio.track.key")).isEqualTo(track);
+        assertThat(pageErrors).isEmpty();
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"app", "command", "matched"})
     void emptyFloorClearsSelectionWithoutEditingOrLosingTheExample(final String id) throws Exception {
