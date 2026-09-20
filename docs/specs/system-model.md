@@ -2,7 +2,7 @@
 
 ## Human Review
 
-Status: **Existing baseline with accepted target boundaries**, updated on 2026-09-19.
+Status: **Existing baseline with accepted target boundaries**, updated on 2026-09-20.
 The platform boundaries below record the user's specification-workshop decisions,
 not an implementation or fresh test pass. The roadmap owns delivery status.
 
@@ -86,6 +86,8 @@ and branching baseline. These are unanswered questions, not newly selected archi
 - **State and resource lifecycle:** define who owns listeners, connection pools, storage handles
   and transaction scopes while Step handlers remain stateless. Decide admission, cancellation,
   deadlines and drain/release behavior across normal completion and rolling replacement.
+  The [host-aware Step extension direction](#planned-host-aware-step-integration) shares this
+  unresolved lifecycle boundary; it is not a separate built-in-only runtime subsystem.
 - **Control and side effects:** Merge/Split/Loop need ordering, context ownership, merge-conflict
   and bounded-work rules; [Merge modes](#planned-merge-and-join) now have accepted direction but
   incomplete semantics. I/O needs explicit outcomes for failures with unknown completion;
@@ -234,6 +236,32 @@ third-party definitions:
 
 Compiler, runtime, and Creator consume this grammar from definitions. They do not branch on a
 standard-library Step ID or input name.
+
+### Planned Host-Aware Step Integration
+
+Source: the user's 2026-09-20 clarification. Platform-dependent behavior belongs to a Step that
+may be supplied by Railix or a third party, not a mandatory Railix host-management service.
+This is an accepted extension direction, not a selected API or implemented lifecycle.
+
+- **SYS-009:** Any Step contract added for host-dependent execution or resource lifecycle MUST
+  be available equally to built-in and third-party Step definitions, without privileged
+  standard-library Step IDs or compiler/Creator special cases for individual implementations.
+
+A Step may need platform/capability detection, initialization or ongoing checks that its required
+configuration remains effective. Their declaration, execution ownership, sharing across Step
+occurrences, startup/shutdown ordering, cancellation and bounded monitoring remain unspecified.
+Resolve these before implementing the first dependent Step, preserving stateless invocation
+handlers and explicit registration rather than runtime scanning. Ordinary Steps must not acquire
+mandatory timers or platform dependencies merely because another Step needs them.
+
+[Layer 4 integration](environments-and-security.md#planned-layer-4-step-integration) is one use
+case, not the definition of this generic contract. Host commands, native interfaces, privileges
+and automatic repair are not approved by recording the extension direction.
+
+Acceptance for SYS-009: install an independently authored Step bundle using the agreed lifecycle,
+build and run it without Step-specific core/Creator edits, and exercise supported, unsupported,
+denied, initialization-failure and cleanup paths. Evidence is planned; the lifecycle contract
+and platform support matrix must be defined first.
 
 ## Candidate Conditions
 

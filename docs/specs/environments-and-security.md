@@ -2,7 +2,7 @@
 
 ## Human Review
 
-Status: **Planned; design discussion**, updated on 2026-09-19. The user accepted the
+Status: **Planned; design discussion**, updated on 2026-09-20. The user accepted the
 local Git-backed default, optional external managers, usability, early rejection, immutable
 deployed identities/permissions, credential rotation and compliance-support goals, not a
 cryptographic architecture or implementation. The latest clarification rejects live user
@@ -145,6 +145,24 @@ check out historical files outside Creator, so the UI cannot promise to prevent 
 Ingress design still needs trusted-proxy rules, admission/handshake/header/body budgets, and
 protocol implementation selection. Body-dependent decisions cannot precede body inspection.
 These are design questions, not approval to replace proven HTTP/TLS implementations.
+
+## Planned Layer 4 Step Integration
+
+Source: the user's 2026-09-20 clarification. Layer 4 enforcement is a potential Step capability,
+including Steps authored by third parties under [SYS-009](system-model.md#planned-host-aware-step-integration),
+not a built-in-only firewall controller or mandatory Creator service. SEC-002 owns the observable
+rejection boundary. **Layer 4 tools, APIs and supported platforms are not specified yet.**
+
+Before implementing a Layer 4 Step, define how it checks host capabilities and permissions,
+whether it invokes host commands or another interface, and which dependencies its artifact needs.
+Specify rule/resource ownership across other applications and rolling instances, initialization,
+monitoring/drift detection, cleanup and the limits of ongoing enforcement. A periodic check alone
+is not evidence of uninterrupted protection. Automatic repair, fail-closed behavior and weaker
+fallback enforcement remain decisions, not accepted defaults from the preceding discussion.
+
+Keep these decisions with the dependent Step/security slice; they do not block unrelated Flow
+work. Any eventual maintenance must preserve the compiled-policy boundary in SEC-006 and the
+capability inclusion boundary in SYS-002. No host-modifying implementation is approved here.
 
 ## Acceptance And Evidence
 

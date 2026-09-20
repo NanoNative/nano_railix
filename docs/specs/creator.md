@@ -2,10 +2,10 @@
 
 ## Human Review
 
-Status: **Existing baseline with accepted group-reuse direction**, updated on 2026-09-19.
-Copy/shared editing is planned; capability/resource presentation below is a design proposal.
-Neither is implemented or newly verified by this workshop. Other sections retain their existing
-baseline. The roadmap owns delivery status.
+Status: **Existing baseline with accepted group-reuse and capability-visibility direction**, updated
+on 2026-09-20. Copy/shared editing, automatic Step module visibility and capability symbols are planned; their
+implementation contracts remain open. Other capability/resource interactions below are proposals,
+not implemented or newly verified behavior. The roadmap owns delivery status.
 
 Owns: presentation metadata, editor interactions, scene/camera, transport and visual resource bounds.
 Asset packaging, settings and audio belong to [Creator assets](creator-assets.md);
@@ -20,8 +20,9 @@ theme geometry. Define those before each feature's implementation; prototypes il
 contract but do not replace it. Backend facts belong to the owning capability specification.
 An ADR is needed for a significant architectural choice, not for each icon or panel.
 
-The user asked how to expose required Java modules, bottlenecks and limits. Proposed interactions,
-not yet accepted UI layouts or new runtime metric/API contracts:
+The user asked how to expose required Java modules, capability symbols, bottlenecks and limits.
+CR-004/CR-005 below own the requested visibility outcomes; the following interactions are proposed
+layouts, not new runtime metric/API contracts:
 
 | Journey | Proposed Creator behavior | Required evidence / unresolved dependency |
 | --- | --- | --- |
@@ -36,6 +37,61 @@ must not imply permission to change settings. Show whether a change needs a rebu
 to the selected environment/build rather than silently altering an attached instance. Performance
 acceptance follows [SYS-006](system-model.md#accepted-platform-boundaries); these proposals add no
 per-Step polling loop or requirement for a metrics database.
+
+### Planned Java Module Visibility
+
+Source: the user's original module-visibility request, revisited on 2026-09-20. The required
+outcome is automatic identification and UI visibility; the detection mechanism is not yet defined.
+
+- **CR-004:** Creator MUST automatically identify and display a selected Step's required Java
+  modules for the selected configuration/build target, including third-party Steps. Missing or
+  unresolved dependency information MUST be shown as such, not as an empty verified module list.
+
+Here, Java modules mean JDK/JPMS modules such as `java.sql`, not Railix Maven modules. The UI
+must distinguish Step-attributed requirements from the final application's shared/transitive
+module closure. Exact attribution and presentation are open; no Step-name-to-module lookup table
+or per-invocation dependency scan is selected.
+
+[ADR 0013](../adr/0013-small-java-product-boundary.md) already selects `jdeps` for future
+per-project packaging. Its [class-dependency analysis](https://docs.oracle.com/en/java/javase/25/docs/specs/man/jdeps.html)
+is a possible input here, not proof of precise per-Step/configuration attribution or complete
+runtime requirements. Before this UI slice, decide how analysis, resolved dependencies and any
+necessary declarations agree, report gaps and refresh after Step/configuration/toolchain changes.
+Do not execute Step handlers to discover their module requirements. The current universal Creator
+runtime retains all build-JDK modules; this visibility goal does not change that packaging contract.
+
+Acceptance for CR-004: inspect built-in and independently installed Steps, change a configuration
+or bundle, and verify module attribution plus unresolved/missing states through Creator. Compare
+the resolved application closure with packaged execution, including shared dependencies. These
+checks are planned; the detection contract and UI are not implemented.
+
+### Planned Step Capability Symbols
+
+Source: the user's 2026-09-20 request for recognizable symbols showing Network, Process/commands,
+Threads, HTTP server and HTTP client usage. These are requested examples, not a closed taxonomy
+or a selected icon library.
+
+- **CR-005:** Creator MUST expose a compact symbol-based capability summary for a selected Step
+  and its configuration, with the same behavior for built-in and third-party definitions. Each
+  symbol MUST have an accessible name and a plain-language explanation available without relying
+  on color or hover alone.
+
+Capabilities describe behavior, separately from the Java modules in CR-004: network access,
+external process execution, explicit concurrency/worker management, accepting HTTP requests or
+making HTTP requests. Ordinary execution on a JVM thread is not evidence of worker management.
+A capability indicator does not imply current activity, granted host permissions or a security
+audit. Unknown or unresolved information must not look like a verified absence of capabilities.
+
+Derive the summary from generic Step/configuration evidence, not built-in Step-name rules.
+Module presence alone is insufficient to identify these behaviors. Detection/declaration trust,
+capability vocabulary and extension metadata, handling overlapping indicators such as HTTP and
+Network, and exact symbols/placement remain open before implementation. Prefer a compact summary
+with details on demand rather than permanent badges over every building; themes may change the
+symbol artwork, not its meaning.
+
+Acceptance for CR-005: inspect built-in and third-party Steps with the requested capabilities,
+change their configuration and exercise unresolved information; verify the summary and its
+explanations by pointer, keyboard and touch. Evidence is planned, not implemented UI.
 
 ### Example Guidance And Circuit Metaphors
 
