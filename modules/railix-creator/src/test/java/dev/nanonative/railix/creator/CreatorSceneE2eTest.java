@@ -50,6 +50,91 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
+    void regionMembersAreReadInBoundedPagesWithoutChangingTheApplication() throws Exception {
+        final RailixValue.ObjectValue overview = scene("");
+        final RailixValue.ObjectValue region = nodes(overview).stream()
+                .filter(node -> string(node, "kind").equals("region") && number(node, "count") > 512).findFirst().orElseThrow();
+        final String path = "/api/scene/observations?revision=" + string(overview, "revision")
+                + "&members=" + URLEncoder.encode(string(region, "id"), StandardCharsets.UTF_8)
+                + "&metrics=duration_nanos_total,duration_samples";
+        final HttpResponse<String> first = request(server.baseUri(), "GET", path, "");
+        assertThat(first.statusCode()).as(first.body()).isEqualTo(200);
+        final RailixValue.ObjectValue page = object(first.body());
+        assertThat(((RailixValue.ObjectValue) page.values().get("groups")).values()).hasSize(512);
+        assertThat(number(page, "next")).isPositive();
+        final HttpResponse<String> second = request(server.baseUri(), "GET", path + "&cursor=" + number(page, "next"), "");
+        assertThat(second.statusCode()).as(second.body()).isEqualTo(200);
+        assertThat(number(object(second.body()), "application_pid")).isEqualTo(number(page, "application_pid"));
+        assertThat(((RailixValue.ObjectValue) object(second.body()).values().get("groups")).values().keySet())
+                .doesNotContainAnyElementsOf(((RailixValue.ObjectValue) page.values().get("groups")).values().keySet());
+    }
+
+    @Test
+    void enteredLongChainKeepsOneForwardLaneAndProvidesItsEntry() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final String source = chain(128);
+        Files.writeString(project, source);
+        try (CreatorServer creator = start(project)) {
+            final String accepted = Files.readString(project);
+            final var overview = object(request(creator.baseUri(), "GET", "/api/scene", "").body());
+            final var region = nodes(overview).stream().filter(value -> number(value, "count") == 128).findFirst().orElseThrow();
+            final String scope = URLEncoder.encode(string(region, "id"), StandardCharsets.UTF_8);
+            final String query = "/api/scene?inside=" + scope + "&focus=" + scope;
+            final var entered = object(request(creator.baseUri(), "GET", query, "").body());
+            final var steps = nodes(entered).stream().filter(value -> "step".equals(string(value, "kind"))).toList();
+            assertThat(steps).hasSize(128);
+            assertThat(steps.stream().map(CreatorSceneE2eTest::centerY).distinct().count()).isEqualTo(1);
+            assertThat(array(entered, "links")).hasSize(127);
+            final var entry = (RailixValue.ObjectValue) entered.values().get("entry");
+            assertThat(string(entry, "id")).isEqualTo("step-0000");
+            assertThat(geometry(entry)).isEqualTo(geometry(node(entered, "step-0000")));
+            final var zoomed = object(request(creator.baseUri(), "GET", query + "&scale=1000", "").body());
+            for (int index = 0; index < 128; index++) {
+                final var current = node(entered, "step-%04d".formatted(index));
+                assertThat(geometry(current)).isEqualTo(geometry(node(zoomed, string(current, "id"))));
+                if (index == 0) continue;
+                final var previous = node(entered, "step-%04d".formatted(index - 1));
+                assertThat(decimal(current, "x")).isGreaterThan(decimal(previous, "x") + decimal(previous, "width"));
+            }
+            for (final var value : array(entered, "links")) {
+                final var link = (RailixValue.ObjectValue) value;
+                assertThat(point(link, 3, 0)).isGreaterThan(point(link, 0, 0));
+                assertThat(point(link, 3, 1)).isEqualTo(point(link, 0, 1));
+            }
+            assertThat(Files.readString(project)).isEqualTo(accepted);
+        }
+    }
+
+    @Test
+    void unequalSubtreesStillHaveSymmetricChoiceSocketsAndBeltLengths() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final String source = branchGroupProject()
+                .replace("\"id\":\"matched\",\"use\":\"railix.field-manipulation\"", "\"id\":\"matched\",\"use\":\"railix.choice\"")
+                .replace("{\"from\":\"matched.next\",\"to\":\"end\"}",
+                        "{\"from\":\"matched.match\",\"to\":\"end\"},{\"from\":\"matched.otherwise\",\"to\":\"end\"}");
+        Files.writeString(project, source);
+        try (CreatorServer creator = start(project)) {
+            final var scene = object(request(creator.baseUri(), "GET", "/api/scene?scale=1", "").body());
+            final var choice = node(scene, "choice");
+            assertThat(centerY(choice) - centerY(node(scene, "matched")))
+                    .isCloseTo(centerY(node(scene, "otherwise")) - centerY(choice), org.assertj.core.data.Offset.offset(.000001));
+            final var links = array(scene, "links").stream().map(RailixValue.ObjectValue.class::cast)
+                    .filter(link -> "choice".equals(string(link, "from"))).toList();
+            assertThat(links).hasSize(2);
+            for (final var link : links) {
+                assertThat(point(link, 0, 0)).isCloseTo(decimal(choice, "x") + decimal(choice, "width") / 2,
+                        org.assertj.core.data.Offset.offset(.000001));
+                assertThat(Math.abs(point(link, 0, 1) - centerY(choice))).isCloseTo(decimal(choice, "height") / 2,
+                        org.assertj.core.data.Offset.offset(.000001));
+            }
+            final double[] lengths = links.stream().mapToDouble(link -> IntStream.range(1, array(link, "points").size())
+                    .mapToDouble(index -> Math.abs(point(link, index, 0) - point(link, index - 1, 0))
+                            + Math.abs(point(link, index, 1) - point(link, index - 1, 1))).sum()).toArray();
+            assertThat(lengths[0]).isCloseTo(lengths[1], org.assertj.core.data.Offset.offset(.000001));
+        }
+    }
+
+    @Test
     void overviewReplacesThousandsOfStepsWithRecursiveRegions() throws Exception {
         final RailixValue.ObjectValue scene = scene("");
 
@@ -95,6 +180,19 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
         assertThat(string(closer, "revision")).isEqualTo(string(overview, "revision"));
     }
 
+    @Test
+    void automaticDetailLevelsDoNotStackTechnicalPartitionBorders() throws Exception {
+        final List<RailixValue.ObjectValue> visible = nodes(scene("?scale=64"));
+        final var boundaries = visible.stream().filter(node -> node.values().get("expanded") == RailixValue.bool(true)
+                && !node.values().containsKey("group")).toList();
+        assertThat(boundaries).isNotEmpty();
+        for (final var boundary : boundaries) {
+            assertThat(boundary.values()).containsKey("group_count");
+            final var ancestors = (RailixValue.ArrayValue) boundary.values().get("regions");
+            assertThat(boundaries).noneMatch(other -> ancestors.values().contains(other.values().get("id")));
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(ints = {1, 2, 3, 5, 8})
     void smallOrdinaryFlowShowsItsRealStepsAtTypicalFitScale(final int count) throws Exception {
@@ -112,13 +210,34 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
+    void focusedStepRemainsVisibleAfterTheFocusParameterIsRemoved() throws Exception {
+        final RailixValue.ObjectValue focused = scene("?focus=step-0021&scale=1");
+        final RailixValue.ObjectValue box = (RailixValue.ObjectValue) focused.values().get("focus");
+        final double scale = Math.max(.000001, decimal(focused, "focus_min_scale"));
+        final RailixValue.ObjectValue settled = scene("?x=" + decimal(box, "x") + "&y=" + decimal(box, "y")
+                + "&width=" + decimal(box, "width") + "&height=" + decimal(box, "height") + "&scale=" + scale);
+        assertThat(nodes(settled)).anySatisfy(node -> assertThat(string(node, "id")).isEqualTo("step-0021"));
+    }
+
+    @Test
     void focusedStepIsRevealedWithoutChangingItsCoordinates() throws Exception {
         final RailixValue.ObjectValue one = scene("?focus=step-1000&scale=1");
         final RailixValue.ObjectValue four = scene("?focus=step-1000&scale=4");
 
         assertThat(geometry(node(one, "step-1000"))).isEqualTo(geometry(node(four, "step-1000")));
         assertThat(one.values().get("focus")).isEqualTo(four.values().get("focus"));
-        assertThat(nodes(four)).hasSizeLessThan(10);
+        assertThat(nodes(four).stream().filter(node -> !RailixValue.bool(true).equals(node.values().get("expanded"))))
+                .hasSizeLessThan(10);
+    }
+
+    @Test
+    void focusedStepIdentifiesItsContainingRegionsNotOtherUsesOfTheSameGroup() throws Exception {
+        final RailixValue.ObjectValue selected = node(scene("?focus=step-0021&scale=10"), "step-0021");
+        final var regions = (RailixValue.ArrayValue) selected.values().get("regions");
+        assertThat(regions).isNotNull();
+        assertThat(regions.values()).contains(RailixValue.string("group-region:normalize:step-0020"))
+                .doesNotContain(RailixValue.string("group-region:normalize:step-0100"), RailixValue.string("world"));
+        assertThat(regions.values()).doesNotHaveDuplicates();
     }
 
     @Test
@@ -221,12 +340,38 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
 
     @Test
     void zoomingInsideCustomGroupKeepsItsBoundaryAndRevealsItsSteps() throws Exception {
-        final RailixValue.ObjectValue scene = scene("?focus=group-region:normalize:step-0020");
+        final String focus = "?focus=group-region:normalize:step-0020";
+        final RailixValue.ObjectValue scene = scene(focus + "&scale=" + decimal(scene(focus), "focus_min_scale"));
 
         assertThat(node(scene, "group-region:normalize:step-0020").values().get("expanded"))
                 .isEqualTo(RailixValue.bool(true));
+        assertThat(number(node(scene, "group-region:normalize:step-0020"), "group_count")).isZero();
         assertThat(nodes(scene).stream().map(node -> string(node, "id")))
                 .contains("step-0020", "step-0021", "step-0022", "step-0023");
+    }
+
+    @Test
+    void tallBranchGroupEntersAtItsOriginRatherThanItsTopmostBranch() throws Exception {
+        final String nodes = IntStream.range(0, 15).mapToObj(index ->
+                "{\"id\":\"branch-" + index + "\",\"use\":\"railix.choice\",\"inputs\":{\"conditions\":[]}}")
+                .collect(java.util.stream.Collectors.joining(","));
+        final String links = IntStream.range(0, 15).mapToObj(index ->
+                "{\"from\":\"branch-" + index + ".match\",\"to\":\"" + (index < 7 ? "branch-" + (index * 2 + 1) : "end") + "\"},"
+                + "{\"from\":\"branch-" + index + ".otherwise\",\"to\":\"" + (index < 7 ? "branch-" + (index * 2 + 2) : "end") + "\"}")
+                .collect(java.util.stream.Collectors.joining(","));
+        final String styles = IntStream.range(0, 15).mapToObj(index -> "\"branch-" + index + "\":{\"group\":\"routing\"}")
+                .collect(java.util.stream.Collectors.joining(","));
+        final Path project = directory.resolve("railix.project.json");
+        Files.writeString(project, "{\"format\":1,\"id\":\"branches\",\"nodes\":["
+                + "{\"id\":\"app\",\"use\":\"railix.app\",\"inputs\":{}},"
+                + "{\"id\":\"command\",\"use\":\"railix.trigger.cli\",\"inputs\":{},\"examples\":[{\"name\":\"branch\",\"payload\":[],\"context\":{}}]}," + nodes
+                + "],\"links\":[{\"from\":\"app.start\",\"to\":\"command\"},{\"from\":\"command.next\",\"to\":\"branch-0\"}," + links + "]}");
+        Files.writeString(directory.resolve("railix.creator.json"), "{\"format\":2,\"groups\":[{\"id\":\"routing\"}],\"steps\":{" + styles + "}}");
+        try (CreatorServer creator = start(project)) {
+            final var scene = object(request(creator.baseUri(), "GET",
+                    "/api/scene?inside=group-region:routing:branch-0&focus=group-region:routing:branch-0", "").body());
+            assertThat(string((RailixValue.ObjectValue) scene.values().get("entry"), "id")).isEqualTo("branch-0");
+        }
     }
 
     @Test
@@ -240,8 +385,10 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
                 }}
                 """);
         try (CreatorServer creator = start(project)) {
-            final RailixValue.ObjectValue scene = object(request(creator.baseUri(), "GET",
+            final RailixValue.ObjectValue focused = object(request(creator.baseUri(), "GET",
                     "/api/scene?focus=group:routing", "").body());
+            final RailixValue.ObjectValue scene = object(request(creator.baseUri(), "GET",
+                    "/api/scene?focus=group:routing&scale=" + decimal(focused, "focus_min_scale"), "").body());
             final RailixValue.ObjectValue choice = node(scene, "choice");
             final RailixValue.ObjectValue matched = node(scene, "matched");
             final RailixValue.ObjectValue otherwise = node(scene, "otherwise");
@@ -255,6 +402,54 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
         }
     }
 
+    @Test
+    void groupedChainBeforeBranchingKeepsItsTriggerOnTheCollapsedGroupsConnectionAxis() throws Exception {
+        final Path project = groupedBranches(4);
+        final String corridorNodes = IntStream.range(0, 12).mapToObj(index ->
+                "{\"id\":\"lane-" + index + "\",\"use\":\"railix.field-manipulation\",\"inputs\":{}},")
+                .collect(java.util.stream.Collectors.joining());
+        final String corridorLinks = IntStream.range(0, 12).mapToObj(index ->
+                "{\"from\":\"lane-" + index + ".next\",\"to\":\""
+                        + (index == 11 ? "route" : "lane-" + (index + 1)) + "\"},")
+                .collect(java.util.stream.Collectors.joining());
+        final String source = Files.readString(project)
+                .replace("\"nodes\":[", "\"nodes\":[" + corridorNodes)
+                .replace("\"links\":[", "\"links\":[" + corridorLinks)
+                .replace("{\"id\":\"route\"", "{\"id\":\"normalize\",\"use\":\"railix.field-manipulation\",\"inputs\":{}},"
+                        + "{\"id\":\"guard\",\"use\":\"railix.choice\",\"inputs\":{}},"
+                        + "{\"id\":\"limit\",\"use\":\"railix.choice\",\"inputs\":{}},"
+                        + "{\"id\":\"disabled\",\"use\":\"railix.field-manipulation\",\"inputs\":{}},"
+                        + "{\"id\":\"rejected\",\"use\":\"railix.field-manipulation\",\"inputs\":{}},"
+                        + "{\"id\":\"route\"")
+                .replace("{\"from\":\"command.next\",\"to\":\"route\"}",
+                        "{\"from\":\"command.next\",\"to\":\"normalize\"},"
+                                + "{\"from\":\"normalize.next\",\"to\":\"guard\"},"
+                                + "{\"from\":\"guard.match\",\"to\":\"limit\"},"
+                                + "{\"from\":\"guard.otherwise\",\"to\":\"disabled\"},"
+                                + "{\"from\":\"limit.match\",\"to\":\"lane-0\"},"
+                                + "{\"from\":\"limit.otherwise\",\"to\":\"rejected\"},"
+                                + "{\"from\":\"disabled.next\",\"to\":\"end\"},"
+                                + "{\"from\":\"rejected.next\",\"to\":\"end\"}");
+        Files.writeString(project, source);
+        Files.writeString(directory.resolve("railix.creator.json"), """
+                {"format":2,"groups":[{"id":"normalization"},{"id":"routing"},{"id":"reply"}],"steps":{
+                  "normalize":{"group":"normalization"},
+                  "route":{"group":"routing"},
+                  "disabled":{"group":"reply"},"rejected":{"group":"reply"},
+                  "output-0":{"group":"reply"},"output-1":{"group":"reply"},
+                  "output-2":{"group":"reply"},"output-3":{"group":"reply"}
+                }}
+                """);
+        try (CreatorServer creator = start(project)) {
+            final RailixValue.ObjectValue scene = object(request(creator.baseUri(), "GET",
+                    "/api/scene?x=-100&y=-100&width=2000&height=1000&scale=0.1", "").body());
+            final RailixValue.ObjectValue trigger = node(scene, "command");
+            final RailixValue.ObjectValue group = node(scene, "group-region:normalization:normalize");
+
+            assertThat(group.values().get("expanded")).isEqualTo(RailixValue.bool(false));
+            assertThat(centerY(trigger)).isCloseTo(centerY(group), org.assertj.core.data.Offset.offset(0.000001));
+        }
+    }
 
     @Test
     void partialBranchGroupDoesNotEncloseTheUngroupedArm() throws Exception {
@@ -309,7 +504,8 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
                 + "&y=" + (decimal(first, "y") + decimal(first, "height") / 2 - height / 2)
                 + "&width=" + gap / 2 + "&height=" + height + "&scale=" + 1000 / gap);
 
-        assertThat(nodes(scene)).isEmpty();
+        assertThat(nodes(scene).stream().filter(node -> !RailixValue.bool(true).equals(node.values().get("expanded"))))
+                .isEmpty();
         assertThat(array(scene, "links")).anySatisfy(value -> {
             final RailixValue.ObjectValue link = (RailixValue.ObjectValue) value;
             assertThat(string(link, "from")).isEqualTo("step-0000");
@@ -375,8 +571,32 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
+    void coarsenedSceneRegionsExposeBoundedIndividualCounters() throws Exception {
+        final CreatorScene indexed = new CreatorScene(Files.readString(groupedBranches(5000)),
+                object("{\"format\":2,\"groups\":[],\"steps\":{}}"), StandardLibrary.catalog());
+        final List<RailixValue.ObjectValue> regions = nodes(indexed.view("")).stream()
+                .filter(node -> string(node, "kind").equals("region")).toList();
+        assertThat(regions).isNotEmpty();
+        for (final var region : regions) {
+            final var page = indexed.memberPage(Map.of("members", string(region, "id"), "metrics", "duration_samples"));
+            final var query = (RailixValue.ObjectValue) page.values().get("query");
+            assertThat(((RailixValue.ObjectValue) query.values().get("steps")).values()).hasSizeLessThanOrEqualTo(512);
+            assertThat(number(page, "count")).isEqualTo(number(region, "count"));
+        }
+    }
+
+    @Test
     void repeatedViewportQueriesAreDeterministic() throws Exception {
         assertThat(scene("?focus=step-1100&scale=2")).isEqualTo(scene("?focus=step-1100&scale=2"));
+    }
+
+    @Test
+    void stationScaleIsDerivedIndependentlyOfTheRequestedViewport() throws Exception {
+        final RailixValue.ObjectValue overview = nodes(scene("?focus=command&scale=1")).stream()
+                .filter(node -> string(node, "id").equals("command")).findFirst().orElseThrow();
+        final RailixValue.ObjectValue close = nodes(scene("?focus=command&scale=100")).stream()
+                .filter(node -> string(node, "id").equals("command")).findFirst().orElseThrow();
+        assertThat(decimal(overview, "station_scale")).isPositive().isEqualTo(decimal(close, "station_scale"));
     }
 
     @Test
@@ -432,7 +652,7 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
     void aBranchsLastStepAndTerminalShareTheirLane(final int steps) throws Exception {
         try (CreatorServer creator = start(groupedBranches(steps))) {
             final RailixValue.ObjectValue scene = object(request(creator.baseUri(), "GET",
-                    "/api/scene?x=-100&y=-100&width=2000&height=1000&scale=0.1", "").body());
+                    "/api/scene?scale=0.1", "").body());
             for (int index = 0; index < steps; index++) {
                 final RailixValue.ObjectValue last = node(scene, "group-region:reply:output-" + index);
                 final RailixValue.ObjectValue terminal = node(scene, "end:output-" + index + ".next");
@@ -446,20 +666,27 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
 
     @ParameterizedTest
     @ValueSource(ints = {3, 4, 8})
-    void branchesLeaveTheRightPortThroughOneSharedTrunk(final int steps) throws Exception {
+    void branchesUseLateralSocketsAccordingToTheirDestinationLane(final int steps) throws Exception {
         try (CreatorServer creator = start(groupedBranches(steps))) {
             final RailixValue.ObjectValue scene = object(request(creator.baseUri(), "GET",
-                    "/api/scene?x=-100&y=-100&width=2000&height=1000&scale=0.1", "").body());
+                    "/api/scene?scale=0.1", "").body());
             final RailixValue.ObjectValue route = node(scene, "route");
             final List<RailixValue.ObjectValue> branches = array(scene, "links").stream()
                     .map(RailixValue.ObjectValue.class::cast)
                     .filter(link -> "route".equals(string(link, "from"))).toList();
             assertThat(branches).hasSize(steps);
             assertThat(branches).allSatisfy(link -> {
-                assertThat(point(link, 0, 0)).isCloseTo(decimal(route, "x") + decimal(route, "width"),
-                        org.assertj.core.data.Offset.offset(0.000001));
-                assertThat(point(link, 1, 0)).isCloseTo(point(branches.getFirst(), 1, 0),
-                        org.assertj.core.data.Offset.offset(0.000001));
+                final var target = node(scene, string(link, "to"));
+                final double delta = centerY(target) - centerY(route);
+                if (Math.abs(delta) < .000001) {
+                    assertThat(point(link, 0, 0)).isCloseTo(decimal(route, "x") + decimal(route, "width"),
+                            org.assertj.core.data.Offset.offset(.000001));
+                } else {
+                    assertThat(point(link, 0, 0)).isCloseTo(decimal(route, "x") + decimal(route, "width") / 2,
+                            org.assertj.core.data.Offset.offset(.000001));
+                    assertThat(point(link, 0, 1)).isCloseTo(centerY(route) + Math.copySign(decimal(route, "height") / 2, delta),
+                            org.assertj.core.data.Offset.offset(.000001));
+                }
             });
         }
     }
@@ -491,6 +718,17 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
         Files.writeString(directory.resolve("railix.creator.json"),
                 "{\"format\":2,\"groups\":[{\"id\":\"reply\",\"name\":\"Reply\"}],\"steps\":{" + groups + "}}");
         return project;
+    }
+
+    @Test
+    void overviewDoesNotCompressFlowStationsRelativeToAppAndTrigger() throws Exception {
+        try (CreatorServer creator = start(groupedBranches(8))) {
+            final var scene = object(request(creator.baseUri(), "GET", "/api/scene?scale=0.1", "").body());
+            assertThat(nodes(scene)).hasSize(19);
+            assertThat(nodes(scene)).allSatisfy(station ->
+                    assertThat(decimal(station, "station_scale")).as(string(station, "id"))
+                            .isCloseTo(1, org.assertj.core.data.Offset.offset(.000001)));
+        }
     }
 
     @Test
@@ -635,6 +873,9 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
         return ((RailixValue.NumberValue) node.values().get(key)).value().doubleValue();
     }
 
+    private static double centerY(final RailixValue.ObjectValue node) {
+        return decimal(node, "y") + decimal(node, "height") / 2;
+    }
 
     private static double point(final RailixValue.ObjectValue link, final int index, final int axis) {
         return ((RailixValue.NumberValue) ((RailixValue.ArrayValue) array(link, "points").get(index))

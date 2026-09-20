@@ -13,6 +13,7 @@ node_modules/
 dist/
 .playwright-cli/
 /output/playwright/
+/output/railix-showcase/
 
 # OS/IDE
 .DS_Store
@@ -35,4 +36,5 @@ out/
 # Local instructions
 CLAUDE.md
 AGENTS.md
+!/AGENTS.md
 .claude

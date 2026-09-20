@@ -12,8 +12,43 @@ import java.util.stream.Collectors;
 import static org.assertj.core.api.Assertions.assertThat;
 
 final class CreatorEditorE2eTest extends CreatorServerE2eSupport {
+    @Test
+    void themeSelectionDoesNotInvalidateSceneGeometry() throws Exception {
+        final var path = directory.resolve("project.json");
+        Files.writeString(path, threeStepProject());
+        try (var creator = start(path)) {
+            final String scene = request(creator.baseUri(), "GET", "/api/scene", "").body();
+            final var changed = request(creator.baseUri(), "PATCH", "/api/creator",
+                    "{\"revision\":0,\"changes\":{\"theme\":\"orbit/ice.css\"}}");
+            assertThat(changed.statusCode()).as(changed.body()).isEqualTo(200);
+            assertThat(request(creator.baseUri(), "GET", "/api/scene", "").body()).isEqualTo(scene);
+        }
+    }
+
+    @Test
+    void themeAndCreationDateSurviveMetadataAndNeighborhoodEdits() throws Exception {
+        final var path = directory.resolve("project.json");
+        Files.writeString(path, threeStepProject());
+        try (var creator = start(path)) {
+            final long pid = number(application(creator.baseUri()), "pid");
+            final String before = Files.readString(path);
+            final var response = request(creator.baseUri(), "POST", "/api/creator",
+                    "{\"format\":2,\"created_at\":1780000000123,\"theme\":\"orbit/ice.css\",\"groups\":[],\"steps\":{}}");
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            assertThat(request(creator.baseUri(), "GET", "/api/editor?node=one", "").body())
+                    .contains("\"created_at\":1780000000123", "\"theme\":\"orbit/ice.css\"");
+            final var saved = request(creator.baseUri(), "PATCH", "/api/creator",
+                    "{\"revision\":1,\"changes\":{\"theme\":null,\"steps\":{\"one\":{\"color\":\"#abcdef\"}}}}");
+            assertThat(saved.statusCode()).as(saved.body()).isEqualTo(200);
+            assertThat(Files.readString(directory.resolve("railix.creator.json")))
+                    .contains("\"created_at\":1780000000123").doesNotContain("\"theme\"");
+            assertThat(number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+            assertThat(Files.readString(path)).isEqualTo(before);
+        }
+    }
+
     @ParameterizedTest
-    @ValueSource(strings = {"rectangle", "ellipse", "triangle", "diamond"})
+    @ValueSource(strings = {"rectangle", "ellipse", "triangle", "diamond", "hexagon", "event", "storage", "subsystem"})
     void stepAndGroupShapesPersistWithoutChangingTheApplication(final String shape) throws Exception {
         final var project = directory.resolve("project.json");
         Files.writeString(project, threeStepProject());

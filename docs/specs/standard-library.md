@@ -1,25 +1,17 @@
-# ADR 0021: Total And Fallible Primitive Contract
+# Standard Library And Primitive Contracts
 
-## Status
+## Human Review
 
-Accepted on 2026-07-30 and refined on 2026-08-06. The Primitive contracts below are stable;
-only rows marked `Done` are implemented. Standard Field Manipulation version 2 applies the
-total host policy defined here.
+Status: **Existing baseline**, reorganized on 2026-09-19. This move does not
+approve new behavior or establish a fresh test pass. Explicitly planned behavior
+remains unsupported. The roadmap owns delivery status.
 
-## Context
+Owns: the finite versioned unary catalog, supported rows, composition and acceptance rules.
+Other routing contracts live in [system model](system-model.md).
 
-Primitive Steps must stay as small as ordinary Java functions while still giving Creator,
-the compiler, and the generated application enough information to author and execute them
-without hidden conversion or exception behavior. The initial five Primitives are total and
-always return `ok`; `text.to-number` is the first fallible Primitive. Collection and percentile
-operations add expected `empty` and `invalid` results without exceptions. The containing
-ordinary host Step, not a special kind, decides whether those results become graph routes or
-ordinary no-write data handling. Every Primitive-style operation is an ordinary `STEP` definition.
+Decisions: [ADR 0021](../adr/0021-total-and-fallible-primitives.md). Historical checks: [verification](../verification.md).
 
-The standard catalog must be finite. "Expose Java" is not a contract: it would produce an
-unsearchable, unstable mirror of thousands of classes and methods.
-
-## Decision
+## Primitive Contract
 
 One Primitive-style operation remains stateless and receives exactly one named `value`. It is an
 ordinary mapped graph `STEP` and may also be composed inside a generic nested `STEPS` input.
@@ -214,39 +206,53 @@ once through an honestly named generic control host rather than copied into ever
 Common implementation-fault and cancellation cases are tested once at the Primitive contract
 boundary.
 
-## Consequences
+## Develop A Unary Step
 
-The catalog is deliberately smaller than the JDK but covers the accepted JSON business-data
-families. New standard Primitives require a roadmap change and a new matrix row. Existing
-semantics never change silently; incompatible behavior requires a Step version increment.
-Projects may explicitly register trusted custom Primitives without waiting for the standard
-catalog.
+"Primitive" is a compact Creator presentation and product role, not a `StepDefinition.Kind`.
+A small value operation is an ordinary `STEP` with one receive, one return, and an explicitly named
+primary outcome when `next` is not suitable:
 
-JDK regular expressions are excluded from `stdlib-1`: catastrophic backtracking cannot be
-reliably interrupted or deadline-bounded in plain Java. Regex matching requires a separately
-accepted bounded implementation before it can enter the standard catalog.
+```java
+public final class Lowercase implements StepHandler {
+    public Lowercase() {
+    }
 
-The collection checkpoint may add only the minimum element refinement proven necessary by
-aggregation and percentile. It may not introduce a parallel value model or general-purpose
-type language.
+    @Override
+    public StepResult run(final StepInput input) {
+        return StepResult.outcome("ok").output(
+                "value",
+                RailixValue.string(input.string("value").toLowerCase(Locale.ROOT))
+        );
+    }
+}
 
-## Rejected Alternatives
+StepDefinition.named("text.lowercase", "1")
+        .primaryOutcome("ok")
+        .receive("value", ValueShape.STRING)
+        .returns("value", ValueShape.STRING)
+        .run(Lowercase.class);
+```
 
-Exceptions, Java `null`, failed-conversion-to-null behavior, automatic trim or case folding,
-format guessing, a dedicated Primitive kind or execution engine, nested outcome maps, outcome aliases, runtime
-type inference from handler code, one wrapper for every JDK method, and a second lightweight
-execution engine are rejected.
+Register definitions explicitly in a `StepCatalog`; Railix never discovers classes through
+reflection. The default outcomes are App `start`, Trigger `next`, and ordinary Step `next`.
+`.primaryOutcome("ok")` deliberately replaces `next` for the unary operation above. Additional
+`.outcome(...)` calls declare explicit non-primary results such as `invalid` or `empty`.
+Optional `.displayName(...)` and `.searchTerms(...)` values affect only Creator presentation and
+search; compiler and runtime behavior remains entirely in the functional contract.
+
+The catalog above owns supported unary behavior; ADR 0021 records the rationale. Immutable locked Step bundles are implemented; repository acquisition and
+the reusable Step template remain roadmap Item 4.
 
 ## Evidence
 
-- [`StepDefinition.java`](../modules/railix-core/src/main/java/dev/nanonative/railix/core/step/StepDefinition.java)
-- [`StepResult.java`](../modules/railix-core/src/main/java/dev/nanonative/railix/core/step/StepResult.java)
-- [`ValueRefinement.java`](../modules/railix-core/src/main/java/dev/nanonative/railix/core/value/ValueRefinement.java)
-- [`ProjectCompiler.java`](../modules/railix-core/src/main/java/dev/nanonative/railix/core/project/ProjectCompiler.java)
-- [`ApplicationGenerator.java`](../modules/railix-core/src/main/java/dev/nanonative/railix/core/project/ApplicationGenerator.java)
-- [`WorkflowRuntime.java`](../modules/railix-core/src/main/java/dev/nanonative/railix/core/project/WorkflowRuntime.java)
-- [`PrimitiveSteps.java`](../modules/railix-stdlib/src/main/java/dev/nanonative/railix/stdlib/PrimitiveSteps.java)
-- [Roadmap Item 3](../ROADMAP.md)
+- [`StepDefinition.java`](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/step/StepDefinition.java)
+- [`StepResult.java`](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/step/StepResult.java)
+- [`ValueRefinement.java`](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/value/ValueRefinement.java)
+- [`ProjectCompiler.java`](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/project/ProjectCompiler.java)
+- [`ApplicationGenerator.java`](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/project/ApplicationGenerator.java)
+- [`WorkflowRuntime.java`](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/project/WorkflowRuntime.java)
+- [`PrimitiveSteps.java`](../../modules/railix-stdlib/src/main/java/dev/nanonative/railix/stdlib/PrimitiveSteps.java)
+- [Roadmap Item 3](../roadmap.md)
 
 Thirty-seven `Done` rows are proven: five total rows by Item 2, `text.to-number` no-write
 continuation by Item 3 checkpoint 2, four collection rows with explicit `empty`/`invalid`
