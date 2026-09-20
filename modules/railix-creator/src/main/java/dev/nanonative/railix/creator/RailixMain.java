@@ -40,20 +40,43 @@ public final class RailixMain {
         }
         return switch (arguments[0]) {
             case "creator" -> creator(arguments);
-            case "run" -> runApplication(arguments);
+            case "run" -> runApplication(List.of(arguments).subList(1, arguments.length), false);
             case "serve" -> serveApplication(arguments);
             default -> reject("Unknown Railix command: " + arguments[0] + ".");
         };
     }
 
-    private static int runApplication(final String[] arguments) {
+    private static int runApplication(final List<String> arguments, final boolean http) {
         try {
-            final Path jar = applicationJar();
+            final Path project = Path.of("railix.project.json");
+            final String source = readApplicationProject(project);
+            final Path absoluteProject = project.toAbsolutePath().normalize();
+            final Path dependencyLock = absoluteProject.resolveSibling("railix.dependencies.lock.json");
+            final StepCatalog catalog = Files.exists(dependencyLock)
+                    ? StandardLibrary.catalog().install(
+                            dependencyLock,
+                            Path.of(System.getProperty("user.home"), ".railix", "artifacts")
+                    )
+                    : StandardLibrary.catalog();
+            final CompileResult result = ProjectCompiler.compileApplication(source, catalog);
+            if (result instanceof CompileResult.Rejected rejected) {
+                final Diagnostic diagnostic = rejected.diagnostics().getFirst();
+                return reject(diagnostic.code() + " " + diagnostic.path() + " " + diagnostic.message());
+            }
+            final CompileResult.Compiled compiled = (CompileResult.Compiled) result;
+            if (http && catalog.definitions().stream()
+                    .filter(definition -> definition.source()
+                            .map(value -> value.name().equals("application.http")).orElse(false))
+                    .flatMap(definition -> catalog.implementation(definition.id()).stream())
+                    .noneMatch(compiled.applicationDependencies()::contains)) {
+                return reject("RUN_SOURCE_UNKNOWN source Project has no Trigger for source: application.http.");
+            }
+            final Path jar = ApplicationBuilder.buildProduction(absoluteProject, compiled).jar();
             final List<String> command = new ArrayList<>();
             command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
             command.add("-jar");
             command.add(jar.toString());
-            command.addAll(List.of(arguments).subList(1, arguments.length));
+            command.addAll(arguments);
             return waitFor(new ProcessBuilder(command).inheritIO().start());
         } catch (final IOException exception) {
             return reject(exception.getMessage());
@@ -65,43 +88,14 @@ public final class RailixMain {
             return reject(SERVE_USAGE);
         }
         try {
-            final Path jar = applicationJar();
             final int port = arguments.length > 1 ? Integer.parseInt(arguments[1]) : DEFAULT_HTTP_PORT;
-            final List<String> command = new ArrayList<>();
-            command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
-            command.add("-jar");
-            command.add(jar.toString());
-            command.add("--railix-http");
-            command.add("127.0.0.1");
-            command.add(Integer.toString(port));
-            return waitFor(new ProcessBuilder(command).inheritIO().start());
+            if (port < 0 || port > 65535) {
+                return reject("HTTP port must be from 0 through 65535.");
+            }
+            return runApplication(List.of("--railix-http", "127.0.0.1", Integer.toString(port)), true);
         } catch (final NumberFormatException exception) {
             return reject("HTTP port must be a number.");
-        } catch (final IOException exception) {
-            return reject(exception.getMessage());
         }
-    }
-
-    private static Path applicationJar() throws IOException {
-        final Path project = Path.of("railix.project.json");
-        final String source = readApplicationProject(project);
-        final Path absoluteProject = project.toAbsolutePath().normalize();
-        final Path dependencyLock = absoluteProject.resolveSibling("railix.dependencies.lock.json");
-        final StepCatalog catalog = Files.exists(dependencyLock)
-                ? StandardLibrary.catalog().install(
-                        dependencyLock,
-                        Path.of(System.getProperty("user.home"), ".railix", "artifacts")
-                )
-                : StandardLibrary.catalog();
-        final CompileResult result = ProjectCompiler.compileApplication(source, catalog);
-        if (result instanceof CompileResult.Rejected rejected) {
-            final Diagnostic diagnostic = rejected.diagnostics().getFirst();
-            throw new IOException(diagnostic.code() + " " + diagnostic.path() + " " + diagnostic.message());
-        }
-        return ApplicationBuilder.buildProduction(
-                absoluteProject,
-                (CompileResult.Compiled) result
-        ).jar();
     }
 
     private static String readApplicationProject(final Path project) throws IOException {

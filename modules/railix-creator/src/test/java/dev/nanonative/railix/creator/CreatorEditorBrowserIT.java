@@ -309,13 +309,12 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         openProject(choiceProject());
         selectWorldNode("choice");
         openInspectorTab("overview");
-        assertThat(page.locator("#selection-overview [data-add-outcome]").first().evaluate(
-                "element => getComputedStyle(element).backgroundImage").toString()).contains("linear-gradient");
-        assertThat(page.locator("#selection-overview [data-add-outcome]").first().evaluate(
-                "element => getComputedStyle(element).textShadow")).isEqualTo("none");
-        page.locator("#dock-case").waitFor();
-        assertThat(page.locator("#dock-case").evaluate("element => getComputedStyle(element).backgroundColor"))
-                .isEqualTo("rgba(0, 0, 0, 0)");
+        final var action = page.locator("#selection-overview [data-add-outcome]").first();
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(action)
+                .hasCSS("background-image", java.util.regex.Pattern.compile(".*linear-gradient.*"));
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(action).hasCSS("text-shadow", "none");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.locator("#dock-case"))
+                .hasCSS("background-color", "rgba(0, 0, 0, 0)");
         assertThat(pageErrors).isEmpty();
     }
 
@@ -528,14 +527,22 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         assertThat(pageErrors).isEmpty();
     }
 
-    @Test
-    void manualMusicPauseSurvivesTabChangesUntilPlayIsPressed() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void manualMusicPauseSurvivesTabChangesUntilPlayIsPressed(final boolean reopenSettings) {
         page.locator("#open-settings").click();
         page.locator("#settings-music-tab").click();
         page.waitForFunction("() => state.audio.musicContext?.state === 'running'");
         page.locator("#music-play").click();
         page.waitForFunction("() => state.audio.musicContext?.state === 'suspended' && !state.settingsWriting && !state.settingsTimer");
         final var playback = page.evaluateHandle("() => ({context:state.audio.musicContext, session:state.audio.musicSession})");
+        if (reopenSettings) {
+            page.keyboard().press("Escape");
+            page.waitForResponse(response -> response.url().endsWith("/api/settings")
+                    && response.request().method().equals("GET") && response.status() == 200,
+                    () -> page.locator("#open-settings").click());
+            page.locator("#settings-music-tab").click();
+        }
         assertThat(page.evaluate("""
                 async playback => {
                   const time = playback.context.currentTime;
@@ -1123,6 +1130,27 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         page.locator("#settings-music-tab").click();
         page.locator("#music-play").click();
         page.waitForFunction("() => state.settings.music_enabled === true && state.audio.musicContext?.state === 'running'");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void reloadedMusicSelectionDiscardsThePreviousShuffleQueue() throws Exception {
+        page.locator("#open-settings").click();
+        page.locator("#settings-music-tab").click();
+        page.waitForFunction("() => state.audio.musicContext?.state === 'running' && state.audio.queue.length > 0");
+        final String track = (String) page.evaluate("() => state.audio.track.key");
+        page.keyboard().press("Escape");
+        page.waitForFunction("() => !state.settingsWriting && !state.settingsTimer");
+        final String settings = (String) page.evaluate("""
+                track => JSON.stringify({...state.settings, music:'track:' + track})
+                """, track);
+        Files.writeString(directory.resolve("railix-home/creator.settings.json"), settings);
+        page.locator("#open-settings").click();
+        page.waitForFunction("track => state.audio.preferences.music === 'track:' + track", track);
+        page.locator("#settings-music-tab").click();
+        page.locator("#music-play").click();
+        page.waitForFunction("() => state.audio.musicContext?.state === 'running'");
+        assertThat(page.evaluate("() => state.audio.track.key")).isEqualTo(track);
         assertThat(pageErrors).isEmpty();
     }
 

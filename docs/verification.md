@@ -1,62 +1,15 @@
-# Railix II Roadmap
+# Historical Verification Evidence
 
-Updated: 2026-09-14
+These are earlier reports migrated from the roadmap and ADR 0020 on 2026-09-19.
+They are not current CI results, current process state, or product certification.
+Statements such as "current", "next" and "accepted" below refer to their original
+checkpoint, not a new instruction or approval. Old renderer experiments are historical.
+Active behavior lives in [specifications](specs/); delivery status lives in
+[roadmap.md](roadmap.md). No runtime tests were rerun for this documentation move.
 
-## Product Goal
-
-Railix is a product-building system for cross-functional teams. It turns one visual project into
-one immutable monolithic application. Java is Railix's current implementation language, not its
-product boundary. The functional project is a complete flat graph beginning at one permanent
-Application Step. Optional Creator metadata adds semantic zoom and presentation without entering
-compilation or changing behavior.
-
-Railix operates on JSON-compatible primitive values. The core remains plain Java,
-non-reflective, small, deterministic, and stateless per admitted item. Small unary operations and
-larger I/O or business Steps use the same generic Step contract; only graph roles with genuinely
-different lifecycle remain distinct kinds.
-
-[ADR 0020](adr/0020-creator-first-application-graph.md) owns the current graph, metadata, and
-Creator contract. [ADR 0021](adr/0021-total-and-fallible-primitives.md) owns the finite built-in
-unary-operation catalog.
-
-### Target Operating Model — Planned
-
-The following is product direction, not current shipped behavior:
-
-- **One executable model.** Applications are expressed as Flows and Steps. HTTP, MQTT, storage,
-  access policy, rate limits, protocol handling, and other application concerns are modeled from
-  that same vocabulary. Creator-only Groups, Blueprints, and Templates are reusable authoring aids
-  that compile away; production understands only Flows and Steps.
-- **Railway-Oriented Programming.** Railix uses this term for the complete application path from
-  an external trigger through policy, processing, and storage—not only for success/failure control
-  flow. Every supported concern must be expressible through the same Flow and Step model.
-- **Example-gated builds.** Named local Examples are intended to be the build gate: every declared
-  example must pass before a production artifact can be built. Test-only behavior uses real test
-  services or explicit test-client Steps that may be omitted from the production artifact.
-  Examples are authored before build; production traffic is never captured as a new Example.
-- **Immutable application artifacts.** A built graph never changes in production. Artifacts will
-  carry timestamp versions and allow only the small set of environment settings selected at build.
-  Whether customers use Git for project persistence and change management remains their choice.
-- **Platform identity and secrets.** Railix will own users, roles, and authorization for project
-  visibility, editing, local Example execution, builds, deployment, and production attachment.
-  Application Flows may enforce product-level authentication and authorization, but cannot grant
-  themselves platform authority. Per-environment secrets will be stored as SOPS-encrypted project
-  material for explicitly authorized recipient keys or key groups, never as Flow values or
-  observability data.
-- **Read-only operational visibility.** When explicitly included at build and authorized, Creator
-  will attach read-only to an instance and display the executing Flow, throughput, bottlenecks,
-  metrics, queues, and errors. It will not edit or invoke production Flows.
-- **A decentralised application mesh.** In the intended multi-instance mode, every authorized
-  Railix instance can accept work and participate in balancing, restart recovery, and rolling
-  replacement. Users declare reachable compute and storage resources; Railix will own the
-  placement and operational plumbing. The unit of distributed work—an eligible Step, a Flow, or
-  another compiled boundary—has deliberately not been decided. Creator Groups never define that
-  boundary.
-
-Railix reduces hand-wired infrastructure configuration; it does not claim that certificates,
-authentication, external networks, storage, or operating-system process supervision cease to
-exist. The aim is one coherent model that makes those concerns explicit and buildable instead of
-spreading them across unconnected application, CI/CD, observability, and orchestration files.
+Machine-local temporary log paths are recorded as basenames only. Those logs were
+ephemeral and are not shipped evidence; retain the conditions and reproducible test
+entrypoints, not an assumption that another checkout can access those files.
 
 ## Progress
 
@@ -104,11 +57,11 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   application JAR hashes were unchanged. Subjective music quality and sustained thermal behavior
   remain unverified. The initial `clean verify` was interrupted in the browser phase; later batches
   and corrections establish this checkpoint, not an uninterrupted full-CI or aggregate coverage result.
-  Evidence: `/private/tmp/railix-ui-publication-final-verify.log`,
-  `/private/tmp/railix-ui-publication-remaining-verify.log`, `/private/tmp/railix-publication-corrections.log`,
-  `/private/tmp/railix-publication-step-labels.log`, `/private/tmp/railix-publication-final-package.log`,
-  `/private/tmp/railix-publication-package-mobile.log` (package/soak gate), and
-  `/private/tmp/railix-publication-responsive-verified.log` (final mobile gate).
+  Evidence: `railix-ui-publication-final-verify.log`,
+  `railix-ui-publication-remaining-verify.log`, `railix-publication-corrections.log`,
+  `railix-publication-step-labels.log`, `railix-publication-final-package.log`,
+  `railix-publication-package-mobile.log` (package/soak gate), and
+  `railix-publication-responsive-verified.log` (final mobile gate).
   **2026-09-12 theme variants:** embedded Foundry Standard/High detail and Classic, optional local
   descriptors and relative CSS/PNG/SVG assets, non-overwriting installation, shared building frame,
   and the Running HUD row are implemented. The generated application is unchanged. The initial
@@ -118,22 +71,22 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   three Settings browser cases at both 1280 and 390 pixels, and the 6,003-node/60-navigation regression
   pass. Theme switching preserves the running application's PID and project; native packaging passes.
   A leaf-focus/overscan defect found during review is fixed, as is literal `+` handling in asset paths.
-  Evidence: `/private/tmp/railix-theme-final-verification.log`, `/private/tmp/railix-theme-mobile-final.log`,
-  `/private/tmp/railix-focus-viewport.log`; the earlier broad renderer run is not a new full-CI certificate.
+  Evidence: `railix-theme-final-verification.log`, `railix-theme-mobile-final.log`,
+  `railix-focus-viewport.log`; the earlier broad renderer run is not a new full-CI certificate.
   The native complex-example preview was restarted; project, Creator metadata and application JAR hashes
   were unchanged. Its then-pending native visual check is superseded by the modular-renderer review below.
   **2026-09-13 Overview:** type/name and shared-renderer building portrait, removal of the icon chooser
   while retaining stored icons, and concise coverage/connection status pass 11 targeted desktop cases
   and three cases at 390 pixels. Native packaging passes; the preview's three content hashes remain
-  unchanged. Evidence: `/private/tmp/railix-overview-final.log`, `/private/tmp/railix-overview-mobile.log`.
+  unchanged. Evidence: `railix-overview-final.log`, `railix-overview-mobile.log`.
   GPU utilization and automatic Example-input proposals are not implemented.
   **2026-09-13 modular renderer: Implemented; visual acceptance pending.** Foundry exposes
   Renderer Canvas (default) and Renderer CSS through the same Settings selector, each at high quality.
   The earlier Standard variants have been removed; existing `canvas` and `hq` selections retain their IDs.
   The two-choice selection, high-resolution Canvas default and saved CSS preference pass desktop/narrow
   regressions. Nineteen scoped settings, extension, group-navigation and motion cases plus a packaged
-  extension check pass in `/private/tmp/railix-renderer-names-package.log` and
-  `/private/tmp/railix-renderer-names-smoke.log`. The running complex preview shows both exact labels;
+  extension check pass in `railix-renderer-names-package.log` and
+  `railix-renderer-names-smoke.log`. The running complex preview shows both exact labels;
   project, metadata and generated application hashes remain unchanged. Full CI was not rerun.
   Embedded `assets/themes/<theme>/`, `assets/sounds/` and `assets/music/<group>/` mirror Railix-home
   extension paths; per-file overrides retain embedded fallbacks. Separate MML roots are canonical;
@@ -150,16 +103,16 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   remaining audio-test tab-selection failure was corrected and passed its targeted rerun. Group
   outlines and empty-view animation-loop regressions also passed after their fixes. Zoom, motion,
   hidden-page suspension and visible raised parcels have browser checks; full CI was not rerun.
-  Evidence: `/private/tmp/railix-modular-themes-package.log`, `/private/tmp/railix-native-package-final.log`,
-  `/private/tmp/railix-native-mobile-final.log`, `/private/tmp/railix-modular-native-package-smoke.log`;
-  measurements: `/private/tmp/railix-renderer-retina.jsonl`. ADR 0020 records reproduction and limits.
+  Evidence: `railix-modular-themes-package.log`, `railix-native-package-final.log`,
+  `railix-native-mobile-final.log`, `railix-modular-native-package-smoke.log`;
+  measurements: `railix-renderer-retina.jsonl`. ADR 0020 records reproduction and limits.
   Final gesture review fixed the Inspector remaining open on group entry and intercepting the second
   click on narrow screens. Four desktop/narrow gesture cases, including normal Inspector interaction,
-  pass in `/private/tmp/railix-final-gesture-package.log`; packaging succeeds. Eight other final
-  variant/zoom/motion cases passed in `/private/tmp/railix-modular-final-package.log`. Its four gesture
+  pass in `railix-final-gesture-package.log`; packaging succeeds. Eight other final
+  variant/zoom/motion cases passed in `railix-modular-final-package.log`. Its four gesture
   failures were a test selector for an unavailable Appearance tab on automatic sections, corrected
   to the existing Groups tab before the passing rerun.
-  Two final packaged extension/cleanup checks pass in `/private/tmp/railix-modular-packaged-final.log`.
+  Two final packaged extension/cleanup checks pass in `railix-modular-packaged-final.log`.
   The earlier native complex-example check used Canvas Standard: 128-Step double-click entry at 50%, Home,
   wheel zoom and visible replay parcels were inspected. No page errors or leftover test processes
   were found. Functional project, Creator metadata and application JAR hashes remain unchanged.
@@ -169,12 +122,12 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   Scoped verification covers 21 functional cases across targeted runs, Retina pixel/zoom/reload checks,
   editable-theme installation and packaged extension loading. Two stale test assumptions were corrected:
   selecting empty corners of isometric bounding boxes, and clicking through an open Inspector.
-  Evidence: `/private/tmp/railix-scenery-final-package.log` (17 initial passes),
-  `/private/tmp/railix-scenery-reviewed-package.log` (four corrected cases and packaging),
-  `/private/tmp/railix-scenery-retina-verified.log` (two Retina cases). The 128-processor comparison,
+  Evidence: `railix-scenery-final-package.log` (17 initial passes),
+  `railix-scenery-reviewed-package.log` (four corrected cases and packaging),
+  `railix-scenery-retina-verified.log` (two Retina cases). The 128-processor comparison,
   now with six image-backed environment plots, retains 16.7-16.8 ms Canvas p95 versus 83-100 ms CSS;
-  raw evidence is `/private/tmp/railix-scenery-retina.jsonl`. The packaged extension check passes in
-  `/private/tmp/railix-scenery-retina-package-smoke.log`; its two stricter scenery-test fixture failures
+  raw evidence is `railix-scenery-retina.jsonl`. The packaged extension check passes in
+  `railix-scenery-retina-package-smoke.log`; its two stricter scenery-test fixture failures
   are superseded by the Retina rerun above. Browser screenshots were inspected; direct inspection of
   the refreshed complex preview was blocked by the locked Mac. Its three content hashes are unchanged.
   No full-CI, sustained-thermal or million-Step certification is claimed.
@@ -197,8 +150,8 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   Scoped Foundry verification covers 65 Creator cases across world, editor and theme-protocol
   checks. The broad run caught a narrow HUD overflow and an obsolete tab-style expectation;
   their fixes passed the subsequent 15-case packaging run (1m54s). Six final interaction/rendering
-  checks passed in 38s. Logs: `/private/tmp/railix-foundry-package.log`,
-  `/private/tmp/railix-foundry-final.log`, `/private/tmp/railix-foundry-boundaries.log`.
+  checks passed in 38s. Logs: `railix-foundry-package.log`,
+  `railix-foundry-final.log`, `railix-foundry-boundaries.log`.
   The 128-Step navigation probe renders nine visible machines/174 plane descendants, with
   18.1 ms frame p95 and 0.1 ms command p95; this does not close the dense 128-visible-machine issue.
   Native review with the existing 143-node project confirmed both themes, group entry at 50%
@@ -209,11 +162,11 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   return walls, smaller direction marks and a round radar with directional endpoints. A browser visual
   probe exposed flattening caused by the old clipping ancestor; finite cargo paths replace that clip
   without allowing packages outside the run. Distant transport remains a tiled material. The 25-case
-  scoped package run passed in 2m41s (`/private/tmp/railix-foundry-transport-package.log`). This is not
+  scoped package run passed in 2m41s (`railix-foundry-transport-package.log`). This is not
   acceptance of target-image fidelity or completion of the dense 128-visible-machine performance work.
   Native review also exposed ignored nested keyframes: a running animation name alone did not prove
   parcel movement. The new position-change regression failed, then passed with top-level keyframes.
-  Final package: 10 cases passed in 1m28s (`/private/tmp/railix-foundry-motion-final.log`). The active
+  Final package: 10 cases passed in 1m28s (`railix-foundry-motion-final.log`). The active
   renderer probe at rates 1, 100 and 1,000,000 retained 22 cubes/192 plane elements and 16.7ms frame p95;
   these are renderer inputs, not application-throughput or dense-world certification.
   Native verification of the 143-node project confirms changing cube positions on the selected
@@ -227,7 +180,7 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   Large animated-view CPU is still unresolved. Do not use frame p95 alone as an efficiency gate;
   the subsequent layer-separation implementation is described below.
   Local correction verification: 13 Creator cases and native packaging passed in 2m28s
-  (`/private/tmp/railix-paths-buildings-review.log`); the functional project and generated application
+  (`railix-paths-buildings-review.log`); the functional project and generated application
   JAR hashes are unchanged. Temporary profiling code was removed. Reduced motion is used only as
   a review-preview mitigation pending the renderer decision, not as a performance fix.
   **Renderer correction (2026-09-12):** after the allowance pause, Portals and Groups now
@@ -236,16 +189,16 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   changing the project, authored shape overrides or generated binary. Four containers are added per
   renderer, not per Step; no graphics dependency or per-frame JavaScript loop is introduced.
   The comparable 120-frame Chromium trace reduced accumulated `DirectRenderer::DrawRenderPass`
-  duration from 270,094 to 146,121 microseconds (`/private/tmp/railix-renderer-trace.log` and
-  `/private/tmp/railix-renderer-layers.log`). These nested event durations are not whole-process CPU
+  duration from 270,094 to 146,121 microseconds (`railix-renderer-trace.log` and
+  `railix-renderer-layers.log`). These nested event durations are not whole-process CPU
   percentages. Per-building isolation and mask-free parcel triangulation were measured and removed;
   temporary profiling code is not retained. The 22-case camera/transport/group regression run passes
-  (`/private/tmp/railix-renderer-regressions.log`); the 128-Step navigation sample has nine visible
+  (`railix-renderer-regressions.log`); the 128-Step navigation sample has nine visible
   machines and 18 ms frame p95. This does not certify 128 simultaneously detailed animated machines.
-  Five focused World cases and one theme-switch case also pass (`/private/tmp/railix-renderer-alignment.log`),
+  Five focused World cases and one theme-switch case also pass (`railix-renderer-alignment.log`),
   including a geometric check of parcel feet against actual conveyor projections after zoom/pan.
   Initial scoped package verification passed 27 Creator cases plus the 8 core / 72 standard-library
-  baseline cases in 4m28s (`/private/tmp/railix-renderer-final-package.log`). Review also fixed retained
+  baseline cases in 4m28s (`railix-renderer-final-package.log`). Review also fixed retained
   detached scene containers: the weak-reference GC test fails with the old references and passes
   after disposal releases them and the browser processes detachment. An existing selection test now
   waits for the asynchronously loaded Inspector, not just an already-selected ID. No product delay
@@ -258,19 +211,19 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   rather than assuming every branch fits their former 1000-unit viewport.
   A strong wheel zoom also exposed ground-only culling of still-visible elevated roofs. Viewport
   queries now include the elevation and foundation overhang in the current group's local unit.
-  Four focused wheel/camera/parcel/128-Step cases pass (`/private/tmp/railix-roof-viewport.log`).
+  Four focused wheel/camera/parcel/128-Step cases pass (`railix-roof-viewport.log`).
   The narrow 390px parcel geometry check excludes offscreen overruns beneath culled machines;
   every zoom must still test exposed onscreen parcels within the unchanged 1px tolerance.
   Final native packaging passes 91 Creator cases (64 scene, 26 renderer, one theme editor) plus the
   8 core / 72 standard-library baseline cases in 4m43s
-  (`/private/tmp/railix-renderer-complete-package.log`). Four additional 390px browser cases pass
-  (`/private/tmp/railix-renderer-mobile-complete.log`); wheel entry uses successive real gestures
+  (`railix-renderer-complete-package.log`). Four additional 390px browser cases pass
+  (`railix-renderer-mobile-complete.log`); wheel entry uses successive real gestures
   because a narrow viewport starts farther from the detail boundary. The same wheel test also passes
-  again on desktop (`/private/tmp/railix-renderer-desktop-wheel-final.log`). Native review confirms entry
+  again on desktop (`railix-renderer-desktop-wheel-final.log`). Native review confirms entry
   at the first of 128 Steps with local 50% zoom. The temporary viewport override was removed.
   A nine-second native sample at 1280x900, 70% zoom, with Example replay and 27 parcels active records
   35.5-42.1% CPU for the shared graphics process, 15.0-30.0% for the page renderer, 1.5-2.1% for Creator
-  and 0.3-0.7% for its generated application (`/private/tmp/railix-native-active-cpu.log`). This is not
+  and 0.3-0.7% for its generated application (`railix-native-active-cpu.log`). This is not
   GPU utilization or a matched comparison to the earlier 128% / 40% large-view readings. Sustained
   thermal behavior and dense-scene capacity remain unproven. The inspection worker itself developed
   high CPU/memory use and was reset before measurements and after UI checks. Reduced motion stays off;
@@ -300,24 +253,24 @@ spreading them across unconnected application, CI/CD, observability, and orchest
   navigation frames; the broad batched run measured 98 ms p95 and 194 ms JavaScript, with 2355
   descendants and all 128 Steps still rendered. Other batched runs ranged from 81 to 102 ms p95.
   Script/style work is lower, but smooth dense navigation is **not demonstrated**; frame-pipeline
-  profiling remains open. Evidence: `/private/tmp/railix-camera-batch-red.log` and
-  `/private/tmp/railix-camera-batch-review.log` (41 rendering cases passed, packaging passed).
+  profiling remains open. Evidence: `railix-camera-batch-red.log` and
+  `railix-camera-batch-review.log` (41 rendering cases passed, packaging passed).
   Final camera/theme/insertion verification passed 8 cases and packaging in
-  `/private/tmp/railix-camera-batch-final-green.log`. The camera mutation probe now uses controlled
+  `railix-camera-batch-final-green.log`. The camera mutation probe now uses controlled
   renderer observations so unrelated asynchronous metrics cannot invalidate the measurement.
   The 6003-Step navigation case also passed: 20 measured requests after 12 warmup requests,
   308 maximum world/label DOM elements and 1.96 ms scene-request p95; this is not a frame-rate
-  or long-duration leak proof (`/private/tmp/railix-camera-batch-final.log`).
-  Evidence: `/private/tmp/railix-depth-belts-red.log`, `/private/tmp/railix-depth-dense.log`,
-  `/private/tmp/railix-belt-material-red.log`, `/private/tmp/railix-belt-material-dense.log`,
-  `/private/tmp/railix-depth-review-package.log`, `/private/tmp/railix-lateral-branch-fixed.log`,
-  `/private/tmp/railix-lateral-destination-red.log`. The broader scoped run passed 26 world and
-  8 editor/audio browser cases: `/private/tmp/railix-stable-junctions-review.log`.
+  or long-duration leak proof (`railix-camera-batch-final.log`).
+  Evidence: `railix-depth-belts-red.log`, `railix-depth-dense.log`,
+  `railix-belt-material-red.log`, `railix-belt-material-dense.log`,
+  `railix-depth-review-package.log`, `railix-lateral-branch-fixed.log`,
+  `railix-lateral-destination-red.log`. The broader scoped run passed 26 world and
+  8 editor/audio browser cases: `railix-stable-junctions-review.log`.
   The strengthened destination regression and three related render checks then passed with
-  packaging in `/private/tmp/railix-lateral-destination-green.log`; `git diff --check` passed.
+  packaging in `railix-lateral-destination-green.log`; `git diff --check` passed.
   Full `clean verify` and cross-browser performance qualification were not run.
   Native review now runs the corrected package at `http://127.0.0.1:65121/` with the existing
-  `/private/tmp/railix-review-20260907/railix.project.json`, not the old preview.
+  `railix-review-20260907/railix.project.json`, not the old preview.
   The batched package was checked there at whole-group and close zoom, then on the selected
   Standard path through its T/L outlets. Project, Creator metadata and generated JAR hashes
   stayed unchanged; test browsers and test JVMs were gone after verification.
@@ -413,172 +366,7 @@ Completion percentages count accepted checkpoints, not lines written. A roadmap 
 only after its public acceptance gate, coverage report, complexity audit, stability checks,
 documentation, and screenshot are complete.
 
-## Retained Foundations
-
-- immutable canonical `RailixValue` primitives;
-- bounded deterministic JSON, YAML, and XML normalization;
-- three explicit production modules: core contracts/compiler/runtime, standard library, and
-  Creator/development tooling;
-- explicit Step registration without reflection or runtime scanning;
-- one flat functional project model and one runtime execution path;
-- deterministic diagnostics and canonical JSON writing;
-- Creator-owned rolling child-process lifecycle whose generated development application owns
-  Example execution, traces, metrics, and management endpoints;
-- no third-party Java runtime or graphics-framework dependency; Creator renders its viewport in CSS.
-
-Anything that cannot serve the accepted Creator-first graph is removed rather than wrapped.
-
-## 1. Creator-First Application Graph
-
-Status: **Complete; re-accepted 2026-07-30**
-
-Goal: prove one understandable real journey before adding breadth.
-
-Accepted journey:
-
-```text
-Application -> searched CLI Trigger -> mapped Lowercase Step -> Trigger result -> End
-```
-
-Accepted behavior:
-
-1. One mutable workflow context with reserved read-only `context.runtime`.
-2. One permanent persisted Application root and catalog-driven searchable Trigger insertion.
-3. Trigger-owned named payload/context Examples, explicit/defaulted results, and unique
-   ingress-source claims.
-4. Generic recursive Step inputs consumed by Creator, compiler, and runtime.
-5. Automatic persistence, structural compilation, rolling child replacement, and example runs.
-6. Node-owned diagnostics, deterministic layout, stable selection, deletion, and keyboard/mobile
-   authoring.
-7. Truthful project path, application launch path, PID, graph count, and build time.
-
-Evidence:
-
-- compiler, runtime, Creator HTTP, desktop/mobile Chrome, packaged JAR, and launcher E2Es;
-- no manual Validate/Run/Start lifecycle and no global Step palette;
-- [accepted Creator screenshot](screenshots/roadmap-item-1-creator-first-v2.jpg).
-
-Deferred: additional Trigger/I/O catalogs, control Steps, external dependencies, live metrics,
-permissions, distribution, remote execution, state, and sharding.
-
-## 2. Primitive Manipulation And Data Workbench
-
-Status: **Complete (2026-07-30)**
-
-Goal: make nested data work understandable without path syntax.
-
-Accepted behavior:
-
-1. Guided sample-backed paths rooted at `context`, with object fields, array indexes, editable
-   breadcrumbs, and a non-mutating Cancel action.
-2. Ordered, searchable, type-compatible unary Steps with insertion, movement, removal, and real
-   per-stage preview from the built application.
-3. Exact JSON numbers, UTC epoch-millisecond dates, sparse arrays, and shape propagation.
-4. Invalid literal drafts remain visible and unpersisted rather than deleting user input.
-5. JSON, YAML, and XML normalization through public project/runtime boundaries.
-6. Desktop/mobile keyboard behavior and the runnable lowercase example.
-
-Evidence:
-
-- one public scenario per path, shape, draft, ordering, preview, normalization, and rejection;
-- [accepted data-workbench screenshot](screenshots/roadmap-item-2-data-workbench.jpg).
-
-The complete unary catalog is not implied by this item; Item 3 owns it.
-
-## 3. Primitive Contract And Standard Library
-
-Status: **In progress (4/6 checkpoints, 67% complete; 33% left)**
-
-Goal: finish a finite versioned catalog for total and explicitly fallible unary operations.
-
-Invariants:
-
-- every operation is an ordinary stateless `STEP`, not a separate kind;
-- one named `value` receive and one named `value` return for standard unary operations;
-- total operations use one primary `ok` result;
-- expected invalid or empty data uses declared outcomes and never exceptions;
-- implementation faults remain failures and interruption remains cancellation;
-- dates remain UTC epoch milliseconds represented as exact JSON numbers;
-- Creator suggestions and configuration derive only from the Step contract.
-
-Checkpoints:
-
-1. **Done:** accept the finite catalog matrix in ADR 0021.
-2. **Done:** implement and prove fallible `text.to-number` with `invalid` no-write continuation.
-3. **Done:** implement collection aggregation and percentile with explicit `empty`/`invalid`.
-4. **Done:** implement and prove all accepted total conversion, text, boolean, number, list,
-   date, matching, and normalization rows.
-5. **In progress:** implement every remaining accepted fallible parse, validation, translation,
-   and collection row. ADR 0021 is the only support matrix.
-6. **Planned:** full catalog acceptance gate, docs, coverage/complexity audit, stability proof, and
-   milestone screenshot.
-
-Regex remains excluded until a bounded implementation exists. External dependency loading belongs
-to Item 4.
-
-## 4. Triggers, I/O Steps, And Dependencies
-
-Status: **Planned**
-
-Goal: provide practical application boundaries while preserving one flat graph.
-
-Scope:
-
-- startup, HTTP, socket, scheduler, MQTT, and gRPC Trigger Steps in addition to CLI;
-- Trigger-owned examples, results, defaults, resource claims, and generated API contracts;
-- HTTP client/server, file, database, and other trusted ordinary Steps;
-- explicit Maven Central, Gradle-compatible coordinates, and repository dependencies;
-- reproducible dependency locks derived from the complete project;
-- one small reusable Step developer template and one-command external-flow E2E proof.
-
-No Trigger or I/O Step is accepted without a real built-application test.
-
-## 5. Flow Control, Groups, And Flat Compilation
-
-Status: **In progress (4/7 checkpoints, 57% complete; 43% left)**
-
-Goal: compose large applications without hidden graph behavior or compiler-only visual models.
-
-Current contract:
-
-- `railix.project.json` contains only `format`, `id`, fully materialized `nodes`, and `links`;
-- `railix.creator.json` optionally contains `format`, visual `groups`, and Step presentation;
-- compiler and application never read Creator metadata;
-- stable opaque UUID-backed node and group IDs encode no order;
-- each ordinary Step has at most one optional group assignment; groups may remain empty;
-- Group Manager owns group name, color, embedded icon, and boundary style while Step Appearance
-  owns assignment;
-- deleting a group only unassigns its Steps and never changes the functional project;
-- one region is derived for each connected component assigned to a group, so one group may render
-  as multiple disconnected regions without persisted occurrences or geometry;
-- continuous pan, zoom, Fit, group focus, scale-based detail, and deterministic automatic branch
-  regions are ephemeral Creator state;
-- creating or inserting a Step never inherits a group, and edits never propagate through groups;
-- strict valid format-1 metadata migrates to canonical format 2; invalid legacy source is preserved
-  while the flat functional graph remains available;
-- compilation builds one immutable authored-order node plan with integer destinations from one
-  linear graph index; runtime resolves IDs only at public Trigger, source, and preview boundaries;
-- `railix.filter` is an ordinary Step using generic ordered candidate predicates and explicit
-  `match` / `otherwise` links;
-- `railix.choice` is an ordinary Step using generic ordered OR groups whose values pass through one
-  shared Transform program and then independent non-empty AND Matcher programs, with missing
-  sources false and canonical JSON values present;
-- `railix.switch` is an ordinary Step whose generic top-level `CANDIDATES` input authors one stable
-  outcome per case; the first accepted case selects its route and no accepted case selects the
-  primary `otherwise` route;
-- authored route identities and links are owned by the functional project, optional labels live
-  only in Creator metadata, and compiler/runtime/Creator derive both fixed and authored routes from
-  the contract;
-- nested authored-outcome Steps are rejected because nested programs have no graph destinations,
-  and Creator excludes those Steps from nested Transform and Matcher searches;
-- Creator renders matcher groups from the generic catalog input, while the rolling-built
-  application owns short-circuit execution, failures, routing, and previews;
-- Creator lays out every declared route in deterministic iterative depth-first order and edits each
-  control route from the Inspector;
-- malformed links are rejected at the functional boundary and remain diagnostic-only with Step
-  insertion disabled if transient browser state is corrupted.
-
-Checkpoints:
+## Flow And Group Checkpoint History
 
 1. **Done (2026-08-06): Flat functional graph.** Remove reusable-flow definitions,
    compiler-generated graph expansion, alternate executable source, and global blueprint storage.
@@ -664,7 +452,7 @@ Checkpoints:
    tests, not fabricated application load. Native review used 143 nodes and five real Examples,
    reaching 141/142 executable Steps; straight terminal lanes, continuous selected branch trunks,
    outline hit areas, group shapes and Inspector controls were checked on the packaged app.
-   [Accepted Inspector screenshot](screenshots/roadmap-item-5-3-inspector-diagram.png).
+   [Accepted Inspector screenshot](../screenshots/roadmap-item-5-3-inspector-diagram.png).
 
    Final clean acceptance log: /tmp/railix-followup-acceptance-20260907-accepted.log. Focused evidence:
    /tmp/railix-shape-scene.log, /tmp/railix-ui-corrections.log, /tmp/railix-shape-hits.log.
@@ -674,9 +462,9 @@ Checkpoints:
    test timeouts; it is not successful acceptance evidence.
    Final command remains ./scripts/coverage.sh; never overlap Maven runs. Integration-test by itself
    can print BUILD SUCCESS with failures: inspect reports or run failsafe verify as well.
-   The earlier review project remains at /private/tmp/railix-review-20260906; its old process was
+   The earlier review project remains at railix-review-20260906; its old process was
    no longer running when checked on September 7. The refreshed 143-node, five-Example project is
-   /private/tmp/railix-review-20260907/railix.project.json. The verified native review runs on port
+   railix-review-20260907/railix.project.json. The verified native review runs on port
    65121 with Creator PID 21200 and generated-app PID 21202 at this checkpoint. Post-verification
    process inspection found no remaining Playwright workers or test JVMs; only this intentional
    Creator/application pair remains. The existing compiler size limits and later roadmap scope
@@ -739,9 +527,9 @@ Checkpoints:
    The final clean run passes all 2,690 cases. Its 60-navigation desktop/mobile probes report
    viewport request p95 of 1.796/1.998 ms and CPU draw submission p95 of 0.300/0.300 ms, respectively.
    These short probes include warmup growth; the sustained retention evidence above is separate.
-   [Accepted group/Example view](screenshots/roadmap-item-5-3-semantic-zoom-group-management.png),
-   [6,003-node overview](screenshots/semantic-zoom-overview.png), and
-   [real Step detail](screenshots/semantic-zoom-detail.png) are captured from the working Creator.
+   [Accepted group/Example view](../screenshots/roadmap-item-5-3-semantic-zoom-group-management.png),
+   [6,003-node overview](../screenshots/semantic-zoom-overview.png), and
+   [real Step detail](../screenshots/semantic-zoom-detail.png) are captured from the working Creator.
 
    The September 8 scaling work below removes the earlier total-node, Trigger-count and local
    source-size ceilings. No million-Step readiness claim follows from a bounded renderer.
@@ -766,9 +554,6 @@ Checkpoints:
    unsupported fields. Validate format 1 strictly before migration, prefer its deepest overlapping
    occurrence, preserve invalid source, and prove flat startup fallback without restarting the
    application.
-6. **Planned:** Merge plus fan-in cardinality, Split plus fan-out cardinality, and bounded Loop.
-7. **Planned:** per-Trigger and per-Step test input, fixtures, assertions, reports,
-   stop-before-side-effect behavior, and proof that every terminal path satisfies Trigger results.
 
 ### Compiler And Observation Scaling
 
@@ -939,8 +724,8 @@ million-Step/application-throughput certification. The raw report is `target/wor
 under the Creator module. The preceding 20,000-Step scene check was not rerun for this renderer-only change.
 The 143-node review project is unchanged and is open
 in the rebuilt native Creator. Real application screenshots show the
-[overview](screenshots/factory-workshop.png), [construction tray](screenshots/factory-workshop-construction.png)
-and [nested detail](screenshots/factory-workshop-detail.png).
+[overview](../screenshots/factory-workshop.png), [construction tray](../screenshots/factory-workshop-construction.png)
+and [nested detail](../screenshots/factory-workshop-detail.png).
 
 The Pixi iteration adds **64 net owned lines to the existing world renderer**, separately from its
 vendor assets and the preceding uncommitted UI work. Review covered resource ownership and browser
@@ -1074,7 +859,7 @@ The factory renderer, vendor assets, HUD and machine appearance remain a separat
 No fresh full-suite coverage claim replaces the previously dated coverage evidence. Item 6
 and the overall accepted roadmap count remain unchanged; this is not platform completion.
 
-### Current Evidence
+### Earlier Runtime And Delivery Evidence
 
 - The generated production application contains direct static Step calls, lowered input resolvers,
   constants, and integer routes. It contains no `StepDefinition`, binding hierarchy, alternate
@@ -1184,74 +969,7 @@ status does not change Item 5 completion.
 
 Global reusable groups, automatic group suggestions, and parameter suggestions remain unsupported.
 
-## 6. Live Runtime, Operations, Bounded Work, And Permissions
-
-Status: **In progress; 1/6 checkpoints accepted (17%)**
-
-Goal: make development observable and production behavior bounded.
-
-Scope:
-
-- explicit suspending Steps begin only as one lifecycle-complete slice: top-level suspension,
-  bounded admission, ingress-owned deadline/cancellation, idempotent application shutdown,
-  one-shot inline resume by integer node, and constrained-heap/classloader-retention proof;
-- independently includable project/build metadata, preview/trace, live-error, queue, and metrics
-  build capabilities;
-- local and remote authenticated, read-only Creator attachment with explicit compatibility
-  metadata and build-selected endpoints; production attachment never edits or invokes a Flow;
-- platform user identity, role, and per-environment capability authorization for project editing,
-  Example execution, build, deployment, and production attachment;
-- SOPS-encrypted, recipient-key or key-group-controlled environment secrets that never enter Flow
-  JSON, diagnostics, traces, metrics, or Creator exports;
-- bounded throughput, timing, resources, uptime, bottleneck, queue, and custom metrics per flow
-  and Step without workflow values;
-- deterministic configuration precedence, named environments, explicit placeholders, and restart
-  behavior without hidden live mutation;
-- bounded issue and diagnostic registries with explicit overflow behavior, plus keyed rate limits
-  whose key, capacity, queue, and rejection paths are visible in the Flow;
-- bounded metric names, labels, and cardinality with an explicit overflow series instead of
-  unbounded production memory;
-- traces only for explicit examples or user-supplied test contexts, never sampled production data;
-- bounded queues, concurrency, deadlines, cancellation, backpressure, and shutdown;
-- explicit filesystem, network, process, environment, and other permission requests;
-- optional resource measurement and enforceable execution policy.
-
-The synchronous generated route remains a separate zero-scheduler fast path. Suspension is not
-accepted as a callback-only API because an abandoned callback would retain its complete event
-context without a lifecycle owner.
-
-Checkpoints:
-
-1. **Accepted (7/7 gates closed; 100%, 0% left): Production observability foundation.**
-   Development applications
-   expose build-selected trace and metric surfaces that are physically absent from production
-   artifacts. The generated development application reads its compiled Example manifest and owns
-   automatic chunked execution, bounded trace storage, projections, and metrics. Each Example makes
-   one ordinary Flow pass with `context.runtime.test=true`; Creator only builds, starts, stops,
-   restarts, and reads authenticated management data. The application streams inputs, nested stages,
-   compact context changes, terminal results, and deterministic trace errors without replaying a
-   Step or capturing production traffic. It retains at most 64 MiB per Example and 256 MiB per suite
-   and serves two-reader bounded, ready-to-display summary and selected-Step JSON projections. The
-   all-Example projection for one Step has one owner from frozen snapshot through response transport;
-   concurrent reads allocate no second case snapshot. It rejects total source replay above 64 MiB
-   before parsing. Timed-out workers receive five seconds for cooperative exit; a worker that still
-   retains execution terminates its generated development process rather than leaking indefinitely.
-   Bounded request-body reads complete before run or trace admission.
-   Compact suite status and one-case status avoid transferring the full inventory during polling. Metrics use
-   fixed-cardinality atomic arrays: execution/error/cancellation counts are exact, Flow timing is
-   exact, graph-Step timing samples one in 1,024 executions, and reads stream JSON, Prometheus, or
-   Influx output. The original baseline excluded Examples; the 2026-09-06 correction removes that
-   exclusion so every admitted execution uses the same metrics, including Examples.
-2. **Planned:** lifecycle-complete suspending Steps with bounded admission, deadline, cancellation,
-   shutdown, and retained-context proof while preserving the synchronous fast path.
-3. **Planned:** independently includable development capabilities, named environments, deterministic
-   configuration precedence, and build-time physical omission per capability.
-4. **Planned:** authenticated local/remote read-only attachment plus platform identity, roles,
-   authorization, and encrypted environment-secret delivery.
-5. **Planned:** bounded queues, backpressure, diagnostics, live errors, rate limits, metric
-   cardinality, and explicit overflow behavior.
-6. **Planned:** declared filesystem/network/process/environment permissions, resource measurement,
-   and enforceable execution policy.
+## Observability Foundation Acceptance
 
 Checkpoint 6.1 acceptance gates:
 
@@ -1272,71 +990,59 @@ Checkpoint 6.1 acceptance gates:
 6. **Closed:** clean `./mvnw clean verify` passes in 47:49 with advisory aggregate coverage of
    95.0335% lines and 90.2590% branches. The one-million-call 64 MiB soak retains 127,512 bytes;
    process inspection finds no owned Railix, Playwright, or project Maven process after shutdown.
-7. **Closed:** the [accepted production-observability screenshot](screenshots/roadmap-item-6-1-production-observability.png)
+7. **Closed:** the [accepted production-observability screenshot](../screenshots/roadmap-item-6-1-production-observability.png)
    shows the real Maven-built Creator, selected Example path, application-owned result, and
    connected Step/Flow metrics.
 
 Protocol-specific Trigger test clients and Example assertions remain later checkpoints; current
 Examples begin at the generic Trigger output after protocol conversion.
 
-## 7. Decentralised Execution, State, Sharding, And Replication
 
-Status: **Planned**
+## Renderer Comparison
 
-Goal: scale one application through a decentralised Railix mesh without turning it into
-microservices or adding a user-managed orchestration layer.
+The earlier layered-renderer probe used a 6,003-node public browser navigation regression:
+60 measured requests had p95 1.795 ms and at most 155 world/label DOM elements in visited views.
+Before correction, top-level overhang queried offscreen Steps at deep zoom and could obscure
+the focused leaf; ground-only bounds instead lost visible elevated groups. The retained design
+uses station-scaled overhang. These are historical probe results, not latency guarantees.
 
-Scope:
+Explicit promotion, per-building isolation wrappers and mask-free gradient triangulation did
+not improve the probes enough to retain. Layer separation improved traced compositing costs.
+A short native replay sample measured 36-42% CPU for the shared graphics process and 15-30%
+for the page renderer, not GPU utilization or a matched thermal test. The shell-only PNG probe
+reduced composition cost but missed smooth-frame targets and was superseded by Canvas.
+Reduced motion was not accepted as a performance fix.
 
-- define member discovery, authenticated mesh membership, resource declarations, work ownership,
-  crash/restart takeover, and decentralised rolling replacement;
-- require a successor to prove identity, compatibility, readiness, ownership transfer, drain, and
-  rollback before an existing application yields work;
-- every authorized mesh instance can accept work and participate in balancing and recovery;
-- decide and prove the compiled unit of distribution: eligible Step, Flow, or another boundary.
-  Creator-only Groups, Blueprints, and Templates must never become a production placement model;
-- explicit eligibility and dependency-tree compatibility, never automatic migration from timing
-  alone;
-- authenticated remote dispatch with bounded retries, deadlines, backpressure, and observability;
-- stable invocation identity, attempt, origin, and trace information;
-- explicit local-resource and placement constraints;
-- Step-owned state, partitioning, replication, repair, backup, and recovery;
-- partition, restart, migration, recovery, and soak proof without retained run state or leaks.
+The three scenery motifs added 234,681 encoded bytes and 1,555,605 decoded pixels
+(5.93 MiB RGBA, excluding masks and browser copies), shared per motif rather than per building.
 
-## 8. Direct Generation, Distribution, And Certification
+The historical four-variant public-renderer comparison included terrain, labels, HUD and real camera calls, with
+128 visible processors, six environment plots and identical transport input. Headless Chrome 152 on this Apple M1 Max used
+ANGLE Metal at 1920x1080 and device pixel ratio 2. Two forward/reverse rounds per variant and phase
+recorded 100 frames (first 20 omitted from interval statistics), page/process CPU deltas and surfaces:
 
-Status: **Planned**
+| Variant | Active p95 frame interval | Renderer CPU | Graphics-process CPU | Idle p95 |
+| --- | --- | --- | --- | --- |
+| CSS Standard | 83.4-100.0 ms | 73.5-74.1% | 123.4-124.8% | 50.1-66.7 ms |
+| CSS High detail | 83.4-100.0 ms | 73.9-74.9% | 121.4-123.7% | 50.0-50.1 ms |
+| Canvas Standard | 16.7 ms | 17.4-22.0% | 15.2-16.8% | 16.7-16.8 ms |
+| Canvas High resolution | 16.8 ms | 15.8-17.3% | 14.9-16.6% | 16.8 ms |
 
-Goal: ship the complete project as a small self-contained application.
+CPU percentages are normalized CPU seconds per wall second (100% is one core), not GPU utilization.
+Canvas uses 2.02/8.08 million pixels per surface here, about 23.1/92.5 MiB RGBA across three surfaces,
+excluding browser copies, bitmap storage and other page elements. Both retain operational animation.
+The same short navigation probe measured p95 200-450 ms for CSS, 16.7 ms for Canvas Standard and 16.8 ms for
+Canvas HQ; these single navigation rounds include reconciliation cost and do not establish an HQ
+speed advantage. Standard used less surface memory; those lower-quality options were subsequently
+removed at the user's request. Renderer Canvas corresponds to Canvas High resolution, Renderer CSS
+to CSS High detail. The remaining Canvas choice prioritizes Retina sharpness, not minimum memory.
+No sustained thermal, Safari/Firefox, million-Step or application-throughput certification follows.
 
-Scope:
-
-- direct Java calls for reachable Steps and control paths;
-- only referenced dependencies and JDK modules;
-- dependency-aware `jdeps` module closure after all project bundles are known, cached `jlink`
-  runtime images, and `jpackage` applications/installers;
-- fresh-machine JDK/toolchain acquisition with verified checksums, plus authenticated private
-  repositories whose credentials never enter project JSON or generated artifacts;
-- environment-selected development capabilities omitted as code rather than disabled at runtime;
-- deterministic Mermaid audit export from the functional graph and a reproducible application
-  quality score whose inputs and deductions are inspectable rather than heuristic fog;
-- immutable timestamp-versioned artifacts, reproducible outputs, signing-ready release smoke,
-  upgrades, supported operating-system supervision integration, and clean-machine proof;
-- GraalVM native-image only after Java contracts stabilize;
-- approximately 95% line and at least 90% branch coverage as non-failing quality reports;
-- one public E2E per reachable success, rejection, cancellation, repeat, concurrency, lifecycle,
-  packaging, and recovery scenario;
-- leak, process-tree, descriptor, queue, memory, and long-running stability evidence.
-
-## Working Rules
-
-- Build the active acceptance checkpoint only.
-- Prefer deletion and reuse over another abstraction.
-- Add no module, runtime dependency, parallel model, compatibility layer, or fake runtime.
-- Reject invalid construction at compiler, builder, parser, or ingress boundaries with deterministic
-  diagnostics.
-- Test through the highest practical public entrypoint; one scenario owns one test.
-- Keep line coverage near 95% and branch coverage at least 90%, reported without failing a
-  developer build.
-- Every completed roadmap item ends with a real Creator screenshot and exact clean verification.
-- Roadmap status changes only when public acceptance evidence exists.
+Latest scenery-atlas evidence: `railix-scenery-retina-package-smoke.log` and
+`railix-scenery-retina.jsonl`. The initial building-only run remains in
+`railix-renderer-retina.jsonl`. Reproduce with
+`-Drailix.renderer.comparison=true -Drailix.browser.dpr=2` and
+`CreatorWorldBrowserIT#compareProductionVariantsWith128VisibleStations`. The comparison now discovers
+the current descriptor choices; it no longer runs the removed Standard variants.
+The original captured sprite strips can be reproduced separately with `railix.sprite.export=true`;
+no screenshot converter runs in the shipped Creator.

@@ -496,6 +496,86 @@ final class GeneratedApplicationE2eTest {
         assertThat(result).isEqualTo(new ProcessResult(0, "\"--railix-http\""));
     }
 
+    @Test
+    void serveCommandRejectsAProjectWithoutHttpIngress() throws Exception {
+        final Path project = project(directory.resolve("serve-without-http"));
+        final Path output = directory.resolve("serve-output.txt");
+        final Process process = new ProcessBuilder(
+                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-cp", System.getProperty("java.class.path"), RailixMain.class.getName(), "serve", "0"
+        ).directory(project.getParent().toFile()).redirectErrorStream(true).redirectOutput(output.toFile()).start();
+        try {
+            assertThat(process.waitFor(20, TimeUnit.SECONDS)).isTrue();
+            assertThat(process.exitValue()).isEqualTo(2);
+            assertThat(Files.readString(output)).contains("Project has no Trigger for source: application.http.");
+        } finally {
+            process.destroyForcibly();
+            assertThat(process.waitFor(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"application/jsonp", "text/plain; note=application/json"})
+    void productionHttpTreatsNonJsonMediaTypesAsText(final String contentType) throws Exception {
+        final String source = httpEchoProject();
+        final Path jar = productionArtifact(project(directory.resolve("media-type"), source), source).jar();
+        try (HttpProcess server = startHttpJar(jar); HttpClient client = HttpClient.newHttpClient()) {
+            final var response = client.send(HttpRequest.newBuilder(server.uri())
+                    .timeout(Duration.ofSeconds(10)).header("Content-Type", contentType)
+                    .POST(HttpRequest.BodyPublishers.ofString("not JSON")).build(), HttpResponse.BodyHandlers.ofString());
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).isEqualTo("\"not JSON\"");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"7", "null", "true", "[\"first\",7]", "{}"})
+    void productionHttpRejectsInvalidResponseHeaders(final String header) throws Exception {
+        final String source = httpEchoProject().replace("[\"first\",\"second\"]", header);
+        final Path jar = productionArtifact(project(directory.resolve("response-headers"), source), source).jar();
+        try (HttpProcess server = startHttpJar(jar); HttpClient client = HttpClient.newHttpClient()) {
+            final var response = client.send(HttpRequest.newBuilder(server.uri()).timeout(Duration.ofSeconds(10))
+                    .build(), HttpResponse.BodyHandlers.ofString());
+            assertThat(response.statusCode()).isEqualTo(500);
+            assertThat(response.body()).contains("HTTP_RESPONSE_HEADERS_INVALID");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{\"X-Test\":7}", "{\"X-Test\":\"a\\r\\nInjected: true\"}",
+            "{\"Bad Header\":\"value\"}", "{\"Content-Length\":\"999\"}"})
+    void productionHttpClientRejectsInvalidHeadersBeforeSending(final String headers) throws Exception {
+        final var requests = new java.util.concurrent.atomic.AtomicInteger();
+        final var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            try (exchange) {
+                requests.incrementAndGet();
+                exchange.sendResponseHeaders(204, -1);
+            }
+        });
+        server.start();
+        try {
+            final String source = """
+                    {"format":1,"id":"bad-headers","nodes":[
+                      {"id":"app","use":"railix.app","inputs":{}},
+                      {"id":"cli","use":"railix.trigger.cli","inputs":{},"examples":[{"name":"default","payload":[]}]},
+                      {"id":"fetch","use":"railix.http.client","inputs":{"url":"http://127.0.0.1:%d/","headers":%s},
+                       "receives":{"body":["context","result"]},"returns":{"response":["context","result"]}}
+                    ],"links":[{"from":"app.start","to":"cli"},{"from":"cli.next","to":"fetch"},
+                               {"from":"fetch.next","to":"end"}]}
+                    """.formatted(server.getAddress().getPort(), headers);
+            final ProcessResult result = runJar(productionArtifact(project(directory.resolve("client-headers"), source), source).jar());
+            assertThat(result.exitCode()).isZero();
+            final var response = CreatorServerE2eSupport.object(result.output());
+            assertThat(response.values().get("status")).isEqualTo(RailixValue.number(0));
+            assertThat(((RailixValue.StringValue) response.values().get("body")).value())
+                    .startsWith("HTTP_REQUEST_HEADERS_INVALID:");
+            assertThat(requests).hasValue(0);
+        } finally {
+            server.stop(0);
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"-1", "65536", "not-a-port"})
     void productionHttpLauncherRejectsInvalidPorts(final String port) throws Exception {

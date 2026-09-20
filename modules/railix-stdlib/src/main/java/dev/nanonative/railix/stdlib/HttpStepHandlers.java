@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Executors;
 
 /** HTTP-only standard Step implementations kept isolated from CLI-only applications. */
@@ -89,6 +90,10 @@ public final class HttpStepHandlers {
         private static void handle(final RuntimeApplication application, final HttpExchange exchange)
                 throws IOException {
             try {
+                final Optional<RailixValue> body = requestBody(exchange);
+                if (body.isEmpty()) {
+                    return;
+                }
                 final RailixValue.ObjectValue request = RailixValue.object(Map.of(
                         "method", RailixValue.string(exchange.getRequestMethod()),
                         "path", RailixValue.string(exchange.getRequestURI().getPath()),
@@ -96,28 +101,16 @@ public final class HttpStepHandlers {
                                 ? ""
                                 : exchange.getRequestURI().getRawQuery()),
                         "headers", headerObject(exchange.getRequestHeaders()),
-                        "body", requestBody(exchange.getRequestHeaders().getFirst("Content-Type"),
-                                exchange.getRequestBody().readNBytes(HTTP_BODY_LIMIT + 1))
+                        "body", body.orElseThrow()
                 ));
                 final WorkflowRuntime.SourceResult source = application.runSource(
                         "application.http",
                         Map.of("request", request)
                 );
                 send(exchange, source);
-            } catch (final IllegalArgumentException exception) {
-                send(exchange, requestErrorStatus(exception), RailixValue.object(Map.of(
-                        "error", RailixValue.object(Map.of(
-                                "code", RailixValue.string(requestErrorCode(exception)),
-                                "message", RailixValue.string(requestErrorMessage(exception))
-                        ))
-                )), RailixValue.object(Map.of()));
             } catch (final RuntimeException exception) {
-                send(exchange, 500, RailixValue.object(Map.of(
-                        "error", RailixValue.object(Map.of(
-                                "code", RailixValue.string("HTTP_TRIGGER_FAILED"),
-                                "message", RailixValue.string("HTTP request failed.")
-                        ))
-                )), RailixValue.object(Map.of()));
+                send(exchange, 500, error("HTTP_TRIGGER_FAILED", "HTTP request failed."),
+                        RailixValue.object(Map.of()));
             } finally {
                 exchange.close();
             }
@@ -155,12 +148,18 @@ public final class HttpStepHandlers {
                 final RailixValue body,
                 final RailixValue headers
         ) throws IOException {
-            final Map<String, List<String>> headerValues = headerValues(headers);
-            headerValues.forEach(exchange.getResponseHeaders()::put);
+            final Optional<Map<String, List<String>>> parsedHeaders = headerValues(headers);
+            if (parsedHeaders.isEmpty()) {
+                send(exchange, 500, error("HTTP_RESPONSE_HEADERS_INVALID",
+                        "Header values must be strings or arrays of strings."), RailixValue.object(Map.of()));
+                return;
+            }
+            final Map<String, List<String>> values = parsedHeaders.orElseThrow();
+            values.forEach(exchange.getResponseHeaders()::put);
             final byte[] bytes = body instanceof RailixValue.NullValue
                     ? new byte[0]
                     : RailixJson.write(body).getBytes(StandardCharsets.UTF_8);
-            if (bytes.length > 0 && !hasHeader(headerValues, "Content-Type")) {
+            if (bytes.length > 0 && !hasHeader(values, "Content-Type")) {
                 exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
             }
             exchange.sendResponseHeaders(status, bytes.length);
@@ -192,13 +191,22 @@ public final class HttpStepHandlers {
     public static final class Client implements StepHandler {
         @Override
         public StepResult run(final StepInput input) throws InterruptedException {
+            final Optional<Map<String, List<String>>> parsedHeaders = headerValues(input.value("headers"));
+            if (parsedHeaders.isEmpty()) {
+                return failure(input,
+                        "HTTP_REQUEST_HEADERS_INVALID: Header values must be strings or arrays of strings.");
+            }
             try (final var client = java.net.http.HttpClient.newHttpClient()) {
                 final RailixValue body = input.optionalValue("body").orElse(RailixValue.nullValue());
                 final String method = input.string("method").toUpperCase(java.util.Locale.ROOT);
                 final HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(input.string("url")))
                         .timeout(HTTP_TIMEOUT);
-                final Map<String, List<String>> headers = headerValues(input.value("headers"));
-                headers.forEach((name, values) -> values.forEach(value -> builder.header(name, value)));
+                final Map<String, List<String>> headers = parsedHeaders.orElseThrow();
+                try {
+                    headers.forEach((name, values) -> values.forEach(value -> builder.header(name, value)));
+                } catch (final IllegalArgumentException exception) {
+                    return failure(input, "HTTP_REQUEST_HEADERS_INVALID: " + exception.getMessage());
+                }
                 if (body instanceof RailixValue.NullValue) {
                     builder.method(method, HttpRequest.BodyPublishers.noBody());
                 } else {
@@ -221,55 +229,65 @@ public final class HttpStepHandlers {
                         "body", parseBody(response.body())
                 )));
             } catch (final IOException exception) {
-                return StepResult.outcome(input.primaryOutcome()).output("response", RailixValue.object(Map.of(
-                        "status", RailixValue.number(0),
-                        "headers", RailixValue.object(Map.of()),
-                        "body", RailixValue.string(exception.getMessage() == null
-                                ? exception.getClass().getSimpleName()
-                                : exception.getMessage())
-                )));
+                return failure(input, exception.getMessage() == null
+                        ? exception.getClass().getSimpleName()
+                        : exception.getMessage());
             }
         }
+
+        private static StepResult failure(final StepInput input, final String message) {
+            return StepResult.outcome(input.primaryOutcome()).output("response", RailixValue.object(Map.of(
+                    "status", RailixValue.number(0),
+                    "headers", RailixValue.object(Map.of()),
+                    "body", RailixValue.string(message)
+            )));
+        }
     }
 
-    private static RailixValue requestBody(final String contentType, final byte[] bytes) {
+    private static Optional<RailixValue> requestBody(final HttpExchange exchange) throws IOException {
+        final byte[] bytes = exchange.getRequestBody().readNBytes(HTTP_BODY_LIMIT + 1);
         if (bytes.length > HTTP_BODY_LIMIT) {
-            throw new IllegalArgumentException(
-                    "HTTP_BODY_TOO_LARGE: HTTP body exceeds the " + HTTP_BODY_LIMIT + "-byte limit."
-            );
+            return rejectBody(exchange, 413, "HTTP_BODY_TOO_LARGE",
+                    "HTTP body exceeds the " + HTTP_BODY_LIMIT + "-byte limit.");
         }
         if (bytes.length == 0) {
-            return RailixValue.nullValue();
+            return Optional.of(RailixValue.nullValue());
         }
-        final String text = utf8(bytes);
-        if (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).contains("application/json")) {
-            return jsonBody(text);
-        }
-        return RailixValue.string(text);
-    }
-
-    private static String utf8(final byte[] bytes) {
+        final String text;
         try {
-            return StandardCharsets.UTF_8.newDecoder()
+            text = StandardCharsets.UTF_8.newDecoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT)
                     .decode(ByteBuffer.wrap(bytes))
                     .toString();
         } catch (final CharacterCodingException exception) {
-            throw new IllegalArgumentException("HTTP_BODY_UTF8_INVALID: HTTP body is not valid UTF-8.");
+            return rejectBody(exchange, 400, "HTTP_BODY_UTF8_INVALID", "HTTP body is not valid UTF-8.");
         }
+        final String contentType = exchange.getRequestHeaders().getFirst("Content-Type");
+        if (contentType != null && contentType.split(";", 2)[0].strip().equalsIgnoreCase("application/json")) {
+            final RailixJson.Result parsed = RailixJson.parse(text);
+            if (parsed instanceof RailixJson.Parsed valid) {
+                return Optional.of(valid.value());
+            }
+            final RailixJson.Invalid invalid = (RailixJson.Invalid) parsed;
+            return rejectBody(exchange, 400, "HTTP_JSON_INVALID",
+                    "HTTP JSON body is invalid at " + invalid.line() + ":" + invalid.column()
+                            + ": " + invalid.message());
+        }
+        return Optional.of(RailixValue.string(text));
     }
 
-    private static RailixValue jsonBody(final String body) {
-        final RailixJson.Result parsed = RailixJson.parse(body);
-        if (parsed instanceof RailixJson.Parsed valid) {
-            return valid.value();
-        }
-        final RailixJson.Invalid invalid = (RailixJson.Invalid) parsed;
-        throw new IllegalArgumentException(
-                "HTTP_JSON_INVALID: HTTP JSON body is invalid at " + invalid.line() + ":" + invalid.column()
-                        + ": " + invalid.message()
-        );
+    private static Optional<RailixValue> rejectBody(
+            final HttpExchange exchange, final int status, final String code, final String message
+    ) throws IOException {
+        Trigger.send(exchange, status, error(code, message), RailixValue.object(Map.of()));
+        return Optional.empty();
+    }
+
+    private static RailixValue.ObjectValue error(final String code, final String message) {
+        return RailixValue.object(Map.of("error", RailixValue.object(Map.of(
+                "code", RailixValue.string(code), "message", RailixValue.string(message)
+        ))));
     }
 
     private static RailixValue parseBody(final String body) {
@@ -289,44 +307,32 @@ public final class HttpStepHandlers {
         return RailixValue.object(values);
     }
 
-    private static Map<String, List<String>> headerValues(final RailixValue value) {
-        final Map<String, List<String>> headers = new LinkedHashMap<>();
-        if (value instanceof RailixValue.ObjectValue object) {
-            object.values().forEach((name, item) -> {
-                if (item instanceof RailixValue.StringValue string) {
-                    headers.put(name, List.of(string.value()));
-                } else if (item instanceof RailixValue.ArrayValue array) {
-                    final List<String> values = new ArrayList<>();
-                    for (final RailixValue header : array.values()) {
-                        if (header instanceof RailixValue.StringValue string) {
-                            values.add(string.value());
-                        }
-                    }
-                    headers.put(name, List.copyOf(values));
-                }
-            });
+    private static Optional<Map<String, List<String>>> headerValues(final RailixValue value) {
+        if (!(value instanceof RailixValue.ObjectValue object)) {
+            return Optional.empty();
         }
-        return headers;
+        final Map<String, List<String>> headers = new LinkedHashMap<>();
+        for (final var entry : object.values().entrySet()) {
+            if (entry.getValue() instanceof RailixValue.StringValue string) {
+                headers.put(entry.getKey(), List.of(string.value()));
+            } else if (entry.getValue() instanceof RailixValue.ArrayValue array) {
+                final List<String> values = new ArrayList<>();
+                for (final RailixValue header : array.values()) {
+                    if (!(header instanceof RailixValue.StringValue string)) {
+                        return Optional.empty();
+                    }
+                    values.add(string.value());
+                }
+                headers.put(entry.getKey(), List.copyOf(values));
+            } else {
+                return Optional.empty();
+            }
+        }
+        return Optional.of(headers);
     }
 
     private static boolean hasHeader(final Map<String, List<String>> headers, final String expected) {
         return headers.keySet().stream().anyMatch(expected::equalsIgnoreCase);
-    }
-
-    private static int requestErrorStatus(final IllegalArgumentException exception) {
-        return requestErrorCode(exception).equals("HTTP_BODY_TOO_LARGE") ? 413 : 400;
-    }
-
-    private static String requestErrorCode(final IllegalArgumentException exception) {
-        final String message = exception.getMessage();
-        final int separator = message == null ? -1 : message.indexOf(':');
-        return separator < 0 ? "HTTP_REQUEST_INVALID" : message.substring(0, separator);
-    }
-
-    private static String requestErrorMessage(final IllegalArgumentException exception) {
-        final String message = exception.getMessage();
-        final int separator = message == null ? -1 : message.indexOf(':');
-        return separator < 0 ? "HTTP request is invalid." : message.substring(separator + 1).strip();
     }
 
 }

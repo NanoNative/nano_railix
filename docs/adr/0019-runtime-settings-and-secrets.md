@@ -3,7 +3,7 @@
 ## Status
 
 Superseded on 2026-07-30 by [ADR 0020](0020-creator-first-application-graph.md) and the accepted
-[roadmap](../ROADMAP.md).
+[roadmap](../roadmap.md).
 
 ## Disposition
 

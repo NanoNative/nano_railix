@@ -1,8 +1,9 @@
-# ADR 0022: HTTP Ingress And Step-Owned JDK Modules
+# ADR 0023: HTTP Ingress And Step-Owned JDK Modules
 
 ## Status
 
-Proposed on 2026-09-06.
+Proposed on 2026-09-06; moved from the unmerged branch's ADR 0022 on 2026-09-20
+to avoid collision with the accepted Example-validation decision.
 
 ## Context
 
@@ -44,6 +45,8 @@ The current HTTP layer is intentionally smaller than a framework. It supports JS
 request and response bodies, string fallback for non-JSON UTF-8 bodies, multi-value headers, status
 mapping, invalid JSON/UTF-8 rejection, and a 1 MiB limit for request bodies and client response
 bodies. Oversized client responses use the existing transport-failure result (status `0`).
+Header values are strings or arrays of strings; invalid values are rejected rather than silently
+dropped. Request validation returns explicit HTTP errors without constructing validation exceptions.
 Interrupting the server closes its listener and cancels owned request tasks.
 
 ## Rejected Alternatives

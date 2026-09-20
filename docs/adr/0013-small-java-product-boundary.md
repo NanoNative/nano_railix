@@ -38,7 +38,8 @@ target after the Java contracts and application are stable; it is not a developm
 
 ## Invariants
 
-- Core growth must pass the ownership tests in `ROADMAP.md`.
+- Core growth must preserve the [system ownership](../specs/system-model.md) and
+  [execution boundary](../specs/observation.md#execution-ownership), with public-entrypoint proof.
 - Transport and Step implementation details stay outside core.
 - Registration and dependency wiring remain explicit.
 - The production runtime remains independent of Node and native libraries.
@@ -62,12 +63,12 @@ development builds are rejected.
 
 ## Evidence
 
-- [`pom.xml`](../pom.xml)
-- [`modules/railix-core/pom.xml`](../modules/railix-core/pom.xml)
-- [`modules/railix-stdlib/pom.xml`](../modules/railix-stdlib/pom.xml)
-- [`modules/railix-creator/pom.xml`](../modules/railix-creator/pom.xml)
-- [`scripts/package-creator-app.sh`](../scripts/package-creator-app.sh)
-- [`RailixPackageIT.java`](../modules/railix-creator/src/test/java/dev/nanonative/railix/creator/RailixPackageIT.java)
+- [`pom.xml`](../../pom.xml)
+- [`modules/railix-core/pom.xml`](../../modules/railix-core/pom.xml)
+- [`modules/railix-stdlib/pom.xml`](../../modules/railix-stdlib/pom.xml)
+- [`modules/railix-creator/pom.xml`](../../modules/railix-creator/pom.xml)
+- [`scripts/package-creator-app.sh`](../../scripts/package-creator-app.sh)
+- [`RailixPackageIT.java`](../../modules/railix-creator/src/test/java/dev/nanonative/railix/creator/RailixPackageIT.java)
 
 `jdeps --print-module-deps modules/railix-creator/target/railix.jar` reports
 `java.base,java.compiler,java.desktop,java.net.http,jdk.httpserver`; this describes current Creator

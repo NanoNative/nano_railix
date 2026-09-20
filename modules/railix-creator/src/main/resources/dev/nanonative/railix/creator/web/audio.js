@@ -102,8 +102,11 @@ class RailixAudio {
     this.groups();
     this.effectChoices();
     if (this.enabled && !this.scores.length && !this.request) void this.catalog();
-    if (this.musicSession && previousMusic !== this.preferences.music) this.stop();
-    if (!this.preferences.music_enabled) this.stop();
+    if (previousMusic !== this.preferences.music) {
+      this.queue = [];
+      this.stop();
+    }
+    if (!this.preferences.music_enabled && !this.musicPaused) this.stop();
   }
 
   volume(value, fallback) {

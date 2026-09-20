@@ -22,6 +22,23 @@ Deliver the smallest working behavior through a real public entrypoint.
 5. Keep Step handlers stateless and resource ownership explicit. Use atomic persistence
    with revision conflicts; close streams, executors and owned child applications.
 
+## Results Before Exceptions
+
+- Return explicit outcomes/results for expected rejection, invalid user data, absence,
+  conflicts and ordinary failure/cancellation paths. Do not construct or throw an
+  exception only to catch it and convert it back to a result, including in parsers
+  and nested Step execution. Reuse StepResult, RunResult, CompileResult and the
+  owning parser's result rather than adding a universal wrapper at every layer.
+- Validate untrusted values before invoking constructors that assume valid inputs.
+  Existing programmer-contract exceptions are not normal data validation. Do not
+  silently break a public exception contract while migrating expected failures.
+- Catch unavoidable JDK/library exceptions once at the owning boundary and translate
+  recoverable failures with actionable context. Preserve cancellation/interruption;
+  do not turn fatal JVM Errors into ordinary business outcomes or blanket-catch Throwable.
+- A polled cancellation should return its result, not manufacture an exception.
+  Stackless exceptions still perform exceptional control flow; do not claim that
+  removing them is faster without measuring the actual rejection and success paths.
+
 ## Preserve
 
 - Use Java 25, JDK types, final values and pure functions where practical. Prefer
@@ -34,7 +51,9 @@ Deliver the smallest working behavior through a real public entrypoint.
   parallel streams, coercion or fallback interpretation.
 - Split generated methods/classes when bytecode requires it; do not impose an
   arbitrary product Step limit. Keep output deterministic and the monolith small.
-- Groups and appearance are presentation-only. The generated development application,
+- Group copy/shared editing belongs to Creator and materializes ordinary Steps/links;
+  compiler/runtime never interpret groups. Appearance stays presentation-only.
+  The generated development application,
   not Creator, executes Examples and owns observations. Production output physically
   omits that development machinery. UI-only display changes need no runtime API change.
 
