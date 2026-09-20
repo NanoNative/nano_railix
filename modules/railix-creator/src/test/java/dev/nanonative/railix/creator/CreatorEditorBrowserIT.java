@@ -527,14 +527,22 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         assertThat(pageErrors).isEmpty();
     }
 
-    @Test
-    void manualMusicPauseSurvivesTabChangesUntilPlayIsPressed() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void manualMusicPauseSurvivesTabChangesUntilPlayIsPressed(final boolean reopenSettings) {
         page.locator("#open-settings").click();
         page.locator("#settings-music-tab").click();
         page.waitForFunction("() => state.audio.musicContext?.state === 'running'");
         page.locator("#music-play").click();
         page.waitForFunction("() => state.audio.musicContext?.state === 'suspended' && !state.settingsWriting && !state.settingsTimer");
         final var playback = page.evaluateHandle("() => ({context:state.audio.musicContext, session:state.audio.musicSession})");
+        if (reopenSettings) {
+            page.keyboard().press("Escape");
+            page.waitForResponse(response -> response.url().endsWith("/api/settings")
+                    && response.request().method().equals("GET") && response.status() == 200,
+                    () -> page.locator("#open-settings").click());
+            page.locator("#settings-music-tab").click();
+        }
         assertThat(page.evaluate("""
                 async playback => {
                   const time = playback.context.currentTime;
