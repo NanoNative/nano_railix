@@ -32,6 +32,7 @@ The planned operating model and its status live in [docs/roadmap.md](docs/roadma
 | Location | Owns |
 | --- | --- |
 | This README | Product introduction, setup and contributor entrypoints. |
+| [Why Railix exists](docs/vision.md) | Founding motivation, product and business rationale, tradeoffs and reference-backed discussion; not implementation requirements. |
 | [.agents/skills/](.agents/skills/) | Standalone project workflow skills, including specification, Java and CSS; no global installation required. |
 | [System model](docs/specs/system-model.md) | Functional graph, Step/context contracts, control routing and compilation. |
 | [Standard library](docs/specs/standard-library.md) | Primitive semantics, catalog/support matrix and acceptance. |
@@ -45,7 +46,8 @@ The planned operating model and its status live in [docs/roadmap.md](docs/roadma
 | [docs/adr/](docs/adr/) | Architectural decisions, rationale, alternatives and consequences. |
 | [Verification history](docs/verification.md) | Earlier checks and performance evidence, not current CI status. |
 
-Specs own behavior and acceptance. ADRs explain why; the roadmap links to those owners.
+The vision explains the product's purpose. Specs own behavior and acceptance; ADRs explain
+technical decisions, and the roadmap links to those owners.
 New requirements go in their owning spec rather than being copied into every document.
 
 ## First Accepted Journey
