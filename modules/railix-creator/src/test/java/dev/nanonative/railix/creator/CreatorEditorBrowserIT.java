@@ -468,6 +468,74 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         assertThat(pageErrors).isEmpty();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"signal", "circuit"})
+    void characterVariantsAnimateAndReturnToExistingRenderers(final String theme) throws Exception {
+        openProject(choiceProject());
+        final String source = Files.readString(directory.resolve("project.json")), pid = applicationPid();
+        page.locator("#open-settings").click();
+        selectTheme(theme + "/theme.css");
+        page.waitForFunction("() => document.querySelector('#graph').dataset.renderer === 'character' && !state.themeError");
+        assertThat(page.locator("#theme-variant option").allTextContents())
+                .containsExactly("Renderer Characters", "Renderer Glyphs", "Renderer Pixels");
+        final List<String> variants = page.locator("#theme-variant option").all().stream()
+                .map(option -> option.getAttribute("value")).toList();
+        final Path images = Files.createDirectories(Path.of("target/renderer-navigation"));
+        for (final String variant : variants) {
+            page.locator("#theme-variant").selectOption(variant);
+            page.waitForFunction("variant => state.settings.theme_variant === variant && !state.themeError && Number(document.querySelector('.world-character')?.dataset.stations) > 0", variant);
+            assertThat(page.locator("#world-plane canvas").count()).isEqualTo(1);
+            page.keyboard().press("Escape");
+            page.waitForFunction("() => JSON.parse(document.querySelector('.world-character').dataset.measurements || '{}').samples > 10");
+            page.screenshot(new Page.ScreenshotOptions().setPath(images.resolve(theme + "-" + variant + ".png")));
+            page.locator("#open-settings").click();
+        }
+        page.keyboard().press("Escape");
+        page.evaluate("() => {Object.defineProperty(document, 'hidden', {configurable:true, value:true});document.dispatchEvent(new Event('visibilitychange'));}");
+        page.waitForFunction("() => document.querySelector('.world-character').dataset.animated === 'false'");
+        page.evaluate("() => {delete document.hidden;document.dispatchEvent(new Event('visibilitychange'));}");
+        page.waitForFunction("() => document.querySelector('.world-character').dataset.animated === 'true'");
+        page.locator("#open-settings").click();
+        selectTheme("");
+        for (final String variant : List.of("canvas", "hq")) {
+            page.locator("#theme-variant").selectOption(variant);
+            page.waitForFunction("variant => !state.themeError && document.querySelector('#graph').dataset.renderer === (variant === 'canvas' ? 'canvas' : 'css')", variant);
+            assertThat(page.locator(".world-character").count()).isZero();
+            assertThat(page.locator("#world-plane canvas").count()).isEqualTo(variant.equals("canvas") ? 1 : 0);
+        }
+        selectTheme("classic/theme.css");
+        page.waitForFunction("() => !state.themeError && document.documentElement.dataset.architecture === 'classic'");
+        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(source);
+        assertThat(applicationPid()).isEqualTo(pid);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void unavailableWebGlReportsAnErrorAndKeepsCssUsable() throws Exception {
+        final String source = Files.readString(directory.resolve("project.json")), pid = applicationPid();
+        page.addInitScript("""
+                (() => {
+                  const getContext = HTMLCanvasElement.prototype.getContext;
+                  HTMLCanvasElement.prototype.getContext = function(type, ...args) {
+                    return type === 'webgl2' ? null : getContext.call(this, type, ...args);
+                  };
+                })();
+                """);
+        page.reload();
+        waitForText("#build-state", "Built");
+        page.locator("#open-settings").click();
+        page.locator("#theme-select").selectOption("circuit/theme.css");
+        page.waitForFunction("() => state.themeError.includes('WebGL 2') && document.querySelector('#graph').dataset.renderer === 'css'");
+        assertThat(page.locator("#world-plane canvas").count()).isZero();
+        assertThat(page.locator("#world-plane .machine").count()).isPositive();
+        selectTheme("");
+        page.locator("#theme-variant").selectOption("canvas");
+        page.waitForFunction("() => !state.themeError && document.querySelector('#graph').dataset.renderer === 'canvas'");
+        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(source);
+        assertThat(applicationPid()).isEqualTo(pid);
+        assertThat(pageErrors).isEmpty();
+    }
+
     @Test
     @Tag("responsive")
     void worldStatusSharesTheSettingsAndAudioRow() {

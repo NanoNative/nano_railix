@@ -1,0 +1,10 @@
+{
+  "name":"Railix Signal (experiment)",
+  "defaultVariant":"mixed",
+  "variants":[
+    {"id":"mixed","name":"Renderer Characters","description":"Native 3D with fixed bitmap characters and colored cell backgrounds. Experimental.","stylesheet":"variants/mixed.css","renderer":"character"},
+    {"id":"glyphs","name":"Renderer Glyphs","description":"The same scene with character strokes and dark backgrounds. Experimental.","stylesheet":"variants/glyphs.css","renderer":"character"},
+    {"id":"pixels","name":"Renderer Pixels","description":"The same scene with solid pixel cells. Experimental.","stylesheet":"variants/pixels.css","renderer":"character"}
+  ],
+  "files":[]
+}

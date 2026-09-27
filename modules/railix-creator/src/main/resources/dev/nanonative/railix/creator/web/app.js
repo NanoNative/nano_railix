@@ -623,7 +623,7 @@ function worldAppearance(item) {
     boundary: presentation.boundary || item.boundary || (coverage === "uncovered" ? "dashed" : "solid"),
     iconUrl: iconUrl(presentation.icon || state.world?.scene?.icons?.[item.icon_ref]),
     showIcon: Boolean(presentation.icon),
-    symbol: item.kind === "step" ? definition?.outcomes.length > 1 ? "branch"
+    symbol: item.kind === "step" ? operation && outcomes(operation).length > 1 ? "branch"
       : definition?.returns[0]?.shape || "step" : item.kind,
     label: presentation.name || (item.kind === "app" && operation && stepName(definitionFor(operation))) || item.name,
     description: activity === "disabled" ? detail : live ? `${detail}. ${formatInteger(live.errors)} errors; ${formatInteger(live.cancelled)} cancellations. ${

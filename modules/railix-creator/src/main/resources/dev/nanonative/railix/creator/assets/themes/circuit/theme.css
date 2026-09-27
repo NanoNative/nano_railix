@@ -1,0 +1,28 @@
+/* Materials remain editable; world graphics use the shared character pipeline. */
+:root {
+  --world-buildings: 1;
+  --world-building-height: 112;
+  --character-circuit: 1;
+  --character-cell: 2.5;
+  --character-density: .8;
+  --character-glow: 1;
+  --character-ground: #09121b;
+  --character-edge: #030710;
+  --character-metal: #5487a2;
+  --character-cream: #c0eceb;
+  --character-roof: #85bece;
+  --character-dark: #183044;
+  --character-mint: #19eaff;
+  --character-teal: #1683c6;
+  --character-copper: #d2a773;
+  --character-warning: #f4af69;
+  --character-error: #ee7b81;
+  --character-water: #15505e;
+  --character-forest: #4a7184;
+  --world-near: #102630;
+  --world-far: #07121c;
+  --machine-light: #c0eceb;
+  --machine-shade: #4a7184;
+  --belt-rim: #368796;
+  --belt-bed: #203c4e;
+}

@@ -1,0 +1,10 @@
+{
+  "name": "Railix Circuit (experiment)",
+  "defaultVariant": "ascii",
+  "variants": [
+    {"id":"ascii","name":"Renderer Characters","description":"Luminous characters with colored cell backgrounds. The complete world stays on the character grid.","stylesheet":"ascii.css","renderer":"character"},
+    {"id":"glyphs","name":"Renderer Glyphs","description":"The same circuit world using only colored character strokes on a dark background.","stylesheet":"glyphs.css","renderer":"character"},
+    {"id":"pixels","name":"Renderer Pixels","description":"The same geometry and light with solid pixel cells, for comparison.","stylesheet":"pixels.css","renderer":"character"}
+  ],
+  "files": []
+}

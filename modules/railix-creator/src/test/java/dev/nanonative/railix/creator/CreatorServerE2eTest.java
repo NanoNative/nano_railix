@@ -1600,6 +1600,41 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
+    void characterThemeIsOptionalInstallableAndEditableWithoutChangingTheProject() throws Exception {
+        final Path home = directory.resolve("character-home");
+        final Path project = directory.resolve("project.json");
+        try (CreatorServer creator = start(project, home)) {
+            final String before = Files.readString(project);
+            final HttpResponse<String> catalog = request(creator.baseUri(), "GET", "/api/themes", "");
+            assertThat(catalog.body()).contains("\"id\":\"signal/theme.css\"", "\"renderer\":\"character\"",
+                    "\"name\":\"Renderer Characters\"", "\"defaultVariant\":\"canvas\"",
+                    "\"id\":\"circuit/theme.css\"");
+            assertThat(request(creator.baseUri(), "GET", "/world-character.js", "").statusCode()).isEqualTo(200);
+            assertThat(request(creator.baseUri(), "POST", "/api/themes",
+                    "{\"action\":\"install\",\"id\":\"signal/theme.css\"}").statusCode()).isEqualTo(200);
+            final Path stylesheet = home.resolve("themes/signal/theme.css");
+            assertThat(Files.readString(stylesheet)).contains("--character-cell", "--character-ground");
+            Files.writeString(stylesheet, ":root { --character-cream: #abcdef; --character-cell: 6; }");
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/signal/theme.css", "").body())
+                    .contains("#abcdef", "--character-cell: 6");
+            request(creator.baseUri(), "POST", "/api/themes", "{\"action\":\"install\",\"id\":\"signal/theme.css\"}");
+            assertThat(Files.readString(stylesheet)).contains("#abcdef");
+            assertThat(request(creator.baseUri(), "POST", "/api/themes",
+                    "{\"action\":\"install\",\"id\":\"circuit/theme.css\"}").statusCode()).isEqualTo(200);
+            assertThat(Files.readString(home.resolve("themes/circuit/theme.css"))).contains("--character-circuit: 1");
+            assertThat(Files.readString(home.resolve("themes/circuit/theme.json")))
+                    .contains("Renderer Characters", "Renderer Glyphs", "Renderer Pixels");
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/circuit/ascii.css", "").body())
+                    .contains("--character-background: .45", "--character-pixels: 0");
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/circuit/glyphs.css", "").body())
+                    .contains("--character-background: 0", "--character-pixels: 0");
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/circuit/pixels.css", "").body())
+                    .contains("--character-pixels: 1");
+            assertThat(Files.readString(project)).isEqualTo(before);
+        }
+    }
+
+    @Test
     void themesUseLocalDescriptorAssetsWithoutFollowingLinksAndDiagnoseMalformedDescriptors() throws Exception {
         final Path home = directory.resolve("home");
         final Path themes = Files.createDirectories(home.resolve("themes/studio"));

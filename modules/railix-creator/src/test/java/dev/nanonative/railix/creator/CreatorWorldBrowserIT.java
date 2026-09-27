@@ -167,12 +167,13 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"hq", "canvas"})
-    void themeVariantsKeepGroupEntryZoomAndHomeBehavior(final String variant) throws IOException {
+    @CsvSource({"foundry,hq", "foundry,canvas", "signal,mixed", "circuit,ascii"})
+    void themeVariantsKeepGroupEntryZoomAndHomeBehavior(final String theme, final String variant) throws IOException {
         openProject(deepBranchProject(128));
         page.locator("#open-settings").click();
+        if (!theme.equals("foundry")) page.locator("#theme-select").selectOption(theme + "/theme.css");
         page.locator("#theme-variant").selectOption(variant);
-        page.waitForFunction("variant => state.settings.theme_variant === variant && !state.themeError && document.querySelector('#graph').dataset.renderer === (variant.startsWith('canvas')?'canvas':'css')",variant);
+        page.waitForFunction("variant => state.settings.theme_variant === variant && !state.themeError && document.querySelector('#graph').dataset.renderer === (variant==='canvas'?'canvas':variant==='hq'?'css':'character')",variant);
         page.keyboard().press("Escape");
         page.locator("[data-group-region-label]").first().click();
         page.locator("#enter-region").click();
@@ -181,10 +182,10 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         final String inside=(String)page.evaluate("() => new URLSearchParams(state.world.query).get('inside')");
         assertThat(page.locator("[data-select-node=step-0]").isVisible()).isTrue();
         final Path images=Files.createDirectories(Path.of("target/renderer-navigation"));
-        page.screenshot(new Page.ScreenshotOptions().setPath(images.resolve(variant+"-50.png")));
+        page.screenshot(new Page.ScreenshotOptions().setPath(images.resolve(theme+"-"+variant+"-50.png")));
         page.locator("#zoom-in").click();
         page.waitForFunction("() => document.querySelector('#zoom-level').textContent === '70%'");
-        page.screenshot(new Page.ScreenshotOptions().setPath(images.resolve(variant+"-70.png")));
+        page.screenshot(new Page.ScreenshotOptions().setPath(images.resolve(theme+"-"+variant+"-70.png")));
         if (variant.startsWith("canvas")) assertThat(((Number) page.locator(".world-raster").evaluate("""
                 canvas => {
                   const rgba=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;

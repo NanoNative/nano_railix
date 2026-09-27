@@ -870,7 +870,7 @@ public final class CreatorServer implements AutoCloseable {
             final String requestedRenderer = themeString(variant, "renderer", false);
             final String renderer = requestedRenderer.isEmpty() ? "css" : requestedRenderer;
             final String atlas = themeString(variant, "atlas", false);
-            if (!Set.of("css", "canvas").contains(renderer) || "canvas".equals(renderer) != !atlas.isEmpty()
+            if (!Set.of("css", "canvas", "character").contains(renderer) || "canvas".equals(renderer) != !atlas.isEmpty()
                     || !atlas.isEmpty() && !themeAsset(parent, atlas).endsWith(".json")
                     || !canonicalSegment(id) || !stylesheet.endsWith(".css") || !ids.add(id)) {
                 throw new IllegalArgumentException("Theme variants require unique safe ids, CSS stylesheets, and a JSON atlas only for canvas rendering.");
@@ -2766,6 +2766,7 @@ public final class CreatorServer implements AutoCloseable {
             case "/app.js" -> "app.js";
             case "/world.js" -> "world.js";
             case "/world-canvas.js" -> "world-canvas.js";
+            case "/world-character.js" -> "world-character.js";
             case "/audio.js" -> "audio.js";
             default -> "";
         };

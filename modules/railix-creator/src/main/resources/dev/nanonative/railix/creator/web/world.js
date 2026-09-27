@@ -119,15 +119,17 @@
     /** Switch drawing after assets load; scene, camera and event handlers remain shared. */
     async renderer(variant = {}, signal, commit = () => {}) {
       const type = variant.renderer || 'css';
-      if (!['css','canvas'].includes(type)) throw Error(`Unsupported world renderer: ${type}.`);
+      if (!['css','canvas','character'].includes(type)) throw Error(`Unsupported world renderer: ${type}.`);
       const assets = type === 'canvas' ? await RailixCanvas.load(variant.atlas, signal) : null;
       if (this._disposed || signal?.aborted) {
         assets?.sprites.forEach(sprite => sprite.bitmap.close());
         signal?.throwIfAborted();return this;
       }
+      // Initialize a graphics context before discarding the working renderer.
+      const next = type === 'character' ? new RailixCharacter(this._plane) : assets ? new RailixCanvas(this._plane, assets) : null;
       commit();
       this._surface?.dispose();
-      this._surface = assets ? new RailixCanvas(this._plane, assets) : null;
+      this._surface = next;
       this._stage.dataset.renderer = type;
       this._batch = null;
       this._resize();
@@ -1131,7 +1133,7 @@
             }
             offset+=length;
           }
-          this._surface.route({id:link.id,look,unit,segments});
+          this._surface.route({id:link.id,look,unit,points:path,segments});
           continue;
         }
         let current;
@@ -1227,7 +1229,7 @@
       const view = this._viewport(), batch = this._batch;
       const scale = batch ? this._camera.scale/batch.camera.scale : 1;
       // Rebase across an octave so clipped surfaces and detail stay bounded at extreme zoom.
-      let reconcile = Boolean(this._surface) || this._geometryDirty || !batch || view.x < batch.view.x || view.y < batch.view.y
+      let reconcile = Boolean(this._surface && !this._surface.camera) || this._geometryDirty || !batch || view.x < batch.view.x || view.y < batch.view.y
         || view.x+view.width > batch.view.x+batch.view.width || view.y+view.height > batch.view.y+batch.view.height
         || scale < .5 || scale > 2;
       this._geometryDirty = false;
@@ -1254,7 +1256,7 @@
           box:this._viewBounds(station.box, this._height(station.node,station.look))}))
           .filter(({box}) => box.x+box.width >= -32 && box.y+box.height >= -32
             && box.x <= this._size.width+32 && box.y <= this._size.height+32);
-        reconcile ||= visible.some(({node}) => {
+        reconcile ||= !this._surface && visible.some(({node}) => {
           const machine = this._parts.get(`node:${node.id}`), box = byId.get(node.id).box;
           return !machine || !node.expanded && node.kind !== 'end'
             && (machine.children.length > 1) !== (Math.min(box.width,box.height) >= 16);
@@ -1271,7 +1273,8 @@
         }) : batch.rails.map(rail => ({...rail, look:{...rail.look,unit:rail.look.unit*scale},
           points:rail.points.map(([x,y]) => [x*scale+dx,y*scale+dy])}));
         if (reconcile) {
-          this._surface?.begin(this._size,this._projection,this._view(0,0),getComputedStyle(document.documentElement));
+          this._surface?.begin(this._size,this._projection,this._view(0,0),getComputedStyle(document.documentElement),
+            this._camera,this._groups?.at(-1)?.unit || 1);
           this._scenery();
           this._batch = {camera:{...this._camera}, rails,
             view:{x:view.x-view.width/4,y:view.y-view.height/4,width:view.width*1.5,height:view.height*1.5}};
@@ -1300,6 +1303,7 @@
               && box.x <= this._size.width+margin && box.y <= this._size.height+margin) this._machine(station);
           }
         } else {
+          this._surface?.camera(this._size,this._projection,this._view(0,0),scale,dx,dy);
           // Move cached layers without rebuilding faces or restarting parcel animations.
           this._factory.style.transform = `translate3d(${dx}px,${dy}px,0) scale3d(${scale},${scale},${scale})`;
           this._stations.style.transform = this._factory.style.transform;
@@ -1312,7 +1316,7 @@
           visible.push({...placement,box:this._viewBounds(placement.box,this._height(placement.node,placement.look))});
         }
         this._renderLabels(visible, rails, outgoing);
-        if (!reconcile) this._scenery();
+        if (!reconcile && !this._surface?.camera) this._scenery();
         let audible = 0;
         for (const {node, look, box} of visible) if (!node.expanded && box.width > 100 && (look.rate > 0 || look.coverage === 'selected')) {
           const distance = Math.hypot(box.x+box.width/2-this._size.width/2, box.y+box.height/2-this._size.height/2);
@@ -1406,7 +1410,7 @@
           if (clearance.some(box=>overlaps(box,footprint))) continue;
           const [px, py] = this._project(x*size, y*size);
           const box={x:px,y:py,width,height};
-          const low=this._viewBounds(box,-80), high=this._viewBounds(box,-80+96*unit);
+          const low=this._viewBounds(box,-80), high=this._viewBounds(box,96*unit);
           if (Math.max(low.x+low.width,high.x+high.width)<0 || Math.min(low.x,high.x)>this._size.width
             || Math.max(low.y+low.height,high.y+high.height)<0 || Math.min(low.y,high.y)>this._size.height) continue;
           if (this._surface?.scenery(variant,box,unit)) continue;

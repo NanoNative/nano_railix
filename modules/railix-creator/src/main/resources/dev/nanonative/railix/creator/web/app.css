@@ -206,6 +206,13 @@ body[data-build="unavailable"] .build-indicator { color: #ff9d8d; }
 /* The same orthographic camera, in independent compositing contexts. */
 #world-plane { pointer-events: none; }
 .world-raster { position:absolute; left:0; top:0; pointer-events:none; }
+#graph[data-renderer="character"] .world-projection,
+#graph[data-renderer="character"] .world-cargo { visibility:hidden; }
+#graph[data-renderer="character"] .world-raster { image-rendering:pixelated; }
+.world-renderer-error {
+  position:absolute; inset:auto 20px 20px; z-index:10;
+  padding:12px; color:#fff; background:#682f2a; border:1px solid #dd7367;
+}
 .world-projection { position: absolute; inset: 0; transform: var(--world-camera); transform-style: preserve-3d; }
 .world-cargo { position: absolute; inset: 0; transform-origin: 0 0; }
 .world-factory { position: absolute; inset: 0; transform-origin: 0 0; transform-style: preserve-3d; will-change: transform; }

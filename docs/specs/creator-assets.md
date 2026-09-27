@@ -31,6 +31,59 @@ The choices and their names come from the theme descriptor, not a fixed global e
 **Install editable copy** installs the theme, variants and descriptor,
 and preserves every existing file. No local folder contents are required for the embedded defaults.
 
+### Character Renderer Experiment
+
+The `feature/character-renderer-spike` branch adds an optional **Railix Signal (experiment)**
+theme. Foundry remains the default. Signal uses dependency-free WebGL 2: one low-resolution
+3D scene, followed by a fixed bitmap-character or pixel pass. It is GPU rendering, not a
+CPU-only replacement. Labels, Inspector, editing, observations, scene routing and camera
+navigation remain the existing Creator implementation. No generated-application change is required.
+
+Its descriptor selects `"renderer":"character"`; CSS controls the material palette through
+`--character-ground`, `--character-metal`, `--character-cream`, `--character-roof`,
+`--character-dark`, `--character-edge`, `--character-mint`, `--character-teal`,
+`--character-copper`, `--character-warning`, `--character-error`, `--character-water`
+and `--character-forest` (six-digit hex colors). `--character-cell` controls horizontal
+cell size in CSS pixels, clamped to 2-16. Smaller cells increase detail and rendering work.
+`--character-background` ranges from 0 to 1; `--character-pixels: 1` removes glyphs.
+`--character-density` adjusts the material-to-glyph curve (0.3-2, default 1);
+values below 1 give shadowed building faces denser character strokes without lighting the ground.
+`--character-glow` ranges from 0 to 1 (default 0). It spreads emissive light to four
+neighboring character cells, using the existing color buffer, not a full-resolution blur.
+The embedded variants demonstrate characters with background, glyphs without background,
+and pixels. Install an editable copy or add another theme folder using the same descriptor.
+All variants share geometry and a bundled, platform-independent glyph bitmap, not OS fonts.
+
+**Railix Circuit (experiment)** is a separate comparison theme using the same renderer.
+Its `--character-circuit: 1` preset draws chip housings, open group vaults, routing switches,
+portals and circuit-board scenery. It offers the same Characters, Glyphs and Pixels
+presentations as Signal. Characters is the default: colored glyphs and cell backgrounds,
+including transport, projected casing shadows, etched ground traces and cooling surfaces.
+Glyphs retains strokes only; Pixels is an explicit comparison option. Neither character
+presentation adds a non-character world layer. Luminous casings and selected transport
+light adjacent cells; unlit ground does not receive a full-screen dot texture.
+The cooling shimmer is stylized, not a reflection of scene objects. Geometry still uses the
+same three draw calls; there are no dynamic shadow maps, reflection passes or bloom buffers.
+Ground traces use world coordinates, respect entered-group scale and stay anchored while
+panning and zooming. Sub-cell trace detail fades to avoid distant aliasing. Signal remains
+available for comparison. These optional themes are not a new default.
+
+This spike has two fixed building families. Custom CSS cannot define new meshes, and the existing
+per-Step shape, rounding and color overrides are not yet applied by this renderer. Such metadata
+is preserved for the existing renderers. Different authored building families need a separate
+design decision; executable theme JavaScript is not introduced by this experiment.
+
+Static geometry is uploaded on scene reconciliation, while normal pan/zoom updates camera
+uniforms and animation runs in shaders. Scene drawing uses three draw calls, bounds mesh buffers,
+and caps the output surface at 8 megapixels. Hidden tabs stop animation; switching renderers
+disposes buffers, textures, programs and the graphics context. Context creation failure uses
+the existing CSS fallback and reports the error; context loss shows an explicit warning. Frame intervals and JavaScript
+submission timings are diagnostic measurements, not GPU utilization or battery measurements.
+Packaged-native execution, all-device graphics compatibility and power savings are not established
+by this experiment.
+
+### Custom Theme Folders
+
 A custom theme can use this optional layout. Embedded resources under `assets/` mirror the same
 relative roots as the user directory; each theme owns its own folder:
 
