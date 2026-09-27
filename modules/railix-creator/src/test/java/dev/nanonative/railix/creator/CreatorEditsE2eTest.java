@@ -210,7 +210,7 @@ final class CreatorEditsE2eTest extends CreatorServerE2eSupport {
         GeneratedApplicationFixture.installedCatalog(directory, Stream.of("first", "second")
                 .map(id -> StepDefinition.named("example.trigger." + id, "1")
                         .kind(StepDefinition.Kind.TRIGGER).source("example.input." + id)
-                        .run(GenericContractSteps.Trigger.class)).toList(), GenericContractSteps.Trigger.class);
+                        .implementation(GenericContractSteps.Trigger.class)).toList(), GenericContractSteps.Trigger.class);
         try (CreatorServer creator = start(directory.resolve("project.json"))) {
             final RailixValue.ObjectValue added = receipt(edit(creator.baseUri(), "/api/project", 0, """
                     {"nodes":{

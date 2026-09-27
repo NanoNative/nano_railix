@@ -1,6 +1,5 @@
 package thirdparty.conformance;
 
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixData;
@@ -15,25 +14,23 @@ public final class CreatorFirstExecutionSteps {
     }
 
     /** Stateless Trigger implementation for explicit run and source boundaries. */
-    public static final class Trigger implements StepHandler {
+    public static final class Trigger {
         /** Creates one stateless Trigger. */
         public Trigger() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome());
         }
     }
 
     /** Stateless adversarial value Step selected by an immutable contract input. */
-    public static final class Probe implements StepHandler {
+    public static final class Probe {
         /** Creates one stateless value Step. */
         public Probe() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             final String behavior = input.string("behavior");
             final RailixValue value = input.optionalValue("value").orElse(RailixValue.nullValue());
             return switch (behavior) {

@@ -54,7 +54,6 @@ final class ApplicationBuilder {
             "dev/nanonative/railix/core/project/RuntimeApplication",
             "dev/nanonative/railix/core/project/WorkflowRuntime",
             "dev/nanonative/railix/core/runtime/",
-            "dev/nanonative/railix/core/step/StepHandler",
             "dev/nanonative/railix/core/step/StepInput",
             "dev/nanonative/railix/core/step/StepResult",
             "dev/nanonative/railix/core/value/"
@@ -241,10 +240,10 @@ final class ApplicationBuilder {
                     StandardOpenOption.CREATE,
                     StandardOpenOption.WRITE
             ); FileLock ignored = channel.lock()) {
-                if (!Files.isRegularFile(artifact.jar())) {
-                    throw new IOException("Development application artifact no longer exists.");
-                }
-                return new DevelopmentBuild(artifact);
+                // Reserve the location even after artifact loss; launch owns startup diagnostics.
+                // Existing artifacts must survive a failed launch.
+                return new DevelopmentBuild(new Artifact(artifact.directory(), artifact.source(), artifact.classes(),
+                        artifact.jar(), artifact.fingerprint(), artifact.builtAt(), true));
             }
         }
     }
@@ -288,7 +287,8 @@ final class ApplicationBuilder {
         }
     }
 
-    static void cleanRuntime(final Artifact artifact) throws IOException {
+    /** Returns false while publication ownership defers cleanup; live sibling runtimes are retained. */
+    static boolean cleanRuntime(final Artifact artifact) throws IOException {
         final Path build = artifact.directory().getParent();
         synchronized (ApplicationBuilder.class) {
             try (FileChannel channel = FileChannel.open(
@@ -296,20 +296,21 @@ final class ApplicationBuilder {
                     StandardOpenOption.CREATE,
                     StandardOpenOption.WRITE
             ); FileLock ignored = channel.lock()) {
-                cleanRuntimeLocked(artifact);
+                return cleanRuntimeLocked(artifact);
             } catch (final NoSuchFileException removedWorkspace) {
                 // The workspace may disappear before the child process's exit callback runs.
+                return true;
             }
         }
     }
 
-    private static void cleanRuntimeLocked(final Artifact artifact) throws IOException {
+    private static boolean cleanRuntimeLocked(final Artifact artifact) throws IOException {
         final Path root = artifact.directory().resolve(".railix-runtime");
         if (!Files.isDirectory(root)) {
-            return;
+            return true;
         }
         if (ArtifactLease.active(root)) {
-            return;
+            return false;
         }
         try (var entries = Files.list(root)) {
             for (final Path entry : entries.filter(Files::isDirectory).toList()) {
@@ -318,13 +319,14 @@ final class ApplicationBuilder {
                 }
             }
         } catch (final NoSuchFileException removedConcurrently) {
-            return;
+            return true;
         }
         try {
             Files.deleteIfExists(root);
         } catch (final DirectoryNotEmptyException ignoredSiblingProcess) {
             // Another generated application owns a sibling process directory.
         }
+        return true;
     }
 
     private static Artifact artifact(final Path directory, final boolean reused) throws IOException {

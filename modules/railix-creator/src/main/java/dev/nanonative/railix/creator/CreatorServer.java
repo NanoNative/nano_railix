@@ -2336,9 +2336,9 @@ public final class CreatorServer implements AutoCloseable {
             final long generation,
             final boolean fullDocument
     ) throws IOException {
-        final DevelopmentApplication candidate;
+        final ApplicationBuilder.DevelopmentBuild publication;
         try {
-            candidate = DevelopmentApplication.start(generation, projectFile, compiled);
+            publication = ApplicationBuilder.build(projectFile, compiled);
         } catch (final ApplicationBuilder.GeneratedCompilationException exception) {
             synchronized (applicationLock) {
                 return json(422, diagnostics(List.of(Diagnostic.atPath(
@@ -2351,74 +2351,131 @@ public final class CreatorServer implements AutoCloseable {
             synchronized (applicationLock) {
                 return json(503, RailixValue.object(Map.of(
                         "status", RailixValue.string("failed"),
-                        "message", RailixValue.string("Generated application did not build and start."),
+                        "message", RailixValue.string("Generated application could not be built."),
                         "application", applicationSnapshotLocked()
                 )));
             }
         }
-        boolean superseded;
-        IOException persistenceFailure = null;
-        IOException activationFailure = null;
-        synchronized (applicationLock) {
-            superseded = !open.get() || revision != projectRevision;
-            if (!superseded) {
-                try {
-                    persist(projectFile, compiled.source());
-                } catch (final IOException exception) {
-                    persistenceFailure = exception;
-                }
-            }
-            if (!superseded && persistenceFailure == null) {
-                source = compiled.source();
-                sourceArtifactKey = candidate.artifact().directory().getFileName().toString();
-                sourceRevision = revision;
-                try {
-                    candidate.activate();
-                } catch (final IOException exception) {
-                    activationFailure = exception;
-                }
-                if (activationFailure == null && !candidate.running()) {
-                    activationFailure = new IOException("Generated application stopped during activation.");
-                }
-                if (activationFailure == null) {
-                    final DevelopmentApplication previous = application;
-                    retirement = previous;
-                    retirementDeletesArtifact = !previous.artifact().directory()
-                            .equals(candidate.artifact().directory());
-                    retirementPhase = "";
-                    application = candidate;
-                }
-            }
-        }
-        if (superseded) {
-            discard(candidate);
-            return json(409, RailixValue.object(Map.of(
-                    "status", RailixValue.string("superseded"),
-                    "message", RailixValue.string("A newer project revision replaced this build."),
-                    "application", application()
-            )));
-        }
-        if (persistenceFailure != null) {
-            discard(candidate);
-            return json(500, RailixValue.object(Map.of(
-                    "status", RailixValue.string("failed"),
-                    "message", RailixValue.string("Project could not be persisted."),
-                "application", application()
-            )));
-        }
-        if (activationFailure != null) {
-            discard(candidate);
+        boolean launched = false;
+        try (publication) {
+            final DevelopmentApplication previous;
             synchronized (applicationLock) {
-                final Map<String, RailixValue> receipt = new LinkedHashMap<>(projectPayloadLocked(false).values());
-                receipt.remove("diagnostics");
-                receipt.put("status", RailixValue.string("failed"));
-                receipt.put("message", RailixValue.string("Generated application could not be activated."));
-                receipt.put("saved", RailixValue.bool(true));
-                return json(503, RailixValue.object(receipt));
+                if (!open.get() || revision != projectRevision) {
+                    return supersededLocked();
+                }
+                previous = application;
+            }
+            // Retain the last working binary while its process releases exclusive resources.
+            try (var recovery = ApplicationBuilder.reserve(previous.artifact())) {
+                try {
+                    previous.close();
+                } catch (final RuntimeException failure) {
+                    synchronized (applicationLock) {
+                        retirement = previous;
+                        retirementDeletesArtifact = false;
+                        retirementPhase = "application-cleanup";
+                        return cleanupPendingLocked();
+                    }
+                }
+                final boolean supersededBeforeStart;
+                synchronized (applicationLock) {
+                    supersededBeforeStart = !open.get() || revision != projectRevision;
+                }
+                if (supersededBeforeStart) {
+                    return replacementFailure(recovery, 409, "A newer project revision replaced this build.");
+                }
+                final DevelopmentApplication candidate;
+                try {
+                    launched = true;
+                    candidate = DevelopmentApplication.start(generation, publication);
+                } catch (final IOException failure) {
+                    return replacementFailure(recovery, 503, "Generated application did not build and start.");
+                }
+                boolean superseded;
+                IOException persistenceFailure = null;
+                IOException activationFailure = null;
+                synchronized (applicationLock) {
+                    superseded = !open.get() || revision != projectRevision;
+                    if (!superseded) {
+                        try {
+                            persist(projectFile, compiled.source());
+                        } catch (final IOException exception) {
+                            persistenceFailure = exception;
+                        }
+                    }
+                    if (!superseded && persistenceFailure == null) {
+                        source = compiled.source();
+                        sourceArtifactKey = candidate.artifact().directory().getFileName().toString();
+                        sourceRevision = revision;
+                        try {
+                            candidate.activate();
+                        } catch (final IOException exception) {
+                            activationFailure = exception;
+                        }
+                        if (activationFailure == null && !candidate.running()) {
+                            activationFailure = new IOException("Generated application stopped during activation.");
+                        }
+                        if (activationFailure == null) {
+                            retirement = previous;
+                            retirementDeletesArtifact = !previous.artifact().directory()
+                                    .equals(candidate.artifact().directory());
+                            retirementPhase = "";
+                            application = candidate;
+                        }
+                    }
+                }
+                if (superseded || persistenceFailure != null || activationFailure != null) {
+                    discard(candidate);
+                    return replacementFailure(recovery, superseded ? 409 : persistenceFailure != null ? 500 : 503,
+                            superseded ? "A newer project revision replaced this build."
+                                    : persistenceFailure != null ? "Project could not be persisted."
+                                    : "Generated application could not be activated.");
+                }
+            }
+        } finally {
+            if (!launched && !publication.artifact().reused()) {
+                ApplicationBuilder.delete(publication.artifact());
             }
         }
         cleanupRetirement();
         return json(200, projectPayload(fullDocument));
+    }
+
+    private Response replacementFailure(final ApplicationBuilder.DevelopmentBuild retained, final int status,
+                                        final String message) throws IOException {
+        final String recovery;
+        if (!cleanupRetirement().isEmpty()) {
+            recovery = "cleanup-pending";
+        } else if (!open.get()) {
+            recovery = "closed";
+        } else {
+            DevelopmentApplication restarted = null;
+            String outcome = "failed";
+            try {
+                restarted = DevelopmentApplication.start(nextGeneration++, retained);
+                restarted.activate();
+                synchronized (applicationLock) {
+                    application = restarted;
+                }
+                outcome = "restarted";
+            } catch (final IOException failure) {
+                if (restarted != null) {
+                    discard(restarted);
+                }
+            }
+            recovery = outcome;
+        }
+        return json(status, RailixValue.object(Map.of(
+                "status", RailixValue.string(status == 409 ? "superseded" : "failed"),
+                "message", RailixValue.string(message + switch (recovery) {
+                    case "restarted" -> " The previous application was restarted.";
+                    case "cleanup-pending" -> " Recovery is blocked until application cleanup succeeds.";
+                    case "closed" -> " Creator is closing; the previous application was not restarted.";
+                    default -> " The previous application could not be restarted; it is not running.";
+                }),
+                "recovery", RailixValue.string(recovery),
+                "application", application()
+        )));
     }
 
     private void discard(final DevelopmentApplication candidate) {

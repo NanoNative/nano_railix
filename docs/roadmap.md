@@ -1,13 +1,13 @@
 # Railix II Roadmap
 
-Documentation reorganized: 2026-09-19. Feature status is retained from the previous
-roadmap, not recertified by this edit. Historical checkpoints and test counts live in
+Documentation reorganized: 2026-09-19; lifecycle/HTTP review updated 2026-09-21. Feature status is
+retained from the previous roadmap, not recertified by this edit. Historical checkpoints and test counts live in
 [verification](verification.md). Railix is **not production-certified**.
 
 The [documentation map](../README.md#documentation-map) identifies each behavioral owner.
 ADRs record rationale; this file owns sequence and status, not a second contract.
 
-## Target Operating Model — Planned
+## Target Operating Model - Planned
 
 The following is product direction, not current shipped behavior:
 
@@ -16,7 +16,7 @@ The following is product direction, not current shipped behavior:
   that same vocabulary. Creator-only Groups, Blueprints, and Templates are reusable authoring aids
   that compile away; production understands only Flows and Steps.
 - **Railway-Oriented Programming.** Railix uses this term for the complete application path from
-  an external trigger through policy, processing, and storage—not only for success/failure control
+  an external trigger through policy, processing, and storage, not only for success/failure control
   flow. Every supported concern must be expressible through the same Flow and Step model.
 - **Example-driven authoring.** Examples demonstrate executed Flows/Steps and expose actual
   fields for mapping and connection. Execution coverage is distinct from successful completion
@@ -57,25 +57,42 @@ spreading them across unconnected application, CI/CD, observability, and orchest
 ## Current Sequence
 
 Two of eight feature milestones are accepted. Checkpoint counts describe accepted
-scope, not estimated effort. The active work is specification, not code. Merge/fan-in,
+scope, not estimated effort. Only accepted, implementation-ready slices proceed to code. Merge/fan-in,
 then Split and bounded Loop remain the pending flow-control sequence, not approval to bypass
 the workshop. The 2026-09-19 decisions put single-instance production readiness before Item 7;
 the required single-instance packaging work from Item 8 therefore does not wait for the mesh.
+
+The 2026-09-21 HTTP review adds a P1 prerequisite to further HTTP work: remove privileged
+compiler handling through the common Step lifecycle. Delivery order for that slice is lifecycle
+and third-party proof, then context-driven client/server behavior including HTTPS. Static Step
+functions, compiled configuration separate from context, downstream-first PRE, upstream-first
+POST and graceful draining are accepted, with an adjustable 30-second drain deadline and explicit
+standalone/embedded escalation. Local replacement with a short interruption and attempted recovery
+is accepted under LC-8; optional private/keyed-shared resource registration now implements LC-3.
+Normal Java-owned resources remain possible. Certificate and hostname checks are separate
+client options, enabled by default; CORS is independent. Secret-manager work
+does not block plain certificate configuration. Configurable primitive families are separate work.
 
 | Specification slice | Outcome / requirements | Dependency and exit evidence | Status |
 | --- | --- | --- | --- |
 | Application and first-mesh boundary | [SYS-001 to SYS-004](specs/system-model.md#accepted-platform-boundaries) | Single-instance execution and minimal packaged capabilities first; mesh compatibility, membership and failure contracts before multi-node tests. | Accepted direction; no new implementation certification. |
 | Result-based failures | [SYS-005](specs/system-model.md#current-failure-handling-gap) | Reuse current results; regress nested rejection/cancellation and invalid parsing before replacing internal exception control flow; measure success and rejection paths. | Planned; no runtime/API change in this workshop. |
+| Step configuration validators | [SYS-019 to SYS-022](specs/system-model.md#configuration-validation) | Prove typed optional functions, defaults, Creator field errors and installed-bundle parity without lifecycle calls or per-request validation. | Implemented; verification gate passed 2026-09-26. Typed callbacks, explicit bundle definition providers, bounded validation workers and field diagnostics use the same contract for built-in and installed Steps. |
+| Common Step lifecycle; remove HTTP privilege (P1) | [SYS-010 to SYS-016, SYS-018](specs/system-model.md#planned-step-lifecycle), [CR-006/007](specs/creator.md#planned-step-resource-settings) | Prove optional hooks, lifecycle ordering, compatible sharing/isolation through per-Step configuration, partial-init cleanup, graceful drain and third-party ingress with Trigger-owned lifetime (LC-9). | Implemented; verification gate passed 2026-09-26: static hooks, cached configuration, admission/drain, Creator replacement/recovery and generic source activation. Optional context.resource registration supports private ownership and explicit keyed sharing without new StepDefinition metadata. Installed-bundle JAR tests cover concurrency, nested Steps and failure cleanup. HTTP Client now reuses connections, with an ordinary private/shared option. Runtime sharing diagnostics and expanded HTTP behavior are not included. |
+| Named resource profiles | [SYS-017](specs/system-model.md#planned-step-lifecycle), [CR-008](specs/creator.md#planned-step-resource-settings) | Agree persistence, references, migration and edit/delete rules before profile authoring; prove canonical settings and affected-Step feedback. | Planned, deferred by the user as a later convenience; not a prerequisite for lifecycle or optional resource sharing. |
+| Context-driven HTTP and HTTPS | [HTTP Trigger](specs/http-trigger.md), [HTTP Client](specs/http-client.md) | Common lifecycle first; resolve field shapes, limits and migration; real HTTPS tests for independent certificate/hostname options, CORS checks and resource measurements. | Planned; plain compiled settings now, secret manager later; binary/multipart/streaming deferred. |
+| Configurable Step families | [Consolidation candidates](specs/standard-library.md#planned-configurable-families) | Agree the first family, outcomes/output shape and version migration; prove existing modes and the generic third-party declaration path without numeric precision loss. | Direction accepted; no IDs merged or catalog rows changed. |
 | Compilation selection | [SYS-007](specs/system-model.md#planned-compilation-selection) | Resolve graph-unreachable versus Example-unvisited now; agree retention, validation and edge handling before pruning; inspect artifacts and authored-graph preservation. | Accepted omission/keep direction; classifier is blocking, current compiler rejects unreachable graphs. |
 | Configurable Merge/join | [SYS-008](specs/system-model.md#planned-merge-and-join) | Resolve correlation scope now; define non-waiting convergence first. Waiting joins additionally need branch activation, context combination and bounded suspension lifecycle. | Mode direction accepted; exact control/scheduling contract is not implementation-ready. |
 | Creator copy and shared editing | [CR-001 to CR-003](specs/creator.md#planned-group-copy-and-sharing) | Agree persistence, binding and edit transactions; prove independent copy plus two linked occurrences and flat compilation. | Planned; earlier blanket rejection superseded. |
 | Environments, secrets and early rejection | [SEC-001 to SEC-006, SEC-008/009](specs/environments-and-security.md#accepted-goals), [Layer 4 Step scope](specs/environments-and-security.md#planned-layer-4-step-integration) | Static identities/access and credential rotation accepted; decide source format, trust, recovery/rollback, renewal failure and transport enforcement before the security milestone. | Planned; no live user-management subsystem; cryptographic architecture and Layer 4 tools/platforms remain unspecified. |
 | Security and compliance evidence | [SEC-007](specs/environments-and-security.md#security-and-compliance-support) | Threat model and applicable controls before security-sensitive implementation; select ISO/ASVS scope, operator duties and release evidence. | Support goal accepted; no certification or legal-compliance claim. |
 | Database and Creator data administration | [DATA-001 to DATA-004](specs/database-and-data-access.md#accepted-behavior) | Agree MongoDB-inspired behavior profile, durability, permission scope and concurrent edits; prove Creator/Flow CRUD, direct API denial, restart and packaged omission. | Planned; no engine or full MongoDB compatibility selected; dedicated time-series database excluded. |
-| Runtime lifecycle, evolution and scale | [Open runtime contracts](specs/system-model.md#open-runtime-and-delivery-contracts), [SYS-006](specs/system-model.md#accepted-platform-boundaries), [SYS-009](specs/system-model.md#planned-host-aware-step-integration) | Agree resource ownership, third-party lifecycle integration, control/retry semantics, compatibility and numeric workload budgets before dependent I/O/host/distributed implementation. | Measurement and extension direction accepted; lifecycle API, monitoring/repair policy and thresholds remain open. |
+| Runtime lifecycle, evolution and scale | [Open runtime contracts](specs/system-model.md#open-runtime-and-delivery-contracts), [SYS-006](specs/system-model.md#accepted-platform-boundaries), [SYS-009](specs/system-model.md#planned-host-aware-step-integration) | Agree control/retry semantics, compatibility and numeric workload budgets before dependent I/O/host/distributed implementation. | Common lifecycle and optional resource ownership implemented; monitoring/repair policy, distribution and thresholds remain open. |
 | Creator capability/resource guidance | [CR-004](specs/creator.md#planned-java-module-visibility), [CR-005](specs/creator.md#planned-step-capability-symbols), [proposed UI journeys](specs/creator.md#planned-capability-and-resource-guidance) | Define per-Step module attribution, capability evidence and unresolved states before this UI slice; agree observation/resource interactions and test comprehension, accessibility and bounded UI work. | Module visibility and capability symbols are planned requirements; detection contracts and UI remain unspecified. Other guidance remains proposed. |
 | Example authoring, ownership and coverage | [EX-001 to EX-003, EX-007/008](specs/examples-and-validation.md#behavior) | Actual field-mapping and coverage journeys; schema/migration before file separation; selected-build evidence before an inclusion or release gate. | Accepted direction; not equivalent to passing assertion tests. |
-| Phase 1 execution validation | EX-001, EX-003, EX-006, EX-008 | Public Creator proof of reached versus completed/failed Steps, cancellation and stale evidence; release consequences await the selection contract. | Planned; no blanket build gate approved. |
+| Per-Example Step output fakes | [EX-009/010](specs/examples-and-validation.md#real-io-and-output-fakes) | Agree fake replacement/output/outcome selection and persistence; prove case isolation, no accidental side effects, truthful coverage and production omission. | Planned; real-I/O Examples and explicit test-mode bypasses remain permitted today. |
+| Phase 1 execution validation | EX-001, EX-003, EX-006, EX-008 | Public Creator proof of reached versus completed/failed Steps, cancellation and stale evidence; release consequences await the selection contract. | Partial: selected-Example failures now explain broken downstream Steps after edits, with repair and stale-result checks. See [editing behavior](specs/creator.md#editing-an-existing-flow). Complete change-impact preview and release eligibility remain open; no blanket build gate approved. |
 | Phase 2 visual expectations | EX-004 to EX-006 | Phase 1 plus agreed operators/selection semantics; matching, failing and unreached-Step examples through Creator. | Planned. |
 
 These are dependencies, not approval to implement or an invented release date. Inputs
@@ -116,15 +133,19 @@ Checkpoints:
 
 Regex remains excluded until a bounded implementation exists. External dependency loading belongs
 to Item 4.
+The [configured-family review](specs/standard-library.md#planned-configurable-families) does not
+change these checkpoint counts or authorize silently replacing existing versioned Step IDs.
 
 ## 4. Triggers, I/O Steps, And Dependencies
 
 Status: **Partial: initial HTTP slice; remaining scope planned**
 
-The [initial HTTP contract](specs/system-model.md#http-trigger-and-client) covers the built-in
-HTTP Trigger/client and generated launcher. Its scoped decision is [ADR 0023](adr/0023-http-ingress-and-step-owned-jdk-modules.md).
-This is not acceptance of generic Trigger lifecycle integration, production ingress hardening or
-the remaining protocols below.
+The [HTTP Trigger](specs/http-trigger.md) and [HTTP Client](specs/http-client.md) specifications
+separate today's minimal implementation from the requested context-driven HTTPS contract.
+[ADR 0023](adr/0023-http-ingress-and-step-owned-jdk-modules.md) records the initial implementation;
+its HTTP-specific launcher exception has been replaced under SYS-012. New lifecycle code
+must use static function composition, compiled settings and ordered startup/draining shutdown.
+The baseline does not certify that contract, production ingress hardening or the protocols below.
 
 Goal: provide practical application boundaries while preserving one flat graph.
 

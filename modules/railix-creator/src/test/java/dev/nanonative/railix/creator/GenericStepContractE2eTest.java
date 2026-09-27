@@ -135,6 +135,19 @@ final class GenericStepContractE2eTest {
         assertThat(context(response).values()).doesNotContainKey("result");
     }
 
+    @Test
+    void repeatedAndTracedCallsReuseConfigurationWithoutRetainingRequestValues() throws Exception {
+        for (final String text : List.of("first request", "different request")) {
+            final DevelopmentApplication.Response response = run("option-parent", text);
+            assertThat(response.status()).as(response.body()).isEqualTo(200);
+            assertThat(payload(response).values().get("text")).isEqualTo(RailixValue.string(text));
+        }
+        final DevelopmentApplication.Response trace = application.traceResponse(
+                "option-parent", "{\"payload\":{\"text\":\"traced request\"}}");
+        assertThat(trace.status()).as(trace.body()).isEqualTo(200);
+        assertThat(trace.body()).contains("\"status\":\"succeeded\"", "traced request");
+    }
+
     private DevelopmentApplication.Response run(final String trigger, final String text) throws Exception {
         return application.run(trigger, "{\"payload\":{\"text\":\"" + text + "\"}}");
     }
@@ -185,7 +198,7 @@ final class GenericStepContractE2eTest {
                         .input("operations", StepDefinition.Input.steps(
                                 StepDefinition.ValueSource.from("value").onMissing("missing")
                         ).propagateOutcomes())
-                        .run(GenericContractSteps.Operation.class));
+                        .implementation(GenericContractSteps.Operation.class));
         definitions.add(StepDefinition.named("example.generic-option", "1")
                 .input("target", StepDefinition.Input.path(READ_WRITE))
                 .input("choice", StepDefinition.Input.options(
@@ -197,7 +210,7 @@ final class GenericStepContractE2eTest {
                                 .fromOwned("value"),
                         StepDefinition.Input.option("none")
                 ))
-                .run(GenericContractSteps.Option.class));
+                .implementation(GenericContractSteps.Option.class));
         return List.copyOf(definitions);
     }
 
@@ -205,7 +218,7 @@ final class GenericStepContractE2eTest {
         return StepDefinition.named("example.trigger." + id, "1")
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source("example.input." + id)
-                .run(GenericContractSteps.Trigger.class);
+                .implementation(GenericContractSteps.Trigger.class);
     }
 
     private static String project() {

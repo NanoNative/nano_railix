@@ -2957,7 +2957,7 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
-    void persistenceFailureStopsCandidateAndKeepsRunningApplication() throws Exception {
+    void persistenceFailureStopsCandidateAndRestartsPreviousApplication() throws Exception {
         final Path project = directory.resolve("project.json");
         try (CreatorServer creator = start(project)) {
             final RailixValue.ObjectValue before = application(creator.baseUri());
@@ -2972,8 +2972,13 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
             );
 
             assertThat(response.statusCode()).isEqualTo(500);
-            assertThat(response.body()).contains("\"message\":\"Project could not be persisted.\"");
-            assertThat(application(creator.baseUri())).isEqualTo(before);
+            assertThat(response.body()).contains("Project could not be persisted.", "\"recovery\":\"restarted\"");
+            final RailixValue.ObjectValue after = application(creator.baseUri());
+            assertThat(number(after, "pid")).isNotEqualTo(number(before, "pid"));
+            assertThat(awaitExit(number(before, "pid"))).isTrue();
+            assertThat(string(after, "state")).isEqualTo("running");
+            assertThat(string(after, "fingerprint")).isEqualTo(string(before, "fingerprint"));
+            assertThat(string(after, "build_path")).isEqualTo(string(before, "build_path"));
         }
     }
 

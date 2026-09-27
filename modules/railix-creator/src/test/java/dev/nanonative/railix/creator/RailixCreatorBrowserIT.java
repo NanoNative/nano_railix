@@ -207,13 +207,22 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
     @Test
     void selectedStepMetricsIdentifySampledTimingAndOmitUnsupportedInflightCounts() {
-        addTrigger();
+        openProject(filterProject().replace("\"expected\":\"allow\"", "\"expected\":\"never\""));
+        selectWorldNode("matched");
         openInspectorSection("Runtime metrics");
         page.locator(".runtime-metrics").waitFor();
 
         assertThat(page.locator(".runtime-metrics").textContent())
-                .contains("Step sampled average", "Step duration maximum", "No sample")
-                .doesNotContain("Step in-flight runs");
+                .contains("Step metrics", "Sampled average", "Duration maximum", "No sample")
+                .doesNotContain("In-flight runs");
+
+        selectWorldNode("command");
+        openInspectorSection("Runtime metrics");
+        page.locator(".runtime-metrics").waitFor();
+
+        assertThat(page.locator(".runtime-metrics").textContent())
+                .contains("Step sampled average", "Step duration maximum")
+                .doesNotContain("No sample", "Step in-flight runs");
     }
 
     @Test
@@ -703,6 +712,106 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 }
 
 final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
+
+    @Test
+    @Tag("responsive")
+    void middleOfFlowEditsExposeDownstreamFailuresAndCanBeRepaired() throws IOException {
+        openProject("""
+                {"format":1,"id":"editing-journey","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"greeting","payload":[],"context":{"payload":{"text":"HELLO"}}}]},
+                  {"id":"lowercase","use":"text.lowercase","inputs":{},
+                    "receives":{"value":["context","payload","text"]},
+                    "returns":{"value":["context","result"]}}
+                ],"links":[{"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"lowercase"},{"from":"lowercase.ok","to":"end"}]}
+                """);
+        assertThat(runResult()).isEqualTo(RailixValue.string("hello"));
+
+        selectTrigger();
+        addManipulationAfterSelected();
+        chooseCustomPath("payload", "prepared");
+        page.locator("#value-0-option").selectOption("literal");
+        page.locator("#value-0-literal-value").fill("\"RAILIX\"");
+        page.locator("#value-0-literal-value").press("Tab");
+        waitForText("#build-state", "Built");
+        final String producer = stepIds().stream().filter(id -> !id.equals("lowercase")).findFirst().orElseThrow();
+        selectWorldNode("lowercase");
+        openInspectorTab("inspect");
+        choosePath("source", "payload", "prepared");
+        waitForText("#build-state", "Built");
+        assertThat(runResult()).isEqualTo(RailixValue.string("railix"));
+
+        selectWorldNode(producer);
+        openInspectorTab("inspect");
+        page.locator("#value-0-literal-value").fill("42");
+        page.locator("#value-0-literal-value").press("Tab");
+        waitForText("#build-state", "Built");
+        selectTrigger();
+        openInspectorTab("inspect");
+        PlaywrightAssertions.assertThat(page.locator(".run-result"))
+                .containsText("RUN_STEP_RECEIVE_INCOMPATIBLE");
+        selectWorldNode("lowercase");
+        PlaywrightAssertions.assertThat(page.locator(".machine[data-selected=true]"))
+                .hasAttribute("data-error", "true");
+        openInspectorTab("overview");
+        PlaywrightAssertions.assertThat(page.locator("button.dock-error")).containsText("requires string");
+        PlaywrightAssertions.assertThat(page.locator("button.dock-error")).containsText("Example: greeting");
+        assertThat(page.locator("button.dock-error").evaluate("element => element.scrollWidth <= element.clientWidth"))
+                .isEqualTo(true);
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("downstream-error-" + page.viewportSize().width + ".png")));
+        page.locator("button.dock-error").click();
+        PlaywrightAssertions.assertThat(page.locator("#preview-error")).containsText("requires string");
+
+        selectTrigger();
+        openInspectorTab("examples");
+        page.locator("[data-select-example='-1']").click();
+        selectWorldNode("lowercase");
+        openInspectorTab("overview");
+        PlaywrightAssertions.assertThat(page.locator("button.dock-error")).hasCount(0);
+        selectTrigger();
+        openInspectorTab("examples");
+        page.locator("[data-select-example='0']").click();
+        selectWorldNode("lowercase");
+        openInspectorTab("overview");
+        PlaywrightAssertions.assertThat(page.locator("button.dock-error")).containsText("requires string");
+
+        selectWorldNode(producer);
+        openInspectorTab("inspect");
+        PlaywrightAssertions.assertThat(page.locator("#preview-error")).isEmpty();
+        page.locator("#value-0-literal-value").fill("\"FIXED\"");
+        page.locator("#value-0-literal-value").press("Tab");
+        waitForText("#build-state", "Built");
+        assertThat(runResult()).isEqualTo(RailixValue.string("fixed"));
+        selectWorldNode("lowercase");
+        PlaywrightAssertions.assertThat(page.locator(".machine[data-selected=true]"))
+                .hasAttribute("data-error", "false");
+        openInspectorTab("overview");
+        PlaywrightAssertions.assertThat(page.locator("button.dock-error")).hasCount(0);
+        openInspectorTab("inspect");
+        PlaywrightAssertions.assertThat(page.locator("#preview-error")).isEmpty();
+
+        selectWorldNode(producer);
+        clickOverview("#delete-step");
+        waitForText("#build-state", "Built");
+        selectTrigger();
+        openInspectorTab("inspect");
+        PlaywrightAssertions.assertThat(page.locator(".run-result")).containsText("RUN_STEP_RECEIVE_REQUIRED");
+        selectWorldNode("lowercase");
+        openInspectorTab("inspect");
+        PlaywrightAssertions.assertThat(page.locator("#preview-error")).containsText("has no value");
+        choosePath("source", "payload", "text");
+        waitForText("#build-state", "Built");
+        assertThat(runResult()).isEqualTo(RailixValue.string("hello"));
+
+        page.reload();
+        waitForText("#build-state", "Built");
+        assertThat(stepIds()).containsExactly("lowercase");
+        assertThat(runResult()).isEqualTo(RailixValue.string("hello"));
+        assertThat(pageErrors).isEmpty();
+    }
     @Test
     void addingAFilterPersistsEveryDeclaredOutcomeConnection() {
         addFilterAfterTrigger();
@@ -6254,7 +6363,7 @@ abstract class RailixCreatorBrowserSupport {
                                         .defaultValue(RailixValue.nullValue()))
                                 .fromOwned("value")
                 ).withAuthoredOutcomes())
-                .run(MatcherConformanceSteps.AuthoredTrue.class);
+                .implementation(MatcherConformanceSteps.AuthoredTrue.class);
     }
 
     void addTrigger() {
@@ -6350,14 +6459,14 @@ abstract class RailixCreatorBrowserSupport {
 
 
     void openProject(final String source) {
-        final Number status = (Number) page.evaluate("""
+        final String response = (String) page.evaluate("""
                 source => fetch('/api/project', {
                   method: 'POST',
                   headers: mutationHeaders(),
                   body: source
-                }).then(response => response.status)
+                }).then(async response => response.status + ' ' + await response.text())
                 """, source);
-        assertThat(status.intValue()).isEqualTo(200);
+        assertThat(response).startsWith("200 ");
         page.reload();
         page.waitForFunction("""
                 () => document.querySelector('#build-state')?.textContent !== 'Loading'

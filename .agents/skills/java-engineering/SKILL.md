@@ -1,6 +1,6 @@
 ---
-name: railix-java
-description: "Implement and review Railix Java contracts, Step behavior, compilation, generated applications, runtime lifecycle, backend APIs, and persistence."
+name: java-engineering
+description: "Implement and review Java APIs, compilers, generated applications, resource lifecycles, backend services and persistence."
 ---
 
 # Java Engineering
@@ -11,24 +11,27 @@ Deliver the smallest working behavior through a real public entrypoint.
 
 1. Trace the entrypoint through its implementation and existing tests. For a bug,
    add a public-boundary regression and confirm its expected failure before fixing it.
-2. Keep ownership clear: core owns values, contracts, compilation and generated-runtime
-   capabilities; stdlib owns built-in Steps; Creator owns editing, builds and lifecycle.
+2. Locate the owning module and its public contract. Keep authoring/build-time concerns
+   separate from runtime behavior; follow the project's documented boundaries.
 3. Extend an existing coherent type before introducing another layer or dependency.
-   Express variation through data, functions and existing contracts, not Step IDs,
+   Express variation through data, functions and existing contracts, not plugin IDs,
    example names, wrappers that only forward, or a second execution path.
 4. Validate each invariant at its owning parser, builder or ingress. Downstream code
    relies on it. Keep domain null, Java null and absence distinct. Translate exceptions
    once; do not swallow failures or catch and rethrow unchanged.
-5. Keep Step handlers stateless and resource ownership explicit. Use atomic persistence
-   with revision conflicts; close streams, executors and owned child applications.
+5. Keep reusable behavior stateless or thread-safe, with explicit resource ownership
+   and no retained request data. Built-in and external extensions use the same contract.
+   Use atomic persistence with revision conflicts; close streams, executors and owned child applications.
+   Distinguish caller-owned from framework-managed resources. Shared resources need
+   stable compatibility keys and one cleanup owner; do not close another user's resource.
 
 ## Results Before Exceptions
 
 - Return explicit outcomes/results for expected rejection, invalid user data, absence,
   conflicts and ordinary failure/cancellation paths. Do not construct or throw an
   exception only to catch it and convert it back to a result, including in parsers
-  and nested Step execution. Reuse StepResult, RunResult, CompileResult and the
-  owning parser's result rather than adding a universal wrapper at every layer.
+  and nested execution. Reuse the owning API's result type rather than adding a
+  universal wrapper at every layer.
 - Validate untrusted values before invoking constructors that assume valid inputs.
   Existing programmer-contract exceptions are not normal data validation. Do not
   silently break a public exception contract while migrating expected failures.
@@ -41,26 +44,21 @@ Deliver the smallest working behavior through a real public entrypoint.
 
 ## Preserve
 
-- Use Java 25, JDK types, final values and pure functions where practical. Prefer
+- Use the project's supported Java release, JDK types, final values and pure functions where practical. Prefer
   standard functional interfaces, meaningful fluent results and records for data.
 - Public APIs need Javadocs for inputs, absence and failures. Do not return Java
   null or void except signatures imposed by Java/platform entrypoints. Do not invent
   dummy results. Use Optional for returns/locals, not fields.
-- Keep StepDefinition an authoring-time contract. Generate direct calls from its
-  generic input algebra and explicit catalog, without reflection, runtime discovery,
-  parallel streams, coercion or fallback interpretation.
+- Keep compile-time and runtime contracts distinct. In code generators, prefer direct
+  validated calls when targets are known; do not introduce runtime discovery or a
+  second interpreter without a current requirement.
 - Split generated methods/classes when bytecode requires it; do not impose an
-  arbitrary product Step limit. Keep output deterministic and the monolith small.
-- Group copy/shared editing belongs to Creator and materializes ordinary Steps/links;
-  compiler/runtime never interpret groups. Appearance stays presentation-only.
-  The generated development application,
-  not Creator, executes Examples and owns observations. Production output physically
-  omits that development machinery. UI-only display changes need no runtime API change.
+  arbitrary product limit. Keep output deterministic. Do not ship development-only
+  machinery in production artifacts when the contract requires its exclusion.
 
 ## Prove
 
-Run from repository root: `./mvnw test` during implementation and
-`./mvnw clean verify` before publishing code. Check actual discovered tests.
+Use the repository's build wrapper, test commands and publication gate. Check actual discovered tests.
 Exercise valid input, rejection, absence, exceptions, reuse and relevant concurrency.
 For compiler/runtime work, build a realistic fixture normally and execute the produced
 artifact. Inspect production omissions, repeatability and size; never patch generated

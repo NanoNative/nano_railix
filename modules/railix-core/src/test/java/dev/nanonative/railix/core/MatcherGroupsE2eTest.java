@@ -337,50 +337,50 @@ final class MatcherGroupsE2eTest {
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source("test.source")
                 .result("result", ValueShape.ANY, RailixValue.nullValue())
-                .run(TestStepHandlers.PrimaryOutcome.class);
+                .implementation(TestStepHandlers.PrimaryOutcome.class);
         final StepDefinition equals = predicate("value.equals")
                 .input("expected", StepDefinition.Input.json(ValueShape.ANY))
-                .run(TestStepHandlers.EqualsExpected.class);
+                .implementation(TestStepHandlers.EqualsExpected.class);
         final StepDefinition nonBoolean = StepDefinition.named("value.non-boolean", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.ANY)
                 .returns("value", ValueShape.ANY)
-                .run(TestStepHandlers.PrimaryIdentity.class);
+                .implementation(TestStepHandlers.PrimaryIdentity.class);
         final StepDefinition textBoolean = StepDefinition.named("value.text-boolean", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.BOOLEAN)
-                .run(TestStepHandlers.True.class);
+                .implementation(TestStepHandlers.True.class);
         final StepDefinition not = StepDefinition.named("boolean.not", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.BOOLEAN)
                 .returns("value", ValueShape.BOOLEAN)
-                .run(TestStepHandlers.BooleanNot.class);
+                .implementation(TestStepHandlers.BooleanNot.class);
         final StepDefinition length = StepDefinition.named("text.length", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.NUMBER)
-                .run(TestStepHandlers.TextLength.class);
+                .implementation(TestStepHandlers.TextLength.class);
         final StepDefinition greaterThan = StepDefinition.named("number.greater-than", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.NUMBER)
                 .returns("value", ValueShape.BOOLEAN)
                 .input("than", StepDefinition.Input.json(ValueShape.NUMBER))
-                .run(TestStepHandlers.GreaterThan.class);
+                .implementation(TestStepHandlers.GreaterThan.class);
         final StepDefinition lessThan = StepDefinition.named("number.less-than", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.NUMBER)
                 .returns("value", ValueShape.BOOLEAN)
                 .input("than", StepDefinition.Input.json(ValueShape.NUMBER))
-                .run(TestStepHandlers.LessThan.class);
+                .implementation(TestStepHandlers.LessThan.class);
         final StepDefinition branchingPredicate = predicate("value.branching-predicate")
                 .outcome("rejected")
-                .run(TestStepHandlers.True.class);
-        final StepDefinition fault = predicate("value.fault").run(TestStepHandlers.AlwaysFault.class);
+                .implementation(TestStepHandlers.True.class);
+        final StepDefinition fault = predicate("value.fault").implementation(TestStepHandlers.AlwaysFault.class);
         final StepDefinition interrupt = predicate("value.interrupt")
-                .run(TestStepHandlers.InterruptAndTrue.class);
+                .implementation(TestStepHandlers.InterruptAndTrue.class);
         final StepDefinition invalid = predicate("value.invalid")
-                .run(TestStepHandlers.InvalidString.class);
+                .implementation(TestStepHandlers.InvalidString.class);
         final StepDefinition probe = StepDefinition.named("test.probe", "1")
                 .input("source", StepDefinition.Input.path(READ).defaultPath("context", "payload", "source"))
                 .input("matches", StepDefinition.Input.matcherGroups(
@@ -390,7 +390,7 @@ final class MatcherGroupsE2eTest {
                                 .fromOwned("literal")
                 ))
                 .input("target", StepDefinition.Input.path(WRITE).defaultPath("context", "payload", "match"))
-                .run(TestStepHandlers.WriteMatches.class);
+                .implementation(TestStepHandlers.WriteMatches.class);
         return StepCatalog.of(
                 app,
                 trigger,

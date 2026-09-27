@@ -7,7 +7,7 @@ import dev.nanonative.railix.core.value.RailixValue;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
-import thirdparty.conformance.InaccessibleConstructorStepHandler;
+import thirdparty.conformance.InvalidProcessStep;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -32,13 +32,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @Timeout(90)
 final class GeneratedCompilationDiagnosticE2eTest {
-    private static final String STEP_ID = "diagnostic.inaccessible-constructor";
-    private static final String IMPLEMENTATION = InaccessibleConstructorStepHandler.class.getCanonicalName();
+    private static final String STEP_ID = "diagnostic.invalid-process";
+    private static final String IMPLEMENTATION = InvalidProcessStep.class.getCanonicalName();
     private static final String IMPLEMENTATION_ENTRY =
-            InaccessibleConstructorStepHandler.class.getName().replace('.', '/') + ".class";
+            InvalidProcessStep.class.getName().replace('.', '/') + ".class";
 
     @Test
-    void creatorRejectsAnUnconstructableLockedImplementationWithAStableDiagnostic(
+    void creatorRejectsALockedInstanceProcessWithAStableDiagnostic(
             @TempDir final Path workspace
     ) throws Exception {
         final Path project = workspace.resolve("railix.project.json");
@@ -56,12 +56,12 @@ final class GeneratedCompilationDiagnosticE2eTest {
             assertThat(text(body, "status")).isEqualTo("rejected");
             final RailixValue.ArrayValue diagnostics = (RailixValue.ArrayValue) body.values().get("diagnostics");
             assertThat(diagnostics.values()).containsExactly(RailixValue.object(Map.of(
-                    "code", RailixValue.string("STEP_IMPLEMENTATION_INVALID"),
+                    "code", RailixValue.string("PROJECT_STEP_PROCESS_INVALID"),
                     "message", RailixValue.string(
-                            "Generated application cannot construct or invoke Step implementation: "
-                                    + IMPLEMENTATION + "."
+                            IMPLEMENTATION + " must declare public static StepResult process(StepInput, StepInput)."
+                                    + " Rebuild older Step bundles against the current Step API."
                     ),
-                    "path", RailixValue.string("")
+                    "path", RailixValue.string("nodes[2].use")
             )));
             final RailixValue.ObjectValue current = (RailixValue.ObjectValue) body.values().get("application");
             assertThat(number(current, "pid")).isEqualTo(number(deployedApplication, "pid"));
@@ -73,9 +73,9 @@ final class GeneratedCompilationDiagnosticE2eTest {
 
     private static void installBundle(final Path project, final Path railixHome) throws Exception {
         final StepDefinition definition = StepDefinition.named(STEP_ID, "1")
-                .run(InaccessibleConstructorStepHandler.class);
+                .implementation(InvalidProcessStep.class);
         final Path bundle = project.resolveSibling("invalid-step-bundle.jar");
-        try (InputStream implementation = InaccessibleConstructorStepHandler.class
+        try (InputStream implementation = InvalidProcessStep.class
                 .getResourceAsStream("/" + IMPLEMENTATION_ENTRY)) {
             if (implementation == null) {
                 throw new IOException("Invalid Step implementation fixture is unavailable.");

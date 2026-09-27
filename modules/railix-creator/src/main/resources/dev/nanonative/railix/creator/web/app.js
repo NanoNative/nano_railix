@@ -430,7 +430,8 @@ function renderDockObservation() {
     }).join("");
   }
   for (const [part, source] of [["issues", issues.length
-    ? `<button type="button" class="dock-error" data-open-panel="inspect">${html(issues[0].message)}</button>` : ""],
+    ? `<button type="button" class="dock-error" data-open-panel="inspect">${
+      issues[0].exampleName ? `Example: ${html(issues[0].exampleName)}. ` : ""}${html(issues[0].message)}</button>` : ""],
     ["values", values], ["counters", counters]]) {
     const element = slot.querySelector(`.dock-${part}`);
     renderDockMarkup(element, source);
@@ -1380,14 +1381,13 @@ function inspectorHeader(kicker, title, subtitle) {
 
 function issueList(owner) {
   const diagnostics = allDiagnostics().filter(diagnostic => diagnosticOwner(diagnostic) === owner);
-  if (!diagnostics.length) {
-    return "";
-  }
   return `
-    <section class="issues" aria-label="Errors and warnings">
+    <section data-issues-owner="${html(owner)}" class="${diagnostics.length ? "issues" : ""}"
+             aria-label="Errors and warnings" ${diagnostics.length ? "" : "hidden"}>
       ${diagnostics.map(diagnostic => `
         <article data-severity="${html(diagnostic.severity || "error")}">
           <strong>${html(diagnostic.code || "CREATOR_ERROR")}</strong>
+          ${diagnostic.exampleName ? `<p>Example: ${html(diagnostic.exampleName)}</p>` : ""}
           <p>${html(diagnostic.message || "Project is not buildable.")}</p>
           ${diagnostic.path ? `<code>${html(diagnostic.path)}</code>` : ""}
         </article>`).join("")}
@@ -1397,7 +1397,8 @@ function issueList(owner) {
 function allDiagnostics() {
   const diagnostics = [
     ...state.localDiagnostics,
-    ...state.diagnostics
+    ...state.diagnostics,
+    ...selectedExampleDiagnostics()
   ];
   const draft = state.jsonDraft;
   if (draft && node(draft.node)) {
@@ -1410,6 +1411,19 @@ function allDiagnostics() {
     });
   }
   return diagnostics;
+}
+
+function selectedExampleDiagnostics() {
+  const example = state.application.example;
+  return state.build === "Built" && !state.pendingProject && example
+      && example.id === selectedExampleId() && state.traceSummaryKey === exampleSummaryKey(example)
+    ? (state.traceSummary?.result?.diagnostics || []).map(diagnostic => ({...diagnostic, exampleName: example.name}))
+    : [];
+}
+
+function exampleSummaryKey(example) {
+  return [state.application.fingerprint || "", state.application.pid || 0,
+    example.id, example.status, example.events].join(":");
 }
 
 function diagnosticOwner(diagnostic) {
@@ -2394,6 +2408,10 @@ function matcherGroupOptions(input, locator) {
 function jsonInput(operation, input, locator, value) {
   const present = hasAt(operation, locator);
   const id = inputId(locator);
+  const path = inputDiagnosticPath(operation.id, locator);
+  const issues = allDiagnostics().filter(issue => issue.path === path && diagnosticOwner(issue) === operation.id);
+  const feedback = issues.length ? `<p id="${html(id)}-error" class="input-error" role="alert">${
+    issues.map(issue => html(issue.message)).join(" ")}</p>` : "";
   if (!input.required && !present) {
     return `
       <section class="inspector-section compact" data-input-name="${html(input.name)}">
@@ -2402,6 +2420,7 @@ function jsonInput(operation, input, locator, value) {
                  data-input-meta="${metaToken(input)}">
           <span>${input.inherited ? "Override " : "Use "}${html(inputLabel(input.name).toLowerCase())}</span>
         </label>
+        ${feedback}
       </section>`;
   }
   const optional = !input.required ? `
@@ -2411,7 +2430,8 @@ function jsonInput(operation, input, locator, value) {
       <span>Use ${html(inputLabel(input.name).toLowerCase())}</span>
     </label>` : "";
   const attributes = `id="${html(id)}-value" ${input.required ? 'aria-required="true"' : ''} data-input-json="${locatorToken(locator)}"
-                      data-input-meta="${metaToken(input)}"`;
+                      data-input-meta="${metaToken(input)}"${issues.length
+    ? ` aria-invalid="true" aria-describedby="${html(id)}-error"` : ""}`;
   let control;
   if (input.shape === "string") {
     control = `<input type="text" ${attributes} value="${html(value ?? "")}">`;
@@ -2420,7 +2440,7 @@ function jsonInput(operation, input, locator, value) {
       ? ` min="${html(numberText(input.minimum))}"` : "";
     const maximum = Object.hasOwn(input, "maximum")
       ? ` max="${html(numberText(input.maximum))}"` : "";
-    control = `<input type="number" step="any" ${attributes}${minimum}${maximum}
+    control = `<input type="number" step="${["Integer", "Long"].includes(input.validation) ? "1" : "any"}" ${attributes}${minimum}${maximum}
                       value="${value === undefined ? "" : html(numberText(value))}">`;
   } else if (input.shape === "boolean") {
     control = `<select ${attributes}>
@@ -2439,6 +2459,7 @@ function jsonInput(operation, input, locator, value) {
       ${optional}
       <label for="${html(id)}-value">${html(input.label || inputLabel(input.name))}${input.required ? " <small>Required</small>" : ""}</label>
       ${control}
+      ${feedback}
       ${input.required && input.shape === "string" && !present ? `
         <button type="button" id="${html(id)}-empty"
                 data-set-empty-json="${locatorToken(locator)}"
@@ -4446,13 +4467,7 @@ async function requestSelectedTrace() {
     }
     return;
   }
-  const summaryKey = [
-    state.application.fingerprint || "",
-    state.application.pid || 0,
-    example.id,
-    example.status,
-    example.events
-  ].join(":");
+  const summaryKey = exampleSummaryKey(example);
   const operation = ["trigger", "step"].includes(state.selection.type)
     ? selectedOperation()
     : null;
@@ -4629,6 +4644,13 @@ function selectedCandidates(operation, options, outcome) {
 }
 
 function refreshTraceView() {
+  updateWorldMarks(state.world?.scene);
+  for (const slot of document.querySelectorAll("[data-issues-owner]")) {
+    const markup = issueList(slot.dataset.issuesOwner);
+    const template = document.createElement("template");
+    template.innerHTML = markup;
+    if (!slot.isEqualNode(template.content.firstElementChild)) slot.replaceWith(template.content.firstElementChild);
+  }
   applyExampleCoverage();
   refreshPickerOptions();
   renderPreview();
@@ -4710,7 +4732,9 @@ function renderPreview() {
   const first = document.querySelector("[data-preview-input-value]");
   if (first && state.selection.type === "step") first.id = "preview-source";
   const error = document.querySelector("#preview-error");
-  if (error) error.textContent = state.preview?.message || "";
+  if (error) error.textContent = state.preview?.message || selectedExampleDiagnostics()
+    .filter(diagnostic => diagnosticOwner(diagnostic) === operation.id)
+    .map(diagnostic => diagnostic.message).join(" ");
   document.querySelectorAll("[data-preview-slot]").forEach(slot => {
     slot.innerHTML = previewStage(
       operation,

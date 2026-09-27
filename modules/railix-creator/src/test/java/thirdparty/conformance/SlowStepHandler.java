@@ -1,6 +1,5 @@
 package thirdparty.conformance;
 
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -11,13 +10,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /** Real bundle-owned Step used to prove graceful rolling shutdown. */
-public final class SlowStepHandler implements StepHandler {
+public final class SlowStepHandler {
     /** Creates one stateless handler. */
     public SlowStepHandler() {
     }
 
-    @Override
-    public StepResult run(final StepInput input) throws InterruptedException {
+    public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
         final Path marker = Path.of(input.string("marker"));
         write(marker, "started");
         final long delay = ((RailixValue.NumberValue) input.value("delay_millis"))

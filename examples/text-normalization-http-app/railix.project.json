@@ -1,0 +1,75 @@
+{
+  "format": 1,
+  "id": "text-normalization-http-app",
+  "nodes": [
+    {"id": "app", "use": "railix.app", "inputs": {}},
+    {"id": "request", "use": "railix.trigger.http", "inputs": {
+      "host": "127.0.0.1", "port": 8080,
+      "target": ["context", "payload", "request"]
+    }, "examples": [
+      {"name": "normalize", "payload": {"method": "POST", "path": "/normalize", "query": "", "headers": {}, "body": {"text": "  Hello   RAILIX  "}}},
+      {"name": "already-normalized", "payload": {"method": "POST", "path": "/normalize", "query": "", "headers": {}, "body": {"text": "hello railix"}}},
+      {"name": "blank-text", "payload": {"method": "POST", "path": "/normalize", "query": "", "headers": {}, "body": {"text": "   "}}},
+      {"name": "wrong-type", "payload": {"method": "POST", "path": "/normalize", "query": "", "headers": {}, "body": {"text": 42}}},
+      {"name": "missing-text", "payload": {"method": "POST", "path": "/normalize", "query": "", "headers": {}, "body": {}}},
+      {"name": "null-text", "payload": {"method": "POST", "path": "/normalize", "query": "", "headers": {}, "body": {"text": null}}},
+      {"name": "boolean-text", "payload": {"method": "POST", "path": "/normalize", "query": "", "headers": {}, "body": {"text": false}}},
+      {"name": "array-text", "payload": {"method": "POST", "path": "/normalize", "query": "", "headers": {}, "body": {"text": []}}},
+      {"name": "object-text", "payload": {"method": "POST", "path": "/normalize", "query": "", "headers": {}, "body": {"text": {}}}},
+      {"name": "unknown-route", "payload": {"method": "POST", "path": "/missing", "query": "", "headers": {}, "body": {"text": "hello"}}},
+      {"name": "wrong-method", "payload": {"method": "GET", "path": "/normalize", "query": "", "headers": {}, "body": null}}
+    ]},
+    {"id": "route", "use": "railix.choice", "inputs": {"conditions": [[
+      {"option": "field", "inputs": {"field": ["context", "payload", "request", "path"]},
+       "when": {"transforms": [], "all": [[{"use": "value.equals", "inputs": {"expected": "/normalize"}}]]}},
+      {"option": "field", "inputs": {"field": ["context", "payload", "request", "method"]},
+       "when": {"transforms": [], "all": [[{"use": "value.equals", "inputs": {"expected": "POST"}}]]}}
+    ]]}},
+    {"id": "valid-text", "use": "railix.choice", "inputs": {"conditions": [[
+      {"option": "field", "inputs": {"field": ["context", "payload", "request", "body", "text"]},
+       "when": {"transforms": [], "all": [[{"use": "value.is-type", "inputs": {"type": {"option": "string", "inputs": {}}}}]]}},
+      {"option": "field", "inputs": {"field": ["context", "payload", "request", "body", "text"]},
+       "when": {"transforms": [{"use": "text.normalize-space", "inputs": {}}, {"use": "text.length", "inputs": {}}],
+                "all": [[{"use": "number.greater-than", "inputs": {"than": 0}}]]}}
+    ]]}},
+    {"id": "normalize", "use": "railix.field-manipulation", "inputs": {
+      "field": ["context", "payload", "normalized", "text"],
+      "value": [{"option": "field", "inputs": {"source": ["context", "payload", "request", "body", "text"]}}],
+      "steps": [{"use": "text.normalize-space", "inputs": {}}, {"use": "text.lowercase", "inputs": {}}]
+    }},
+    {"id": "response", "use": "railix.field-manipulation", "inputs": {
+      "field": ["context", "body"],
+      "value": [{"option": "field", "inputs": {"source": ["context", "payload", "normalized"]}}], "steps": []
+    }},
+    {"id": "invalid-body", "use": "railix.field-manipulation", "inputs": {
+      "field": ["context", "body"], "value": [{"option": "literal", "inputs": {
+        "literal": {"error": "invalid_text", "message": "Provide a non-empty string in body.text."}
+      }}], "steps": []
+    }},
+    {"id": "invalid-status", "use": "railix.field-manipulation", "inputs": {
+      "field": ["context", "status"], "value": [{"option": "literal", "inputs": {"literal": 400}}], "steps": []
+    }},
+    {"id": "not-found-body", "use": "railix.field-manipulation", "inputs": {
+      "field": ["context", "body"], "value": [{"option": "literal", "inputs": {
+        "literal": {"error": "not_found", "message": "Use POST /normalize."}
+      }}], "steps": []
+    }},
+    {"id": "not-found-status", "use": "railix.field-manipulation", "inputs": {
+      "field": ["context", "status"], "value": [{"option": "literal", "inputs": {"literal": 404}}], "steps": []
+    }}
+  ],
+  "links": [
+    {"from": "app.start", "to": "request"},
+    {"from": "request.next", "to": "route"},
+    {"from": "route.match", "to": "valid-text"},
+    {"from": "route.otherwise", "to": "not-found-body"},
+    {"from": "valid-text.match", "to": "normalize"},
+    {"from": "valid-text.otherwise", "to": "invalid-body"},
+    {"from": "normalize.next", "to": "response"},
+    {"from": "response.next", "to": "end"},
+    {"from": "invalid-body.next", "to": "invalid-status"},
+    {"from": "invalid-status.next", "to": "end"},
+    {"from": "not-found-body.next", "to": "not-found-status"},
+    {"from": "not-found-status.next", "to": "end"}
+  ]
+}

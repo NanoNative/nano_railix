@@ -2,7 +2,7 @@
 
 ## Human Review
 
-Status: **Planned; design discussion**, updated on 2026-09-20. The user accepted the
+Status: **Planned; design discussion**, updated on 2026-09-21. The user accepted the
 local Git-backed default, optional external managers, usability, early rejection, immutable
 deployed identities/permissions, credential rotation and compliance-support goals, not a
 cryptographic architecture or implementation. The latest clarification rejects live user
@@ -14,6 +14,18 @@ policy boundaries. [System model](system-model.md#accepted-platform-boundaries) 
 capability inclusion; [observation](observation.md) owns management/observation behavior.
 [Database access](database-and-data-access.md) owns the new data-administration requirements;
 its serving boundary must enforce permissions even when a caller bypasses Creator's UI.
+
+The 2026-09-21 [Step lifecycle contract](system-model.md#planned-step-lifecycle) keeps immutable
+compiled configuration separate from context. Certificate files/passwords can use plain Step
+configuration for the first HTTP delivery; future secret management is not a prerequisite.
+This is the current limitation, not delivery of SEC-003/005/009: plain values stored in projects
+or compiled into artifacts can be read by whoever has those files. Do not label UI masking as
+encryption or imply that ordinary Step configuration already has secret storage/rotation.
+
+HTTP authorization fields contain parsed credentials, not an authenticated identity. Redaction
+must cover raw headers and derived fields equally; exposing a token in context must not silently
+publish it in Example traces. Explicit client trust-all is separate from server CORS and cannot
+weaken other Step occurrences. These target rules do not certify current redaction or TLS behavior.
 
 ## Accepted Goals
 

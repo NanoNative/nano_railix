@@ -215,7 +215,7 @@ final class CreatorFirstExecutionProject {
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source("test.source." + id)
                 .result("result", ValueShape.ANY, RailixValue.nullValue())
-                .run(CreatorFirstExecutionSteps.Trigger.class);
+                .implementation(CreatorFirstExecutionSteps.Trigger.class);
     }
 
     private static StepDefinition probe(
@@ -230,7 +230,7 @@ final class CreatorFirstExecutionProject {
                 .receive("value", receiveShape, receiveRefinement)
                 .input("behavior", StepDefinition.Input.json(ValueShape.STRING))
                 .returns("value", returnShape, returnRefinement)
-                .run(CreatorFirstExecutionSteps.Probe.class);
+                .implementation(CreatorFirstExecutionSteps.Probe.class);
     }
 
     private static void addTerminalTrigger(

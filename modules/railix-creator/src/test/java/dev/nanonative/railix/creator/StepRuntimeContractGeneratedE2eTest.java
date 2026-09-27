@@ -181,7 +181,7 @@ final class StepRuntimeContractGeneratedE2eTest {
                         StepDefinition.named("contract.source.downstream", "1")
                                 .input("value", Input.path(READ).defaultPath("context", "payload", "value"))
                                 .input("mode", mode("graph-exception"))
-                                .run(StepRuntimeContractProbe.class)
+                                .implementation(StepRuntimeContractProbe.class)
                 )
         );
         refinedNumberJar = buildJar(
@@ -568,7 +568,7 @@ final class StepRuntimeContractGeneratedE2eTest {
         } else {
             definition.result("result", ValueShape.ANY, RailixValue.nullValue());
         }
-        return definition.input("mode", mode("primary")).run(StepRuntimeContractProbe.class);
+        return definition.input("mode", mode("primary")).implementation(StepRuntimeContractProbe.class);
     }
 
     private static StepDefinition graphStep(final GraphCase graph) {
@@ -624,7 +624,7 @@ final class StepRuntimeContractGeneratedE2eTest {
             default -> {
             }
         }
-        return definition.run(StepRuntimeContractProbe.class);
+        return definition.implementation(StepRuntimeContractProbe.class);
     }
 
     private static StepDefinition graphTail(final GraphCase graph) {
@@ -640,7 +640,7 @@ final class StepRuntimeContractGeneratedE2eTest {
             definition.input("first", Input.path(WRITE))
                     .input("second", Input.path(WRITE));
         }
-        return definition.run(StepRuntimeContractProbe.class);
+        return definition.implementation(StepRuntimeContractProbe.class);
     }
 
     private static StepDefinition nestedStep(
@@ -656,7 +656,7 @@ final class StepRuntimeContractGeneratedE2eTest {
         if (secondaryOutcome) {
             definition.outcome("secondary");
         }
-        return definition.run(StepRuntimeContractProbe.class);
+        return definition.implementation(StepRuntimeContractProbe.class);
     }
 
     private static StepDefinition sourceTrigger(final String id, final String mode) {
@@ -667,7 +667,7 @@ final class StepRuntimeContractGeneratedE2eTest {
                 .input("target", Input.path(WRITE).defaultPath("context", "payload", "value"))
                 .input("mode", mode(mode))
                 .result("result", ValueShape.ANY, RailixValue.nullValue())
-                .run(StepRuntimeContractProbe.class);
+                .implementation(StepRuntimeContractProbe.class);
     }
 
     private static StepDefinition sourceTrigger(
@@ -682,7 +682,7 @@ final class StepRuntimeContractGeneratedE2eTest {
                 .receive("value", shape, refinement)
                 .input("mode", mode(mode))
                 .result("result", ValueShape.ANY, RailixValue.nullValue())
-                .run(StepRuntimeContractProbe.class);
+                .implementation(StepRuntimeContractProbe.class);
     }
 
     private static Input mode(final String value) {

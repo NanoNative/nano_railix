@@ -66,7 +66,7 @@ final class ProductionRuntimeBranchE2eTest {
                         .input("depth", StepDefinition.Input.json(ValueShape.NUMBER)
                                 .defaultValue(RailixValue.number(0)))
                         .outcome("one")
-                        .run(ProductionRuntimeBranchSteps.Branch.class),
+                        .implementation(ProductionRuntimeBranchSteps.Branch.class),
                 StepDefinition.named("production.leaf", "1")
                         .primaryOutcome("ok")
                         .receive("route", ValueShape.STRING)
@@ -74,7 +74,7 @@ final class ProductionRuntimeBranchE2eTest {
                         .input("expected", StepDefinition.Input.json(ValueShape.STRING)
                                 .defaultValue(RailixValue.string("")))
                         .outcome("invalid")
-                        .run(ProductionRuntimeBranchSteps.Leaf.class)
+                        .implementation(ProductionRuntimeBranchSteps.Leaf.class)
         );
     }
 

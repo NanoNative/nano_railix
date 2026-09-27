@@ -34,7 +34,8 @@ The planned operating model and its status live in [docs/roadmap.md](docs/roadma
 | This README | Product introduction, setup and contributor entrypoints. |
 | [Why Railix exists](docs/vision.md) | Founding motivation, product and business rationale, tradeoffs and reference-backed discussion; not implementation requirements. |
 | [.agents/skills/](.agents/skills/) | Standalone project workflow skills, including specification, Java and CSS; no global installation required. |
-| [System model](docs/specs/system-model.md) | Functional graph, Step/context contracts, control routing and compilation. |
+| [System model](docs/specs/system-model.md) | Functional graph, Step/context and lifecycle contracts, control routing and compilation. |
+| [HTTP Trigger](docs/specs/http-trigger.md) / [HTTP Client](docs/specs/http-client.md) | Current HTTP baseline, planned context-driven HTTPS behavior and shared protocol data rules. |
 | [Standard library](docs/specs/standard-library.md) | Primitive semantics, catalog/support matrix and acceptance. |
 | [Observation](docs/specs/observation.md) | Current development execution, metrics and management APIs. |
 | [Creator](docs/specs/creator.md) | Authoring, presentation metadata, factory world and navigation. |
@@ -169,10 +170,13 @@ compiler and Creator never execute Step handlers.
 
 ## HTTP Examples
 
+The [text normalization app](examples/text-normalization-http-app/README.md) is a small
+starting point: route requests, guard input types, transform text and return JSON.
+
 Serve the [HTTP example](examples/auth-http-app/README.md) on loopback:
 
 ```sh
-(cd examples/auth-http-app && "$RAILIX" serve 8080)
+(cd examples/auth-http-app && "$RAILIX" run)
 ```
 
 The [proxy example](examples/auth-proxy-http-app/README.md) demonstrates one built application

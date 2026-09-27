@@ -116,6 +116,41 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"pre", "post"})
+    void fatalStartupHooksReclaimChildrenBeforeProcessExit(final String phase, @TempDir final Path workspace)
+            throws Exception {
+        final Path marker = workspace.resolve("child.pid");
+        final var step = StepDefinition.named("test.startup-child", "1")
+                .input("marker", StepDefinition.Input.json(ValueShape.STRING))
+                .input("failure", StepDefinition.Input.json(ValueShape.STRING))
+                .implementation(DevelopmentRuntimeConformanceSteps.StartupChild.class);
+        final var candidate = DevelopmentRuntimeGeneratedProcess.build(workspace, """
+                {"format":1,"id":"startup-child","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{"name":"empty","payload":[]}]},
+                  {"id":"child","use":"test.startup-child","inputs":{"marker":%s,"failure":"%s"}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"child"},
+                  {"from":"child.next","to":"end"}
+                ]}
+                """.formatted(RailixJson.write(RailixValue.string(marker.toString())), phase),
+                List.of(step), DevelopmentRuntimeConformanceSteps.StartupChild.class, ProcessTreeStepHandler.class);
+        try (var child = DevelopmentRuntimeGeneratedProcess.launch(candidate)) {
+            child.closeOwner();
+            assertThat(child.awaitExit()).isNotZero();
+            assertThat(child.error()).contains(phase.equals("pre") ? "Fatal PRE" : "Fatal POST");
+            final long pid = Long.parseLong(Files.readString(marker));
+            assertThat(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false))
+                    .as("Startup cleanup must not orphan child %s", pid).isFalse();
+        } finally {
+            if (Files.exists(marker)) {
+                stopIfAlive(Long.parseLong(Files.readString(marker)));
+            }
+        }
+    }
+
     @Test
     void automaticExamplesRemainDormantUntilTheCreatorActivatesTheApplication(@TempDir final Path workspace)
             throws Exception {
@@ -3849,52 +3884,52 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                         .input("operations", StepDefinition.Input.steps(
                                 StepDefinition.ValueSource.from("value")
                         ))
-                        .run(DevelopmentRuntimeConformanceSteps.Operation.class),
+                        .implementation(DevelopmentRuntimeConformanceSteps.Operation.class),
                 StepDefinition.named("development.runtime.fault", "1")
-                        .run(DevelopmentRuntimeConformanceSteps.Fault.class),
+                        .implementation(DevelopmentRuntimeConformanceSteps.Fault.class),
                 StepDefinition.named("development.runtime.nested-fault", "1")
                         .receive("value", ValueShape.ANY)
                         .returns("value", ValueShape.ANY)
-                        .run(DevelopmentRuntimeConformanceSteps.Fault.class),
+                        .implementation(DevelopmentRuntimeConformanceSteps.Fault.class),
                 StepDefinition.named("development.runtime.cancel", "1")
-                        .run(DevelopmentRuntimeConformanceSteps.Cancel.class),
+                        .implementation(DevelopmentRuntimeConformanceSteps.Cancel.class),
                 StepDefinition.named("development.runtime.nested-cancel", "1")
                         .receive("value", ValueShape.ANY)
                         .returns("value", ValueShape.ANY)
-                        .run(DevelopmentRuntimeConformanceSteps.Cancel.class),
+                        .implementation(DevelopmentRuntimeConformanceSteps.Cancel.class),
                 StepDefinition.named("development.runtime.append", "1")
                         .input("file", StepDefinition.Input.path(READ)
                                 .defaultPath("context", "payload", "file"))
-                        .run(DevelopmentRuntimeConformanceSteps.Append.class),
+                        .implementation(DevelopmentRuntimeConformanceSteps.Append.class),
                 StepDefinition.named("development.runtime.oversized", "1")
                         .input("target", StepDefinition.Input.path(READ_WRITE)
                                 .defaultPath("context", "payload", "oversized"))
-                        .run(DevelopmentRuntimeConformanceSteps.Oversized.class),
+                        .implementation(DevelopmentRuntimeConformanceSteps.Oversized.class),
                 StepDefinition.named("development.runtime.oversized-trace", "1")
                         .input("target", StepDefinition.Input.path(READ_WRITE)
                                 .defaultPath("context", "payload", "oversized"))
-                        .run(DevelopmentRuntimeConformanceSteps.OversizedTrace.class),
+                        .implementation(DevelopmentRuntimeConformanceSteps.OversizedTrace.class),
                 StepDefinition.named("development.runtime.block", "1")
                         .input("entered_port", StepDefinition.Input.path(READ)
                                 .defaultPath("context", "payload", "entered_port"))
-                        .run(DevelopmentRuntimeConformanceSteps.Block.class),
+                        .implementation(DevelopmentRuntimeConformanceSteps.Block.class),
                 StepDefinition.named("development.runtime.ignore-interrupt", "1")
                         .input("entered_port", StepDefinition.Input.path(READ)
                                 .defaultPath("context", "payload", "entered_port"))
-                        .run(DevelopmentRuntimeConformanceSteps.IgnoreInterrupt.class),
+                        .implementation(DevelopmentRuntimeConformanceSteps.IgnoreInterrupt.class),
                 StepDefinition.named("development.runtime.delayed-ignore-interrupt", "1")
                         .input("entered_port", StepDefinition.Input.path(READ)
                                 .defaultPath("context", "payload", "entered_port"))
                         .input("cancelled_port", StepDefinition.Input.path(READ)
                                 .defaultPath("context", "payload", "cancelled_port")
                                 .optional())
-                        .run(DevelopmentRuntimeConformanceSteps.DelayedIgnoreInterrupt.class),
+                        .implementation(DevelopmentRuntimeConformanceSteps.DelayedIgnoreInterrupt.class),
                 StepDefinition.named("development.runtime.hold", "1")
                         .input("entered_port", StepDefinition.Input.path(READ)
                                 .defaultPath("context", "payload", "entered_port"))
                         .input("release_port", StepDefinition.Input.path(READ)
                                 .defaultPath("context", "payload", "release_port"))
-                        .run(DevelopmentRuntimeConformanceSteps.Hold.class)
+                        .implementation(DevelopmentRuntimeConformanceSteps.Hold.class)
         );
     }
 
@@ -3905,12 +3940,12 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         if (requiredResult) {
             definition.requiredResult("result", ValueShape.ANY);
         }
-        return definition.run(DevelopmentRuntimeConformanceSteps.Pass.class);
+        return definition.implementation(DevelopmentRuntimeConformanceSteps.Pass.class);
     }
 
     private static StepDefinition pass() {
         return StepDefinition.named("development.runtime.pass", "1")
-                .run(DevelopmentRuntimeConformanceSteps.Pass.class);
+                .implementation(DevelopmentRuntimeConformanceSteps.Pass.class);
     }
 
     private static StepDefinition exampleGate() {
@@ -3921,14 +3956,14 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                         .defaultPath("context", "payload", "case"))
                 .input("ignore_interrupt", StepDefinition.Input.json(ValueShape.BOOLEAN)
                         .defaultValue(RailixValue.bool(true)))
-                .run(ChunkGateStepHandler.class);
+                .implementation(ChunkGateStepHandler.class);
     }
 
     private static StepDefinition aggregateStorageStep() {
         return StepDefinition.named("development.runtime.aggregate-storage", "1")
                 .input("target", StepDefinition.Input.path(READ_WRITE)
                         .defaultPath("context", "payload", "large"))
-                .run(DevelopmentRuntimeConformanceSteps.Oversized.class);
+                .implementation(DevelopmentRuntimeConformanceSteps.Oversized.class);
     }
 
     private static String nonCooperativeExample(final Path gate) {
@@ -4043,7 +4078,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                 StepDefinition.named("development.runtime.process-tree", "1")
                         .input("mode", StepDefinition.Input.json(ValueShape.STRING))
                         .input("marker", StepDefinition.Input.path(READ).defaultPath("context", "payload", "marker"))
-                        .run(ProcessTreeStepHandler.class)
+                        .implementation(ProcessTreeStepHandler.class)
         ), DevelopmentRuntimeConformanceSteps.Pass.class, ProcessTreeStepHandler.class);
     }
 
@@ -4252,7 +4287,7 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                         StepDefinition.named("development.runtime.append", "1")
                                 .input("file", StepDefinition.Input.path(READ)
                                         .defaultPath("context", "payload", "file"))
-                                .run(DevelopmentRuntimeConformanceSteps.Append.class)
+                                .implementation(DevelopmentRuntimeConformanceSteps.Append.class)
                 ),
                 DevelopmentRuntimeConformanceSteps.Pass.class,
                 DevelopmentRuntimeConformanceSteps.Append.class

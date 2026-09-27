@@ -2,9 +2,10 @@
 
 ## Human Review
 
-Status: **Existing baseline**, reorganized on 2026-09-19. This move does not
-approve new behavior or establish a fresh test pass. Explicitly planned behavior
-remains unsupported. The roadmap owns delivery status.
+Status: **Existing baseline with planned consolidation**, updated on 2026-09-26.
+The user accepted reviewing related operations as configurable Step families; exact
+replacement contracts remain open. The ordinary `value.is-type` predicate now supports
+type guards without changing those planned families.
 
 Owns: the finite versioned unary catalog, supported rows, composition and acceptance rules.
 Other routing contracts live in [system model](system-model.md).
@@ -183,9 +184,49 @@ tests. Until then, one independent Railix codec remains safer than an adapter or
 | --- | --- | --- | --- | --- | --- |
 | Done | `value.equals` | T | ANY -> BOOLEAN | `expected:ANY`, default JSON `null` | recursive JSON equality; array order matters; object order does not; numbers compare by value rather than decimal scale |
 | Done | `value.not-equals` | T | ANY -> BOOLEAN | `expected:ANY`, default JSON `null` | exact logical inverse of `value.equals` |
+| Done | `value.is-type` | T | ANY -> BOOLEAN | `type:OPTIONS` selecting `null`, `boolean`, `number`, `string`, `array` or `object`; default `string` | exact JSON shape, no coercion; JSON null is a value, not an absent field; number includes integral and fractional values |
 | Planned | `value.require-not-null` | F | ANY -> ANY | none | non-null returns unchanged `ok`; JSON null is `invalid` |
 | Planned | `text.require-not-blank` | F | STRING -> STRING | none | non-blank returns unchanged `ok`; empty or Unicode-blank text is `invalid` |
 | Planned | `number.require-between` | F | NUMBER -> NUMBER | required `min:NUMBER`, `max:NUMBER` | inclusive exact bounds; outside is `invalid`; `min > max` is a project diagnostic |
+
+To guard a type-specific transformation in a Choice, put `value.is-type` in an earlier AND
+condition than that transformation. Existing short-circuit evaluation skips later conditions
+on mismatch or an absent field. The guard is an ordinary unary Step, also usable as a graph
+node or in a nested predicate program; it does not change compiler inference or convert data.
+
+## Planned Configurable Families
+
+The goal is fewer concepts for users, not fewer useful capabilities. Related operations should
+share a configurable definition when their input, output and failure contracts fit. A shared
+Creator presentation alone does not justify changing stored Step IDs or runtime behavior.
+
+| Family | Existing behavior to preserve | Proposed direction / remaining decision |
+| --- | --- | --- |
+| Numeric comparison | Greater/less than, inclusive variants, exact decimal comparison. | One operator selection; decide IDs, defaults and migration before replacing rows. |
+| Numeric collection statistics | Sum/min/max, with different empty and invalid outcomes. Average is not implemented. | Configurable aggregate or summary outputs such as count/sum/min/max/average; agree output shape, empty input and average precision/rounding. |
+| Rounding | Floor, ceiling and half-up rounding. | One rounding operation with declared mode; preserve existing negative-number and tie behavior. |
+| Text matching | Contains, starts-with, ends-with. | One match operation with mode and ordinary operands; do not silently introduce regex or change case rules. |
+| Text case | Locale-independent upper/lower conversion. | One case mode if the declaration remains simpler than separate operations. |
+| Branching | Filter, Choice, Switch, planned Split. | Related output-selection modes in one authoring family; execution-count, ordering and later parallelism still require the [control contract](system-model.md). |
+
+These are consolidation candidates, not newly supported Steps. A summary object is not a
+drop-in replacement for a scalar sum. Do not adopt Java double-based statistics and lose the
+existing exact number domain. A non-terminating average needs an explicit precision/rounding
+rule, not accidental `BigDecimal.divide` exceptions. Empty arrays need a declared result for
+each selected output, rather than invented minimum/maximum values. `list.size` still accepts
+nonnumeric elements and must not acquire a numeric scan just to share a statistics family.
+
+Options and their valid shapes belong to the ordinary Step definition, consumed by Creator,
+compiler and third-party Steps alike. No special family names or stdlib IDs in those consumers.
+Before implementation, agree the first family, persisted version/ID migration, scalar versus
+multiple-output behavior, and how options affect outcomes and available connections.
+
+Acceptance is planned through the public catalog, Creator and generated application: preserve
+each existing operation's relevant scenarios, exercise every supported mode and invalid setting,
+prove old-project migration without changed results, and verify a third-party configured Step
+uses the same declaration path. Measure any changed collection hot path against the current
+operation; consolidation must not compute unused aggregates or introduce new runtime machinery
+without a demonstrated need.
 
 ## Acceptance Derivation
 
@@ -213,12 +254,11 @@ A small value operation is an ordinary `STEP` with one receive, one return, and 
 primary outcome when `next` is not suitable:
 
 ```java
-public final class Lowercase implements StepHandler {
-    public Lowercase() {
+public final class Lowercase {
+    private Lowercase() {
     }
 
-    @Override
-    public StepResult run(final StepInput input) {
+    public static StepResult process(final StepInput configuration, final StepInput input) {
         return StepResult.outcome("ok").output(
                 "value",
                 RailixValue.string(input.string("value").toLowerCase(Locale.ROOT))
@@ -230,11 +270,15 @@ StepDefinition.named("text.lowercase", "1")
         .primaryOutcome("ok")
         .receive("value", ValueShape.STRING)
         .returns("value", ValueShape.STRING)
-        .run(Lowercase.class);
+        .implementation(Lowercase.class);
 ```
 
 Register definitions explicitly in a `StepCatalog`; Railix never discovers classes through
 reflection. The default outcomes are App `start`, Trigger `next`, and ordinary Step `next`.
+Built-in and bundle Steps use this same static PROCESS signature. Old bundles using
+`StepHandler.run` must be rebuilt; there is no second legacy execution path. Configuration
+contains compiled literals, paths and selected options, while `input` supplies invocation values
+and compiled nested programs. Constructors are never a Step startup hook.
 `.primaryOutcome("ok")` deliberately replaces `next` for the unary operation above. Additional
 `.outcome(...)` calls declare explicit non-primary results such as `invalid` or `empty`.
 Optional `.displayName(...)` and `.searchTerms(...)` values affect only Creator presentation and

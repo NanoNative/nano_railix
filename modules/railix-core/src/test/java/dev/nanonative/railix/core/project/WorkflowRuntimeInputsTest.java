@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 final class WorkflowRuntimeInputsTest {
     private static final WorkflowRuntime.StepPlan PLAN = new WorkflowRuntime.StepPlan(
             "step", "test.step", false, List.of(), List.of(), List.of("next", "skip"),
-            Map.of(), Map.of(), "nodes[0]"
+            Map.of(), Map.of(), "nodes[0]", new StepInput(Map.of(), Map.of(), Map.of(), Map.of(), "next")
     );
     private static final WorkflowRuntime.InputResolver RECEIVES =
             (execution, received, outcome) -> WorkflowRuntime.inputs(received, outcome);
@@ -34,7 +34,7 @@ final class WorkflowRuntimeInputsTest {
         final WorkflowRuntime.Execution execution = execution(Map.of());
         final List<StepInput> captured = new ArrayList<>();
         for (int index = 0; index < 10; index++) {
-            assertThat(execution.call(PLAN, input -> {
+            assertThat(execution.call(PLAN, (configuration, input) -> {
                 captured.add(input);
                 return NEXT;
             }, Map.of(), RECEIVES)).isZero();
@@ -61,7 +61,7 @@ final class WorkflowRuntimeInputsTest {
         final List<StepInput> captured = new ArrayList<>();
         final WorkflowRuntime.Execution execution = execution(Map.of());
 
-        assertThat(execution.call(PLAN, input -> {
+        assertThat(execution.call(PLAN, (configuration, input) -> {
             captured.add(input);
             return NEXT;
         }, received, (current, source, outcome) -> {
@@ -95,7 +95,7 @@ final class WorkflowRuntimeInputsTest {
                 "literal", "", child, sources, new WorkflowRuntime.NestedProgram(List.of()), List.of()
         );
 
-        assertThat(execution.call(PLAN, input -> {
+        assertThat(execution.call(PLAN, (configuration, input) -> {
             captured.add(input);
             return NEXT;
         }, Map.of(), (current, received, outcome) -> {
@@ -128,7 +128,7 @@ final class WorkflowRuntimeInputsTest {
     @Test
     void missingReadPathsAndUnselectedCandidatesLeaveInputsEmpty() {
         final WorkflowRuntime.Execution execution = execution(Map.of());
-        assertThat(execution.call(PLAN, input -> {
+        assertThat(execution.call(PLAN, (configuration, input) -> {
             assertThat(input.values()).isEmpty();
             assertThat(input.optionalValue("missing")).isEmpty();
             assertThat(input.options()).containsExactlyInAnyOrderEntriesOf(Map.of("choice", "empty"));
@@ -149,7 +149,7 @@ final class WorkflowRuntimeInputsTest {
     void aProgramWithAMissingSourceKeepsEmptyInputsAndItsInvocationScope() {
         final WorkflowRuntime.Execution execution = execution(Map.of());
         final List<StepInput> captured = new ArrayList<>();
-        assertThat(execution.call(PLAN, input -> {
+        assertThat(execution.call(PLAN, (configuration, input) -> {
             captured.add(input);
             assertThat(input.values()).isEmpty();
             final StepInput.ProgramResult result = input.run("operations");
@@ -176,13 +176,13 @@ final class WorkflowRuntimeInputsTest {
             inputs.path("value", binding(true, false), current);
             return inputs;
         };
-        assertThat(execution.call(PLAN, input -> {
+        assertThat(execution.call(PLAN, (configuration, input) -> {
             captured.add(input);
             return NEXT;
         }, Map.of(), read)).isZero();
         final RailixValue.ObjectValue before = execution.context();
 
-        assertThat(execution.call(PLAN, input -> {
+        assertThat(execution.call(PLAN, (configuration, input) -> {
             assertThat(input.values()).isEmpty();
             return NEXT.write("target", RailixValue.string("changed"));
         }, Map.of(), (current, received, outcome) -> {
@@ -209,7 +209,7 @@ final class WorkflowRuntimeInputsTest {
                 )), false, true)
                 : binding(false, true, "primitive", "child");
 
-        assertThat(execution.call(PLAN, input -> NEXT.write("first", VALUE).write("second", VALUE),
+        assertThat(execution.call(PLAN, (configuration, input) -> NEXT.write("first", VALUE).write("second", VALUE),
                 Map.of(), (current, received, outcome) -> {
                     final WorkflowRuntime.Inputs inputs = WorkflowRuntime.inputs(received, outcome);
                     inputs.path("first", binding(false, true, "created", "child"), current);
@@ -231,7 +231,7 @@ final class WorkflowRuntimeInputsTest {
     @ValueSource(strings = {"outcome", "output", "write", "null", "exception"})
     void emptyInputsDoNotBypassStepFailureValidation(final String failure) {
         final WorkflowRuntime.Execution execution = execution(Map.of());
-        assertThat(execution.call(PLAN, input -> switch (failure) {
+        assertThat(execution.call(PLAN, (configuration, input) -> switch (failure) {
             case "outcome" -> StepResult.outcome("undeclared");
             case "output" -> NEXT.output("undeclared", VALUE);
             case "write" -> NEXT.write("undeclared", VALUE);
@@ -259,7 +259,7 @@ final class WorkflowRuntimeInputsTest {
         assumeTrue(allocations.isThreadAllocatedMemoryEnabled());
         final WorkflowRuntime.Execution execution = execution(Map.of());
         final StepInput[] captured = new StepInput[1];
-        final WorkflowRuntime.StepCall handler = input -> {
+        final WorkflowRuntime.StepCall handler = (configuration, input) -> {
             captured[0] = input;
             return NEXT;
         };

@@ -74,6 +74,29 @@ public final class StepContractJson {
      * @return canonical {@code META-INF/railix/steps.json} content
      */
     public static String writeManifest(final List<StepDefinition> definitions) {
+        return writeManifest(List.of(), definitions);
+    }
+
+    /**
+     * Exports a bundle whose public static {@code definitions()} method returns these definitions.
+     * The method is called only in a validation subprocess, never for catalog discovery or runtime.
+     * No Java callback is serialized. The root JAR must own the provider class.
+     *
+     * @param provider class declaring {@code public static List<StepDefinition> definitions()}
+     * @param definitions definitions returned by that method, including their validation callbacks
+     * @return canonical manifest including the explicit definition provider
+     * @throws IllegalArgumentException for invalid definitions or a missing/unnamed provider
+     */
+    public static String writeManifest(final Class<?> provider, final List<StepDefinition> definitions) {
+        if (provider == null || provider.getCanonicalName() == null) {
+            throw new IllegalArgumentException("Bundle definitions provider must be a named Java class.");
+        }
+        return writeManifest(List.of(new StepDefinition.ImplementationAddress(provider.getCanonicalName(),
+                provider.getName().replace('.', '/') + ".class", List.of())), definitions);
+    }
+
+    private static String writeManifest(final List<StepDefinition.ImplementationAddress> providers,
+                                        final List<StepDefinition> definitions) {
         if (definitions == null || definitions.isEmpty()) {
             throw new IllegalArgumentException("Step bundle manifest must contain at least one definition.");
         }
@@ -83,7 +106,10 @@ public final class StepContractJson {
         if (sorted.stream().map(StepDefinition::id).distinct().count() != sorted.size()) {
             throw new IllegalArgumentException("Step bundle manifest ids must be unique.");
         }
-        return RailixJson.write(RailixValue.object(Map.of(
+        if (providers.isEmpty() && sorted.stream().anyMatch(definition -> !StepValidation.inputs(definition).isEmpty())) {
+            throw new IllegalArgumentException("Bundle validators require an explicit definitions provider.");
+        }
+        final Map<String, RailixValue> manifest = new LinkedHashMap<>(Map.of(
                 "format", RailixValue.number(1),
                 "steps", RailixValue.array(sorted.stream().<RailixValue>map(definition -> {
                     final StepDefinition.ImplementationAddress implementation =
@@ -100,7 +126,12 @@ public final class StepContractJson {
                             "implementation_entry", RailixValue.string(implementation.classEntry())
                     ));
                 }).toList())
-        )));
+        ));
+        providers.forEach(provider -> manifest.put("definitions", RailixValue.object(Map.of(
+                "class", RailixValue.string(provider.sourceName()),
+                "entry", RailixValue.string(provider.classEntry())
+        ))));
+        return RailixJson.write(RailixValue.object(manifest));
     }
 
     /** Reconstructs one external executable definition without loading its implementation class. */
@@ -230,6 +261,7 @@ public final class StepContractJson {
                 value.put("shape", RailixValue.string(shape(json.shape())));
                 value.put("required", RailixValue.bool(json.required()));
                 json.defaultValue().ifPresent(item -> value.put("default", item));
+                json.validations().forEach(validation -> value.put("validation", RailixValue.string(validation.typeName())));
                 if (!json.range().isEmpty()) {
                     value.put("minimum", json.range().getFirst());
                     value.put("maximum", json.range().getLast());
@@ -352,13 +384,15 @@ public final class StepContractJson {
         final String type = text(value, "type", path);
         return switch (type) {
             case "json" -> {
-                object(value, Set.of("default", "maximum", "minimum", "name", "required", "shape", "type"),
-                        path, Set.of("default", "maximum", "minimum", "name"));
+                object(value, Set.of("default", "maximum", "minimum", "name", "required", "shape", "type", "validation"),
+                        path, Set.of("default", "maximum", "minimum", "name", "validation"));
                 yield new StepDefinition.JsonInput(
                         shape(text(value, "shape", path), path + ".shape"),
                         value.values().containsKey("default") ? List.of(value.values().get("default")) : List.of(),
                         range(value, path),
-                        bool(value, "required", path)
+                        bool(value, "required", path),
+                        optionalText(value, "validation", path).map(StepDefinition.Validation::reference)
+                                .map(List::of).orElseGet(List::of)
                 );
             }
             case "path" -> {

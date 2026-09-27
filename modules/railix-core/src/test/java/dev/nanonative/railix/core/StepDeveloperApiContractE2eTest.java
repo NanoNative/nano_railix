@@ -3,7 +3,6 @@ package dev.nanonative.railix.core;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepDefinition;
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
 import org.junit.jupiter.api.Test;
@@ -459,12 +458,11 @@ final class StepDeveloperApiContractE2eTest {
 
     private static StepDefinition definition() {
         return StepDefinition.named("example.step", "1")
-                .run(NextHandler.class);
+                .implementation(NextHandler.class);
     }
 
-    private static final class NextHandler implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    private static final class NextHandler {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome());
         }
     }

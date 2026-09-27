@@ -1,12 +1,12 @@
 ---
-name: railix-audio
-description: "Compose Railix music, design state/interaction sounds, and implement MML synthesis, playback, mixing and audio performance. Not for asset discovery or file-editor persistence."
+name: procedural-audio
+description: "Compose original procedural music, design interaction sounds, and implement declarative scores, synthesis, playback, mixing and audio performance. Not for asset discovery or file persistence."
 ---
 
 # Music And Sound Design
 
-Create original, memorable cyber-factory audio that supports concentration. Industrial
-and electronic RTS energy is inspiration, not permission to copy melodies or samples.
+Create original, memorable audio for the requested mood and use. Genre or game
+references are inspiration, not permission to copy melodies or samples.
 
 ## Compose Music
 
@@ -25,36 +25,27 @@ and electronic RTS energy is inspiration, not permission to copy melodies or sam
    return with purpose, and end cleanly. Align instrument sections with rests, plan
    tails, and vary instrumentation instead of repeating one full mix indefinitely.
 6. Compare new tracks by rhythmic phrasing and melodic interval contour, not just
-   absolute pitches or speed. Give each a distinct hook and arrangement. Humorous
-   developer titles can suggest a mood; do not insert copyrighted quotes or samples.
+   absolute pitches or speed. Give each a distinct hook and arrangement. Titles can
+   suggest a mood; do not insert unlicensed quotes or samples.
 
 ## Design Effects
 
 Use short cues with distinct envelopes and rhythms: a dry interaction click, a small
-mechanical working gesture, a soft idle response, and distinguishable warning/error
-cues. Unreached is neutral, not another alarm. Group cues may share the family while
-using a different cadence. Do not encode every state only as a louder version.
+working gesture, a soft idle response, and distinguishable warning/error cues.
+Absence of activity is not automatically an alarm. Related entity types may share
+a sound family with different cadences. Do not encode every state only as a louder version.
 
 Keep proximity ambience subordinate to feedback and music. Preserve bounded effect
-sessions under rapid clicking; do not stack a source per Step, request or frame.
+sessions under rapid clicking; do not stack a source per entity, request or frame.
 Use the existing state/event mapping, respect mute, and avoid repetitive alarm loops.
 
 ## Author And Synthesize
 
-Write editable MML, not executable source or distributed binary audio. Use `name:`
-and `tempo:` headers, then 1-8 parallel lines of
-`instrument volume attack release | notes`; optional `key=value` controls go before `|`.
-Tempo is 40-240 BPM; volume is 0-1 and attack/release are seconds.
-Keep files within the 64 KiB limit.
-Use whitespace-separated tokens: `o4` sets octave, `c@1` lasts one beat, `r@.5` rests,
-`[ceg]@4` plays a chord, and `/: c@1 r@1 :/4` repeats. Accidentals use `+` or `-`.
-Repeats allow 1-16 passes with at most three nested levels; chords have at most four notes.
-
-Available instruments are sine, triangle, square, sawtooth, kick, snare and hat.
-Use the supported decay, sustain, cutoff, detune, drive, pan and echo controls;
-do not invent instrument names or syntax. Keep one validated score model and native
-Web Audio synthesis path for playback and preview. Audio belongs only to Creator.
-Schedule against its audio clock with bounded lookahead, reusable voices and shared
+Read the supported score syntax, instruments, units and limits before composing.
+Do not invent syntax or change a file format to repair weak timbre or arrangement.
+For declarative scores, validate complexity at ingress and preserve compact repeats.
+Keep one validated score model and synthesis path for playback and preview.
+Schedule against the audio clock with bounded lookahead, reusable voices and shared
 noise/routing. Do not expand long repeats or schedule an entire soundtrack at once.
 
 ## Mix And Verify
@@ -73,6 +64,6 @@ numbers cannot establish musical quality. Report explicitly when listening was u
 Test 0-100% gain, independent music/effect mute, pause/resume, stop, Next, shuffle
 without immediate repeats when alternatives exist, and hidden-page cleanup. Measure
 voice/context counts, CPU and memory during long playback and rapid actions.
-Use Java 25 and existing Java Playwright tests with Chrome; run `./mvnw clean verify`
-from repository root before publishing audio changes. Review WAVs may live under
-`target/`, never in distributed assets. Stop task-owned renders, contexts and helpers.
+Use the project's playback tests and publication gate. Keep review renders in an
+ignored output directory, not distributed assets unless explicitly requested.
+Stop task-owned renders, contexts and helpers.
