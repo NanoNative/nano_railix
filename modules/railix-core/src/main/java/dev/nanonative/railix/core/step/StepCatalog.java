@@ -5,6 +5,7 @@ import dev.nanonative.railix.core.value.RailixValue;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.classfile.ClassFile;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -42,16 +43,19 @@ public final class StepCatalog {
     private final List<StepDefinition> definitions;
     private final Map<String, StepDefinition> definitionsById;
     private final Map<String, Implementation> implementations;
+    private final Map<String, Implementation> validationProviders;
 
     private StepCatalog(
             final List<StepDefinition> definitions,
-            final Map<String, Implementation> implementations
+            final Map<String, Implementation> implementations,
+            final Map<String, Implementation> validationProviders
     ) {
         this.definitions = Collections.unmodifiableList(new ArrayList<>(definitions));
         final Map<String, StepDefinition> byId = new LinkedHashMap<>();
         definitions.forEach(definition -> byId.put(definition.id(), definition));
         this.definitionsById = Collections.unmodifiableMap(byId);
         this.implementations = Collections.unmodifiableMap(new LinkedHashMap<>(implementations));
+        this.validationProviders = Map.copyOf(validationProviders);
     }
 
     /** Creates a platform-owned catalog from explicitly constructed definitions. */
@@ -83,7 +87,32 @@ public final class StepCatalog {
                     )
             ));
         }
-        return new StepCatalog(copy, implementations);
+        return new StepCatalog(copy, implementations, Map.of());
+    }
+
+    /**
+     * Creates an explicit catalog with a provider for isolated configuration validation.
+     *
+     * @param provider class declaring public static List of StepDefinition {@code definitions()}
+     * @param definitions definitions supplied by that provider
+     * @return catalog; ordinary definitions without validators start no helper process
+     * @throws IllegalArgumentException for an invalid provider or definitions
+     */
+    public static StepCatalog of(final Class<?> provider, final StepDefinition... definitions) {
+        if (provider == null || provider.getCanonicalName() == null) {
+            throw new IllegalArgumentException("Definitions provider must be a named Java class.");
+        }
+        final StepCatalog catalog = of(definitions);
+        final Map<String, Implementation> providers = new LinkedHashMap<>();
+        catalog.definitions.forEach(definition -> providers.put(definition.id(), new Implementation(
+                provider.getCanonicalName(), provider.getName().replace('.', '/') + ".class", Ownership.PLATFORM,
+                List.of(), "sha256:" + digest(StepContractJson.write(definition).getBytes(StandardCharsets.UTF_8)), List.of())));
+        return new StepCatalog(catalog.definitions, catalog.implementations, providers);
+    }
+
+    /** Returns the explicit validation provider, or empty for a directly constructed in-process catalog. */
+    public Optional<Implementation> validationProvider(final String stepId) {
+        return Optional.ofNullable(validationProviders.get(stepId));
     }
 
     /**
@@ -125,6 +154,7 @@ public final class StepCatalog {
         final Map<String, Artifact> artifacts = artifacts(root, store.toAbsolutePath().normalize());
         final List<StepDefinition> nextDefinitions = new ArrayList<>(definitions);
         final Map<String, Implementation> nextImplementations = new LinkedHashMap<>(implementations);
+        final Map<String, Implementation> nextProviders = new LinkedHashMap<>(validationProviders);
         final Set<String> referencedArtifacts = new LinkedHashSet<>();
         String previousBundle = "";
         for (final RailixValue value : array(root, "bundles", "DEPENDENCY_LOCK_NON_CANONICAL", "lock").values()) {
@@ -196,6 +226,8 @@ public final class StepCatalog {
                     throw failure("STEP_DEPENDENCY_ID_CONFLICT", "Installed Step id is already present: " + id + ".");
                 }
                 nextDefinitions.add(installed.definition());
+                installed.providers().forEach(provider -> nextProviders.put(id, new Implementation(
+                        provider.sourceName(), provider.classEntry(), Ownership.BUNDLE, closure, contract, List.of())));
                 nextImplementations.put(id, new Implementation(
                         implementation,
                         implementationEntry,
@@ -215,7 +247,7 @@ public final class StepCatalog {
         if (!referencedArtifacts.equals(artifacts.keySet())) {
             throw failure("DEPENDENCY_LOCK_NON_CANONICAL", "Every locked artifact must belong to a bundle closure.");
         }
-        return new StepCatalog(nextDefinitions, nextImplementations);
+        return new StepCatalog(nextDefinitions, nextImplementations, nextProviders);
     }
 
     public Optional<StepDefinition> find(final String id) {
@@ -352,7 +384,21 @@ public final class StepCatalog {
                 "STEP_DEPENDENCY_MANIFEST_NON_CANONICAL",
                 "Bundle Step manifest"
         );
-        exact(root, Set.of("format", "steps"), "STEP_DEPENDENCY_MANIFEST_NON_CANONICAL", "manifest");
+        exact(root, root.values().containsKey("definitions") ? Set.of("format", "steps", "definitions")
+                : Set.of("format", "steps"), "STEP_DEPENDENCY_MANIFEST_NON_CANONICAL", "manifest");
+        final List<StepDefinition.ImplementationAddress> providers = new ArrayList<>();
+        if (root.values().containsKey("definitions")) {
+            final RailixValue.ObjectValue provider = object(root.values().get("definitions"),
+                    "STEP_DEPENDENCY_CONTRACT_INVALID", "manifest.definitions");
+            exact(provider, Set.of("class", "entry"), "STEP_DEPENDENCY_CONTRACT_INVALID", "manifest.definitions");
+            try {
+                providers.add(new StepDefinition.ImplementationAddress(
+                        text(provider, "class", "STEP_DEPENDENCY_CONTRACT_INVALID", "manifest.definitions"),
+                        text(provider, "entry", "STEP_DEPENDENCY_CONTRACT_INVALID", "manifest.definitions"), List.of()));
+            } catch (final IllegalArgumentException exception) {
+                throw failure("STEP_DEPENDENCY_CONTRACT_INVALID", exception.getMessage(), exception);
+            }
+        }
         if (integer(root, "format", "STEP_DEPENDENCY_MANIFEST_NON_CANONICAL", "manifest") != 1) {
             throw failure("STEP_DEPENDENCY_MANIFEST_NON_CANONICAL", "Bundle Step manifest format must be 1.");
         }
@@ -394,6 +440,9 @@ public final class StepCatalog {
             if (definition.kind() == StepDefinition.Kind.APP) {
                 throw failure("STEP_DEPENDENCY_CONTRACT_INVALID", "Installed bundles cannot replace railix.app.");
             }
+            if (providers.isEmpty() && !StepValidation.inputs(definition).isEmpty()) {
+                throw failure("STEP_DEPENDENCY_CONTRACT_INVALID", "Bundle validators require a definitions provider.");
+            }
             if (definition.id().compareTo(previous) <= 0) {
                 throw failure("STEP_DEPENDENCY_MANIFEST_NON_CANONICAL", "Manifest Steps must be sorted by unique id.");
             }
@@ -402,10 +451,16 @@ public final class StepCatalog {
                     definition,
                     implementation,
                     implementationEntry,
-                    expected
+                    expected,
+                    List.copyOf(providers)
             ));
         }
         try (JarFile jar = new JarFile(artifact.path().toFile(), true)) {
+            for (final StepDefinition.ImplementationAddress provider : providers) {
+                if (jar.getJarEntry(provider.classEntry()) == null) {
+                    throw failure("STEP_DEPENDENCY_OWNER_MISSING", "Bundle root does not own its definitions provider.");
+                }
+            }
             for (final ManifestStep step : result.values()) {
                 final JarEntry implementation = jar.getJarEntry(step.implementationEntry());
                 if (implementation == null || implementation.isDirectory()) {
@@ -679,6 +734,103 @@ public final class StepCatalog {
         public boolean platformOwned() {
             return ownership == Ownership.PLATFORM;
         }
+
+        /**
+         * Checks a definition provider's public static entrypoint from class bytes without initialization.
+         * @return actionable signature problem, or empty for a directly callable provider
+         * @throws DependencyException when the class bytes cannot be inspected
+         */
+        public Optional<String> definitionsProblem() throws DependencyException {
+            final var model = classModel();
+            final int modifiers = ClassFile.ACC_PUBLIC | ClassFile.ACC_STATIC;
+            if ((model.flags().flagsMask() & ClassFile.ACC_PUBLIC) == 0 || model.methods().stream().noneMatch(method ->
+                    method.methodName().equalsString("definitions")
+                            && method.methodType().equalsString("()Ljava/util/List;")
+                            && (method.flags().flagsMask() & modifiers) == modifiers)) {
+                return Optional.of(className + " must declare public static List<StepDefinition> definitions().");
+            }
+            return Optional.empty();
+        }
+
+        /**
+         * Checks the required static PROCESS entrypoint without loading or initializing its class.
+         *
+         * @return an actionable contract problem, or empty when PROCESS can be called directly
+         * @throws DependencyException when the declared class bytes cannot be read or parsed
+         */
+        public Optional<String> processProblem() throws DependencyException {
+            final String descriptor = "(Ldev/nanonative/railix/core/step/StepInput;"
+                    + "Ldev/nanonative/railix/core/step/StepInput;)"
+                    + "Ldev/nanonative/railix/core/step/StepResult;";
+            final var methods = classModel().methods().stream()
+                    .filter(method -> method.methodName().equalsString("process")
+                            && method.methodType().equalsString(descriptor)).toList();
+            final int modifiers = ClassFile.ACC_PUBLIC | ClassFile.ACC_STATIC;
+            if (methods.size() != 1 || (methods.getFirst().flags().flagsMask() & modifiers) != modifiers) {
+                return Optional.of(className
+                        + " must declare public static StepResult process(StepInput, StepInput)."
+                        + " Rebuild older Step bundles against the current Step API.");
+            }
+            return Optional.empty();
+        }
+
+        /**
+         * Resolves optional conventional lifecycle entrypoints from class bytes, without initialization.
+         *
+         * @return present PRE/POST method names; absent hooks require no runtime call
+         * @throws DependencyException for unreadable bytes or an invalid declared hook signature
+         */
+        public List<String> lifecycleMethods() throws DependencyException {
+            final String descriptor = "(Ldev/nanonative/railix/core/step/StepInput;"
+                    + "Ldev/nanonative/railix/core/step/StepInput;)"
+                    + "Ldev/nanonative/railix/core/step/StepResult;";
+            final var methods = classModel().methods();
+            final List<String> present = new ArrayList<>();
+            for (final String name : List.of("pre", "post")) {
+                final var named = methods.stream()
+                        .filter(method -> method.methodName().equalsString(name)).toList();
+                if (named.isEmpty()) {
+                    continue;
+                }
+                final int modifiers = ClassFile.ACC_PUBLIC | ClassFile.ACC_STATIC;
+                if (named.stream().noneMatch(method -> method.methodType().equalsString(descriptor)
+                        && (method.flags().flagsMask() & modifiers) == modifiers)) {
+                    throw failure("PROJECT_STEP_LIFECYCLE_INVALID", className
+                            + " must declare public static StepResult " + name + "(StepInput, StepInput).");
+                }
+                present.add(name);
+            }
+            return List.copyOf(present);
+        }
+
+        private java.lang.classfile.ClassModel classModel() throws DependencyException {
+            try {
+                return ClassFile.of().parse(classBytes());
+            } catch (final IOException | IllegalArgumentException exception) {
+                throw failure("PROJECT_STEP_IMPLEMENTATION_UNREADABLE",
+                        "Cannot inspect declared Step class " + className + ": " + exception.getMessage(), exception);
+            }
+        }
+
+        private byte[] classBytes() throws IOException {
+            if (platformOwned()) {
+                try (final InputStream input = StepCatalog.class.getClassLoader().getResourceAsStream(classEntry)) {
+                    if (input == null) {
+                        throw new IOException("Class resource is missing: " + classEntry);
+                    }
+                    return input.readAllBytes();
+                }
+            }
+            try (final JarFile jar = new JarFile(artifacts.getFirst().path().toFile())) {
+                final JarEntry entry = jar.getJarEntry(classEntry);
+                if (entry == null) {
+                    throw new IOException("Bundle class is missing: " + classEntry);
+                }
+                try (final InputStream input = jar.getInputStream(entry)) {
+                    return input.readAllBytes();
+                }
+            }
+        }
     }
 
     /** Physical owner used by the application packager. */
@@ -707,7 +859,8 @@ public final class StepCatalog {
             StepDefinition definition,
             String implementation,
             String implementationEntry,
-            String contractDigest
+            String contractDigest,
+            List<StepDefinition.ImplementationAddress> providers
     ) {
     }
 }

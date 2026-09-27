@@ -83,7 +83,12 @@ class PrimitiveStepsCreatorProjectE2eTest {
         assertThat(definition.receives()).extracting(StepDefinition.Port::name)
                 .containsExactly("request");
         assertThat(definition.inputs()).extracting(StepDefinition.Field::name)
-                .containsExactly("target");
+                .containsExactly("host", "port", "target");
+        assertThat((StepDefinition.JsonInput) definition.inputs().getFirst().input())
+                .extracting(StepDefinition.JsonInput::defaultValue).isEqualTo(java.util.Optional.of(RailixValue.string("127.0.0.1")));
+        final var port = (StepDefinition.JsonInput) definition.inputs().get(1).input();
+        assertThat(port.defaultValue()).contains(RailixValue.number(8080));
+        assertThat(port.range()).containsExactly(RailixValue.number(0), RailixValue.number(65535));
         assertThat(definition.results()).extracting(StepDefinition.Result::name)
                 .containsExactly("body", "headers", "status");
     }
@@ -98,7 +103,13 @@ class PrimitiveStepsCreatorProjectE2eTest {
         assertThat(definition.receives()).extracting(StepDefinition.Port::name)
                 .containsExactly("body");
         assertThat(definition.inputs()).extracting(StepDefinition.Field::name)
-                .containsExactly("url", "method", "headers");
+                .containsExactly("url", "method", "headers", "connection");
+        assertThat(definition.inputs().getLast().input()).isInstanceOfSatisfying(
+                StepDefinition.OptionsInput.class, connection -> {
+                    assertThat(connection.options()).extracting(StepDefinition.Option::name)
+                            .containsExactly("private", "shared");
+                    assertThat(connection.defaultOption()).contains("private");
+                });
         assertThat(definition.returns()).extracting(StepDefinition.Port::name)
                 .containsExactly("response");
         assertThat(definition.outcomes()).containsExactly("next");
@@ -468,6 +479,34 @@ class PrimitiveStepsCreatorProjectE2eTest {
                 )),
                 List.of("ok")
         );
+    }
+
+    @Test
+    void valueIsTypeDeclaresOneGenericTypeSelector() {
+        final StepDefinition definition = StandardLibrary.catalog().find("value.is-type").orElseThrow();
+        assertThat(definition.displayName()).isEqualTo("Is Type");
+        assertThat(definition.receives()).containsExactly(new StepDefinition.Port("value", ValueShape.ANY));
+        assertThat(definition.returns()).containsExactly(new StepDefinition.Port("value", ValueShape.BOOLEAN));
+        assertThat(definition.outcomes()).containsExactly("ok");
+        assertThat(definition.inputs()).singleElement().satisfies(field -> {
+            assertThat(field.name()).isEqualTo("type");
+            assertThat(field.input()).isInstanceOfSatisfying(StepDefinition.OptionsInput.class, options -> {
+                assertThat(options.options()).extracting(StepDefinition.Option::name)
+                        .containsExactlyInAnyOrder("null", "boolean", "number", "string", "array", "object");
+                assertThat(options.defaultOption()).contains("string");
+            });
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{\"type\":\"string\"}", "{\"type\":{\"option\":\"integer\",\"inputs\":{}}}",
+            "{\"type\":{\"option\":\"string\",\"inputs\":{\"extra\":true}}}", "{\"extra\":true}"})
+    void valueIsTypeRejectsInvalidConfigurationAtCompilation(final String config) {
+        assertThat(ProjectCompiler.compileApplication(
+                configuredProject(List.of("value.is-type"), "value.is-type", config, "42"),
+                StandardLibrary.catalog())).isInstanceOfSatisfying(CompileResult.Rejected.class,
+                rejected -> assertThat(rejected.diagnostics()).singleElement().satisfies(diagnostic ->
+                        assertThat(diagnostic.path()).startsWith("nodes[2].inputs.steps[0].inputs")));
     }
 
     @Test

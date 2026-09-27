@@ -1,6 +1,6 @@
 ---
-name: railix-css-ui
-description: "Build and review Railix factory visuals, CSS 3D geometry, HUD interactions, native Canvas rendering, belts, camera/zoom, and scene performance."
+name: css-canvas-scenes
+description: "Build and review CSS 3D geometry, Canvas scenes, game HUDs, animated transport, camera navigation and rendering performance."
 ---
 
 # Factory UI Engineering
@@ -10,9 +10,9 @@ Build a coherent game-like world with usable controls, not a generic dashboard.
 ## Build
 
 1. Confirm the visible behavior before a redesign; agree on a target image for a new
-   building family. Preserve the theme's materials, palette, typography and spacing.
-   Use native JavaScript, CSS and Canvas, not PixiJS, frameworks or new icon libraries.
-2. Share one scene, camera, geometry and picking model between CSS and Canvas.
+   visual family. Preserve the theme's materials, palette, typography and spacing.
+   Extend the chosen rendering stack rather than introducing a graphics dependency for decoration.
+2. When supporting multiple renderers, share one scene, camera, geometry and picking model.
    PNG/SVG are assets, not separate layout engines. Derive footprints, elevation,
    ports and hit regions from common dimensions; do not add per-example scale hacks.
 3. Prove one primitive with unequal width, depth and height. Name faces explicitly
@@ -27,7 +27,7 @@ Build a coherent game-like world with usable controls, not a generic dashboard.
 6. Derive belt plates, arrows, parcels and junction highlights from one continuous
    path and phase. Paint markings per run, not per tile. Hide endpoints under
    machines; fix geometry rather than hiding seams with arbitrary z-index values.
-7. Keep selection, group color, execution state and Example preview distinct.
+7. Keep selection, category color, operational state and preview/simulation distinct.
    Apply overrides only to the selected entity. Preview is not live traffic.
 
 ## Make The HUD Usable
@@ -47,13 +47,12 @@ caches, cancel stale requests, and release replaced images, listeners and surfac
 Avoid per-frame layout reads, full-scene rebuilding, huge blurred layers and duplicate
 animation clocks. Fewer elements alone do not establish lower rendering cost.
 
-Check both renderers with unequal shapes, continuous motion, junction highlights,
-pan/zoom, group entry/exit, Home, theme changes, keyboard input and narrow layouts.
+Check supported renderers with unequal shapes, continuous motion, junction highlights,
+pan/zoom, detail transitions, navigation reset, theme changes, keyboard input and narrow layouts.
 Zoom must visibly scale geometry between detail levels. Respect the explicit motion
 setting, but do not disable motion to conceal a performance problem.
 
-Use installed Chrome and the repository's Java Playwright tests; run
-`./mvnw clean verify` from the root with Java 25 before publishing UI code.
+Use the repository's browser fixtures and supported browsers; run its relevant publication gate.
 Compare identical scenes, viewport/DPR and motion state before/after performance work.
 Measure frame times, paint/compositing, CPU and memory; graphics-process CPU is not
 GPU utilization. A still screenshot cannot prove animation. Report untested cases

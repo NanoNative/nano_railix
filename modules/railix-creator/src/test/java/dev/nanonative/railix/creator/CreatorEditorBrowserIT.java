@@ -23,6 +23,50 @@ import static org.assertj.core.api.Assertions.within;
 final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     @ParameterizedTest
     @ValueSource(ints = {1280, 390})
+    void configurationValidationAppearsAtTheEditedFieldAndClearsAfterCorrection(final int width) {
+        page.setViewportSize(width, 800);
+        openProject("""
+                {"format":1,"id":"validation-ui","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"request","use":"railix.trigger.http","inputs":{"port":0},
+                   "examples":[{"name":"get","payload":{"method":"GET","path":"/"}}]}],
+                 "links":[{"from":"app.start","to":"request"},{"from":"request.next","to":"end"}]}
+                """);
+        selectWorldNode("request");
+        final String pid = applicationPid();
+        final var port = page.getByLabel("Port", new Page.GetByLabelOptions().setExact(true));
+        assertThat(port.getAttribute("step")).isEqualTo("1");
+        port.fill("8080.5");
+        port.press("Tab");
+        waitForText("#build-state", "Not built");
+        assertThat(port.getAttribute("aria-invalid")).isEqualTo("true");
+        assertThat(page.locator("#port-error").textContent()).contains("whole number");
+        assertThat(port.inputValue()).isEqualTo("8080.5");
+        assertThat(applicationPid()).isEqualTo(pid);
+        final Number contrast = (Number) page.locator(".issues article").evaluate("""
+                element => {
+                  const luminance = color => color.match(/[\\d.]+/g).slice(0, 3)
+                    .map(Number).map(value => value / 255)
+                    .map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4)
+                    .reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+                  const style = getComputedStyle(element);
+                  const values = [luminance(style.color), luminance(style.backgroundColor)].sort((a, b) => a - b);
+                  return (values[1] + .05) / (values[0] + .05);
+                }
+                """);
+        assertThat(contrast.doubleValue()).as("Validation diagnostic remains readable in the HUD").isGreaterThanOrEqualTo(4.5);
+        page.locator("#port-error").scrollIntoViewIfNeeded();
+        page.screenshot(new Page.ScreenshotOptions().setPath(Path.of("target", "configuration-validation-" + width + ".png")));
+        port.fill("0");
+        port.press("Tab");
+        waitForText("#build-state", "Built");
+        assertThat(port.getAttribute("aria-invalid")).isNull();
+        assertThat(page.locator("#port-error").count()).isZero();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1280, 390})
     void settingsOfferOnlyTheNamedHighQualityRenderers(final int width) throws Exception {
         page.setViewportSize(width, 800);
         Files.deleteIfExists(directory.resolve("railix-home/creator.settings.json"));
@@ -1533,8 +1577,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
 
     @Test
     void minimapDistinguishesUnreachedFromDisabledMetrics() {
-        openProject(choiceProject().replace("\"id\":\"matched\",", "\"id\":\"matched\",\"metrics\":false,")
-                .replace("\"value\":\"deny\"", "\"value\":\"allow\""));
+        openProject(unreachedBranchProject());
         page.locator("[data-world-id=command]").click();
         page.waitForFunction("() => document.querySelector('.machine[data-station-id=otherwise]')?.dataset.never === 'true'");
         assertThat(page.locator(".map-cells i[data-state=never]").count()).isEqualTo(1);
@@ -1895,8 +1938,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
 
     @Test
     void neverExecutedStepsLookUnpoweredButMetricsDisabledStepsDoNot() {
-        openProject(choiceProject().replace("\"id\":\"matched\",", "\"id\":\"matched\",\"metrics\":false,")
-                .replace("\"value\":\"deny\"", "\"value\":\"allow\""));
+        openProject(unreachedBranchProject());
         page.waitForFunction("() => document.querySelector('.machine[data-station-id=otherwise]')?.dataset.never === 'true'");
         assertThat(page.locator(".machine[data-station-id=matched]").getAttribute("data-never")).isEqualTo("false");
         assertThat(page.locator(".machine[data-station-id=otherwise] .machine-core")
@@ -3046,8 +3088,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
 
     @Test
     void diagramDistinguishesDisabledMetricsFromIdleStepsWithoutInventingTimings() {
-        openProject(choiceProject().replace("\"id\":\"matched\",", "\"id\":\"matched\",\"metrics\":false,")
-                .replace("\"value\":\"deny\"", "\"value\":\"allow\""));
+        openProject(unreachedBranchProject());
         page.waitForFunction("() => document.querySelector('[data-node-id=matched]')?.dataset.activity === 'disabled'");
         assertThat(page.locator("#status-observations").isHidden()).isTrue();
 
@@ -3058,6 +3099,13 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         assertThat(page.locator("[data-node-id='otherwise']").getAttribute("title"))
                 .contains("No duration inferred.");
         assertThat(pageErrors).isEmpty();
+    }
+
+    private static String unreachedBranchProject() {
+        // Both the real CLI startup and Examples must leave the other branch untouched.
+        return choiceProject().replace("\"id\":\"matched\",", "\"id\":\"matched\",\"metrics\":false,")
+                .replace("\"option\":\"field\",\"inputs\":{\"field\":[\"context\",\"payload\",\"value\"]}",
+                        "\"option\":\"literal\",\"inputs\":{\"value\":\"allow\"}");
     }
 
     @Test

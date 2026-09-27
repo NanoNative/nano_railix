@@ -1,13 +1,14 @@
 package dev.nanonative.railix.stdlib;
 
 import dev.nanonative.railix.core.step.StepDefinition;
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueRefinement;
 import dev.nanonative.railix.core.value.ValueShape;
 
+import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 /** Small, stateless unary Steps usable as mapped graph nodes or in an ordered nested Step input. */
 public final class PrimitiveSteps {
@@ -84,6 +85,17 @@ public final class PrimitiveSteps {
                         PrimitiveStepHandlers.BooleanToNumber.class),
                 valueWrapList(),
                 valueToJson(),
+                StepDefinition.named("value.is-type", "1")
+                        .displayName("Is Type")
+                        .searchTerms("type", "shape")
+                        .primaryOutcome("ok")
+                        .receive("value", ValueShape.ANY)
+                        .returns("value", ValueShape.BOOLEAN)
+                        .input("type", StepDefinition.Input.options(Arrays.stream(ValueShape.values())
+                                .filter(shape -> shape != ValueShape.ANY)
+                                .map(shape -> StepDefinition.Input.option(shape.name().toLowerCase(Locale.ROOT)))
+                                .toArray(StepDefinition.Option[]::new)).defaultOption("string"))
+                        .implementation(PrimitiveStepHandlers.ValueIsType.class),
                 valuePredicate("value.equals", "Equals",
                         PrimitiveStepHandlers.ValueEquals.class, "eq"),
                 valuePredicate(
@@ -100,7 +112,7 @@ public final class PrimitiveSteps {
             final String id,
             final ValueShape input,
             final ValueShape output,
-            final Class<? extends StepHandler> implementation
+            final Class<?> implementation
     ) {
         return primitive(
                 id,
@@ -118,13 +130,13 @@ public final class PrimitiveSteps {
             final ValueRefinement inputRefinement,
             final ValueShape output,
             final ValueRefinement outputRefinement,
-            final Class<? extends StepHandler> implementation
+            final Class<?> implementation
     ) {
         return StepDefinition.named(id, "1")
                 .primaryOutcome("ok")
                 .receive("value", input, inputRefinement)
                 .returns("value", output, outputRefinement)
-                .run(implementation);
+                .implementation(implementation);
     }
 
     private static StepDefinition listReverse() {
@@ -178,7 +190,7 @@ public final class PrimitiveSteps {
     private static StepDefinition comparison(
             final String id,
             final String displayName,
-            final Class<? extends StepHandler> implementation,
+            final Class<?> implementation,
             final String... searchTerms
     ) {
         return StepDefinition.named(id, "1")
@@ -189,13 +201,13 @@ public final class PrimitiveSteps {
                 .returns("value", ValueShape.BOOLEAN)
                 .input("than", StepDefinition.Input.json(ValueShape.NUMBER)
                         .defaultValue(RailixValue.number(0)))
-                .run(implementation);
+                .implementation(implementation);
     }
 
     private static StepDefinition textPredicate(
             final String id,
             final String input,
-            final Class<? extends StepHandler> implementation
+            final Class<?> implementation
     ) {
         return StepDefinition.named(id, "1")
                 .primaryOutcome("ok")
@@ -203,13 +215,13 @@ public final class PrimitiveSteps {
                 .returns("value", ValueShape.BOOLEAN)
                 .input(input, StepDefinition.Input.json(ValueShape.STRING)
                         .defaultValue(RailixValue.string("")))
-                .run(implementation);
+                .implementation(implementation);
     }
 
     private static StepDefinition valuePredicate(
             final String id,
             final String displayName,
-            final Class<? extends StepHandler> implementation,
+            final Class<?> implementation,
             final String... searchTerms
     ) {
         return StepDefinition.named(id, "1")
@@ -220,7 +232,7 @@ public final class PrimitiveSteps {
                 .returns("value", ValueShape.BOOLEAN)
                 .input("expected", StepDefinition.Input.json(ValueShape.ANY)
                         .defaultValue(RailixValue.nullValue()))
-                .run(implementation);
+                .implementation(implementation);
     }
 
     private static StepDefinition textToNumber() {
@@ -229,7 +241,7 @@ public final class PrimitiveSteps {
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.NUMBER)
                 .outcome("invalid")
-                .run(PrimitiveStepHandlers.TextToNumber.class);
+                .implementation(PrimitiveStepHandlers.TextToNumber.class);
     }
 
     private static StepDefinition utcMillis() {
@@ -238,7 +250,7 @@ public final class PrimitiveSteps {
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.NUMBER)
                 .returns("value", ValueShape.BOOLEAN)
-                .run(PrimitiveStepHandlers.UtcMillis.class);
+                .implementation(PrimitiveStepHandlers.UtcMillis.class);
     }
 
     private static StepDefinition listSum() {
@@ -261,13 +273,13 @@ public final class PrimitiveSteps {
                         .between(RailixValue.number(0), RailixValue.number(100)))
                 .outcome("empty")
                 .outcome("invalid")
-                .run(PrimitiveStepHandlers.ListPercentile.class);
+                .implementation(PrimitiveStepHandlers.ListPercentile.class);
     }
 
     private static StepDefinition collection(
             final String id,
             final boolean emptyAware,
-            final Class<? extends StepHandler> implementation
+            final Class<?> implementation
     ) {
         final StepDefinition.Builder builder = StepDefinition.named(id, "1")
                 .primaryOutcome("ok")
@@ -276,7 +288,7 @@ public final class PrimitiveSteps {
         if (emptyAware) {
             builder.outcome("empty");
         }
-        return builder.outcome("invalid").run(implementation);
+        return builder.outcome("invalid").implementation(implementation);
     }
 
 }

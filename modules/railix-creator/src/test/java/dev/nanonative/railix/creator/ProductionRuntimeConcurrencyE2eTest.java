@@ -103,16 +103,30 @@ final class ProductionRuntimeConcurrencyE2eTest {
         assertThat(metric(result.output(), "succeeded")).isEqualTo(OVERLAP_CALLS);
     }
 
+    @Test
+    void shutdownDrainsAdmittedWorkBeforePostAndRejectsNewAdmissions() throws Exception {
+        final ProcessResult result = probe.run("drain");
+        assertThat(result.exitCode()).as(result.output()).isZero();
+        assertThat(result.output()).isEqualTo("DRAIN|closed=1");
+    }
+
+    @Test
+    void expiredDrainCancelsButRetainsResourcesUntilIgnoredCancellationFinishes() throws Exception {
+        final ProcessResult result = probe.run("deadline");
+        assertThat(result.exitCode()).as(result.output()).isZero();
+        assertThat(result.output()).isEqualTo("DEADLINE|closed=1");
+    }
+
     private static List<StepDefinition> definitions() {
         return List.of(
                 StepDefinition.named("production.concurrent.barrier", "1")
-                        .run(ProductionRuntimeConcurrencySteps.Barrier.class),
+                        .implementation(ProductionRuntimeConcurrencySteps.Barrier.class),
                 StepDefinition.named("production.concurrent.create-file", "1")
                         .receive("file", ValueShape.STRING)
                         .receive("id", ValueShape.STRING)
                         .input("target", StepDefinition.Input.path(WRITE)
                                 .defaultPath("context", "result"))
-                        .run(ProductionRuntimeConcurrencySteps.CreateFile.class)
+                        .implementation(ProductionRuntimeConcurrencySteps.CreateFile.class)
         );
     }
 
@@ -205,6 +219,10 @@ final class ProductionRuntimeConcurrencyE2eTest {
                         final Path directory = Path.of(arguments[1]);
                         Files.createDirectories(directory);
                         final RuntimeApplication application = RailixApplication.runtime();
+                        if ("drain".equals(scenario) || "deadline".equals(scenario)) {
+                            shutdown(application, directory, "deadline".equals(scenario));
+                            return;
+                        }
                         if ("overlap".equals(scenario)) {
                             overlap(application, directory);
                             return;
@@ -234,6 +252,66 @@ final class ProductionRuntimeConcurrencyE2eTest {
                                 observed.add(future.get());
                             }
                             return List.copyOf(observed);
+                        }
+                    }
+
+                    private static void shutdown(final RuntimeApplication application, final Path directory,
+                            final boolean deadline) throws Exception {
+                        ProductionRuntimeConcurrencySteps.Barrier.arm(1);
+                        if (deadline) {
+                            ProductionRuntimeConcurrencySteps.Barrier.ignoreCancellation();
+                        }
+                        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                            final var request = executor.submit(() -> invoke(application, directory, 0));
+                            try {
+                            if (!ProductionRuntimeConcurrencySteps.Barrier.awaitEntered(10_000)) {
+                                throw new AssertionError("Request did not enter the Step.");
+                            }
+                            final Future<RunResult> shutdown = deadline
+                                    ? java.util.concurrent.CompletableFuture.completedFuture(application.stop(java.time.Duration.ZERO))
+                                    : executor.submit(() -> application.stop(java.time.Duration.ofSeconds(10)));
+                            final long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                            while (true) {
+                                final var check = application.runSource("not-a-source", Map.of()).result();
+                                if (check instanceof RunResult.Rejected rejected && rejected.diagnostics().stream()
+                                        .anyMatch(diagnostic -> diagnostic.code().equals("APPLICATION_NOT_READY"))) {
+                                    break;
+                                }
+                                if (System.nanoTime() > until) {
+                                    throw new AssertionError("Shutdown did not close admission.");
+                                }
+                                Thread.yield();
+                            }
+                            if (ProductionRuntimeConcurrencySteps.Barrier.closed() != 0) {
+                                throw new AssertionError("POST ran while an admitted request was still active.");
+                            }
+                            if (deadline) {
+                                if (!(shutdown.get(10, TimeUnit.SECONDS) instanceof RunResult.Failed failed)
+                                        || !failed.failure().code().equals("APPLICATION_DRAIN_TIMEOUT")) {
+                                    throw new AssertionError("Expired drain did not report incomplete shutdown.");
+                                }
+                                final var repeated = executor.submit(() -> application.stop(java.time.Duration.ofHours(1)));
+                                if (!(repeated.get(10, TimeUnit.SECONDS) instanceof RunResult.Failed repeatedFailure)
+                                        || !repeatedFailure.failure().code().equals("APPLICATION_DRAIN_TIMEOUT")) {
+                                    throw new AssertionError("Repeated stop must not reset the application drain deadline.");
+                                }
+                            } else if (shutdown.isDone()) {
+                                throw new AssertionError("Shutdown completed without draining the active request.");
+                            }
+                            ProductionRuntimeConcurrencySteps.Barrier.release();
+                            request.get(10, TimeUnit.SECONDS);
+                            if (!deadline && !(shutdown.get(10, TimeUnit.SECONDS) instanceof RunResult.Succeeded)) {
+                                throw new AssertionError("Drained shutdown did not succeed.");
+                            }
+                            if (!(application.stop(java.time.Duration.ofSeconds(10)) instanceof RunResult.Succeeded)
+                                    || !(application.stop() instanceof RunResult.Succeeded)
+                                    || ProductionRuntimeConcurrencySteps.Barrier.closed() != 1) {
+                                throw new AssertionError("POST must run exactly once after the request finishes.");
+                            }
+                            System.out.print((deadline ? "DEADLINE" : "DRAIN") + "|closed=1");
+                            } finally {
+                                ProductionRuntimeConcurrencySteps.Barrier.release();
+                            }
                         }
                     }
 

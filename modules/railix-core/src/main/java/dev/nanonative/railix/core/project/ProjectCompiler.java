@@ -2,6 +2,7 @@ package dev.nanonative.railix.core.project;
 
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepDefinition;
+import dev.nanonative.railix.core.step.StepValidation;
 import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -21,6 +22,7 @@ import java.util.Set;
 
 /** Sole parser and compiler for one functional Railix project. */
 public final class ProjectCompiler {
+    private final List<StepValidation.Request> validations = new ArrayList<>();
     private static final int MAX_ARRAY_GAP = 1_024;
     private static final Set<String> PROJECT_FIELDS = Set.of("format", "id", "nodes", "links");
     private static final Set<String> NODE_FIELDS = Set.of(
@@ -41,6 +43,10 @@ public final class ProjectCompiler {
 
     /** Parses, validates, and lowers one complete project to a directly compilable Java application. */
     public static CompileResult compileApplication(final String source, final StepCatalog catalog) {
+        return new ProjectCompiler().compile(source, catalog);
+    }
+
+    private CompileResult compile(final String source, final StepCatalog catalog) {
         if (source == null || source.isBlank()) {
             return rejected("PROJECT_SOURCE_REQUIRED", "Project source must be supplied.", "");
         }
@@ -145,6 +151,8 @@ public final class ProjectCompiler {
             examples.addAll(trigger.examples());
         }
 
+        final List<Diagnostic> validationProblems = StepValidation.validate(catalog, validations);
+        if (!validationProblems.isEmpty()) return new CompileResult.Rejected(validationProblems);
         final ApplicationGenerator.Result application = ApplicationGenerator.generate(
                 new ApplicationPlan(id.value(), plans, triggers, examples),
                 catalog
@@ -176,7 +184,7 @@ public final class ProjectCompiler {
         return Optional.empty();
     }
 
-    private static NodeRead nodes(
+    private NodeRead nodes(
             final RailixValue.ArrayValue values,
             final StepCatalog catalog
     ) {
@@ -460,7 +468,7 @@ public final class ProjectCompiler {
         return new PortRead(paths, List.of());
     }
 
-    private static InputsRead inputs(
+    private InputsRead inputs(
             final RailixValue.ObjectValue authored,
             final List<StepDefinition.Field> declarations,
             final String path,
@@ -490,7 +498,7 @@ public final class ProjectCompiler {
         return new InputsRead(bindings, List.of());
     }
 
-    private static InputRead input(
+    private InputRead input(
             final RailixValue authored,
             final StepDefinition.Input declaration,
             final String path,
@@ -511,7 +519,7 @@ public final class ProjectCompiler {
         };
     }
 
-    private static InputRead json(
+    private InputRead json(
             RailixValue value,
             final StepDefinition.JsonInput declaration,
             final String path
@@ -540,6 +548,7 @@ public final class ProjectCompiler {
                     path
             );
         }
+        if (!declaration.validations().isEmpty()) validations.add(new StepValidation.Request(declaration, value, path));
         return InputRead.value(new ApplicationPlan.JsonBinding(List.of(value)));
     }
 
@@ -564,7 +573,7 @@ public final class ProjectCompiler {
         return InputRead.value(new ApplicationPlan.PathBinding(parsed.value(), declaration.access()));
     }
 
-    private static InputRead options(
+    private InputRead options(
             RailixValue value,
             final StepDefinition.OptionsInput declaration,
             final String path,
@@ -592,7 +601,7 @@ public final class ProjectCompiler {
         return choice(object, declaration.options(), path, catalog, OPTION_FIELDS, "OPTIONS", "OPTION");
     }
 
-    private static InputRead choice(
+    private InputRead choice(
             final RailixValue.ObjectValue object,
             final List<StepDefinition.Option> declaredOptions,
             final String path,
@@ -653,7 +662,7 @@ public final class ProjectCompiler {
         ));
     }
 
-    private static InputRead steps(
+    private InputRead steps(
             final RailixValue value,
             final StepDefinition.StepsInput declaration,
             final String path,
@@ -672,7 +681,7 @@ public final class ProjectCompiler {
         );
     }
 
-    private static InputRead candidates(
+    private InputRead candidates(
             RailixValue value,
             final StepDefinition.CandidatesInput declaration,
             final String path,
@@ -717,7 +726,7 @@ public final class ProjectCompiler {
         return InputRead.value(new ApplicationPlan.CandidatesBinding(plans, path));
     }
 
-    private static InputRead matcherGroups(
+    private InputRead matcherGroups(
             final RailixValue value,
             final StepDefinition.MatcherGroupsInput declaration,
             final String path,
@@ -772,7 +781,7 @@ public final class ProjectCompiler {
         return InputRead.value(new ApplicationPlan.MatcherGroupsBinding(plans));
     }
 
-    private static CandidateRead candidate(
+    private CandidateRead candidate(
             final RailixValue candidate,
             final List<StepDefinition.Option> options,
             final String path,
@@ -854,7 +863,7 @@ public final class ProjectCompiler {
         );
     }
 
-    private static ConditionRead condition(
+    private ConditionRead condition(
             final RailixValue value,
             final String path,
             final StepCatalog catalog,
@@ -874,7 +883,7 @@ public final class ProjectCompiler {
         );
     }
 
-    private static ConditionRead structuredCondition(
+    private ConditionRead structuredCondition(
             final RailixValue.ObjectValue value,
             final String path,
             final StepCatalog catalog,
@@ -1052,7 +1061,7 @@ public final class ProjectCompiler {
         return ValueShape.ANY;
     }
 
-    private static NestedRead nestedSteps(
+    private NestedRead nestedSteps(
             final RailixValue value,
             final String path,
             final StepCatalog catalog

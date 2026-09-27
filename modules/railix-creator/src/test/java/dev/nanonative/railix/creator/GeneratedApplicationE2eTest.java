@@ -2,8 +2,6 @@ package dev.nanonative.railix.creator;
 
 import dev.nanonative.railix.core.project.CompileResult;
 import dev.nanonative.railix.core.project.ProjectCompiler;
-import dev.nanonative.railix.core.project.RuntimeApplication;
-import dev.nanonative.railix.core.project.WorkflowRuntime;
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.value.RailixJson;
@@ -12,7 +10,6 @@ import dev.nanonative.railix.core.value.ValueShape;
 import dev.nanonative.railix.development.ArtifactLease;
 import dev.nanonative.railix.stdlib.StandardLibrary;
 import dev.nanonative.railix.stdlib.StandardStepHandlers;
-import dev.nanonative.railix.stdlib.HttpStepHandlers;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
@@ -145,10 +142,10 @@ final class GeneratedApplicationE2eTest {
             );
 
             assertThat(source).contains(
-                    "new dev.nanonative.railix.stdlib.StandardStepHandlers.Cli()",
-                    "new dev.nanonative.railix.stdlib.PrimitiveStepHandlers.Lowercase()",
-                    "DevelopmentRuntime.Trace.invoke(input, HANDLER_0)",
-                    "DevelopmentRuntime.Trace.invoke(input, HANDLER_1)",
+                    "dev.nanonative.railix.stdlib.StandardStepHandlers.Cli::process",
+                    "dev.nanonative.railix.stdlib.PrimitiveStepHandlers.Lowercase::process",
+                    "DevelopmentRuntime.Trace.invoke(configuration, input, CALL_0)",
+                    "DevelopmentRuntime.Trace.invoke(configuration, input, CALL_1)",
                     "switch (current)"
             ).doesNotContain(
                     "CompiledProject",
@@ -320,8 +317,9 @@ final class GeneratedApplicationE2eTest {
                 "javap",
                 "-classpath", artifact.jar().toString(),
                 "-p", "dev.nanonative.railix.core.project.WorkflowRuntime$StepCall"
-        )).contains("dev.nanonative.railix.core.step.StepResult run("
-                        + "dev.nanonative.railix.core.step.StepInput) throws java.lang.InterruptedException;")
+        )).contains("dev.nanonative.railix.core.step.StepResult process("
+                        + "dev.nanonative.railix.core.step.StepInput, dev.nanonative.railix.core.step.StepInput)"
+                        + " throws java.lang.InterruptedException;")
                 .doesNotContain("java.lang.String");
     }
 
@@ -442,7 +440,7 @@ final class GeneratedApplicationE2eTest {
     }
 
     @Test
-    void productionApplicationPublicApiContainsOnlyProductionIngress() throws Exception {
+    void productionApplicationPublicApiContainsOnlyProductionIngressAndLifecycle() throws Exception {
         final Path jar = productionArtifact().jar();
         final String api = tool(
                 "javap",
@@ -452,6 +450,9 @@ final class GeneratedApplicationE2eTest {
 
         assertThat(api.lines().map(String::strip).filter(line -> line.contains("(")).toList())
                 .containsExactly(
+                        "public dev.nanonative.railix.core.runtime.RunResult start();",
+                        "public dev.nanonative.railix.core.runtime.RunResult launch(java.util.List<java.lang.String>);",
+                        "public dev.nanonative.railix.core.runtime.RunResult stop(java.time.Duration);",
                         "public static void main(java.lang.String[]);",
                         "public java.lang.String projectId();",
                         "public dev.nanonative.railix.core.project.WorkflowRuntime$SourceResult "
@@ -497,7 +498,7 @@ final class GeneratedApplicationE2eTest {
     }
 
     @Test
-    void serveCommandRejectsAProjectWithoutHttpIngress() throws Exception {
+    void removedServeCommandDoesNotSelectABuiltinSource() throws Exception {
         final Path project = project(directory.resolve("serve-without-http"));
         final Path output = directory.resolve("serve-output.txt");
         final Process process = new ProcessBuilder(
@@ -507,7 +508,7 @@ final class GeneratedApplicationE2eTest {
         try {
             assertThat(process.waitFor(20, TimeUnit.SECONDS)).isTrue();
             assertThat(process.exitValue()).isEqualTo(2);
-            assertThat(Files.readString(output)).contains("Project has no Trigger for source: application.http.");
+            assertThat(Files.readString(output)).contains("Unknown Railix command: serve.");
         } finally {
             process.destroyForcibly();
             assertThat(process.waitFor(5, TimeUnit.SECONDS)).isTrue();
@@ -577,31 +578,26 @@ final class GeneratedApplicationE2eTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"-1", "65536", "not-a-port"})
-    void productionHttpLauncherRejectsInvalidPorts(final String port) throws Exception {
-        final String source = httpEchoProject();
-        final Path jar = productionArtifact(project(directory.resolve("invalid-port"), source), source).jar();
-
-        final ProcessResult result = runJar(jar, "--railix-http", "127.0.0.1", port);
-
-        assertThat(result.exitCode()).isEqualTo(2);
-        assertThat(result.output()).contains("HTTP port").doesNotContain("Exception", "\tat ");
+    @ValueSource(strings = {"-1", "65536", "8080.5", "\"not-a-port\""})
+    void httpConfigurationRejectsInvalidPortsBeforeGeneration(final String port) {
+        final String source = httpEchoProject().replace("\"port\":0", "\"port\":" + port);
+        assertThat(ProjectCompiler.compileApplication(source, StandardLibrary.catalog()))
+                .isInstanceOfSatisfying(CompileResult.Rejected.class, rejected ->
+                        assertThat(rejected.diagnostics()).anySatisfy(diagnostic ->
+                                assertThat(diagnostic.path()).contains("inputs.port")));
     }
 
     @Test
     void interruptedHttpServerReleasesItsListener() throws Exception {
-        final Process process = new ProcessBuilder(
-                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "-cp", System.getProperty("java.class.path"), InterruptedHttpServer.class.getName()
-        ).redirectErrorStream(true).start();
-        try {
-            assertThat(process.waitFor(10, TimeUnit.SECONDS)).as("interrupted HTTP server exits").isTrue();
-            final String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            assertThat(process.exitValue()).as(output).isZero();
-            assertThat(output).contains("listener released");
-        } finally {
-            process.destroyForcibly();
-            assertThat(process.waitFor(5, TimeUnit.SECONDS)).isTrue();
+        final String source = httpEchoProject();
+        final Path jar = productionArtifact(project(directory.resolve("http-stop"), source), source).jar();
+        try (HttpProcess server = startHttpJar(jar)) {
+            server.process().destroy();
+            assertThat(server.process().waitFor(10, TimeUnit.SECONDS)).as("HTTP server stops gracefully").isTrue();
+            try (var socket = new java.net.ServerSocket(server.uri().getPort(), 1,
+                    java.net.InetAddress.getLoopbackAddress())) {
+                assertThat(socket.isBound()).isTrue();
+            }
         }
     }
 
@@ -641,6 +637,128 @@ final class GeneratedApplicationE2eTest {
             }
         } finally {
             server.stop(0);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"private", "shared"})
+    void httpClientReusesConnectionsWithoutImplicitCookieSessions(final String ownership) throws Exception {
+        final var ports = java.util.concurrent.ConcurrentHashMap.<Integer>newKeySet();
+        final var cookies = new java.util.concurrent.atomic.AtomicInteger();
+        final var requests = new java.util.concurrent.atomic.AtomicInteger();
+        final var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            try (exchange) {
+                exchange.getRequestBody().readAllBytes();
+                ports.add(exchange.getRemoteAddress().getPort());
+                if (exchange.getRequestHeaders().containsKey("Cookie")) cookies.incrementAndGet();
+                requests.incrementAndGet();
+                exchange.getResponseHeaders().add("Set-Cookie", "session=must-not-share; Path=/");
+                exchange.sendResponseHeaders(204, -1);
+            }
+        });
+        server.start();
+        try {
+            final String source = """
+                    {"format":1,"id":"http-reuse","nodes":[
+                      {"id":"app","use":"railix.app","inputs":{}},
+                      {"id":"cli","use":"railix.trigger.cli","inputs":{},"examples":[{"name":"default","payload":[]}]},
+                      {"id":"first","use":"railix.http.client","inputs":{"url":"http://127.0.0.1:%1$d/one",
+                       "connection":{"option":"%2$s","inputs":{}}},
+                       "receives":{"body":["context","result"]},"returns":{"response":["context","result"]}},
+                      {"id":"second","use":"railix.http.client","inputs":{"url":"http://127.0.0.1:%1$d/two",
+                       "connection":{"option":"%2$s","inputs":{}}},
+                       "receives":{"body":["context","result"]},"returns":{"response":["context","result"]}}
+                    ],"links":[{"from":"app.start","to":"cli"},{"from":"cli.next","to":"first"},
+                               {"from":"first.next","to":"second"},{"from":"second.next","to":"end"}]}
+                    """.formatted(server.getAddress().getPort(), ownership);
+            final Path jar = productionArtifact(project(directory.resolve("reuse-" + ownership), source), source).jar();
+            final Path probe = GeneratedApplicationFixture.compileProbe(directory.resolve("http-probe"), jar, "HttpReuseProbe", """
+                    package dev.nanonative.railix.core.project;
+                    import dev.nanonative.railix.core.runtime.RunResult;
+                    import dev.nanonative.railix.core.value.RailixValue;
+                    import java.util.*;
+                    public class HttpReuseProbe {
+                        public static void main(String[] args) {
+                            var app = RailixApplication.runtime();
+                            try {
+                                for (int run = 0; run < 5; run++) {
+                                    var result = app.runSource("application.arguments",
+                                            Map.of("arguments", RailixValue.array(List.of()))).result();
+                                    if (!(result instanceof RunResult.Succeeded success)) throw new AssertionError(result);
+                                    var response = (RailixValue.ObjectValue) success.context().values().get("result");
+                                    if (!RailixValue.number(204).equals(response.values().get("status"))) throw new AssertionError(response);
+                                }
+                            } finally {
+                                if (!(app.stop() instanceof RunResult.Succeeded)) throw new AssertionError("Cleanup failed.");
+                            }
+                        }
+                    }
+                    """);
+            final Path output = directory.resolve("http-reuse.log");
+            final Process child = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                    "-cp", jar + java.io.File.pathSeparator + probe, "dev.nanonative.railix.core.project.HttpReuseProbe")
+                    .redirectErrorStream(true).redirectOutput(output.toFile()).start();
+            try {
+                assertThat(child.waitFor(20, TimeUnit.SECONDS)).isTrue();
+                assertThat(child.exitValue()).as(Files.readString(output)).isZero();
+            } finally {
+                child.destroyForcibly();
+                assertThat(child.waitFor(5, TimeUnit.SECONDS)).isTrue();
+            }
+            assertThat(requests).hasValue(10);
+            assertThat(ports).hasSize(ownership.equals("shared") ? 1 : 2);
+            assertThat(cookies).hasValue(0);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void loadableNormalizationAppServesRealRequestsAndRunsItsExamples() throws Exception {
+        final String source = Files.readString(Path.of("../../examples/text-normalization-http-app/railix.project.json"))
+                .replace("\"port\": 8080", "\"port\": 0");
+        final Path project = project(directory.resolve("normalization"), source);
+        final ApplicationBuilder.Artifact artifact = productionArtifact(project, source);
+        record Case(String method, String path, String body, int status, String response) { }
+        final String invalid = "{\"error\":\"invalid_text\",\"message\":\"Provide a non-empty string in body.text.\"}";
+        final String missing = "{\"error\":\"not_found\",\"message\":\"Use POST /normalize.\"}";
+        final List<Case> cases = List.of(
+                new Case("POST", "/normalize", "{\"text\":\"  Hello   RAILIX  \"}", 200, "{\"text\":\"hello railix\"}"),
+                new Case("POST", "/normalize", "{\"text\":\"hello railix\"}", 200, "{\"text\":\"hello railix\"}"),
+                new Case("POST", "/normalize", "{\"text\":\"   \"}", 400, invalid),
+                new Case("POST", "/normalize", "{\"text\":42}", 400, invalid),
+                new Case("POST", "/normalize", "{}", 400, invalid),
+                new Case("POST", "/normalize", "{\"text\":null}", 400, invalid),
+                new Case("POST", "/normalize", "{\"text\":false}", 400, invalid),
+                new Case("POST", "/normalize", "{\"text\":[]}", 400, invalid),
+                new Case("POST", "/normalize", "{\"text\":{}}", 400, invalid),
+                new Case("POST", "/missing", "{\"text\":\"hello\"}", 404, missing),
+                new Case("GET", "/normalize", "null", 404, missing));
+        try (HttpProcess server = startHttpJar(artifact.jar()); HttpClient client = HttpClient.newHttpClient()) {
+            for (final Case example : cases) {
+                final var response = client.send(HttpRequest.newBuilder(server.uri().resolve(example.path()))
+                        .timeout(Duration.ofSeconds(10)).header("Content-Type", "application/json")
+                        .method(example.method(), HttpRequest.BodyPublishers.ofString(example.body())).build(),
+                        HttpResponse.BodyHandlers.ofString());
+                assertThat(response.statusCode()).as("%s %s: %s", example.method(), example.path(), response.body())
+                        .isEqualTo(example.status());
+                assertThat(RailixJson.parse(response.body())).isEqualTo(RailixJson.parse(example.response()));
+            }
+        }
+        try (CreatorServer creator = start(project)) {
+            awaitExamples(creator.baseUri(), cases.size());
+            for (int index = 0; index < cases.size(); index++) {
+                final var response = request(creator.baseUri(), "GET", "/api/examples/request:" + index + "/view", "");
+                assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+                final var view = CreatorServerE2eSupport.object(response.body());
+                final var result = (RailixValue.ObjectValue) view.values().get("result");
+                assertThat(string(result, "status")).isEqualTo("succeeded");
+                final var context = (RailixValue.ObjectValue) result.values().get("context");
+                assertThat(number(context, "status")).isEqualTo(cases.get(index).status());
+                assertThat(context.values().get("body"))
+                        .isEqualTo(((RailixJson.Parsed) RailixJson.parse(cases.get(index).response())).value());
+            }
         }
     }
 
@@ -1590,7 +1708,7 @@ final class GeneratedApplicationE2eTest {
             definitions[index + 1] = StepDefinition.named(definition, "1")
                     .kind(StepDefinition.Kind.TRIGGER)
                     .source("application.source-" + suffix)
-                    .run(StandardStepHandlers.Cli.class);
+                    .implementation(StandardStepHandlers.Cli.class);
             nodes.append(",{")
                     .append("\"id\":\"").append(node)
                     .append("\",\"use\":\"").append(definition)
@@ -1714,7 +1832,7 @@ final class GeneratedApplicationE2eTest {
                         .defaultValue(RailixValue.number(0)));
         for (int index = 0; index < extraOutcomes; index++) definition.outcome("branch-" + index);
         // Invalid input exercises the last outcome across extracted selector boundaries.
-        return definition.outcome("invalid").run(ProductionRuntimeSequenceStep.class);
+        return definition.outcome("invalid").implementation(ProductionRuntimeSequenceStep.class);
     }
 
     private static String sparseArrayWrite(final int index) {
@@ -1759,7 +1877,7 @@ final class GeneratedApplicationE2eTest {
         return """
                 {"format":1,"id":"http-echo","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
-                  {"id":"request","use":"railix.trigger.http","inputs":{},"examples":[{
+                  {"id":"request","use":"railix.trigger.http","inputs":{"port":0},"examples":[{
                     "name":"post-json","payload":{
                       "method":"POST","path":"/echo","query":"","headers":{},"body":{"message":"Hello HTTP"}
                     }
@@ -1832,8 +1950,8 @@ final class GeneratedApplicationE2eTest {
                 StepDefinition.named("partition.trigger", "1")
                         .kind(StepDefinition.Kind.TRIGGER)
                         .source("application.arguments")
-                        .run(StandardStepHandlers.Cli.class),
-                wide.run(StandardStepHandlers.FieldManipulation.class)
+                        .implementation(StandardStepHandlers.Cli.class),
+                wide.implementation(StandardStepHandlers.FieldManipulation.class)
         );
         final StringBuilder nodes = new StringBuilder("""
                 {"format":1,"id":"wide-plan-partition","nodes":[
@@ -1976,9 +2094,6 @@ final class GeneratedApplicationE2eTest {
         command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
         command.add("-jar");
         command.add(jar.toString());
-        command.add("--railix-http");
-        command.add("127.0.0.1");
-        command.add("0");
         final Process process = RailixPackageIT.instrumentJava(new ProcessBuilder(command))
                 .redirectErrorStream(true)
                 .start();
@@ -2046,30 +2161,6 @@ final class GeneratedApplicationE2eTest {
     }
 
     private record ProcessResult(int exitCode, String output) {
-    }
-
-    public static final class InterruptedHttpServer {
-        public static void main(final String[] arguments) throws Exception {
-            final int port;
-            try (var socket = new java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())) {
-                port = socket.getLocalPort();
-            }
-            final RuntimeApplication application = new RuntimeApplication() {
-                @Override
-                public String projectId() { return "http-interruption"; }
-
-                @Override
-                public WorkflowRuntime.SourceResult runSource(final String source, final Map<String, RailixValue> values) {
-                    throw new AssertionError("No request should be dispatched by this shutdown check.");
-                }
-            };
-            Thread.currentThread().interrupt();
-            final int result = HttpStepHandlers.Trigger.serve(application, "127.0.0.1", port);
-            if (result != 130 || !Thread.interrupted()) throw new AssertionError("Cancellation must be preserved.");
-            try (var socket = new java.net.ServerSocket(port, 1, java.net.InetAddress.getLoopbackAddress())) {
-                System.out.println("listener released");
-            }
-        }
     }
 
     private record HttpProcess(Process process, URI uri) implements AutoCloseable {

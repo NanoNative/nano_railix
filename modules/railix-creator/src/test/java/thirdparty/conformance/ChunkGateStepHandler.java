@@ -1,6 +1,5 @@
 package thirdparty.conformance;
 
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -11,13 +10,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /** Real bundle-owned Step that exposes bounded example admission through filesystem signals. */
-public final class ChunkGateStepHandler implements StepHandler {
+public final class ChunkGateStepHandler {
     /** Creates one stateless handler. */
     public ChunkGateStepHandler() {
     }
 
-    @Override
-    public StepResult run(final StepInput input) throws InterruptedException {
+    public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
         final Path root = Path.of(input.string("root"));
         final String example = input.string("case");
         final boolean ignoreInterrupt = ((RailixValue.BooleanValue) input.value("ignore_interrupt")).value();

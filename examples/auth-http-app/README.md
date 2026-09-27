@@ -27,13 +27,13 @@ Serve it as an HTTP app:
 macOS:
 
 ```sh
-../../modules/railix-creator/target/app-image/railix.app/Contents/MacOS/railix serve 8080
+../../modules/railix-creator/target/app-image/railix.app/Contents/MacOS/railix run
 ```
 
 Linux:
 
 ```sh
-../../modules/railix-creator/target/app-image/railix/bin/railix serve 8080
+../../modules/railix-creator/target/app-image/railix/bin/railix run
 ```
 
 Then call it from another terminal:

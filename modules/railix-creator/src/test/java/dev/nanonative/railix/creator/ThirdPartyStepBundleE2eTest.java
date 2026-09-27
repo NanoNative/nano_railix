@@ -5,7 +5,7 @@ import dev.nanonative.railix.core.project.ProjectCompiler;
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepContractJson;
 import dev.nanonative.railix.core.step.StepDefinition;
-import dev.nanonative.railix.core.step.StepHandler;
+import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueShape;
@@ -72,7 +72,7 @@ final class ThirdPartyStepBundleE2eTest {
         final CompileResult.Compiled compiled = compile(workspace, "external.alpha");
 
         assertThat(compiled.productionApplicationSource())
-                .contains("new thirdparty.alpha.Handlers.BundleStep()")
+                .contains("thirdparty.alpha.Handlers.BundleStep::process")
                 .doesNotContain("Class.forName", "java.class.path", "ServiceLoader");
     }
 
@@ -184,7 +184,7 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     @Test
-    void failedRollingDevelopmentChildStartupKeepsTheRunningApplication() throws Exception {
+    void failedRollingDevelopmentChildStartupRestartsThePreviousApplication() throws Exception {
         final Bundle working = bundle(
                 "rollingworking",
                 "external.rollingworking",
@@ -219,9 +219,11 @@ final class ThirdPartyStepBundleE2eTest {
             }
 
             assertThat(response.statusCode()).isEqualTo(503);
-            assertThat(response.body()).contains("Generated application did not build and start.");
+            assertThat(response.body()).contains("Generated application did not build and start.",
+                    "\"recovery\":\"restarted\"");
             assertThat(CreatorServerE2eSupport.number(after, "pid"))
-                    .isEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+                    .isNotEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+            assertThat(CreatorServerE2eSupport.string(after, "state")).isEqualTo("running");
             assertThat(CreatorServerE2eSupport.string(after, "fingerprint"))
                     .isEqualTo(CreatorServerE2eSupport.string(before, "fingerprint"));
             assertThat(Files.readString(project, StandardCharsets.UTF_8)).isEqualTo(persisted);
@@ -265,11 +267,12 @@ final class ThirdPartyStepBundleE2eTest {
             final HttpResponse<String> failed = CreatorServerE2eSupport.request(
                     creator.baseUri(), "POST", "/api/project", projectSource(failing.definition().id()));
             assertThat(failed.statusCode()).isEqualTo(503);
-            assertThat(failed.body()).contains("Generated application could not be activated.");
+            assertThat(failed.body()).contains("Generated application could not be activated.",
+                    "\"recovery\":\"restarted\"");
             assertThat(Files.readString(project, StandardCharsets.UTF_8)).isNotEqualTo(persisted);
-            assertThat(CreatorServerE2eSupport.number(
-                    CreatorServerE2eSupport.application(creator.baseUri()), "pid"))
-                    .isEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+            final long restartedPid = CreatorServerE2eSupport.number(
+                    CreatorServerE2eSupport.application(creator.baseUri()), "pid");
+            assertThat(restartedPid).isNotEqualTo(CreatorServerE2eSupport.number(before, "pid"));
             final HttpResponse<String> unactivatedScene = CreatorServerE2eSupport.request(
                     creator.baseUri(), "GET", "/api/scene", "");
             assertThat(unactivatedScene.statusCode()).isEqualTo(200);
@@ -289,7 +292,7 @@ final class ThirdPartyStepBundleE2eTest {
             assertThat(recovered.statusCode()).isEqualTo(200);
             assertThat(CreatorServerE2eSupport.number(
                     CreatorServerE2eSupport.application(creator.baseUri()), "pid"))
-                    .isEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+                    .isEqualTo(restartedPid);
             for (final String selection : List.of("", "&example=command%3A0")) {
                 final HttpResponse<String> accepted = CreatorServerE2eSupport.request(creator.baseUri(), "GET",
                         "/api/scene/observations?revision=" + acceptedRevision + selection, "");
@@ -1722,13 +1725,12 @@ final class ThirdPartyStepBundleE2eTest {
         final StepDefinition definition = StepDefinition.named(stepId, "1")
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.STRING)
-                .run(RuntimeBoundaryProbeStep.class);
+                .implementation(RuntimeBoundaryProbeStep.class);
         final String contractDigest = "sha256:" + sha256(
                 StepContractJson.write(definition).getBytes(StandardCharsets.UTF_8)
         );
         final Path stepSource = source(root, packageName, "Handlers", """
                 package %s;
-                import dev.nanonative.railix.core.step.StepHandler;
                 import dev.nanonative.railix.core.step.StepInput;
                 import dev.nanonative.railix.core.step.StepResult;
                 import dev.nanonative.railix.core.value.RailixValue;
@@ -1736,8 +1738,8 @@ final class ThirdPartyStepBundleE2eTest {
                 import java.nio.charset.StandardCharsets;
                 public final class Handlers {
                     private Handlers() {}
-                    public static final class BundleStep implements StepHandler {
-                        static {
+                    public static final class BundleStep {
+                        public static StepResult pre(final StepInput configuration, final StepInput context) {
                             final String output = %s;
                             if (!output.isEmpty()) {
                                 System.out.print(output);
@@ -1747,6 +1749,7 @@ final class ThirdPartyStepBundleE2eTest {
                             if (!interference.isEmpty()) {
                                 interfere(interference);
                             }
+                            return StepResult.outcome(context.primaryOutcome());
                         }
                         private static void interfere(final String interference) {
                             try {
@@ -1856,12 +1859,11 @@ final class ThirdPartyStepBundleE2eTest {
                                     }
                                 }
                             } catch (final java.io.IOException | NumberFormatException failure) {
-                                throw new ExceptionInInitializerError(failure);
+                                throw new IllegalStateException("Startup interference failed.", failure);
                             }
                         }
                         public BundleStep() {}
-                        @Override
-                        public StepResult run(final StepInput input) {
+                        public static StepResult process(final StepInput configuration, final StepInput input) {
                             if (%s) {
                                 System.out.println("RAILIX_READY malformed");
                                 final byte[] output = new byte[8192];
@@ -1892,7 +1894,7 @@ final class ThirdPartyStepBundleE2eTest {
                         javaString("/" + packagePath + "/message.txt")
                 ));
         final Path stepClasses = root.resolve("step-classes");
-        compileJava(stepSource, stepClasses, List.of(location(StepHandler.class), helperJar));
+        compileJava(stepSource, stepClasses, List.of(location(StepInput.class), helperJar));
         final Path rootJar = root.resolve("bundle.jar");
         final Map<String, byte[]> rootEntries = classEntries(stepClasses);
         rootEntries.put(packagePath + "/message.txt", resource.getBytes(StandardCharsets.UTF_8));

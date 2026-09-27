@@ -513,7 +513,7 @@ final class RailixPackageIT {
     }
 
     @Test
-    void packagedExecutableRejectsAProjectWithoutCommandLineIngress() throws Exception {
+    void packagedExecutableExitsNormallyWithoutAnyActiveTrigger() throws Exception {
         Files.writeString(
                 directory.resolve("railix.project.json"),
                 """
@@ -524,11 +524,7 @@ final class RailixPackageIT {
                 StandardCharsets.UTF_8
         );
 
-        assertThat(runExecutable(Map.of(), "run")).isEqualTo(new ProcessResult(
-                2,
-                "RUN_SOURCE_UNKNOWN source "
-                        + "Project has no Trigger for source: application.arguments."
-        ));
+        assertThat(runExecutable(Map.of(), "run")).isEqualTo(new ProcessResult(0, ""));
     }
 
     @Test
@@ -626,8 +622,7 @@ final class RailixPackageIT {
         assertThat(runExecutable(Map.of())).isEqualTo(new ProcessResult(
                 2,
                 "Usage: railix creator [project-file] [port]\n"
-                        + "       railix run [arguments...]\n"
-                        + "       railix serve [port]"
+                        + "       railix run [arguments...]"
         ));
     }
 
@@ -968,16 +963,14 @@ final class RailixPackageIT {
         final String manifest = RailixJson.write(manifestValue);
         final Path classes = compileBundleClass(root, className, """
                 package thirdparty.sqlprobe;
-                import dev.nanonative.railix.core.step.StepHandler;
                 import dev.nanonative.railix.core.step.StepInput;
                 import dev.nanonative.railix.core.step.StepResult;
                 import dev.nanonative.railix.core.value.RailixValue;
                 import java.sql.JDBCType;
-                public final class SqlProbeStep implements StepHandler {
+                public final class SqlProbeStep {
                     public SqlProbeStep() {
                     }
-                    @Override
-                    public StepResult run(final StepInput input) {
+                    public static StepResult process(final StepInput configuration, final StepInput input) {
                         return StepResult.outcome(input.primaryOutcome())
                                 .write("target", RailixValue.number(
                                         JDBCType.VARCHAR.getVendorTypeNumber().longValue()

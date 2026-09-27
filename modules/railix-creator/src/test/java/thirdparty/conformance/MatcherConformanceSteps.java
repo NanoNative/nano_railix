@@ -1,6 +1,5 @@
 package thirdparty.conformance;
 
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -11,91 +10,83 @@ public final class MatcherConformanceSteps {
     }
 
     /** Continues from a Trigger through its primary outcome. */
-    public static final class Trigger implements StepHandler {
+    public static final class Trigger {
         public Trigger() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome());
         }
     }
 
     /** Returns the received value without changing it. */
-    public static final class Identity implements StepHandler {
+    public static final class Identity {
         public Identity() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("value", input.value("value"));
         }
     }
 
     /** Returns boolean true for every compatible input. */
-    public static final class True implements StepHandler {
+    public static final class True {
         public True() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("value", RailixValue.bool(true));
         }
     }
 
     /** Returns true through the first matched authored route, or the primary route. */
-    public static final class AuthoredTrue implements StepHandler {
+    public static final class AuthoredTrue {
         public AuthoredTrue() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.selectedOutcomeOrPrimary("cases"))
                     .output("value", RailixValue.bool(true));
         }
     }
 
     /** Throws to prove deterministic nested implementation-fault handling. */
-    public static final class Fault implements StepHandler {
+    public static final class Fault {
         public Fault() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             throw new IllegalStateException("fault");
         }
     }
 
     /** Interrupts the generated application's request thread. */
-    public static final class Interrupt implements StepHandler {
+    public static final class Interrupt {
         public Interrupt() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             Thread.currentThread().interrupt();
             return StepResult.outcome(input.primaryOutcome()).output("value", RailixValue.bool(true));
         }
     }
 
     /** Deliberately violates its declared boolean return contract. */
-    public static final class Invalid implements StepHandler {
+    public static final class Invalid {
         public Invalid() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("value", RailixValue.string("wrong"));
         }
     }
 
     /** Writes the resolved matcher-groups result through the declared target path. */
-    public static final class Probe implements StepHandler {
+    public static final class Probe {
         public Probe() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).write("target", input.value("matches"));
         }
     }

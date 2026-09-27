@@ -2,9 +2,9 @@
 
 ## Human Review
 
-Status: **Existing baseline with accepted group-reuse and capability-visibility direction**, updated
-on 2026-09-20. Copy/shared editing, automatic Step module visibility and capability symbols are planned; their
-implementation contracts remain open. Other capability/resource interactions below are proposals,
+Status: **Existing baseline with accepted group-reuse, resource-authoring and capability-visibility direction**, updated
+on 2026-09-21. Copy/shared editing, resource profiles, automatic Step module visibility and capability symbols are planned;
+their implementation contracts remain open. Other capability/resource interactions below are proposals,
 not implemented or newly verified behavior. The roadmap owns delivery status.
 
 Owns: presentation metadata, editor interactions, scene/camera, transport and visual resource bounds.
@@ -111,6 +111,41 @@ accessible explanations; do not make knowledge of circuit notation a prerequisit
 Before the Merge UI slice, define a user journey that configures its mode, maps branch outputs,
 runs Examples and diagnoses waiting/failed/skipped input states. The [control contract](system-model.md#planned-merge-and-join)
 owns those states. No animation speed, gate icon or physics analogy may invent runtime semantics.
+
+## Planned Step Resource Settings
+
+Source: the user's 2026-09-21 resource ownership clarification.
+[SYS-016/017 and LC-3](system-model.md#planned-step-lifecycle) own runtime/configuration semantics.
+The HTTP Client now exposes an ordinary `connection` option with `private` (default) and `shared`.
+It uses the same generic option editor as third-party Steps. Named profiles and resource-sharing
+diagnostics remain planned; no separate resource declaration or mandatory panel is introduced.
+
+- **CR-006:** Steps that offer selectable resource ownership MUST expose it through ordinary
+  StepDefinition inputs, using the same editor for built-in and third-party Steps. Steps without
+  such options MUST NOT acquire an empty resource panel. The Step chooses private or keyed shared
+  registration from compiled configuration. No global UI switch may force incompatible resources
+  together or infer sharing from visual Groups.
+- **CR-007 (planned):** Any sharing explanation MUST distinguish observed allocation from configured
+  intent and omit secret values. Creator cannot infer compatibility from arbitrary Java factories
+  or keys. Runtime evidence and its UI contract must be specified before presenting actual owners.
+  Session-sharing choices MUST be explicit; visual Group changes MUST NOT affect them.
+- **CR-008 (deferred):** Named-profile selection MUST use the same metadata-driven controls and
+  its canonical settings. Before saving profile edits, Creator MUST show the affected Step
+  references and that application changes require a
+  rebuild. A Step MUST NOT retain a competing editable copy of the profile configuration.
+
+For HTTP, show a connection control and session behavior in plain language, not Java registry
+details. [HC-011](http-client.md#behavior) owns disabled, private and explicitly shared cookies.
+The exact layout remains open; profile CRUD/conflict decisions belong to the deferred slice.
+Do not add a global Settings preference that silently changes functional project behavior.
+A future batch assignment action
+may target selected Steps, but visual group membership itself is never resource configuration.
+
+Acceptance: configure built-in and third-party Steps with their ordinary private/shared options.
+Sharing/isolation explanations need separate runtime evidence. The later profile slice additionally checks
+shared-profile selection and affected Steps before edits. Verify no controls for resource-free
+Steps, keyboard access, unresolved compatibility states, secret redaction and unchanged behavior
+after moving/deleting visual Groups.
 
 ## Planned Group Copy And Sharing
 
@@ -236,6 +271,28 @@ new persistent format. Reads wait for the current write acknowledgement and reje
 write before replacing the editing neighborhood. Invalid JSON drafts survive unrelated navigation
 and saves. Whole-document GET remains an explicit interchange boundary, not browser startup.
 
+### Editing An Existing Flow
+
+Inserting a Step into one outgoing connection preserves its previous destination on the new
+Step's primary outcome. Additional outcomes initially end the flow. Deleting a linear Step
+reconnects its predecessor to its primary successor; deletion is blocked while a secondary
+outcome still has a connected branch. Other branches and stable Step IDs remain unchanged.
+
+These graph edits do not rewrite downstream field mappings. Changing or removing an upstream
+producer can therefore leave a structurally valid flow with a missing or incompatible value.
+The selected Example result reports that failure. The affected building uses the existing error
+state, its Overview names the Example and explains the error, and Inputs displays the same
+execution diagnostic. These are observed failures, not predictions about untested inputs.
+Example explanations belong to the selected Example and matching build; switching Examples or
+rebuilding must not reuse an older result. Runtime error counters remain separate evidence.
+Repairing the field mapping or producer reruns the Examples;
+old failures must not remain attached to the repaired build. "Running" describes the development
+application, not a guarantee that every Example succeeded.
+
+Current proof covers insertion, output-type changes, producer deletion, downstream diagnostics,
+repair and reload in one browser journey. Arbitrary reconnection, shared downstream Steps,
+Undo/Redo and a complete change-impact preview are not provided by this behavior.
+
 ## Metadata Example
 
 ```json
@@ -357,6 +414,11 @@ on demand.
 The world and label surfaces use non-scrollable clipping; browser focus scrolling must not move
 the diagram independently of the camera or displace its controls.
 Diagnostics and malformed route states appear on their owning node, outcome, or group.
+Configuration validation also appears directly at its JSON input with an accessible error
+description. Integer/Long validators request whole-number editing; the compiler remains authoritative
+and returns the same custom messages for built-in and installed Steps. An invalid draft remains
+editable without replacing the saved project or running application. The shared contract and
+execution boundary are defined by [SYS-019 to SYS-022](system-model.md#configuration-validation).
 Containing-region IDs derive from existing scene parent links, not a second membership model.
 Pending edits and diagnostics propagate to the containing occurrence, not every use of a group name.
 The Inspector scrolls its fields independently of its fixed navigation, tabs and Close control.

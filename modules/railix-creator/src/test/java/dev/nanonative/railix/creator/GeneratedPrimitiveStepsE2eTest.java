@@ -853,6 +853,30 @@ final class GeneratedPrimitiveStepsE2eTest {
         )));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"null", "boolean", "number", "string", "array", "object"})
+    void valueIsTypeMatchesOnlyTheConfiguredShapeAcrossRepeatedRuns(final String type) {
+        final var application = configuredApplication(List.of("value.is-type"), "value.is-type",
+                "{\"type\":{\"option\":\"" + type + "\",\"inputs\":{}}}", "null");
+        final Map<String, List<String>> values = Map.of(
+                "null", List.of("null"),
+                "boolean", List.of("true", "false"),
+                "number", List.of("0", "-1", "1.25"),
+                "string", List.of("\"\"", "\"42\"", "\"hello\""),
+                "array", List.of("[]", "[1,null]"),
+                "object", List.of("{}", "{\"text\":\"hello\"}"));
+        values.forEach((shape, inputs) -> inputs.forEach(input ->
+                assertThat(result(application, input)).as("%s is %s", input, type)
+                        .isEqualTo(RailixValue.bool(shape.equals(type)))));
+    }
+
+    @Test
+    void valueIsTypeDefaultsToStringAndComposesWithNot() {
+        assertThat(result("value.is-type", "\"hello\"")).isEqualTo(RailixValue.bool(true));
+        assertThat(result("value.is-type", "42")).isEqualTo(RailixValue.bool(false));
+        assertThat(result(List.of("value.is-type", "boolean.not"), "42")).isEqualTo(RailixValue.bool(true));
+    }
+
     @Test
     void listIsEmptyRejectsAnObjectWithoutCoercion() {
         assertIncompatible("list.is-empty", "{}", "array", "object");

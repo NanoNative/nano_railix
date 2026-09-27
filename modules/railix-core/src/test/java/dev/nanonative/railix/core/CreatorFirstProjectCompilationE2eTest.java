@@ -273,9 +273,9 @@ class CreatorFirstProjectCompilationE2eTest {
         final StepDefinition trigger = StepDefinition.named("example.trigger", "1")
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source("application.example")
-                .run(TestStepHandlers.CompilationMustNotExecute.class);
+                .implementation(TestStepHandlers.CompilationMustNotExecute.class);
         final StepDefinition step = StepDefinition.named("example.step", "1")
-                .run(TestStepHandlers.CompilationMustNotExecute.class);
+                .implementation(TestStepHandlers.CompilationMustNotExecute.class);
         final String source = """
                 {"format":1,"id":"pure-compilation","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},
@@ -362,7 +362,7 @@ class CreatorFirstProjectCompilationE2eTest {
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.STRING)
                 .input("locale", Input.json(ValueShape.STRING).defaultValue(RailixValue.string("root")))
-                .run(TestStepHandlers.LowercaseValue.class);
+                .implementation(TestStepHandlers.LowercaseValue.class);
 
         assertThat(ProjectCompiler.compileApplication(contextProject(), replacePrimitive(lowercase)))
                 .isInstanceOf(CompileResult.Compiled.class);
@@ -393,7 +393,7 @@ class CreatorFirstProjectCompilationE2eTest {
                 .result("exit_code", ValueShape.NUMBER, RailixValue.number(0))
                 .response("output", "result")
                 .response("status", "exit_code")
-                .run(TestStepHandlers.WriteArguments.class);
+                .implementation(TestStepHandlers.WriteArguments.class);
         final StepDefinition manipulation = StepDefinition.named("railix.field-manipulation", "1")
                 .input("field", Input.path(READ_WRITE).defaultPath("context", "payload"))
                 .input("value", Input.candidates(
@@ -406,12 +406,12 @@ class CreatorFirstProjectCompilationE2eTest {
                                         .fromOwned("source")
                         ).defaultCandidate("current"))
                 .input("steps", Input.steps(StepDefinition.ValueSource.from("value")))
-                .run(TestStepHandlers.RunStepsWriteWhenPresentField.class);
+                .implementation(TestStepHandlers.RunStepsWriteWhenPresentField.class);
         final StepDefinition lowercase = StepDefinition.named("text.lowercase", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.STRING)
-                .run(TestStepHandlers.LowercaseValue.class);
+                .implementation(TestStepHandlers.LowercaseValue.class);
         final StepDefinition branchingTransform = StepDefinition.named("test.branching-transform", "1")
                 .input("field", Input.path(READ_WRITE).defaultPath("context", "payload"))
                 .input("value", Input.candidates(
@@ -426,7 +426,7 @@ class CreatorFirstProjectCompilationE2eTest {
                 .input("steps", Input.steps(
                         StepDefinition.ValueSource.from("value").onMissing("missing")
                 ).propagateOutcomes())
-                .run(TestStepHandlers.RunStepsWriteField.class);
+                .implementation(TestStepHandlers.RunStepsWriteField.class);
         return StepCatalog.of(app, cli, manipulation, lowercase, branchingTransform);
     }
 
@@ -436,7 +436,7 @@ class CreatorFirstProjectCompilationE2eTest {
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.NUMBER)
                 .outcome("invalid")
-                .run(TestStepHandlers.ToNumber.class);
+                .implementation(TestStepHandlers.ToNumber.class);
         return with(contextCatalog(), toNumber);
     }
 
@@ -528,7 +528,7 @@ class CreatorFirstProjectCompilationE2eTest {
         return StepDefinition.named(id, "1")
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source(source)
-                .run(TestStepHandlers.PrimaryOutcome.class);
+                .implementation(TestStepHandlers.PrimaryOutcome.class);
     }
 
     private static StepCatalog replacePrimitive(final StepDefinition replacement) {

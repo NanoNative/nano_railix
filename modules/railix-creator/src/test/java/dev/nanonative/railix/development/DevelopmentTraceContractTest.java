@@ -41,7 +41,8 @@ final class DevelopmentTraceContractTest {
     void graphHandlerExecutesDirectlyWithoutAnActiveTrace() throws Exception {
         final StepResult result = DevelopmentRuntime.Trace.invoke(
                 input(),
-                ignored -> StepResult.outcome("direct")
+                input(),
+                (_, ignored) -> StepResult.outcome("direct")
         );
 
         assertThat(result.outcome()).isEqualTo("direct");
@@ -53,7 +54,8 @@ final class DevelopmentTraceContractTest {
                 "nested",
                 "test.nested",
                 input(),
-                ignored -> StepResult.outcome("direct")
+                input(),
+                (_, ignored) -> StepResult.outcome("direct")
         );
 
         assertThat(result.outcome()).isEqualTo("direct");
@@ -101,7 +103,7 @@ final class DevelopmentTraceContractTest {
     void graphHandlerInvocationRequiresAnOpenStep() {
         assertThatThrownBy(() -> DevelopmentRuntime.Trace.start(empty(), event -> true, () -> {
             try {
-                DevelopmentRuntime.Trace.invoke(input(), ignored -> StepResult.outcome("next"));
+                DevelopmentRuntime.Trace.invoke(input(), input(), (_, ignored) -> StepResult.outcome("next"));
             } catch (final InterruptedException exception) {
                 throw new AssertionError(exception);
             }
@@ -115,8 +117,8 @@ final class DevelopmentTraceContractTest {
         assertThatThrownBy(() -> DevelopmentRuntime.Trace.start(empty(), event -> true, () -> {
             DevelopmentRuntime.Trace.before(1, "step", "test.step", empty());
             try {
-                DevelopmentRuntime.Trace.invoke(input(), ignored -> StepResult.outcome("next"));
-                DevelopmentRuntime.Trace.invoke(input(), ignored -> StepResult.outcome("next"));
+                DevelopmentRuntime.Trace.invoke(input(), input(), (_, ignored) -> StepResult.outcome("next"));
+                DevelopmentRuntime.Trace.invoke(input(), input(), (_, ignored) -> StepResult.outcome("next"));
             } catch (final InterruptedException exception) {
                 throw new AssertionError(exception);
             }
@@ -154,7 +156,8 @@ final class DevelopmentTraceContractTest {
                         "nested",
                         "test.nested",
                         input(),
-                        ignored -> null
+                        input(),
+                        (_, ignored) -> null
                 )).isNull();
             } catch (final InterruptedException exception) {
                 throw new AssertionError(exception);
@@ -177,7 +180,8 @@ final class DevelopmentTraceContractTest {
                         "nested",
                         "test.nested",
                         input(),
-                        ignored -> {
+                        input(),
+                        (_, ignored) -> {
                             throw new IllegalStateException("failed");
                         }
                 );
@@ -202,7 +206,8 @@ final class DevelopmentTraceContractTest {
                         "nested",
                         "test.nested",
                         input(),
-                        ignored -> {
+                        input(),
+                        (_, ignored) -> {
                             throw new InterruptedException("cancelled");
                         }
                 );
@@ -287,6 +292,7 @@ final class DevelopmentTraceContractTest {
             final StepResult step;
             try {
                 step = DevelopmentRuntime.Trace.invoke(
+                        input(),
                         new StepInput(
                                 Map.of("value", RailixValue.string("BEFORE")),
                                 Map.of(),
@@ -294,7 +300,7 @@ final class DevelopmentTraceContractTest {
                                 Map.of(),
                                 "ok"
                         ),
-                        input -> StepResult.outcome("ok")
+                        (_, input) -> StepResult.outcome("ok")
                                 .output("value", RailixValue.string("after"))
                 );
             } catch (final InterruptedException exception) {
@@ -418,19 +424,21 @@ final class DevelopmentTraceContractTest {
         DevelopmentRuntime.Trace.start(before, sink(events), () -> {
             DevelopmentRuntime.Trace.before(1, "manipulation", "test.manipulation", before);
             try {
-                DevelopmentRuntime.Trace.invoke(input(RailixValue.string(" BEFORE ")), ignored -> {
+                DevelopmentRuntime.Trace.invoke(input(), input(RailixValue.string(" BEFORE ")), (_, ignored) -> {
                     DevelopmentRuntime.Trace.invoke(
                             "manipulation.inputs.operations[0]",
                             "text.trim",
+                            input(),
                             input(RailixValue.string(" BEFORE ")),
-                            nested -> StepResult.outcome("ok")
+                            (_, nested) -> StepResult.outcome("ok")
                                     .output("value", RailixValue.string("BEFORE"))
                     );
                     DevelopmentRuntime.Trace.invoke(
                             "manipulation.inputs.operations[1]",
                             "text.lowercase",
+                            input(),
                             input(RailixValue.string("BEFORE")),
-                            nested -> StepResult.outcome("ok")
+                            (_, nested) -> StepResult.outcome("ok")
                                     .write("target", RailixValue.string("before"))
                     );
                     return StepResult.outcome("next")
@@ -470,12 +478,13 @@ final class DevelopmentTraceContractTest {
         assertThatThrownBy(() -> DevelopmentRuntime.Trace.start(context, sink(events), () -> {
             DevelopmentRuntime.Trace.before(1, "failed", "test.failed", context);
             try {
-                DevelopmentRuntime.Trace.invoke(input(RailixValue.string("before")), ignored -> {
+                DevelopmentRuntime.Trace.invoke(input(), input(RailixValue.string("before")), (_, ignored) -> {
                     DevelopmentRuntime.Trace.invoke(
                             "failed.inputs.operations[0]",
                             "text.uppercase",
+                            input(),
                             input(RailixValue.string("before")),
-                            nested -> StepResult.outcome("ok")
+                            (_, nested) -> StepResult.outcome("ok")
                                     .output("value", RailixValue.string("BEFORE"))
                     );
                     throw new IllegalStateException("failed after primitive");
@@ -574,12 +583,13 @@ final class DevelopmentTraceContractTest {
                 () -> {
                     DevelopmentRuntime.Trace.before(1, "outer", "test.outer", empty());
                     try {
-                        DevelopmentRuntime.Trace.invoke(input(), ignored -> {
+                        DevelopmentRuntime.Trace.invoke(input(), input(), (_, ignored) -> {
                             final StepResult nested = DevelopmentRuntime.Trace.invoke(
                                     "outer/nested",
                                     "test.nested",
                                     input(),
-                                    nestedInput -> {
+                                    input(),
+                                    (_, nestedInput) -> {
                                         nestedExecuted.set(true);
                                         return StepResult.outcome("next");
                                     }

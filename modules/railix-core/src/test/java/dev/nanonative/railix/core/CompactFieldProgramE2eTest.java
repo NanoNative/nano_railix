@@ -126,28 +126,28 @@ final class CompactFieldProgramE2eTest {
                 .example("example", RailixValue.object(Map.of(
                         "name", RailixValue.string("existing")
                 )))
-                .run(TestStepHandlers.PrimaryOutcome.class);
+                .implementation(TestStepHandlers.PrimaryOutcome.class);
         final StepDefinition identity = StepDefinition.named("value.identity", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.ANY)
                 .returns("value", ValueShape.ANY)
-                .run(TestStepHandlers.PrimaryIdentity.class);
+                .implementation(TestStepHandlers.PrimaryIdentity.class);
         final StepDefinition not = StepDefinition.named("boolean.not", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.BOOLEAN)
                 .returns("value", ValueShape.BOOLEAN)
-                .run(TestStepHandlers.BooleanNot.class);
+                .implementation(TestStepHandlers.BooleanNot.class);
         final StepDefinition length = StepDefinition.named("text.length", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.NUMBER)
-                .run(TestStepHandlers.TextLength.class);
+                .implementation(TestStepHandlers.TextLength.class);
         final StepDefinition branchingPredicate = StepDefinition.named("value.branching-predicate", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.ANY)
                 .returns("value", ValueShape.BOOLEAN)
                 .outcome("rejected")
-                .run(TestStepHandlers.True.class);
+                .implementation(TestStepHandlers.True.class);
         final StepDefinition change = StepDefinition.named("example.change-field", "1")
                 .input("field", StepDefinition.Input.path(READ_WRITE))
                 .input("value", StepDefinition.Input.candidates(
@@ -162,7 +162,7 @@ final class CompactFieldProgramE2eTest {
                 .input("steps", StepDefinition.Input.steps(
                         StepDefinition.ValueSource.from("value").onMissing("unresolved")
                 ))
-                .run(TestStepHandlers.RunStepsWriteField.class);
+                .implementation(TestStepHandlers.RunStepsWriteField.class);
         return StepCatalog.of(app, trigger, identity, not, length, branchingPredicate, change);
     }
 

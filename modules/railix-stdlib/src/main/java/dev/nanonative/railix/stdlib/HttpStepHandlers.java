@@ -3,16 +3,15 @@ package dev.nanonative.railix.stdlib;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dev.nanonative.railix.core.project.Diagnostic;
-import dev.nanonative.railix.core.project.RuntimeApplication;
 import dev.nanonative.railix.core.project.WorkflowRuntime;
 import dev.nanonative.railix.core.runtime.RunResult;
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -39,55 +38,47 @@ public final class HttpStepHandlers {
     }
 
     /** Maps one HTTP request object to the configured workflow-context path. */
-    public static final class Trigger implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class Trigger {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).write("target", input.value("request"));
         }
 
         /**
-         * Serves the application's HTTP source until the calling thread is interrupted.
+         * Prepares one listener; binding starts through the same source capability available to bundles.
          *
-         * @param application compiled application; Java null is rejected
-         * @param host bind address; null or blank selects loopback
-         * @param port listening port from 0 through 65535; zero selects a free port
-         * @return 130 on interruption, or 2 when binding or port validation fails
-         * @throws IllegalArgumentException when the application is Java null
+         * @param configuration compiled host and port settings; zero port selects a free port
+         * @param context payload-free lifecycle context with this Trigger's source
+         * @return primary lifecycle outcome after registering activation and cleanup
+         * @throws UncheckedIOException when the listener cannot be prepared
          */
-        public static int serve(final RuntimeApplication application, final String host, final int port) {
-            if (application == null) {
-                throw new IllegalArgumentException("HTTP application cannot be Java null.");
-            }
-            if (port < 0 || port > 65535) {
-                System.err.println("HTTP port must be from 0 through 65535.");
-                return 2;
-            }
-            final String bindHost = host == null || host.isBlank() ? "127.0.0.1" : host;
+        public static StepResult pre(final StepInput configuration, final StepInput context) {
+            final StepInput.Source source = context.source();
+            final String host = configuration.string("host");
+            final int port = ((RailixValue.NumberValue) configuration.value("port")).value().intValueExact();
+            final InetSocketAddress address = new InetSocketAddress(host, port);
             try {
-                final HttpServer server = HttpServer.create(new InetSocketAddress(bindHost, port), 0);
-                try (final var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                final HttpServer server = HttpServer.create();
+                source.onClose(() -> server.stop(0));
+                final var executor = Executors.newVirtualThreadPerTaskExecutor();
+                source.onClose(executor::shutdownNow);
+                server.createContext("/", exchange -> handle(source, exchange));
+                server.setExecutor(executor);
+                source.onStart(() -> {
                     try {
-                        server.createContext("/", exchange -> handle(application, exchange));
-                        server.setExecutor(executor);
+                        server.bind(address, 0);
                         server.start();
-                        System.out.println("Railix HTTP http://" + bindHost + ":" + server.getAddress().getPort() + "/");
-                        Thread.currentThread().join();
-                        return 0;
-                    } finally {
-                        server.stop(0);
-                        executor.shutdownNow();
+                        System.out.println("Railix HTTP http://" + host + ":" + server.getAddress().getPort() + "/");
+                    } catch (final IOException exception) {
+                        throw new UncheckedIOException("Cannot bind configured HTTP listener.", exception);
                     }
-                }
-            } catch (final InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                return 130;
+                });
+                return StepResult.outcome(context.primaryOutcome());
             } catch (final IOException exception) {
-                System.err.println(exception.getMessage());
-                return 2;
+                throw new UncheckedIOException("Cannot prepare HTTP listener.", exception);
             }
         }
 
-        private static void handle(final RuntimeApplication application, final HttpExchange exchange)
+        private static void handle(final StepInput.Source source, final HttpExchange exchange)
                 throws IOException {
             try {
                 final Optional<RailixValue> body = requestBody(exchange);
@@ -103,11 +94,15 @@ public final class HttpStepHandlers {
                         "headers", headerObject(exchange.getRequestHeaders()),
                         "body", body.orElseThrow()
                 ));
-                final WorkflowRuntime.SourceResult source = application.runSource(
-                        "application.http",
-                        Map.of("request", request)
-                );
-                send(exchange, source);
+                source.run(Map.of("request", request), result -> {
+                    try {
+                        send(exchange, result);
+                    } catch (final IOException exception) {
+                        throw new UncheckedIOException(exception);
+                    }
+                });
+            } catch (final UncheckedIOException exception) {
+                throw exception.getCause();
             } catch (final RuntimeException exception) {
                 send(exchange, 500, error("HTTP_TRIGGER_FAILED", "HTTP request failed."),
                         RailixValue.object(Map.of()));
@@ -123,7 +118,9 @@ public final class HttpStepHandlers {
                         status(source.responses().get("status")),
                         source.responses().getOrDefault("body", RailixValue.nullValue()),
                         source.responses().getOrDefault("headers", RailixValue.object(Map.of())));
-                case RunResult.Rejected rejected -> send(exchange, 400, RailixValue.object(Map.of(
+                case RunResult.Rejected rejected -> send(exchange,
+                        rejected.diagnostics().stream().anyMatch(diagnostic -> diagnostic.code().equals("APPLICATION_SOURCE_INACTIVE"))
+                                ? 503 : 400, RailixValue.object(Map.of(
                         "diagnostics", diagnostics(rejected.diagnostics())
                 )), RailixValue.object(Map.of()));
                 case RunResult.Failed failed -> send(exchange, 500, RailixValue.object(Map.of(
@@ -163,7 +160,9 @@ public final class HttpStepHandlers {
                 exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
             }
             exchange.sendResponseHeaders(status, bytes.length);
-            exchange.getResponseBody().write(bytes);
+            try (final var output = exchange.getResponseBody()) {
+                output.write(bytes);
+            }
         }
 
         private static int status(final RailixValue value) {
@@ -188,15 +187,27 @@ public final class HttpStepHandlers {
     }
 
     /** Issues one outbound HTTP request and returns status, headers, and body. */
-    public static final class Client implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) throws InterruptedException {
+    public static final class Client {
+        /** Prepares a reusable transport; request URL, method and headers do not identify a connection pool. */
+        public static StepResult pre(final StepInput configuration, final StepInput context) {
+            if (configuration.option("connection").equals("shared")) {
+                context.resource("client", java.net.http.HttpClient.class, "jdk-defaults-no-cookies",
+                        java.net.http.HttpClient::newHttpClient, java.net.http.HttpClient::close);
+            } else {
+                context.resource("client", java.net.http.HttpClient.class,
+                        java.net.http.HttpClient::newHttpClient, java.net.http.HttpClient::close);
+            }
+            return StepResult.outcome(context.primaryOutcome());
+        }
+
+        public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
             final Optional<Map<String, List<String>>> parsedHeaders = headerValues(input.value("headers"));
             if (parsedHeaders.isEmpty()) {
                 return failure(input,
                         "HTTP_REQUEST_HEADERS_INVALID: Header values must be strings or arrays of strings.");
             }
-            try (final var client = java.net.http.HttpClient.newHttpClient()) {
+            final var client = input.resource("client", java.net.http.HttpClient.class);
+            try {
                 final RailixValue body = input.optionalValue("body").orElse(RailixValue.nullValue());
                 final String method = input.string("method").toUpperCase(java.util.Locale.ROOT);
                 final HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(input.string("url")))

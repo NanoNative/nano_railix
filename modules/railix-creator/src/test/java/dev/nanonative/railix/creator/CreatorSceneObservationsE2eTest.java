@@ -54,6 +54,7 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
                 """);
         server = start(project, workspace.resolve("home"));
         assertThat(awaitExampleView(server.baseUri(), "command:0").statusCode()).isEqualTo(200);
+        awaitStartupAndExample(server.baseUri(), "three");
     }
 
     @AfterAll
@@ -226,13 +227,13 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
         assertThat(observed.values()).containsKeys("coverage_revision", "example")
                 .doesNotContainKeys("mode", "unvisited");
         final RailixValue.ObjectValue step = entry(observed, "one");
-        assertThat(metricNumber(step, "executions")).isEqualTo(1);
+        assertThat(metricNumber(step, "executions")).isEqualTo(2);
         assertThat(number(step, "covered_count")).isEqualTo(1);
         assertThat(number(step, "selected_count")).isEqualTo(1);
         assertThat(entries(observed, "links")).anySatisfy(link -> {
             assertThat(string(link, "id")).isEqualTo("two.next>three");
             assertThat(string(link, "selection")).isEqualTo("reached");
-            assertThat(metricNumber(link, "executions")).isEqualTo(1);
+            assertThat(metricNumber(link, "executions")).isEqualTo(2);
         });
         assertThat(entries(observed, "links").stream().filter(link -> string(link, "id").equals("one.next>two")
                 || string(link, "id").contains(">end:")))
@@ -316,7 +317,7 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
         final RailixValue.ObjectValue region = entry(object(response.body()), "group-region:normalize:one");
         assertThat(number(region, "count")).isEqualTo(3);
         assertThat(number(region, "disabled_count")).isEqualTo(1);
-        assertThat(metricNumber(region, "executions")).isEqualTo(2);
+        assertThat(metricNumber(region, "executions")).isEqualTo(4);
         assertThat(metricNumber(region, "errors")).isZero();
         assertThat(metricNumber(region, "cancelled")).isZero();
         assertThat(metricNumber(region, "duration_samples")).isEqualTo(2);
@@ -360,16 +361,16 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
         final RailixValue.ObjectValue observed = operationalObservations(source, StandardLibrary.catalog(), 1025, 200);
         final RailixValue.ObjectValue region = entry(observed, "group-region:normalize:one");
 
-        assertThat(metricNumber(region, "executions")).isEqualTo(2052);
+        assertThat(metricNumber(region, "executions")).isEqualTo(2054);
         assertThat(metricNumber(region, "errors")).isZero();
         assertThat(metricNumber(region, "duration_samples")).isEqualTo(4);
         assertThat(metricNumber(region, "duration_nanos_total")).isPositive();
         assertThat(number(region, "disabled_count")).isEqualTo(1);
-        assertThat(metricNumber(entry(observed, "app"), "executions")).isEqualTo(1026);
-        assertThat(metricNumber(entry(observed, "command"), "executions")).isEqualTo(1026);
+        assertThat(metricNumber(entry(observed, "app"), "executions")).isEqualTo(1027);
+        assertThat(metricNumber(entry(observed, "command"), "executions")).isEqualTo(1027);
         assertThat(entries(observed, "links")).anySatisfy(link -> {
             assertThat(string(link, "id")).isEqualTo("command.next>group-region:normalize:one");
-            assertThat(metricNumber(link, "executions")).isEqualTo(1026);
+            assertThat(metricNumber(link, "executions")).isEqualTo(1027);
         });
         assertThat(entries(observed, "links").stream().filter(link -> string(link, "id").contains(">end:")))
                 .allSatisfy(link -> assertThat(link.values()).doesNotContainKey("metrics"));
@@ -379,7 +380,7 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
     void operationalHttpFailuresContributeTheirRealStepErrors() throws Exception {
         final StepCatalog catalog = GeneratedApplicationFixture.installedCatalog(directory,
                 List.of(StepDefinition.named("scene.observation.fault", "1")
-                        .run(DevelopmentRuntimeConformanceSteps.Fault.class)), DevelopmentRuntimeConformanceSteps.Fault.class);
+                        .implementation(DevelopmentRuntimeConformanceSteps.Fault.class)), DevelopmentRuntimeConformanceSteps.Fault.class);
         final String source = threeStepProject()
                 .replace("\"id\":\"two\",", "\"id\":\"two\",\"metrics\":false,")
                 .replace("\"id\":\"three\",\"use\":\"railix.field-manipulation\"",
@@ -387,8 +388,8 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
 
         final RailixValue.ObjectValue region = entry(operationalObservations(source, catalog, 3, 500), "group-region:normalize:one");
 
-        assertThat(metricNumber(region, "executions")).isEqualTo(8);
-        assertThat(metricNumber(region, "errors")).isEqualTo(4);
+        assertThat(metricNumber(region, "executions")).isEqualTo(10);
+        assertThat(metricNumber(region, "errors")).isEqualTo(5);
         assertThat(metricNumber(region, "cancelled")).isZero();
         assertThat(metricNumber(region, "duration_samples")).isEqualTo(2);
     }
@@ -480,6 +481,7 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
         try (CreatorServer creator = start(project)) {
             assertThat(awaitExampleView(creator.baseUri(), "command:0").statusCode()).isEqualTo(200);
             final String viewport = "x=-1000&y=-1000&width=10000000&height=10000000&scale=100000000";
+            awaitStartupAndExample(creator.baseUri(), "step-5999");
             final String path = "/api/scene/observations?revision="
                     + string(scene(creator.baseUri(), viewport), "revision") + "&" + viewport
                     + (selected ? "&example=command%3A0" : "");
@@ -500,7 +502,7 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
             assertThat(observed.values().get("limited")).isEqualTo(RailixValue.bool(true));
             assertThat(entries(observed, "links").stream().filter(link -> link.values().containsKey("metrics")))
                     .isNotEmpty().allSatisfy(link -> assertThat(metricNumber(link, "executions"))
-                            .isEqualTo(string(link, "id").equals("app.start>command") ? 0 : 1));
+                            .isEqualTo(string(link, "id").equals("app.start>command") ? 1 : 2));
             assertThat(response.body().getBytes(StandardCharsets.UTF_8).length).isLessThanOrEqualTo(2 * 1024 * 1024);
             if (selected) {
                 assertThat(entries(observed, "nodes")).allSatisfy(node -> {
@@ -596,6 +598,19 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
                 + (viewport.isEmpty() ? "" : "&" + viewport) + extra, "");
     }
 
+    private static void awaitStartupAndExample(final URI uri, final String lastStep) throws Exception {
+        final long deadline = System.nanoTime() + java.time.Duration.ofSeconds(30).toNanos();
+        while (true) {
+            final HttpResponse<String> response = observations(uri, "focus=" + lastStep + "&scale=100", "");
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            final long executions = metricNumber(entry(object(response.body()), lastStep), "executions");
+            if (executions == 2) return;
+            assertThat(executions).as("One CLI startup and one Example, without duplicate execution").isLessThan(2);
+            assertThat(System.nanoTime()).as("CLI startup and Example must reach the last Step").isLessThan(deadline);
+            Thread.sleep(10);
+        }
+    }
+
     private static RailixValue.ObjectValue portableIcon(final String color) {
         return RailixValue.object(Map.of("media_type", RailixValue.string("image/svg+xml"),
                 "data", RailixValue.string(Base64.getEncoder().encodeToString(
@@ -620,6 +635,16 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
                 }
                 assertThat(System.nanoTime()).as("Example suite must complete: %s", response.body()).isLessThan(deadline);
                 Thread.sleep(20);
+            }
+            while (true) {
+                final HttpResponse<String> response = child.request(uri, token, "POST", "/v1/metrics/query",
+                        "{\"steps\":{},\"flows\":{},\"application\":\"app\",\"metrics\":[\"executions\",\"in_flight\"]}", null);
+                assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+                final RailixValue.ObjectValue app = (RailixValue.ObjectValue)
+                        ((RailixValue.ObjectValue) object(response.body()).values().get("groups")).values().get("app");
+                if (number(app, "executions") == 2 && number(app, "in_flight") == 0) break;
+                assertThat(System.nanoTime()).as("CLI startup and Example must finish: %s", response.body()).isLessThan(deadline);
+                Thread.sleep(10);
             }
             for (int run = 0; run < runs; run++) {
                 final HttpResponse<String> response = child.request(uri, token, "POST", "/v1/run/command", "{}", "false");

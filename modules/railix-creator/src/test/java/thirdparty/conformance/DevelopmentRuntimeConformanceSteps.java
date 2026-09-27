@@ -1,6 +1,5 @@
 package thirdparty.conformance;
 
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -18,90 +17,216 @@ import java.util.concurrent.CountDownLatch;
 public final class DevelopmentRuntimeConformanceSteps {
     private static final int OVERSIZED_CONTEXT_BYTES = 1_048_577;
 
+    /** Starts a real child before a fatal startup/cleanup failure. */
+    public static final class StartupChild {
+        public static StepResult pre(final StepInput configuration, final StepInput context) {
+            try {
+                final Process child = new ProcessBuilder(
+                        Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                        "-cp", System.getProperty("java.class.path"),
+                        ProcessTreeStepHandler.class.getName(), "sleep")
+                        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                        .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+                Files.writeString(Path.of(configuration.string("marker")), Long.toString(child.pid()));
+            } catch (final IOException failure) {
+                throw new java.io.UncheckedIOException(failure);
+            }
+            if (configuration.string("failure").equals("pre")) {
+                throw new AssertionError("Fatal PRE after starting a child.");
+            }
+            return StepResult.outcome(context.primaryOutcome());
+        }
+
+        public static StepResult process(final StepInput configuration, final StepInput context) {
+            return StepResult.outcome(context.primaryOutcome());
+        }
+
+        public static StepResult post(final StepInput configuration, final StepInput context) {
+            if (configuration.string("failure").equals("post")) {
+                throw new AssertionError("Fatal POST during startup rejection.");
+            }
+            return StepResult.outcome(context.primaryOutcome());
+        }
+    }
+
+    public static final class Lifecycle {
+        private Lifecycle() {
+            throw new AssertionError("Lifecycle Steps are static functions.");
+        }
+
+        public static StepResult pre(final StepInput configuration, final StepInput context) {
+            if (!context.values().isEmpty() || !context.options().isEmpty()) {
+                throw new AssertionError("Lifecycle context must not contain an invocation payload.");
+            }
+            record(configuration, "pre");
+            if (configuration.string("mode").equals("pre-fatal")) {
+                throw new AssertionError("Requested fatal PRE failure.");
+            }
+            if (configuration.string("mode").equals("pre-failure")) {
+                throw new IllegalStateException("Requested PRE failure.");
+            }
+            return StepResult.outcome(context.primaryOutcome());
+        }
+
+        public static StepResult process(final StepInput configuration, final StepInput context) {
+            if (context.value("test") instanceof RailixValue.BooleanValue test && !test.value()) {
+                record(configuration, "process");
+            }
+            return context.optionalValue("value")
+                    .map(value -> StepResult.outcome(context.primaryOutcome()).output("value", value))
+                    .orElseGet(() -> StepResult.outcome(context.primaryOutcome()));
+        }
+
+        public static StepResult post(final StepInput configuration, final StepInput context) {
+            if (!context.values().isEmpty()) {
+                throw new AssertionError("POST retained request data.");
+            }
+            record(configuration, "post");
+            if (configuration.string("mode").equals("post-fatal")) {
+                throw new AssertionError("Requested fatal POST failure.");
+            }
+            if (configuration.string("mode").equals("post-failure")) {
+                throw new IllegalStateException("Requested POST failure.");
+            }
+            return StepResult.outcome(context.primaryOutcome());
+        }
+
+        private static void record(final StepInput configuration, final String phase) {
+            try {
+                java.nio.file.Files.writeString(java.nio.file.Path.of(configuration.string("log")),
+                        phase + ":" + configuration.string("name") + "\n",
+                        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+            } catch (final java.io.IOException exception) {
+                throw new java.io.UncheckedIOException(exception);
+            }
+        }
+    }
+
     private DevelopmentRuntimeConformanceSteps() {
     }
 
     /** Passes a Trigger or ordinary Step to its primary outcome. */
-    public static final class Pass implements StepHandler {
+    public static final class Pass {
         /** Creates one stateless handler. */
         public Pass() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome());
         }
     }
 
     /** Writes the executing generated application's process identifier through a declared path. */
-    public static final class ProcessId implements StepHandler {
+    public static final class ProcessId {
         /** Creates one stateless handler. */
         public ProcessId() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome())
                     .write("target", RailixValue.number(ProcessHandle.current().pid()));
         }
     }
 
+    /** Records process liveness from inside the replacement application. */
+    public static final class ProcessStatus {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
+            final long pid = ((RailixValue.NumberValue) input.value("pid")).value().longValueExact();
+            return StepResult.outcome(input.primaryOutcome()).write("target",
+                    RailixValue.bool(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)));
+        }
+    }
+
+    /** Simulates artifact loss or denied access during process handoff, once per workspace. */
+    public static final class ArtifactLoss {
+        public static StepResult process(final StepInput configuration, final StepInput input)
+                throws InterruptedException {
+            if (!((RailixValue.BooleanValue) input.value("test")).value()) {
+                return StepResult.outcome(input.primaryOutcome());
+            }
+            final Path workspace = Path.of(input.string("workspace"));
+            try {
+                try {
+                    Files.createFile(workspace.resolve("fault.started"));
+                } catch (final java.nio.file.FileAlreadyExistsException alreadyInjected) {
+                    return StepResult.outcome(input.primaryOutcome());
+                }
+                try {
+                    new CountDownLatch(1).await();
+                } catch (final InterruptedException stopping) {
+                    final Path current = Path.of(System.getProperty("java.class.path")).toAbsolutePath();
+                    final boolean losePrevious = ((RailixValue.BooleanValue) input.value("lose_previous")).value();
+                    try (var builds = Files.list(workspace.resolve(".railix/build"))) {
+                        for (final Path build : builds.toList()) {
+                            final Path jar = build.resolve("application.jar");
+                            if (losePrevious || !jar.equals(current)) {
+                                Files.deleteIfExists(jar);
+                            }
+                        }
+                    }
+                    if (((RailixValue.BooleanValue) input.value("block_previous")).value()) {
+                        Files.setPosixFilePermissions(current, java.util.Set.of());
+                    }
+                    throw stopping;
+                }
+                throw new AssertionError("Artifact fault requires application shutdown.");
+            } catch (final IOException failure) {
+                throw new IllegalStateException("Cannot inject the artifact loss.", failure);
+            }
+        }
+    }
+
     /** Executes the declared nested program and writes its final value through the declared path. */
-    public static final class Operation implements StepHandler {
+    public static final class Operation {
         /** Creates one stateless handler. */
         public Operation() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) throws InterruptedException {
+        public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
             return input.run("operations").writeWhenPresent("field");
         }
     }
 
     /** Raises one implementation fault through the real generated dispatch path. */
-    public static final class Fault implements StepHandler {
+    public static final class Fault {
         /** Creates one stateless handler. */
         public Fault() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             throw new IllegalStateException("private conformance detail");
         }
     }
 
     /** Escapes the ordinary Step exception contract to prove process-boundary example finalization. */
-    public static final class Fatal implements StepHandler {
+    public static final class Fatal {
         /** Creates one stateless handler. */
         public Fatal() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             throw new AssertionError("fatal conformance detail");
         }
     }
 
     /** Cancels one execution through the real generated dispatch path. */
-    public static final class Cancel implements StepHandler {
+    public static final class Cancel {
         /** Creates one stateless handler. */
         public Cancel() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) throws InterruptedException {
+        public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
             throw new InterruptedException("conformance cancellation");
         }
     }
 
     /** Appends one byte to a real file so observation invocation count is externally provable. */
-    public static final class Append implements StepHandler {
+    public static final class Append {
         /** Creates one stateless handler. */
         public Append() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             try {
                 Files.writeString(
                         Path.of(input.string("file")),
@@ -117,39 +242,36 @@ public final class DevelopmentRuntimeConformanceSteps {
     }
 
     /** Writes a value larger than the development response boundary. */
-    public static final class Oversized implements StepHandler {
+    public static final class Oversized {
         /** Creates one stateless handler. */
         public Oversized() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome())
                     .write("target", RailixValue.string("x".repeat(OVERSIZED_CONTEXT_BYTES)));
         }
     }
 
     /** Writes enough data to exceed one development trace event while remaining valid workflow state. */
-    public static final class OversizedTrace implements StepHandler {
+    public static final class OversizedTrace {
         /** Creates one stateless handler. */
         public OversizedTrace() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome())
                     .write("target", RailixValue.string("x".repeat(3 * 1_024 * 1_024)));
         }
     }
 
     /** Signals entry over loopback and then waits until runtime shutdown interrupts the invocation. */
-    public static final class Block implements StepHandler {
+    public static final class Block {
         /** Creates one stateless handler. */
         public Block() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) throws InterruptedException {
+        public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
             signal(port(input, "entered_port"));
             new CountDownLatch(1).await();
             return StepResult.outcome(input.primaryOutcome());
@@ -157,13 +279,12 @@ public final class DevelopmentRuntimeConformanceSteps {
     }
 
     /** Completes normally after interruption so cancellation acknowledgement cannot be optimistic. */
-    public static final class IgnoreInterrupt implements StepHandler {
+    public static final class IgnoreInterrupt {
         /** Creates one stateless handler. */
         public IgnoreInterrupt() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             signal(port(input, "entered_port"));
             try {
                 new CountDownLatch(1).await();
@@ -175,13 +296,12 @@ public final class DevelopmentRuntimeConformanceSteps {
     }
 
     /** Keeps working briefly after interruption to prove bounded cancellation acknowledgement. */
-    public static final class DelayedIgnoreInterrupt implements StepHandler {
+    public static final class DelayedIgnoreInterrupt {
         /** Creates one stateless handler. */
         public DelayedIgnoreInterrupt() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             signal(port(input, "entered_port"));
             try {
                 new CountDownLatch(1).await();
@@ -200,13 +320,12 @@ public final class DevelopmentRuntimeConformanceSteps {
     }
 
     /** Holds one invocation on a real socket until the test releases it. */
-    public static final class Hold implements StepHandler {
+    public static final class Hold {
         /** Creates one stateless handler. */
         public Hold() {
         }
 
-        @Override
-        public StepResult run(final StepInput input) throws InterruptedException {
+        public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
             signal(port(input, "entered_port"));
             awaitRelease(port(input, "release_port"));
             return StepResult.outcome(input.primaryOutcome());

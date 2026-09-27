@@ -2,7 +2,6 @@ package dev.nanonative.railix.core.project;
 
 import dev.nanonative.railix.core.runtime.RunFailure;
 import dev.nanonative.railix.core.runtime.RunResult;
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixData;
@@ -12,10 +11,16 @@ import dev.nanonative.railix.core.value.ValueShape;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 
 /**
@@ -33,12 +38,446 @@ public final class WorkflowRuntime {
     private WorkflowRuntime() {
     }
 
+    /** Application-owned lifecycle for directly compiled Step hooks. */
+    static final class Lifecycle {
+        private static final RunResult SUCCESS = new RunResult.Succeeded(RailixValue.object(Map.of()));
+        record Stage(StepPlan plan, List<StepCall> pre, List<StepCall> post, String source) {
+        }
+
+        private final List<Stage> stages;
+        private final Map<String, SourceBinding> sources = new LinkedHashMap<>();
+        private final Map<StepPlan, ResourceScope> scopes = new IdentityHashMap<>();
+        private final Map<SharedKey, ManagedResource<?>> shared = new LinkedHashMap<>();
+        private final BiFunction<String, Map<String, RailixValue>, SourceResult> dispatch;
+        private List<String> arguments = List.of();
+        private ResourceScope initializingScope;
+        private boolean launched;
+        private int activeSources;
+        private int entered;
+        private RunResult startup;
+        private RunResult shutdown;
+        private boolean ready;
+        private boolean stopping;
+        private long drainStarted;
+        private long drainNanos;
+        private final Map<Thread, Integer> admitted = new LinkedHashMap<>();
+
+        Lifecycle(final List<Stage> stages,
+                  final BiFunction<String, Map<String, RailixValue>, SourceResult> dispatch) {
+            this.stages = List.copyOf(stages);
+            this.dispatch = dispatch;
+            for (final Stage stage : stages) {
+                final ResourceScope scope = new ResourceScope(stage.plan().use());
+                scopes.put(stage.plan(), scope);
+                if (!stage.source().isEmpty()) {
+                    sources.put(stage.source(), new SourceBinding(stage.source(), scope));
+                }
+            }
+        }
+
+        /** Initializes each occurrence at most once, rolling back partial startup on failure. */
+        synchronized RunResult start() {
+            if (stopping) {
+                return rejectedResult("APPLICATION_STOPPED", "Application has already stopped.", "application");
+            }
+            if (startup != null) {
+                return startup;
+            }
+            startup = SUCCESS;
+            try {
+                for (final Stage stage : stages) {
+                    entered++;
+                    final RunResult result;
+                    initializingScope = scopes.get(stage.plan());
+                    try {
+                        result = invoke(stage, stage.pre(), "PRE");
+                    } finally {
+                        initializingScope = null;
+                    }
+                    if (!(result instanceof RunResult.Succeeded)) {
+                        startup = result;
+                        stop(java.time.Duration.ZERO);
+                        return startup;
+                    }
+                }
+            } catch (final Error failure) {
+                try {
+                    stop(java.time.Duration.ZERO);
+                } catch (final RuntimeException | Error cleanup) {
+                    if (failure != cleanup) failure.addSuppressed(cleanup);
+                }
+                throw failure;
+            }
+            ready = true;
+            return startup;
+        }
+
+        /** Activates registered sources once, only after the complete application is ready. */
+        synchronized RunResult launch(final List<String> arguments) {
+            final List<String> supplied = List.copyOf(arguments);
+            if (launched) {
+                return stopping ? rejectedResult("APPLICATION_STOPPED", "Application has stopped.", "application")
+                        : startup;
+            }
+            this.arguments = supplied;
+            launched = true;
+            final RunResult result = start();
+            if (!(result instanceof RunResult.Succeeded)) {
+                return result;
+            }
+            try {
+                for (final SourceBinding source : sources.values()) {
+                    if (source.activation != null) {
+                        source.active = true;
+                        activeSources++;
+                        source.activation.run();
+                    }
+                }
+            } catch (final RuntimeException failure) {
+                startup = failedResult("SOURCE_START_FAILED",
+                        "Source activation failed: " + failure.getClass().getSimpleName(), "");
+                stop(RuntimeApplication.DEFAULT_DRAIN_BUDGET);
+            } catch (final Error failure) {
+                try {
+                    stop(RuntimeApplication.DEFAULT_DRAIN_BUDGET);
+                } catch (final RuntimeException | Error cleanup) {
+                    if (failure != cleanup) failure.addSuppressed(cleanup);
+                }
+                throw failure;
+            }
+            return startup;
+        }
+
+        /** Waits on the existing main thread, without polling or one idle thread per source. */
+        synchronized int awaitSources() {
+            while (!stopping && (activeSources > 0 || !admitted.isEmpty())) {
+                try {
+                    wait();
+                } catch (final InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    return 130;
+                }
+            }
+            return sources.values().stream().mapToInt(source -> source.status).filter(status -> status != 0)
+                    .findFirst().orElse(0);
+        }
+
+        synchronized boolean enter() {
+            if (startup == null && !stopping) {
+                start();
+            }
+            if (!ready || stopping) {
+                return false;
+            }
+            admitted.merge(Thread.currentThread(), 1, Integer::sum);
+            return true;
+        }
+
+        synchronized Lifecycle leave() {
+            final Thread thread = Thread.currentThread();
+            final int remaining = admitted.get(thread) - 1;
+            if (remaining == 0) {
+                admitted.remove(thread);
+                if (admitted.isEmpty() && (stopping || activeSources == 0)) notifyAll();
+            } else {
+                admitted.put(thread, remaining);
+            }
+            return this;
+        }
+
+        /** Runs POST in reverse initialization order, continuing cleanup after an ordinary hook failure. */
+        synchronized RunResult stop(final java.time.Duration drainBudget) {
+            if (drainBudget == null || drainBudget.isNegative()) {
+                throw new IllegalArgumentException("Drain budget must be a nonnegative duration.");
+            }
+            final long budget = drainBudget.toNanos();
+            if (shutdown != null) {
+                return shutdown;
+            }
+            if (admitted.containsKey(Thread.currentThread())) {
+                return rejectedResult("APPLICATION_STOP_IN_REQUEST",
+                        "Application shutdown must run outside an admitted request.", "application");
+            }
+            if (!stopping) {
+                stopping = true;
+                ready = false;
+                drainStarted = System.nanoTime();
+                drainNanos = budget;
+                notifyAll();
+            }
+            while (!admitted.isEmpty()) {
+                final long remaining = drainNanos - (System.nanoTime() - drainStarted);
+                if (remaining <= 0) {
+                    admitted.keySet().forEach(Thread::interrupt);
+                    return failedResult("APPLICATION_DRAIN_TIMEOUT",
+                            "Drain deadline expired; cancellation requested, resources remain in use.", "");
+                }
+                try {
+                    java.util.concurrent.TimeUnit.NANOSECONDS.timedWait(this, remaining);
+                } catch (final InterruptedException exception) {
+                    admitted.keySet().forEach(Thread::interrupt);
+                    Thread.currentThread().interrupt();
+                    return new RunResult.Cancelled();
+                }
+            }
+            shutdown = SUCCESS;
+            boolean interrupted = Thread.interrupted();
+            Error fatal = null;
+            try {
+                while (entered > 0) {
+                    final Stage stage = stages.get(--entered);
+                    try {
+                        final RunResult result = finish(stage);
+                        if (!(result instanceof RunResult.Succeeded) && shutdown instanceof RunResult.Succeeded) {
+                            shutdown = result;
+                        }
+                    } catch (final Error failure) {
+                        shutdown = failedResult("STEP_POST_FATAL", "Fatal POST failure.", stage.plan().id());
+                        if (fatal == null) {
+                            fatal = failure;
+                        } else if (fatal != failure) {
+                            fatal.addSuppressed(failure);
+                        }
+                    }
+                    interrupted |= Thread.interrupted();
+                }
+                if (fatal != null) {
+                    throw fatal;
+                }
+                return shutdown;
+            } finally {
+                if (interrupted || shutdown instanceof RunResult.Cancelled) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+
+        private RunResult finish(final Stage stage) {
+            final SourceBinding source = sources.get(stage.source());
+            final ResourceScope scope = scopes.get(stage.plan());
+            RunResult result = SUCCESS;
+            Error fatal = null;
+            try {
+                result = invoke(stage, stage.post(), "POST");
+            } catch (final Error failure) {
+                fatal = failure;
+            }
+            while (!scope.cleanup.isEmpty()) {
+                try {
+                    scope.cleanup.removeLast().run();
+                } catch (final RuntimeException failure) {
+                    if (result instanceof RunResult.Succeeded) {
+                        result = failedResult("STEP_RESOURCE_CLOSE_FAILED",
+                                "Step resource cleanup failed: " + failure.getClass().getSimpleName(), stage.plan().id());
+                    }
+                } catch (final Error failure) {
+                    if (fatal == null) fatal = failure;
+                    else if (fatal != failure) fatal.addSuppressed(failure);
+                }
+            }
+            if (source != null) {
+                if (source.active && !source.completed) activeSources--;
+                source.completed = true;
+                source.activation = null;
+            }
+            if (fatal != null) throw fatal;
+            return result;
+        }
+
+        private RunResult invoke(final Stage stage, final List<StepCall> hooks, final String phase) {
+            for (final StepCall hook : hooks) {
+                final StepInput context = StepInput.lifecycle(stage.plan().primaryOutcome(), sources.get(stage.source()),
+                        scopes.get(stage.plan()));
+                try {
+                    final StepResult result = hook.process(stage.plan().configuration(), context);
+                    if (result == null || !stage.plan().primaryOutcome().equals(result.outcome())
+                            || !result.outputs().isEmpty() || !result.writes().isEmpty()) {
+                        return failedResult("STEP_" + phase + "_RESULT_INVALID",
+                                phase + " must return the primary outcome without payload outputs or writes.", stage.plan().id());
+                    }
+                } catch (final InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    return new RunResult.Cancelled();
+                } catch (final RuntimeException exception) {
+                    return failedResult("STEP_" + phase + "_FAILED",
+                            phase + " failed: " + exception.getClass().getSimpleName(), stage.plan().id());
+                }
+            }
+            return SUCCESS;
+        }
+
+        private record SharedKey(String definition, String name, Class<?> type, Object settings) { }
+
+        private static final class ManagedResource<T> {
+            private final Class<T> type;
+            private final AtomicReference<T> value;
+            private final Consumer<? super T> close;
+            private int owners;
+
+            private ManagedResource(final Class<T> type, final T value, final Consumer<? super T> close) {
+                this.type = type;
+                this.value = new AtomicReference<>(value);
+                this.close = close;
+            }
+
+            private <R> R get(final Class<R> requested) {
+                if (type != requested) throw new IllegalArgumentException("Resource declared with a different type.");
+                final T current = value.get();
+                if (current == null) throw new IllegalStateException("Resource has already closed.");
+                return requested.cast(current);
+            }
+
+            private void release() {
+                if (--owners == 0) close.accept(value.getAndSet(null));
+            }
+        }
+
+        private final class ResourceScope implements StepInput.Resources {
+            private final String definition;
+            private final List<Runnable> cleanup = new ArrayList<>();
+            // Written only during serialized PRE, then read after lifecycle admission publishes it.
+            private Map<String, ManagedResource<?>> resources = Map.of();
+
+            private ResourceScope(final String definition) {
+                this.definition = definition;
+            }
+
+            private void requirePre() {
+                if (initializingScope != this) {
+                    throw new IllegalStateException("Resource registration belongs in its Step's PRE method.");
+                }
+            }
+
+            private static void validate(final String name, final Class<?> type) {
+                if (name == null || name.isBlank()) throw new IllegalArgumentException("Resource name must be non-blank.");
+                Objects.requireNonNull(type, "Resource type cannot be Java null.");
+            }
+
+            @Override
+            public <T> T get(final String name, final Class<T> type) {
+                validate(name, type);
+                final ManagedResource<?> resource = resources.get(name);
+                if (resource == null) throw new IllegalStateException("Resource is not registered: " + name);
+                return resource.get(type);
+            }
+
+            @Override
+            public <T> T acquire(final String name, final Class<T> type, final Object sharingKey,
+                                 final Supplier<? extends T> factory, final Consumer<? super T> close) {
+                synchronized (Lifecycle.this) {
+                    requirePre();
+                    validate(name, type);
+                    Objects.requireNonNull(factory, "Resource factory cannot be Java null.");
+                    Objects.requireNonNull(close, "Resource cleanup cannot be Java null.");
+                    if (resources.containsKey(name)) throw new IllegalStateException("Resource already registered: " + name);
+                    if (resources.isEmpty()) resources = new LinkedHashMap<>();
+                    // Reserve before invoking user code so a factory cannot register its own name again.
+                    resources.put(name, null);
+                    final SharedKey key = sharingKey == null ? null : new SharedKey(definition, name, type, sharingKey);
+                    ManagedResource<?> resource = key == null ? null : shared.get(key);
+                    if (resource == null) {
+                        final T value = type.cast(Objects.requireNonNull(factory.get(), "Resource factory returned Java null."));
+                        resource = new ManagedResource<>(type, value, close);
+                        if (key != null) shared.put(key, resource);
+                    }
+                    resources.put(name, resource);
+                    resource.owners++;
+                    cleanup.add(resource::release);
+                    return resource.get(type);
+                }
+            }
+        }
+
+        private final class SourceBinding implements StepInput.Source {
+            private final String name;
+            private final ResourceScope scope;
+            private Runnable activation;
+            private boolean active;
+            private boolean completed;
+            private int status;
+
+            private SourceBinding(final String name, final ResourceScope scope) {
+                this.name = name;
+                this.scope = scope;
+            }
+
+            @Override
+            public StepInput.Source onStart(final Runnable action) {
+                synchronized (Lifecycle.this) {
+                    scope.requirePre();
+                    if (activation != null) throw new IllegalStateException("Source activation is already registered.");
+                    activation = Objects.requireNonNull(action, "Source activation cannot be Java null.");
+                    return this;
+                }
+            }
+
+            @Override
+            public StepInput.Source onClose(final Runnable action) {
+                synchronized (Lifecycle.this) {
+                    scope.requirePre();
+                    scope.cleanup.add(Objects.requireNonNull(action, "Source cleanup cannot be Java null."));
+                    return this;
+                }
+            }
+
+            @Override
+            public List<String> arguments() {
+                synchronized (Lifecycle.this) {
+                    return arguments;
+                }
+            }
+
+            @Override
+            public SourceResult run(final Map<String, RailixValue> values, final Consumer<SourceResult> response) {
+                Objects.requireNonNull(values, "Source values cannot be Java null.");
+                Objects.requireNonNull(response, "Source response consumer cannot be Java null.");
+                final boolean accepted;
+                synchronized (Lifecycle.this) {
+                    accepted = active && !completed && enter();
+                }
+                if (!accepted) {
+                    final SourceResult rejected = new SourceResult(rejectedResult("APPLICATION_SOURCE_INACTIVE",
+                            "Source is not accepting work.", name), Map.of());
+                    response.accept(rejected);
+                    return rejected;
+                }
+                try {
+                    final SourceResult result = dispatch.apply(name, values);
+                    response.accept(result);
+                    return result;
+                } finally {
+                    leave();
+                }
+            }
+
+            @Override
+            public StepInput.Source complete(final int status) {
+                if (status < 0 || status > 255) throw new IllegalArgumentException("Source status must be 0 through 255.");
+                synchronized (Lifecycle.this) {
+                    if (!active || (completed && this.status != status)) {
+                        throw new IllegalStateException("Source completion requires an active source and a consistent status.");
+                    }
+                    this.status = status;
+                    if (!completed) activeSources--;
+                    completed = true;
+                    Lifecycle.this.notifyAll();
+                    return this;
+                }
+            }
+        }
+    }
+
     static Execution execution(
             final List<ResultPlan> results,
             final RailixValue.ObjectValue context,
             final RailixValue.ObjectValue runtime
     ) {
         return new Execution(results, context, runtime);
+    }
+
+    static Execution execution(final List<ResultPlan> results, final RailixValue.ObjectValue context,
+                               final RailixValue.ObjectValue runtime, final Lifecycle lifecycle) {
+        return new Execution(results, context, runtime, lifecycle);
     }
 
     static Optional<RunResult> validateSource(
@@ -74,13 +513,20 @@ public final class WorkflowRuntime {
         private RailixValue.ObjectValue frozenContext;
         private RunResult aborted;
         private final List<ResultPlan> results;
+        private final Lifecycle lifecycle;
 
         Execution(
                 final List<ResultPlan> results,
                 final RailixValue.ObjectValue streamContext,
                 final RailixValue.ObjectValue runtime
         ) {
+            this(results, streamContext, runtime, null);
+        }
+
+        Execution(final List<ResultPlan> results, final RailixValue.ObjectValue streamContext,
+                  final RailixValue.ObjectValue runtime, final Lifecycle lifecycle) {
             this.results = results;
+            this.lifecycle = lifecycle;
             final LinkedHashMap<String, Object> context = new LinkedHashMap<>(streamContext.values());
             for (final ResultPlan result : results) {
                 context.remove(result.name());
@@ -201,7 +647,14 @@ public final class WorkflowRuntime {
         }
 
         StepResult nested(final NestedStep step, final StepInput input) throws InterruptedException {
-            return step.handler().run(input);
+            return step.handler().process(step.step().configuration(), input);
+        }
+
+        private StepInput input(final StepPlan plan, final Inputs inputs) {
+            final Lifecycle.ResourceScope scope = lifecycle == null ? null : lifecycle.scopes.get(plan);
+            return scope == null || scope.resources.isEmpty() ? inputs.input()
+                    : StepInput.invocation(inputs.values, inputs.options, inputs.programs, inputs.selected,
+                            inputs.primaryOutcome, scope);
         }
     }
 
@@ -218,7 +671,7 @@ public final class WorkflowRuntime {
         }
         final StepResult result;
         try {
-            result = implementation.run(resolution.input());
+            result = implementation.process(plan.configuration(), execution.input(plan, resolution));
         } catch (final ProgramAbort abort) {
             return execution.abort(abort.result());
         } catch (final InterruptedException exception) {
@@ -627,7 +1080,7 @@ public final class WorkflowRuntime {
             }
             final StepResult result;
             try {
-                result = execution.nested(step, resolved.input());
+                result = execution.nested(step, execution.input(step.step(), resolved));
             } catch (final InterruptedException exception) {
                 throw exception;
             } catch (final ProgramAbort abort) {
@@ -1096,9 +1549,17 @@ public final class WorkflowRuntime {
         }
     }
 
+    /** A direct static Step function; cancellation can propagate without wrapping exceptions. */
     @FunctionalInterface
-    interface StepCall {
-        StepResult run(StepInput input) throws InterruptedException;
+    public interface StepCall {
+        /**
+         * Executes a declared phase with compiled settings separate from invocation data.
+         * @param configuration immutable settings reused across invocations
+         * @param context invocation values; lifecycle calls have no payload
+         * @return declared outcome and value changes
+         * @throws InterruptedException when execution is cancelled
+         */
+        StepResult process(StepInput configuration, StepInput context) throws InterruptedException;
     }
 
     record ResultPlan(String name, ValueShape shape, List<RailixValue> defaultValue) {
@@ -1116,7 +1577,8 @@ public final class WorkflowRuntime {
             List<String> outcomes,
             Map<String, Path> receivePaths,
             Map<String, Path> returnPaths,
-            String path
+            String path,
+            StepInput configuration
     ) {
         String primaryOutcome() {
             return outcomes.getFirst();
@@ -1151,7 +1613,7 @@ public final class WorkflowRuntime {
             StepPlan step,
             InputResolver inputs,
             String path,
-            StepHandler handler
+            StepCall handler
     ) {
     }
 

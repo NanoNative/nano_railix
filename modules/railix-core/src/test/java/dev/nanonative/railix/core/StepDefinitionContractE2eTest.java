@@ -12,7 +12,6 @@ import dev.nanonative.railix.core.step.StepDefinition.Result;
 import dev.nanonative.railix.core.step.StepDefinition.Source;
 import dev.nanonative.railix.core.step.StepDefinition.StepsInput;
 import dev.nanonative.railix.core.step.StepCatalog;
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueRefinement;
@@ -35,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 final class StepDefinitionContractE2eTest {
-    private static final Class<? extends StepHandler> NEXT = NextHandler.class;
+    private static final Class<?> NEXT = NextHandler.class;
 
     @Test
     void kindSurfaceContainsOnlyApplicationTriggerAndStep() {
@@ -48,7 +47,7 @@ final class StepDefinitionContractE2eTest {
 
     @Test
     void namedHandlerClassIsTheGeneratedApplicationImplementation() {
-        final StepDefinition definition = StepDefinition.named("example.named", "1").run(NextHandler.class);
+        final StepDefinition definition = StepDefinition.named("example.named", "1").implementation(NextHandler.class);
 
         assertThat(definition.executable()).isTrue();
     }
@@ -56,7 +55,7 @@ final class StepDefinitionContractE2eTest {
     @Test
     void implementationJdkModulesReachTheStepCatalog() {
         final StepCatalog catalog = StepCatalog.of(StepDefinition.named("example.http", "1")
-                .run(NextHandler.class, "java.net.http", "jdk.httpserver"));
+                .implementation(NextHandler.class, "java.net.http", "jdk.httpserver"));
 
         assertThat(catalog.implementation("example.http"))
                 .hasValueSatisfying(implementation -> assertThat(implementation.jdkModules())
@@ -66,21 +65,20 @@ final class StepDefinitionContractE2eTest {
     @Test
     void missingImplementationClassIsRejectedAtTheDeveloperBoundary() {
         assertThatIllegalArgumentException().isThrownBy(() -> StepDefinition.named("example.lambda", "1")
-                        .run(null))
+                        .implementation(null))
                 .withMessage("Step implementation cannot be Java null.");
     }
 
     @Test
     void localImplementationClassIsRejectedBeforeApplicationGeneration() {
-        final class LocalHandler implements StepHandler {
-            @Override
-            public StepResult run(final dev.nanonative.railix.core.step.StepInput input) {
+        final class LocalHandler {
+            public static StepResult process(final dev.nanonative.railix.core.step.StepInput configuration, final dev.nanonative.railix.core.step.StepInput input) {
                 return StepResult.outcome(input.primaryOutcome());
             }
         }
 
         assertThatIllegalArgumentException().isThrownBy(() -> StepDefinition.named("example.local", "1")
-                        .run(LocalHandler.class))
+                        .implementation(LocalHandler.class))
                 .withMessage("Step implementation must be a named Java class so generated applications can call it.");
     }
 
@@ -89,7 +87,7 @@ final class StepDefinitionContractE2eTest {
         final StepDefinition definition = StepDefinition.named("number.greater-or-equal", "1")
                 .displayName("Greater Or Equal")
                 .searchTerms("gte", "ge")
-                .run(NextHandler.class);
+                .implementation(NextHandler.class);
 
         assertThat(definition.displayName()).isEqualTo("Greater Or Equal");
         assertThat(definition.searchTerms()).containsExactly("gte", "ge");
@@ -161,7 +159,7 @@ final class StepDefinitionContractE2eTest {
         final StepDefinition definition = StepDefinition.named("example.match", "1")
                 .input("value", Input.json(ValueShape.ANY))
                 .input("matches", groups)
-                .run(NEXT);
+                .implementation(NEXT);
 
         assertThat(groups.options()).extracting(Option::name).containsExactly("current", "literal");
         assertThat(definition.inputs()).extracting(StepDefinition.Field::name)
@@ -176,7 +174,7 @@ final class StepDefinitionContractE2eTest {
                 .requiredResult("required", STRING)
                 .result("defaulted", NUMBER, RailixValue.number(0))
                 .maximumInstances(2)
-                .run(NEXT);
+                .implementation(NEXT);
 
         assertThat(definition.version()).isEqualTo("7");
         assertThat(definition.maximumInstances()).isEqualTo(2);
@@ -196,7 +194,7 @@ final class StepDefinitionContractE2eTest {
                 ))
                 .input("steps", Input.steps(StepDefinition.ValueSource.from("choice")
                         .onMissing("missing")))
-                .run(NEXT);
+                .implementation(NEXT);
 
         final StepsInput steps = (StepsInput) definition.inputs().getLast().input();
         assertThat(steps.valueSource()).isEqualTo(StepDefinition.ValueSource.from("choice")
@@ -217,7 +215,7 @@ final class StepDefinitionContractE2eTest {
                 .input("steps", Input.steps(
                         StepDefinition.ValueSource.from("value").onMissing("unresolved")
                 ))
-                .run(NEXT);
+                .implementation(NEXT);
 
         final CandidatesInput candidates = (CandidatesInput) definition.inputs().get(1).input();
         assertThat(candidates.options()).extracting(Option::name).containsExactly("current", "literal");
@@ -231,7 +229,7 @@ final class StepDefinitionContractE2eTest {
                 .input("steps", Input.steps(
                         StepDefinition.ValueSource.from("value")
                 ))
-                .run(NEXT);
+                .implementation(NEXT);
 
         assertThat(definition.outcomes()).containsExactly("next");
     }
@@ -240,7 +238,7 @@ final class StepDefinitionContractE2eTest {
     void legacyReceivePortKeepsTheExplicitNoRefinementDefault() {
         final StepDefinition definition = StepDefinition.named("example.step", "1")
                 .receive("value", ValueShape.ANY)
-                .run(NEXT);
+                .implementation(NEXT);
 
         assertThat(definition.receives().getFirst().refinement()).isEqualTo(ValueRefinement.none());
     }
@@ -250,7 +248,7 @@ final class StepDefinitionContractE2eTest {
         final ValueRefinement refinement = ValueRefinement.canonical().withMaxDepth(4);
         final StepDefinition definition = StepDefinition.named("example.step", "1")
                 .receive("value", ValueShape.ARRAY, refinement)
-                .run(NEXT);
+                .implementation(NEXT);
 
         assertThat(definition.receives().getFirst().refinement()).isEqualTo(refinement);
     }
@@ -260,7 +258,7 @@ final class StepDefinitionContractE2eTest {
         final ValueRefinement refinement = ValueRefinement.canonical().withMaxJsonBytes(32);
         final StepDefinition definition = StepDefinition.named("example.step", "1")
                 .returns("value", ValueShape.STRING, refinement)
-                .run(NEXT);
+                .implementation(NEXT);
 
         assertThat(definition.returns().getFirst().refinement()).isEqualTo(refinement);
     }
@@ -379,17 +377,17 @@ final class StepDefinitionContractE2eTest {
                 invalid("multiple authored-outcome inputs", () -> StepDefinition.named("example.routes", "1")
                                 .input("first", authoredCandidates())
                                 .input("second", authoredCandidates())
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "A Step may declare only one authored-outcome candidates input."),
                 invalid("nested authored-outcome input", () -> StepDefinition.named("example.routes", "1")
                                 .input("nested", Input.options(Input.option("branch")
                                         .input("cases", authoredCandidates())))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Authored-outcome candidates must be a top-level Step input."),
                 invalid("trigger authored-outcome input", () -> StepDefinition.named("example.trigger", "1")
                                 .kind(StepDefinition.Kind.TRIGGER)
                                 .input("cases", authoredCandidates())
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Only ordinary Steps may declare authored-outcome candidates."),
                 invalid("null JSON shape", () -> new JsonInput(null, List.of(), List.of(), true),
                         "JSON input shape cannot be Java null."),
@@ -504,34 +502,34 @@ final class StepDefinitionContractE2eTest {
                 invalid("null source responses", () -> new Source("example.source", null),
                         "Trigger source responses cannot be Java null."),
                 invalid("ordinary Step source", () -> StepDefinition.named("example.step", "1")
-                                .source("example.source").run(NEXT),
+                                .source("example.source").implementation(NEXT),
                         "Only Trigger Steps may declare an external source."),
                 invalid("ordinary Step example", () -> StepDefinition.named("example.step", "1")
-                                .example("case", RailixValue.object(Map.of())).run(NEXT),
+                                .example("case", RailixValue.object(Map.of())).implementation(NEXT),
                         "Only Trigger Steps may declare example templates."),
                 invalid("ordinary Step example target", () -> StepDefinition.named("example.step", "1")
                                 .input("target", Input.path(WRITE))
                                 .exampleTarget("target")
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Only Trigger Steps may declare an example target."),
                 invalid("unknown Trigger example target", () -> StepDefinition.named("example.trigger", "1")
                                 .kind(StepDefinition.Kind.TRIGGER)
                                 .exampleTarget("missing")
                                 .example("case", RailixValue.object(Map.of()))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Trigger example target must reference a declared PATH input: missing."),
                 invalid("read-only Trigger example target", () -> StepDefinition.named("example.trigger", "1")
                                 .kind(StepDefinition.Kind.TRIGGER)
                                 .input("target", Input.path(READ))
                                 .exampleTarget("target")
                                 .example("case", RailixValue.object(Map.of()))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Trigger example target must reference a writable PATH input: target."),
                 invalid("response without result", () -> StepDefinition.named("example.trigger", "1")
                                 .kind(StepDefinition.Kind.TRIGGER)
                                 .source("example.source")
                                 .response("output", "missing")
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Trigger response output must reference a declared result: missing."),
                 invalid("null port shape", () -> new StepDefinition.Port("value", null),
                         "Port shape cannot be Java null."),
@@ -584,37 +582,37 @@ final class StepDefinitionContractE2eTest {
                         "Step search term must be a non-blank string."),
                 invalid("duplicate Step search terms", () -> StepDefinition.named("example.step", "1")
                                 .searchTerms("alias", "alias")
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Step search terms must be distinct."),
                 invalid("zero maximum instances", () -> StepDefinition.named("example.step", "1").maximumInstances(0),
                         "Maximum Step instances must be positive."),
-                invalid("Java null implementation", () -> StepDefinition.named("example.step", "1").run(null),
+                invalid("Java null implementation", () -> StepDefinition.named("example.step", "1").implementation(null),
                         "Step implementation cannot be Java null."),
                 invalid("unknown option value source", () -> StepDefinition.named("example.step", "1")
                                 .input("choice", Input.options(Input.option("current").fromParent("missing")))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Option parent source must reference a readable earlier input: missing."),
                 invalid("write-only option value source", () -> StepDefinition.named("example.step", "1")
                                 .input("target", Input.path(WRITE))
                                 .input("choice", Input.options(Input.option("current").fromParent("target")))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Option parent source must reference a readable earlier input: target."),
                 invalid("unknown option-owned value source", () -> StepDefinition.named("example.step", "1")
                                 .input("choice", Input.options(Input.option("literal").fromOwned("missing")))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Option-owned source must reference a readable input owned by option literal: missing."),
                 invalid("unknown nested Step value source", () -> StepDefinition.named("example.step", "1")
                                 .input("steps", Input.steps(
                                         StepDefinition.ValueSource.from("missing").onMissing("missing")
                                 ))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Nested Step source must reference a readable earlier input: missing."),
                 invalid("write-only nested Step value source", () -> StepDefinition.named("example.step", "1")
                                 .input("target", Input.path(WRITE))
                                 .input("steps", Input.steps(
                                         StepDefinition.ValueSource.from("target").onMissing("missing")
                                 ))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Nested Step source must reference a readable earlier input: target."),
                 invalid("nested Step list as value source", () -> StepDefinition.named("example.step", "1")
                                 .input("seed", Input.json(ValueShape.ANY)
@@ -625,29 +623,29 @@ final class StepDefinitionContractE2eTest {
                                 .input("second", Input.steps(
                                         StepDefinition.ValueSource.from("first").onMissing("missing")
                                 ))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Nested Step source must reference a readable earlier input: first."),
                 invalid("source-less option as nested Step value", () -> StepDefinition.named("example.step", "1")
                                 .input("choice", Input.options(Input.option("literal")))
                                 .input("steps", Input.steps(StepDefinition.ValueSource.from("choice")))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Nested Step source must reference a readable earlier input: choice."),
                 invalid("duplicate received values", () -> StepDefinition.named("example.step", "1")
                                 .receive("value", STRING).receive("value", STRING)
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Received value names must be distinct."),
                 invalid("duplicate returned values", () -> StepDefinition.named("example.step", "1")
                                 .returns("value", STRING).returns("value", STRING)
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Returned value names must be distinct."),
                 invalid("duplicate inputs", () -> StepDefinition.named("example.step", "1")
                                 .input("value", Input.json(STRING)).input("value", Input.json(STRING))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Input names must be distinct."),
                 invalid("duplicate results", () -> StepDefinition.named("example.trigger", "1")
                                 .kind(StepDefinition.Kind.TRIGGER)
                                 .requiredResult("result", STRING).requiredResult("result", STRING)
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Result names must be distinct."),
                 invalid("duplicate examples", () -> StepDefinition.named("example.trigger", "1")
                                 .kind(StepDefinition.Kind.TRIGGER)
@@ -655,10 +653,10 @@ final class StepDefinitionContractE2eTest {
                                 .exampleTarget("target")
                                 .example("case", RailixValue.object(Map.of()))
                                 .example("case", RailixValue.object(Map.of()))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Trigger example template names must be distinct."),
                 invalid("duplicate outcomes", () -> StepDefinition.named("example.step", "1")
-                                .outcome("next").run(NEXT),
+                                .outcome("next").implementation(NEXT),
                         "Step outcomes must be distinct."),
                 invalid("nested missing outcome conflicts with primary outcome", () -> StepDefinition
                                 .named("example.step", "1")
@@ -666,7 +664,7 @@ final class StepDefinitionContractE2eTest {
                                 .input("steps", Input.steps(
                                         StepDefinition.ValueSource.from("seed").onMissing("next")
                                 ))
-                                .run(NEXT),
+                                .implementation(NEXT),
                         "Nested Step missing outcomes must differ from enclosing Step outcomes.")
         );
     }
@@ -694,9 +692,8 @@ final class StepDefinitionContractE2eTest {
         return StepResult.outcome(input.primaryOutcome());
     }
 
-    private static final class NextHandler implements StepHandler {
-        @Override
-        public StepResult run(final dev.nanonative.railix.core.step.StepInput input) {
+    private static final class NextHandler {
+        public static StepResult process(final dev.nanonative.railix.core.step.StepInput configuration, final dev.nanonative.railix.core.step.StepInput input) {
             return next(input);
         }
     }

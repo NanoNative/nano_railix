@@ -1,6 +1,6 @@
 ---
-name: railix-verification
-description: "Verify and review Railix changes through regression tests, browser/audio checks, profiling and packaged artifacts. Use static checks for documentation-only work."
+name: implementation-verification
+description: "Verify and review changes through public-boundary regressions, browser/audio checks, profiling and packaged artifacts. Use static checks for documentation-only work."
 ---
 
 # Verification And Review
@@ -15,33 +15,24 @@ Define the claimed behavior and choose evidence that can disprove it.
 2. Use compiled artifacts, real HTTP and visible browser controls rather than only
    private helpers. Cover success, absence, rejection, failure and relevant reuse/races.
    Do not hand-edit generated output or fixtures to conceal unsupported behavior.
-3. Run from repository root with Java 25. During development use `./mvnw test`;
-   before publishing code use `./mvnw --batch-mode --no-transfer-progress clean verify`.
-   The latter includes packaged/native and desktop/mobile browser checks.
-4. For a focused Creator run, build upstream modules and keep required suites nonempty:
-
-```sh
-./mvnw -pl modules/railix-creator -am -Drailix.test.forks=1 \
-  -Dtest=RailixValueNullContractTest,PrimitiveStepsCreatorProjectE2eTest,CreatorEditorE2eTest \
-  -Dsurefire.failIfNoSpecifiedTests=false test
-```
-
-Replace the last class with the affected Creator suite, such as CreatorEditorBrowserIT
-or CreatorWorldBrowserIT. Confirm discovery in test reports; a focused run is not the
-full gate. Coverage is advisory, not an enforced Maven percentage threshold.
+3. Discover the repository's toolchain, commands, coverage policy and publication gate.
+   Build prerequisites for focused tests and confirm nonempty discovery in reports;
+   a successful command with skipped suites is not evidence. A focused run is not the full gate.
+4. Protect active previews and user outputs from clean builds. Do not run competing
+   builds against the same output directory. Use an isolated snapshot when necessary.
 
 ## Inspect The Changed Behavior
 
-- Browser: use existing Java Playwright fixtures and installed Chrome, not a global
-  npm CLI. Inspect fresh page state after navigation/menu changes. Test desktop/narrow
+- Browser: use the project's supported fixtures and browsers. Inspect fresh page
+  state after navigation/menu changes. Test desktop/narrow
   layouts, keyboard typing, and affected renderers/navigation. Keep traces/screenshots
-  under the module's target directory; do not substitute private calls for user journeys.
+  in ignored build output; do not substitute private calls for user journeys.
 - Performance: compare the same project, viewport/DPR, renderer, motion and warmup.
   Record frame-time distribution, CPU, memory growth, requests and visible object count.
   Separate navigation from steady animation; graphics-process CPU is not GPU utilization.
 - Audio: render through playback including master gain; check duration, finite samples,
   peaks/RMS and clipping. Exercise pause/cleanup and listen when possible.
-- Packaging: test Creator and generated applications separately, using isolated homes.
+- Packaging: test authoring tools and generated applications separately, using isolated homes.
   Check production omissions, artifact size and external extensions without a rebuild.
 - Documentation: validate metadata, links, portability and Git inclusion. Support status
   claims with evidence, distinguish partial/planned work, and update the owning document
