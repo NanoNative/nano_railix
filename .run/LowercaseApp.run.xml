@@ -1,0 +1,11 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="LowercaseApp" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="dev.nanonative.railix.creator.RailixMain" />
+    <module name="railix-creator" />
+    <option name="PROGRAM_PARAMETERS" value="creator examples/lowercase-app/railix.project.json 7310" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
