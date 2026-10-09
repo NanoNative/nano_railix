@@ -2071,6 +2071,37 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
+    void buildDetailsImportsACompleteProjectJson() throws Exception {
+        final String imported = CreatorProjects.previewBoundary()
+                .replace("\"id\":\"preview-boundary\"", "\"id\":\"uploaded-project\"");
+        final Path upload = directory.resolve("uploaded-railix.project.json");
+        Files.writeString(upload, imported);
+        page.locator(".build-indicator").click();
+
+        page.locator("#project-import-file").setInputFiles(upload);
+        page.waitForFunction("() => document.querySelector('#project-import-source').value.includes('uploaded-project')");
+        final var response = page.waitForResponse(candidate -> candidate.url().endsWith("/api/project")
+                        && candidate.request().method().equals("POST"),
+                () -> page.locator("#project-import-submit").click());
+
+        assertThat(response.status()).isEqualTo(200);
+        page.waitForFunction("""
+                () => state.project.id === 'uploaded-project'
+                  && state.workspace.flow_count === 1
+                  && state.workspace.step_count === 4
+                  && state.build === 'Built'
+                  && !state.pendingProject
+                  && !state.writeActive
+                """);
+        waitForText("#project-import-status", "Imported and built.");
+        assertThat(page.locator("#flow-count").textContent()).isEqualTo("1 flow");
+        assertThat(page.locator("#step-count").textContent()).isEqualTo("4 steps");
+        assertThat(page.title()).isEqualTo("uploaded-project - Railix Creator");
+        assertThat(Files.readString(directory.resolve("project.json"))).contains("\"id\":\"uploaded-project\"");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
     @Tag("responsive")
     void closingBuildDetailsKeepsAnAlreadyOpenInspectorAndItsSelection() {
         openProject(fourStepProject());

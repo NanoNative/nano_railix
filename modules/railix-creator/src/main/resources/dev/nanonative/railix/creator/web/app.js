@@ -1444,7 +1444,181 @@ function buildDetails() {
           builtAt ? html(new Date(builtAt).toLocaleString()) : "Not built"
         }</dd></div>
       </dl>
+    </section>
+    <section id="project-import">
+      <header><strong>Project JSON</strong></header>
+      <label for="project-import-file">File</label>
+      <input id="project-import-file" type="file" accept="application/json,.json">
+      <label for="project-import-source">Source</label>
+      <textarea id="project-import-source" rows="9" spellcheck="false"></textarea>
+      <nav aria-label="Project import">
+        <button id="project-import-submit" type="button">Import</button>
+        <button id="project-import-clear" type="button">Clear</button>
+      </nav>
+      <p id="project-import-status" role="status"></p>
     </section>`;
+}
+
+function projectImportStatus(message, severity = "") {
+  const status = document.querySelector("#project-import-status");
+  if (!status) return;
+  status.textContent = message;
+  if (severity) status.dataset.severity = severity;
+  else delete status.dataset.severity;
+}
+
+function projectImportControls(disabled) {
+  for (const id of ["project-import-file", "project-import-source", "project-import-submit", "project-import-clear"]) {
+    const control = document.getElementById(id);
+    if (control) control.disabled = disabled;
+  }
+}
+
+function clearProjectImport() {
+  const file = document.querySelector("#project-import-file");
+  const source = document.querySelector("#project-import-source");
+  if (file) file.value = "";
+  if (source) source.value = "";
+  projectImportStatus("");
+}
+
+async function readProjectImportFile(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  const source = document.querySelector("#project-import-source");
+  if (!source) return;
+  try {
+    source.value = await file.text();
+    projectImportStatus(file.name);
+  } catch (_error) {
+    projectImportStatus("Project JSON file could not be read.", "error");
+  }
+}
+
+async function flushPendingWritesForProjectImport() {
+  if (state.saveTimer) {
+    clearTimeout(state.saveTimer);
+    state.saveTimer = 0;
+    const revision = state.revision;
+    const functional = state.pendingProject;
+    state.pendingProject = false;
+    enqueueWrite({
+      revision,
+      projectChanged: functional,
+      projectSource: JSON.stringify(state.project),
+      creatorSource: JSON.stringify(state.creator)
+    });
+  }
+  if (state.writeActive) {
+    await state.writePromise;
+  }
+}
+
+async function importProjectJson() {
+  const source = document.querySelector("#project-import-source")?.value || "";
+  if (!source.trim()) {
+    projectImportStatus("Choose or paste project JSON.", "error");
+    return;
+  }
+  try {
+    parseExact(source);
+  } catch (_error) {
+    projectImportStatus("Project JSON is invalid.", "error");
+    return;
+  }
+  let previousBuild = state.build;
+  try {
+    projectImportControls(true);
+    projectImportStatus("Importing.");
+    await flushPendingWritesForProjectImport();
+    previousBuild = state.build;
+    state.build = "Building";
+    state.pendingProject = true;
+    renderBuildStatus();
+    const response = await fetch("/api/project", {
+      method: "POST",
+      headers: mutationHeaders(),
+      body: source
+    });
+    const payload = parseExact(await response.text());
+    if (!response.ok) {
+      const diagnostic = payload.diagnostics?.[0];
+      state.build = previousBuild;
+      state.pendingProject = false;
+      renderBuildStatus();
+      projectImportStatus(diagnostic?.message || payload.message || "Project could not be imported.", "error");
+      return;
+    }
+    const editorResponse = await fetch("/api/editor", { cache: "no-store" });
+    const editorPayload = parseExact(await editorResponse.text());
+    if (!editorResponse.ok) {
+      state.build = previousBuild;
+      state.pendingProject = false;
+      renderBuildStatus();
+      projectImportStatus(editorPayload.message || "Project was imported; reload to refresh the editor.", "error");
+      return;
+    }
+    applyImportedProject(editorPayload);
+    render();
+    document.querySelector("#application-status").innerHTML = buildDetails();
+    projectImportStatus("Imported and built.");
+    scheduleApplicationPoll(0);
+    scheduleMetricsPoll(0);
+    void state.world?.focus("app", .5);
+  } catch (_error) {
+    state.build = previousBuild;
+    state.pendingProject = false;
+    renderBuildStatus();
+    projectImportStatus("Project could not be imported.", "error");
+  } finally {
+    projectImportControls(false);
+  }
+}
+
+function applyImportedProject(payload) {
+  state.editorRequest++;
+  state.editorController?.abort();
+  state.editorController = null;
+  state.project = payload.project;
+  state.editor = payload.editor;
+  state.builtProject = clone(payload.project);
+  state.creator = payload.creator || { format: 2, groups: [], steps: {} };
+  state.savedCreator = clone(state.creator);
+  state.projectVersion = payload.revision;
+  state.creatorVersion = payload.creator_revision;
+  state.workspace = payload.workspace;
+  state.diagnostics = payload.diagnostics || [];
+  state.localDiagnostics = [];
+  replaceApplication(payload.application);
+  state.build = "Built";
+  state.pendingProject = false;
+  state.pendingWrite = null;
+  state.removedFlows = [];
+  state.pendingPrune = false;
+  state.selection = { type: "app", id: "app" };
+  state.regionSelection = null;
+  state.groupPointer = null;
+  state.inspectorMode = "inspect";
+  state.picker = null;
+  state.groupPicker = null;
+  state.pathPicker = null;
+  state.jsonDraft = null;
+  state.exampleDraft = null;
+  state.exampleTrigger = "";
+  state.exampleIndex = 0;
+  state.revealNode = "";
+  state.revision++;
+  clearInputQueries();
+  clearPreview(true);
+  resetMetrics();
+  state.worldChanges.clear();
+  state.worldMarkedRegions.clear();
+  state.worldIssues.clear();
+  state.worldCovered.clear();
+  state.worldSelected.clear();
+  state.coverageSource = null;
+  state.coverageBits = "";
+  state.sceneDirty = true;
 }
 
 function triggerInspector(trigger, issues) {
@@ -5394,6 +5568,14 @@ document.addEventListener("click", event => {
     document.querySelector('#application-status').innerHTML = buildDetails();
     return;
   }
+  if (target.closest("#project-import-submit")) {
+    void importProjectJson();
+    return;
+  }
+  if (target.closest("#project-import-clear")) {
+    clearProjectImport();
+    return;
+  }
   const exampleTrigger = target.closest("[data-locate-trigger]");
   if (exampleTrigger) {
     const id = exampleTrigger.dataset.locateTrigger;
@@ -5726,6 +5908,8 @@ document.addEventListener("input", event => {
     state.pathIndex = event.target.value;
     document.querySelector("#append-path-index").disabled =
       !validPathIndex(state.pathIndex);
+  } else if (event.target.id === "project-import-source") {
+    projectImportStatus("");
   }
 });
 
@@ -5752,6 +5936,7 @@ document.addEventListener("change", event => {
   }
   if (target.id === 'theme-variant') { changeSettings({theme_variant:target.value}); void applyTheme(); return; }
   if (target.id === 'reduced-motion') { changeSettings({reduced_motion:target.checked}); return; }
+  if (target.id === "project-import-file") { void readProjectImportFile(target); return; }
   if (target.id === "dock-example") {
     selectExample(Number(target.value), state.hoverTrigger?.id === target.dataset.trigger ? state.hoverTrigger : node(target.dataset.trigger));
     return;
