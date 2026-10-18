@@ -68,6 +68,8 @@ const state = {
   saveTimer: 0,
   writeActive: false,
   pendingWrite: null,
+  saveFailure: null,
+  rebuildRequired: false,
   runResult: "",
   preview: null,
   previewCases: [],
@@ -963,7 +965,7 @@ function inspector() {
     const modes = [["overview", "Overview"], ...(group ? [["appearance", "Appearance"]] : []), ['groups','Groups']];
     const tabs = `<nav class="inspector-tabs" aria-label="Inspector mode" style="--tab-count:${modes.length}">${modes.map(([id, label]) =>
       `<button type="button" data-inspector-mode="${id}" class="${state.inspectorMode === id ? "active" : ""}">${label}</button>`).join("")}</nav>`;
-    return tabs + (state.inspectorMode === 'groups' ? manageGroupsInspector() : state.inspectorMode === "appearance" && group
+    return tabs + changeStatus() + (state.inspectorMode === 'groups' ? manageGroupsInspector() : state.inspectorMode === "appearance" && group
       ? presentationEditor(group, {name: region.name}, "group:" + group.id)
       : `<section id="selection-overview"></section><section class="inspector-section">${issueList(region.id)}</section>`
         + metricFacts("Group metrics", [...metricRows(currentWorldObservations()?.nodes.get(region.id)?.metrics),
@@ -984,27 +986,48 @@ function inspector() {
     <button type="button" data-inspector-mode="${mode}" class="${
       state.inspectorMode === mode ? "active" : ""
     }">${label}</button>`).join("")}</nav>`;
-  if (state.inspectorMode === "overview") return tabs + '<section id="selection-overview"></section>';
-  if (state.inspectorMode === 'groups') return tabs + manageGroupsInspector();
+  const panel = tabs + changeStatus();
+  if (state.inspectorMode === "overview") return panel + '<section id="selection-overview"></section>';
+  if (state.inspectorMode === 'groups') return panel + manageGroupsInspector();
   if (state.inspectorMode === "examples") {
-    return tabs + examplesInspector(node(state.selection.id));
+    return panel + examplesInspector(node(state.selection.id));
   }
   if (state.inspectorMode === "appearance") {
-    return tabs + appearanceInspector();
+    return panel + appearanceInspector();
   }
   if (state.selection.type === "trigger") {
     const trigger = node(state.selection.id);
-    return tabs + (trigger
+    return panel + (trigger
       ? triggerInspector(trigger, issueList(trigger.id))
       : appInspector(issueList("app")));
   }
   if (state.selection.type === "step") {
     const operation = node(state.selection.id);
-    return tabs + (operation
+    return panel + (operation
       ? stepInspector(operation, issueList(operation.id))
       : appInspector(issueList("app")));
   }
-  return tabs + appInspector(issueList("app"));
+  return panel + appInspector(issueList("app"));
+}
+
+function changeStatus() {
+  if (!["Building", "Not built", "Not saved"].includes(state.build)) return "";
+  const building = state.build === "Building";
+  const required = allDiagnostics().some(issue => issue.code === "PROJECT_INPUT_REQUIRED");
+  const title = building ? "Applying changes…" : required ? "Complete required inputs"
+    : state.build === "Not saved" ? "Appearance changes not saved" : "Changes not applied";
+  const message = building ? "The running application updates when the build is ready."
+    : state.saveFailure?.message || "Review the highlighted fields. Your draft is kept in the editor.";
+  const running = state.application.state === "running";
+  const application = !building && state.build !== "Not saved" && running
+    ? "The last successful application is still running."
+    : !building && !running ? "The application is not running." : "";
+  return `<section id="change-status" class="change-status" role="status" data-state="${building ? "pending" : "failed"}">
+    <strong>${title}</strong><p>${html(message)}</p>${!building && state.rebuildRequired
+      ? '<p>The project is saved, but this version is not running.</p>' : ""}${application ? `<p>${application}</p>` : ""}
+    ${!building && (state.rebuildRequired || state.saveFailure?.retryable) && !state.jsonDraft && !state.exampleDraft
+      ? '<button type="button" id="retry-save">Retry changes</button>' : ""}
+  </section>`;
 }
 
 function appearanceInspector() {
@@ -1591,6 +1614,8 @@ function applyImportedProject(payload) {
   state.localDiagnostics = [];
   replaceApplication(payload.application);
   state.build = "Built";
+  state.rebuildRequired = false;
+  state.saveFailure = null;
   state.pendingProject = false;
   state.pendingWrite = null;
   state.removedFlows = [];
@@ -1716,6 +1741,8 @@ function portPathInput(operation, definition, direction, port) {
   const fallback = source || ["context", "payload", port.name];
   return {
     name: single ? prefix : prefix + "_" + port.name,
+    label: direction === "receives" ? single ? "Read from" : "Read " + inputLabel(port.name) + " from"
+      : single ? "Write to" : "Write " + inputLabel(port.name) + " to",
     type: "path",
     access: direction === "receives" ? "read" : "write",
     required: true,
@@ -1821,13 +1848,17 @@ function pathInput(operation, input, locator, value) {
             }>Reset</button>` : "";
   return `
     <section class="inspector-section" data-input-name="${html(input.name)}">
-      <div class="section-heading"><strong>${html(inputLabel(input.name))}</strong>
+      <div class="section-heading"><strong>${html(input.label || inputLabel(input.name))}</strong>
         <div class="path-heading-actions"><span>${html(input.access.replace("_", " "))} path</span>${reset}</div>
       </div>${optional}
       <button class="path-button" type="button" id="${html(id)}-path"
               data-open-path="${locatorToken(locator)}" data-input-meta="${metaToken(input)}">
         ${selected?.length ? pathCrumbs(selected) : "Choose path"}
       </button>
+      ${locator[0] === "returns" && selected?.length ? `<p class="path-effect">${
+        Object.values(operation.receives || {}).some(path => samePath(path, selected))
+          ? "Replaces the source field with the result." : "Writes the result to this field."
+      }</p>` : ""}
       <div class="path-values" data-path-observation="${locatorToken(locator)}"
            data-input-meta="${metaToken(input)}" aria-live="polite">${pathValues(operation, input, selected, locator)}</div>
       ${open ? pathBrowser(input, operation, locator) : ""}
@@ -2233,7 +2264,7 @@ function jsonInput(operation, input, locator, value) {
              data-toggle-input="${locatorToken(locator)}" data-input-meta="${metaToken(input)}">
       <span>Use ${html(inputLabel(input.name).toLowerCase())}</span>
     </label>` : "";
-  const attributes = `id="${html(id)}-value" data-input-json="${locatorToken(locator)}"
+  const attributes = `id="${html(id)}-value" ${input.required ? 'aria-required="true"' : ''} data-input-json="${locatorToken(locator)}"
                       data-input-meta="${metaToken(input)}"`;
   let control;
   if (input.shape === "string") {
@@ -2260,7 +2291,7 @@ function jsonInput(operation, input, locator, value) {
     <section class="inspector-section${input.required ? "" : " compact"}"
              data-input-name="${html(input.name)}">
       ${optional}
-      <label for="${html(id)}-value">${html(inputLabel(input.name))}</label>
+      <label for="${html(id)}-value">${html(inputLabel(input.name))}${input.required ? " <small>Required</small>" : ""}</label>
       ${control}
       ${input.required && input.shape === "string" && !present ? `
         <button type="button" id="${html(id)}-empty"
@@ -2604,6 +2635,7 @@ function addCatalogStep(id) {
   state.picker = null;
   state.pathPicker = null;
   state.pathDraft = [];
+  state.inspectorMode = "inspect";
   dirty(true);
 }
 
@@ -4246,7 +4278,7 @@ function formatPercentPpm(value) {
 }
 
 async function requestSelectedTrace() {
-  if (state.build === "Building" || !state.application.pid || state.jsonDraft || state.exampleDraft) {
+  if (state.build === "Building" || state.rebuildRequired || !state.application.pid || state.jsonDraft || state.exampleDraft) {
     return;
   }
   const example = selectedTraceCase();
@@ -4384,7 +4416,7 @@ async function readExampleProjection(path, signal) {
 }
 
 function selectedTraceCase() {
-  if (state.exampleIndex < 0) return null;
+  if (state.exampleIndex < 0 || state.rebuildRequired) return null;
   const operation = state.selection.type === "trigger" || state.selection.type === "step"
     ? node(state.selection.id)
     : null;
@@ -4474,7 +4506,7 @@ function applyExampleCoverage() {
   const examples = state.application.examples;
   if (!state.project) return;
   const deployed = state.builtProject || state.project;
-  const bits = state.application.state === "running" ? examples?.coverage_bits || "" : "";
+  const bits = !state.rebuildRequired && state.application.state === "running" ? examples?.coverage_bits || "" : "";
   if (state.coverageSource !== deployed || state.coverageBits !== bits) {
     state.worldCovered = exampleCoverage(bits, deployed);
     state.worldCovered.delete("app");
@@ -4686,6 +4718,9 @@ function renderRunResult() {
 }
 
 function dirty(projectChanged = true) {
+  if (projectChanged || !Object.keys(documentChanges(state.builtProject, state.project)).length) {
+    state.saveFailure = null;
+  }
   if (projectChanged) {
     if (state.builtProject && !state.builtProject.nodes.some(operation => operation.id === state.selection.id)) {
       state.revealNode = state.selection.id;
@@ -4760,14 +4795,33 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     const changes = projectChanged ? documentChanges(state.builtProject, project) : {};
     const removedFlows = [...state.removedFlows];
     if (removedFlows.length) changes.remove_flows = removedFlows;
-    if (Object.keys(changes).length) {
+    if (Object.keys(changes).length || projectChanged && state.rebuildRequired) {
       const projectResponse = await fetch("/api/project", {
         method: "PATCH",
         headers: mutationHeaders(),
         body: JSON.stringify({ revision: state.projectVersion, changes })
       });
       payload = parseExact(await projectResponse.text());
+      // Persistence may succeed even if activation fails. Keep the acknowledged edit baseline
+      // separate from whether that source reached the running application, including stale replies.
+      if (projectResponse.ok || payload.saved === true) {
+        state.projectVersion = payload.revision;
+        state.builtProject = project;
+        state.rebuildRequired = !projectResponse.ok;
+        if (state.rebuildRequired) clearPreview(true);
+        state.removedFlows = state.removedFlows.filter(id => !removedFlows.includes(id));
+        state.pendingPrune ||= removedFlows.length > 0;
+        state.workspace = payload.workspace;
+        state.sceneDirty = true;
+      }
       if (!projectResponse.ok) {
+        // Appearance edits advance the UI revision without replacing the functional draft.
+        if (revision === state.revision || projectSource === JSON.stringify(state.project)) {
+          state.saveFailure = {
+            message: payload.message || "Review the highlighted fields. Your draft is kept in the editor.",
+            retryable: projectResponse.status >= 500
+          };
+        }
         if (revision === state.revision) {
           if (payload.application) {
             replaceApplication(payload.application);
@@ -4782,13 +4836,6 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
         }
         return false;
       }
-      // A stale UI response still advances the transport baseline for the next queued save.
-      state.projectVersion = payload.revision;
-      state.builtProject = project;
-      state.removedFlows = state.removedFlows.filter(id => !removedFlows.includes(id));
-      state.pendingPrune ||= removedFlows.length > 0;
-      state.workspace = payload.workspace;
-      state.sceneDirty = true;
     }
     const metadataChanges = documentChanges(state.savedCreator, creator);
     if (state.pendingPrune) metadataChanges.prune_removed_steps = true;
@@ -4801,11 +4848,17 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
       payload = parseExact(await creatorResponse.text());
       if (!creatorResponse.ok) {
         if (revision === state.revision) {
+          const retryProject = state.saveFailure?.retryable === true
+            && Object.keys(documentChanges(state.builtProject, project)).length > 0;
           state.diagnostics = payload.diagnostics || [{
             code: "CREATOR_METADATA_SAVE_FAILED",
             message: payload.message || "Creator metadata could not be saved.",
             path: ""
           }];
+          state.saveFailure = {
+            message: payload.message || "Appearance changes could not be saved. Your draft is kept in the editor.",
+            retryable: retryProject || creatorResponse.status >= 500
+          };
           state.build = "Not saved";
           render();
         }
@@ -4821,13 +4874,16 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     if (payload?.application) {
       replaceApplication(payload.application);
     }
-    state.build = Object.keys(documentChanges(state.builtProject, state.project)).length ? "Not built" : "Built";
+    state.build = state.rebuildRequired || Object.keys(documentChanges(state.builtProject, state.project)).length ? "Not built" : "Built";
     if (state.build === "Built") {
+      state.saveFailure = null;
       state.diagnostics = payload?.diagnostics || state.diagnostics;
     }
     state.sceneDirty = true;
     if (state.pathPicker) {
       renderBuildStatus();
+      const status = document.querySelector("#change-status");
+      if (status) status.outerHTML = changeStatus();
       if (!refreshPathPicker()) {
         render();
       }
@@ -4840,6 +4896,9 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     }
     return true;
   } catch (error) {
+    if (revision === state.revision || projectChanged && projectSource === JSON.stringify(state.project)) {
+      state.saveFailure = { message: "Creator could not confirm this change. Your draft is kept in the editor.", retryable: true };
+    }
     if (revision !== state.revision) {
       return false;
     }
@@ -5664,6 +5723,10 @@ document.addEventListener("click", event => {
   }
   if (target.closest("#add-trigger") || target.closest("[data-open-picker='trigger']")) {
     openPicker("trigger", "app");
+    return;
+  }
+  if (target.closest("#retry-save")) {
+    dirty(state.rebuildRequired || Object.keys(documentChanges(state.builtProject, state.project)).length > 0);
     return;
   }
   if (target.closest("#add-next-step")) {

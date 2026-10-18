@@ -15,12 +15,201 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
+    @ParameterizedTest
+    @ValueSource(strings = {"canvas", "hq"})
+    @Tag("responsive")
+    void addingAStepShowsItsMappingsAndActualExampleResult(final String renderer) throws Exception {
+        page.locator("#open-settings").click();
+        page.locator("#theme-variant").selectOption(renderer);
+        page.waitForFunction("() => !state.settingsWriting && !state.settingsTimer");
+        page.locator("[aria-label='Close Settings']").click();
+        prepareTextPayloadTrigger();
+        final String endpoint = "**/api/project";
+        final List<Route> pending = new ArrayList<>();
+        page.route(endpoint, route -> {
+            if (route.request().method().equals("PATCH")) pending.add(route);
+            else route.resume();
+        });
+        try {
+            clickOverview("#add-next-step");
+            page.locator("#step-search").fill("lowercase");
+            page.locator("[data-add-step='text.lowercase']").click();
+            page.waitForCondition(() -> !pending.isEmpty());
+            page.locator("[data-input-name=source] [data-open-path]").click();
+            assertThat(page.locator("#change-status").textContent()).contains("Applying changes");
+            pending.removeFirst().resume();
+            waitForText("#build-state", "Built");
+            assertThat(page.locator(".path-browser").count()).isEqualTo(1);
+            assertThat(page.locator("#change-status").count()).isZero();
+            page.locator("#cancel-path").click();
+        } finally {
+            pending.forEach(Route::abort);
+            page.unroute(endpoint);
+        }
+
+        assertThat(page.locator("[data-inspector-mode=inspect]").getAttribute("class")).contains("active");
+        assertThat(page.locator("[data-input-name=source]").textContent()).contains("Read from", "payload", "text");
+        assertThat(page.locator("[data-input-name=target]").textContent())
+                .contains("Write to", "Replaces the source field");
+        page.waitForFunction("() => document.querySelector('[data-preview-output=value]')?.textContent === '\"railix\"'");
+        assertThat(page.locator("[data-preview-input-value=value]").textContent()).isEqualTo("\"RAILIX\"");
+        assertThat(page.locator("#graph").getAttribute("data-renderer")).isEqualTo(renderer.equals("hq") ? "css" : "canvas");
+        final var inspector = page.locator("#inspector").boundingBox();
+        assertThat(inspector.x).isGreaterThanOrEqualTo(0);
+        assertThat(inspector.x + inspector.width).isLessThanOrEqualTo((double) page.viewportSize().width);
+        page.screenshot(new com.microsoft.playwright.Page.ScreenshotOptions().setPath(
+                Files.createDirectories(Path.of("target", "screenshots")).resolve(
+                        "step-creation-" + renderer + "-" + page.viewportSize().width + ".png")));
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void newlyAddedStepExplainsRequiredConfigurationAndCanRecover() throws Exception {
+        prepareTextPayloadTrigger();
+        final String before = applicationPid();
+        clickOverview("#add-next-step");
+        page.locator("#step-search").fill("http client");
+        page.locator("[data-add-step='railix.http.client']").click();
+        waitForText("#build-state", "Not built");
+
+        assertThat(applicationPid()).isEqualTo(before);
+        assertThat(page.locator("#change-status").textContent())
+                .contains("Complete required inputs", "last successful application is still running");
+        assertThat(page.locator("[data-input-name=url]").textContent()).contains("Required");
+        assertThat(page.locator("#url-value").isVisible()).isTrue();
+        page.screenshot(new com.microsoft.playwright.Page.ScreenshotOptions().setPath(
+                Files.createDirectories(Path.of("target", "screenshots")).resolve(
+                        "step-required-configuration-" + page.viewportSize().width + ".png")));
+        page.locator("#url-value").scrollIntoViewIfNeeded();
+        page.screenshot(new com.microsoft.playwright.Page.ScreenshotOptions().setPath(
+                Path.of("target", "screenshots", "step-required-input-" + page.viewportSize().width + ".png")));
+
+        final var service = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        service.createContext("/", exchange -> {
+            try (exchange) {
+                final byte[] body = "{\"customer\":\"Alice\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+            }
+        });
+        service.start();
+        try {
+            page.locator("#url-value").fill("http://127.0.0.1:" + service.getAddress().getPort() + "/");
+            page.locator("#url-value").press("Tab");
+            waitForText("#build-state", "Built");
+            page.waitForFunction("() => document.querySelector('[data-preview-output=response]')?.textContent.includes('Alice')");
+            assertThat(applicationPid()).isNotEqualTo(before);
+            assertThat(page.locator("#change-status").count()).isZero();
+        } finally {
+            service.stop(0);
+        }
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"after", "during", "disconnected"})
+    void failedStepSaveCanBeRetriedWithoutAddingTheStepAgain(final String appearanceTiming) throws Exception {
+        openProject(fourStepProject());
+        selectWorldNode("one");
+        final String before = applicationPid();
+        final String endpoint = "**/api/project";
+        final List<Route> pending = new ArrayList<>();
+        final var failure = new Route.FulfillOptions().setStatus(503)
+                .setContentType("application/json")
+                .setBody("{\"message\":\"Generated application did not build and start.\"}");
+        page.route(endpoint, route -> {
+            if (route.request().method().equals("PATCH")) pending.add(route);
+            else route.resume();
+        });
+        try {
+            clickOverview("#add-next-step");
+            page.locator("[data-add-step='railix.field-manipulation']").click();
+            page.waitForCondition(() -> !pending.isEmpty());
+            if (appearanceTiming.equals("after")) {
+                pending.removeFirst().fulfill(failure);
+                waitForText("#build-state", "Not built");
+                assertThat(page.locator("#change-status").textContent())
+                        .contains("Generated application did not build and start.", "last successful application is still running");
+            }
+            assertThat(applicationPid()).isEqualTo(before);
+            assertThat(Files.readString(directory.resolve("project.json"))).doesNotContain("step-");
+            presentationName().fill("Retried Step");
+            final var appearance = page.waitForResponse(response -> response.url().endsWith("/api/creator")
+                    && response.request().method().equals("PATCH"), () -> {
+                presentationName().press("Tab");
+                if (!appearanceTiming.equals("after")) {
+                    page.waitForFunction("() => state.pendingWrite && !state.pendingWrite.projectChanged");
+                    final Route build = pending.removeFirst();
+                    if (appearanceTiming.equals("disconnected")) build.abort();
+                    else build.fulfill(failure);
+                }
+            });
+            assertThat(appearance.status()).isEqualTo(422);
+            page.waitForFunction("() => !state.writeActive");
+            assertThat(page.locator("#retry-save").isVisible()).isTrue();
+        } finally {
+            pending.forEach(Route::abort);
+            page.unroute(endpoint);
+        }
+
+        page.locator("#retry-save").click();
+        waitForText("#build-state", "Built");
+        assertThat(stepIds()).hasSize(5);
+        assertThat(applicationPid()).isNotEqualTo(before);
+        page.reload();
+        waitForText("#build-state", "Built");
+        assertThat(stepIds()).hasSize(5);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"correct", "retry", "appearance"})
+    void savedStepFailureDoesNotTurnTheNextEditIntoARevisionConflict(final String recovery) {
+        openProject(fourStepProject());
+        selectWorldNode("one");
+        final var first = new java.util.concurrent.atomic.AtomicBoolean(true);
+        page.route("**/api/project", route -> {
+            if (!route.request().method().equals("PATCH") || !first.compareAndSet(true, false)) {
+                route.resume();
+                return;
+            }
+            final var response = route.fetch();
+            assertThat(response.status()).isEqualTo(200);
+            final Map<String, RailixValue> receipt = new java.util.LinkedHashMap<>(
+                    CreatorServerE2eSupport.object(response.text()).values());
+            receipt.remove("diagnostics");
+            receipt.put("saved", RailixValue.bool(true));
+            receipt.put("status", RailixValue.string("failed"));
+            receipt.put("message", RailixValue.string("Generated application could not be activated."));
+            route.fulfill(new Route.FulfillOptions().setResponse(response).setStatus(503)
+                    .setBody(RailixJson.write(RailixValue.object(receipt))));
+        });
+        clickOverview("#add-next-step");
+        page.locator("[data-add-step='railix.field-manipulation']").click();
+        waitForText("#build-state", "Not built");
+        openInspectorTab("inspect");
+
+        if (recovery.equals("appearance")) {
+            presentationName().fill("Retained Step");
+            presentationName().press("Tab");
+            page.waitForFunction("() => !state.writeActive && state.savedCreator.steps[state.selection.id]?.name === 'Retained Step'");
+        }
+        if (recovery.equals("correct")) page.locator("#node-metrics").uncheck();
+        else page.locator("#retry-save").click();
+        waitForText("#build-state", "Built");
+        assertThat(stepIds()).hasSize(5);
+        assertThat(page.locator("#inspector").textContent()).doesNotContain("changed in another editor");
+        assertThat(pageErrors).isEmpty();
+    }
+
     @ParameterizedTest
     @ValueSource(ints = {1280, 390})
     void settingsOfferOnlyTheNamedHighQualityRenderers(final int width) throws Exception {

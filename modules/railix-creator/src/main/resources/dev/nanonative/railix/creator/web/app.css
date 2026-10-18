@@ -747,6 +747,20 @@ body[data-build="unavailable"] .build-indicator { color: #ff9d8d; }
   padding: 12px 0;
 }
 
+.change-status {
+  margin-top: 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.change-status[data-state="failed"] { border-color: var(--red); }
+.change-status p { margin: 6px 0; }
+.change-status button { margin-top: 4px; }
+.path-effect { color: var(--muted); font-size: 12px; line-height: 1.4; margin: 8px 0; }
+
 .group-list {
   display: grid;
   max-height: 230px;
