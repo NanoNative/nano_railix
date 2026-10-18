@@ -47,6 +47,9 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
             pending.removeFirst().resume();
             waitForText("#build-state", "Built");
             assertThat(page.locator(".path-browser").count()).isEqualTo(1);
+            assertThat(page.locator(".path-create").count()).isZero();
+            page.locator("[data-path-depth='1']").click();
+            assertThat(page.locator("#apply-path").isDisabled()).isTrue();
             assertThat(page.locator("#change-status").count()).isZero();
             page.locator("#cancel-path").click();
         } finally {
@@ -57,7 +60,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         assertThat(page.locator("[data-inspector-mode=inspect]").getAttribute("class")).contains("active");
         assertThat(page.locator("[data-input-name=source]").textContent()).contains("Read from", "payload", "text");
         assertThat(page.locator("[data-input-name=target]").textContent())
-                .contains("Write to", "Replaces the source field");
+                .contains("Store value at", "Replaces the source field");
         page.waitForFunction("() => document.querySelector('[data-preview-output=value]')?.textContent === '\"railix\"'");
         assertThat(page.locator("[data-preview-input-value=value]").textContent()).isEqualTo("\"RAILIX\"");
         assertThat(page.locator("#graph").getAttribute("data-renderer")).isEqualTo(renderer.equals("hq") ? "css" : "canvas");
@@ -67,6 +70,124 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         page.screenshot(new com.microsoft.playwright.Page.ScreenshotOptions().setPath(
                 Files.createDirectories(Path.of("target", "screenshots")).resolve(
                         "step-creation-" + renderer + "-" + page.viewportSize().width + ".png")));
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    void anUnreachedFilterCanConfigureAReadPathWithoutInventingExampleValues() {
+        final String id = addUnreachedFilter();
+        waitForText("[data-input-name='field'] .path-values", "Not reached");
+        page.locator("#conditions-0-field-path").click();
+        page.locator("#new-path-field").fill("request");
+        page.locator("#append-path-field").click();
+        page.locator("#new-path-field").fill("path");
+        page.locator("#append-path-field").click();
+
+        assertThat(page.locator(".path-preview").textContent())
+                .contains("This Example did not reach this Step", "Path not verified by an Example");
+        assertThat(page.locator(".path-preview output").count()).isZero();
+        assertThat(page.locator("#apply-path").isEnabled()).isTrue();
+        page.locator("#apply-path").click();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async id => (await (await fetch('/api/project')).json()).project.nodes
+                  .find(node => node.id === id).inputs.conditions[0].inputs.field
+                """, id)).isEqualTo(List.of("context", "payload", "request", "path"));
+        page.reload();
+        waitForText("#build-state", "Built");
+        selectWorldNode(id);
+        assertThat(page.locator("#conditions-0-field-path").textContent()).contains("request", "path");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    void resultsForAnUnreachedFilterDoNotInventValues() {
+        addUnreachedFilter();
+        waitForText("[data-input-name='field'] .path-values", "Not reached");
+        openInspectorTab("results");
+
+        assertThat(page.locator("#example-results-values").textContent()).contains("This Example did not reach this Step");
+        assertThat(page.locator("#example-results-values pre").count()).isZero();
+        page.locator("#results-example").selectOption("-1");
+        assertThat(page.locator("#example-results-values").textContent()).contains("Choose an Example");
+        page.locator("#results-example").selectOption("0");
+        waitForText("#example-results-values", "This Example did not reach this Step.");
+        assertThat(page.locator("#example-results-values pre").count()).isZero();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    void fieldSourcePickerUsesTheFullCandidateWidth() {
+        addFilterAfterTrigger();
+        assertThat(page.locator("#conditions-0-option option").allTextContents())
+                .anyMatch(label -> label.contains("Read a field"))
+                .anyMatch(label -> label.contains("Enter a fixed value"));
+        assertThat(page.locator(".candidate-source-label").textContent()).isEqualTo("Value source");
+        assertThat(page.locator("[data-input-name='field'] .section-heading").textContent()).contains("Read from");
+        page.locator("#conditions-0-field-path").click();
+
+        final var source = page.locator("#conditions-0-option").boundingBox();
+        final var picker = page.locator(".path-browser").boundingBox();
+        assertThat(picker.x).isCloseTo(source.x, within(1.0));
+        assertThat(picker.width).isCloseTo(source.width, within(1.0));
+        assertThat(picker.y).isGreaterThan(source.y + source.height);
+        page.locator("#cancel-path").click();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    private String addUnreachedFilter() {
+        addFilterAfterTrigger();
+        clickOverview("[data-add-outcome='otherwise']");
+        page.locator("#step-search").fill("filter");
+        page.locator("[data-add-step='railix.filter']").click();
+        waitForText("#build-state", "Built");
+        openInspectorTab("inspect");
+        return (String) page.evaluate("() => state.selection.id");
+    }
+
+    @Test
+    @Tag("responsive")
+    void resultsAndRouteNavigationPreserveTheFunctionalProject() throws Exception {
+        openProject(filterProject());
+        selectWorldNode("filter");
+        final String project = Files.readString(directory.resolve("project.json"));
+        final String pid = applicationPid();
+        openInspectorTab("results");
+        page.waitForFunction("() => document.querySelector('.example-route strong')?.textContent === 'Match'");
+        assertThat(page.locator(".example-context pre").first().textContent()).contains("allow");
+        assertThat(page.locator("[data-input-json], [data-open-path]").count()).isZero();
+        page.locator("#results-example").selectOption("1");
+        page.waitForFunction("() => document.querySelector('.example-route strong')?.textContent === 'Otherwise'");
+        assertThat(page.locator(".example-context pre").first().textContent()).contains("deny").doesNotContain("allow");
+        openInspectorTab("inspect");
+        page.locator("[data-navigate-step='otherwise']").click();
+        page.waitForFunction("() => state.selection.id === 'otherwise' && document.querySelector('#step-details')");
+        openInspectorTab("results");
+        page.waitForFunction("() => document.querySelectorAll('.example-context pre')[1]?.textContent.includes('otherwise')");
+        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
+        assertThat(applicationPid()).isEqualTo(pid);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void writablePickerShowsExpandableBeforeAndAfterValues() {
+        final String before = "RAILIX".repeat(20);
+        final String after = before.toLowerCase(java.util.Locale.ROOT);
+        addGraphPrimitive("\"" + before + "\"", "lowercase", "text.lowercase");
+        page.waitForFunction("() => document.querySelector('[data-preview-output=value]')");
+        page.locator("[data-input-name=target] [data-open-path]").click();
+        final var preview = page.locator(".path-preview");
+        assertThat(page.locator("[data-input-name=target] .path-values").count()).isEqualTo(1);
+        assertThat(preview.locator("details").count()).isEqualTo(2);
+        preview.locator("details summary").first().click();
+        assertThat(preview.locator("[data-path-value=before]").textContent()).isEqualTo("\"" + before + "\"");
+        preview.locator("details summary").nth(1).click();
+        assertThat(preview.locator("[data-path-value=after]").textContent()).isEqualTo("\"" + after + "\"");
+        page.locator("#cancel-path").click();
         assertThat(pageErrors).isEmpty();
     }
 

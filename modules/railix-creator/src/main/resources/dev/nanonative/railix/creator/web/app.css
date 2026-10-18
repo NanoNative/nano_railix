@@ -625,6 +625,8 @@ body[data-build="unavailable"] .build-indicator { color: #ff9d8d; }
 .inspector details[open] summary { margin-bottom: 16px; }
 .condition-transforms, .condition-add, .condition-chain { margin-block: 10px; padding: 8px; border: 1px solid var(--hud-border); border-radius: 6px; }
 .condition-transforms:not([open]) { display: inline-block; padding: 5px 8px; }
+.condition-transforms { max-width: 100%; }
+.condition-transforms summary { overflow-wrap: anywhere; }
 .condition-predicate .candidate-heading { margin: 0; }
 .condition-predicate .nested-step { padding: 8px; }
 .condition-predicate .inspector-section { padding: 0; margin: 0; border: 0; }
@@ -656,10 +658,22 @@ body[data-build="unavailable"] .build-indicator { color: #ff9d8d; }
   font-size: 11px;
   font-weight: 500;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
+
+.inspector-help { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.step-identity { display: grid; gap: 5px; font-size: 11px; }
+.step-identity dt { color: var(--muted); }
+.step-identity dd { margin: 0 0 8px; overflow-wrap: anywhere; font-family: var(--mono); }
+.next-step-controls { display: grid; width: 100%; gap: 8px; }
+.next-step-controls > span { color: var(--muted); font-size: 11px; }
+.configuration-next-steps .step-destination, #selection-overview .step-destination {
+  min-height: 28px; padding: 3px 0; border: 0; background: transparent; box-shadow: none;
+  color: var(--focus); text-align: left; white-space: normal; overflow-wrap: anywhere; text-decoration: underline;
+}
+.example-context pre { max-height: 280px; overflow: auto; margin: 0; padding: 10px;
+  background: var(--paper); color: var(--ink); font: 11px var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.example-route { font-size: 12px; }
 
 /* One lighting/material vocabulary for fixed HUD controls, independent of world size. */
 :is(#trigger-example, #world-map, #application-status, #audio-panel, .inspector) {
@@ -989,8 +1003,9 @@ textarea {
 .value-status, .value-arrow { color: var(--muted); font-size: 12px; }
 .example-value { max-width: 100%; }
 .example-value output { display: block; max-height: 180px; overflow: auto; }
-.path-choice > span { display: grid; text-align: left; }
-.path-choice > output { max-width: 60%; text-align: right; }
+.path-values output, .path-choice output { color: var(--ink); }
+.path-choice > span { display: grid; gap: 3px; text-align: left; }
+.path-choice > output { max-width: 100%; text-align: left; }
 .observed-input > .inspector-section { border-bottom: 0; padding-bottom: 8px; }
 .input-result { border-bottom: 1px solid var(--line); padding-bottom: 12px; }
 
@@ -1001,8 +1016,6 @@ textarea {
 }
 
 .path-browser {
-  max-height: 250px;
-  overflow: auto;
   border: 1px solid var(--line-strong);
   border-top: 0;
   background: var(--panel);
@@ -1021,6 +1034,8 @@ textarea {
   gap: 5px;
 }
 
+.path-crumbs-label { flex-basis: 100%; color: var(--muted); font-size: 10px; }
+
 .path-crumb {
   border: 1px solid var(--line-strong);
   border-radius: 3px;
@@ -1034,6 +1049,9 @@ textarea {
 .path-choices {
   display: grid;
   gap: 4px;
+  max-height: 200px;
+  overflow: auto;
+  min-width: 0;
 }
 
 .path-choices-label {
@@ -1046,10 +1064,11 @@ textarea {
 }
 
 .path-choice {
-  display: flex;
+  display: grid;
   width: 100%;
-  align-items: center;
-  justify-content: space-between;
+  min-width: 0;
+  gap: 5px;
+  overflow-wrap: anywhere;
   border: 1px solid var(--line);
   background: transparent;
   padding: 7px 8px;
@@ -1063,15 +1082,20 @@ textarea {
 
 .path-choice strong {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .path-choice small,
 .path-hint,
-.path-actions small {
+.path-create-label,
+.path-preview > small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
+
+.path-create-label { grid-column: 1 / -1; }
+.path-preview, .path-observation { display: grid; min-width: 0; gap: 5px; }
+.path-preview output { overflow-wrap: anywhere; color: var(--ink); font: 12px var(--mono); }
 
 .path-create {
   display: grid;
@@ -1097,7 +1121,7 @@ textarea {
 .path-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   border-top: 1px solid var(--line);
   padding-top: 9px;
 }
@@ -1109,10 +1133,12 @@ textarea {
   padding: 7px 10px;
   color: white;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .path-action-buttons {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -1238,8 +1264,8 @@ textarea {
   padding-top: 10px;
 }
 
-.candidate-source { display: grid; grid-template-columns: minmax(90px, .4fr) minmax(0, 1fr); align-items: end; gap: 8px; }
-.candidate-source-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.candidate-source { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.candidate-source-label { margin: 0; }
 .candidate-source > .inspector-section { padding: 0; margin: 0; border: 0; }
 .candidate-source select { margin: 0; }
 .matcher-row .candidate-condition > .section-heading { display: none; }
@@ -1344,8 +1370,9 @@ body[data-reduced-motion=true] *, body[data-reduced-motion=true] *::before, body
   max-height: 240px;
   overflow: auto;
   margin: 10px 0 0;
-  border-left: 3px solid var(--green);
-  background: #edf6f0;
+  border-left: 3px solid var(--focus);
+  background: var(--paper);
+  color: var(--ink);
   padding: 10px;
   font-family: var(--mono);
   font-size: 10px;

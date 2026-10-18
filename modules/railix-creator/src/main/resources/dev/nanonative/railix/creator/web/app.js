@@ -878,17 +878,22 @@ function refreshPathPicker() {
   }
   const currentCreate = current.querySelector(".path-create");
   const desiredCreate = desired.querySelector(".path-create");
-  const createMode = element => element?.querySelector("#new-path-index") ? "index"
-    : element ? "field" : "";
+  const createMode = element => ["#new-path-field", "#new-path-index"]
+    .filter(selector => element?.querySelector(selector)).join(",");
   if (createMode(currentCreate) !== createMode(desiredCreate)) {
     if (currentCreate && desiredCreate) {
       currentCreate.replaceWith(desiredCreate);
     } else if (currentCreate) {
       currentCreate.remove();
     } else if (desiredCreate) {
-      current.querySelector(".path-actions").before(desiredCreate);
+      current.querySelector(".path-preview").before(desiredCreate);
     }
   }
+  const verification = current.querySelector("[data-path-verification]");
+  const desiredVerification = desired.querySelector("[data-path-verification]");
+  verification.textContent = desiredVerification.textContent;
+  verification.hidden = desiredVerification.hidden;
+  refreshPathObservations(operation);
   current.querySelector("#apply-path").disabled = desired.querySelector("#apply-path").disabled;
   return true;
 }
@@ -973,7 +978,8 @@ function inspector() {
   }
   const modes = [
     ["overview", "Overview"],
-    ["inspect", "Inputs"],
+    ["inspect", "Configure"],
+    ...(["trigger", "step"].includes(state.selection.type) ? [["results", "Results"]] : []),
     ["appearance", "Appearance"],
     ["groups", "Groups"],
     ...(state.selection.type === "trigger" ? [["examples", "Examples"]] : [])
@@ -982,13 +988,17 @@ function inspector() {
     state.inspectorMode = "inspect";
   }
   const tabs = `<nav class="inspector-tabs" aria-label="Inspector mode"
-                     style="--tab-count:${modes.length}">${modes.map(([mode, label]) => `
-    <button type="button" data-inspector-mode="${mode}" class="${
+                     style="--tab-count:${Math.min(3, modes.length)}">${modes.map(([mode, label]) => `
+    <button type="button" data-inspector-mode="${mode}" aria-pressed="${state.inspectorMode === mode}" class="${
       state.inspectorMode === mode ? "active" : ""
     }">${label}</button>`).join("")}</nav>`;
   const panel = tabs + changeStatus();
   if (state.inspectorMode === "overview") return panel + '<section id="selection-overview"></section>';
   if (state.inspectorMode === 'groups') return panel + manageGroupsInspector();
+  if (state.inspectorMode === "results") {
+    const operation = selectedOperation();
+    return panel + (operation ? exampleResultsInspector(operation) : appInspector(issueList("app")));
+  }
   if (state.inspectorMode === "examples") {
     return panel + examplesInspector(node(state.selection.id));
   }
@@ -1364,7 +1374,7 @@ function inspectorHeader(kicker, title, subtitle) {
     <header class="inspector-heading">
       <span class="eyebrow">${html(kicker)}</span>
       <h2>${html(title)}</h2>
-      <p>${html(subtitle)}</p>
+      ${subtitle ? `<p>${html(subtitle)}</p>` : ""}
     </header>`;
 }
 
@@ -1649,19 +1659,23 @@ function applyImportedProject(payload) {
 function triggerInspector(trigger, issues) {
   const definition = definitionOf(trigger.use);
   return `
-    ${inspectorHeader("Trigger", stepPresentation(trigger.id).name || stepName(definition), trigger.use)}
+    ${inspectorHeader("Trigger", stepPresentation(trigger.id).name || stepName(definition), "")}
     ${issues}
-    ${inputFields(trigger, definition.inputs, ["inputs"])}
-    ${metricsSetting(trigger)}
-    ${runtimeDetails()}
+    ${inputFields(trigger, definition.inputs.map(input => input.name === definition.example_target
+      ? { ...input, label: "Store incoming data at" } : input), ["inputs"])}
     <section class="inspector-section">
-      <div class="section-heading"><strong>Expected results</strong><span>Trigger contract</span></div>
+      <div class="section-heading"><strong>Flow result fields</strong></div>
+      <p class="inspector-help">These context fields provide the results when this flow finishes.</p>
       <div class="contract-list">${definition.results.map(result => `
         <span><code>context.${html(result.name)}</code><small>${html(result.shape)}${
           Object.hasOwn(result, "default") ? " · default " + html(JSON.stringify(result.default)) : ""
         }</small></span>`
       ).join("")}</div>
     </section>
+    ${configurationNextSteps(trigger)}
+    ${stepDetails(trigger, definition)}
+    ${metricsSetting(trigger)}
+    ${runtimeDetails()}
     <div id="run-result-panel">${runResultPanel()}</div>`;
 }
 
@@ -1671,7 +1685,7 @@ function examplesInspector(trigger) {
   }
   const example = selectedExample(trigger);
   return `
-    ${inspectorHeader("Trigger", stepPresentation(trigger.id).name || stepName(definitionFor(trigger)), trigger.id)}
+    ${inspectorHeader("Trigger", stepPresentation(trigger.id).name || stepName(definitionFor(trigger)), "")}
     ${issueList(trigger.id)}
     <section class="inspector-section">
       <div class="section-heading"><strong>Examples</strong><span>${count(trigger.examples.length, "case")}</span></div>
@@ -1706,31 +1720,98 @@ function examplesInspector(trigger) {
 function stepInspector(operation, issues) {
   const definition = definitionOf(operation.use);
   return `
-    ${inspectorHeader("Step", stepPresentation(operation.id).name || stepName(definition), operation.id)}
+    ${inspectorHeader("Step", stepPresentation(operation.id).name || stepName(definition), "")}
     ${issues}
     <div id="preview-values">
-      ${portMappings(operation, definition)}
+      ${portMappings(operation, definition, "receives")}
       ${inputFields(operation, definition.inputs, ["inputs"])}
+      ${portMappings(operation, definition, "returns")}
     </div>
+    ${configurationNextSteps(operation)}
+    ${stepDetails(operation, definition)}
     ${metricsSetting(operation)}
     ${runtimeDetails()}
     <div id="preview-error" role="status"></div>`;
 }
 
-function portMappings(operation, definition) {
-  const receiveFields = definition.receives.map(port => pathInput(
+function configurationNextSteps(operation) {
+  return `<section class="inspector-section configuration-next-steps">
+    <div class="section-heading"><strong>Next Steps</strong></div>
+    ${nextStepControls(operation)}
+  </section>`;
+}
+
+function stepDetails(operation, definition) {
+  return `<details class="inspector-section" id="step-details"><summary>Technical details</summary>
+    <dl class="step-identity"><dt>Step ID</dt><dd>${html(operation.id)}</dd>
+      <dt>Definition</dt><dd>${html(definition.id)}</dd>
+      <dt>Version</dt><dd>${html(definition.version)}</dd></dl>
+  </details>`;
+}
+
+function exampleResultsInspector(operation) {
+  const trigger = triggerFor(operation.id);
+  const definition = definitionFor(operation);
+  if (!trigger) return `${inspectorHeader("Example results", stepName(definition), "")}
+    <p class="value-status">No Trigger is connected to this Step.</p>`;
+  return `${inspectorHeader("Example results", stepPresentation(operation.id).name || stepName(definition), "")}
+    <p class="inspector-help">Inspect what happened in an Example execution.</p>
+    <label for="results-example">Example</label>
+    <select id="results-example" data-trigger="${html(trigger.id)}">
+      <option value="-1" ${state.exampleIndex < 0 ? "selected" : ""}>None</option>
+      ${trigger.examples.map((example, index) => `<option value="${index}" ${index === state.exampleIndex ? "selected" : ""}>${html(example.name)}</option>`).join("")}
+    </select>
+    <button type="button" data-edit-trigger="${html(trigger.id)}">Edit Examples</button>
+    <div id="example-results-values" aria-live="polite">${exampleResultsValues(operation)}</div>`;
+}
+
+function exampleResultsValues(operation) {
+  if (state.exampleIndex < 0) return '<p class="value-status">Choose an Example to inspect its results.</p>';
+  const before = observedExampleContext(operation);
+  if (before.status) {
+    const status = before.status === "Not reached" ? "This Example did not reach this Step." : before.status;
+    let content = `<p class="value-status">${html(status)}</p>`;
+    if (state.preview?.step === operation.id && state.preview.message) {
+      content += `<p class="value-status">${html(state.preview.message)}</p>`;
+    }
+    return content;
+  }
+  const trigger = definitionFor(operation).kind === "trigger";
+  if (!trigger && state.traceContext !== "input") {
+    return '<p class="value-status">Loading this Step’s Example results.</p>';
+  }
+  let content = "";
+  if (trigger) {
+    content += exampleContextSection("Starting context", before);
+    content += `<div id="run-result-panel">${runResultPanel()}</div>`;
+  } else {
+    const outcome = state.traceStep?.id === operation.id ? state.traceStep.outcome : undefined;
+    if (outcome) {
+      content += `<p class="example-route">Route taken: <strong>${html(outcomeLabel(operation, outcome))}</strong></p>`;
+    }
+    content += exampleContextSection("Before this Step", before);
+    content += exampleContextSection("After this Step", observedExampleContext(operation, true));
+  }
+  if (state.preview?.message) content += `<p class="issues">${html(state.preview.message)}</p>`;
+  return content;
+}
+
+function exampleContextSection(label, observation) {
+  const value = observation.status
+    ? `<p class="value-status">${html(observation.status)}</p>`
+    : `<pre>${html(JSON.stringify(observation.root.context, null, 2))}</pre>`;
+  return `<section class="inspector-section example-context">
+    <div class="section-heading"><strong>${html(label)}</strong></div>${value}</section>`;
+}
+
+function portMappings(operation, definition, direction) {
+  const ports = definition[direction];
+  return ports.map(port => pathInput(
     operation,
-    portPathInput(operation, definition, "receives", port),
-    ["receives", port.name],
-    operation.receives?.[port.name]
-  ));
-  const returnFields = definition.returns.map(port => pathInput(
-    operation,
-    portPathInput(operation, definition, "returns", port),
-    ["returns", port.name],
-    operation.returns?.[port.name]
-  ));
-  return receiveFields.join("") + returnFields.join("");
+    portPathInput(operation, definition, direction, port),
+    [direction, port.name],
+    operation[direction]?.[port.name]
+  )).join("");
 }
 
 function portPathInput(operation, definition, direction, port) {
@@ -1742,7 +1823,7 @@ function portPathInput(operation, definition, direction, port) {
   return {
     name: single ? prefix : prefix + "_" + port.name,
     label: direction === "receives" ? single ? "Read from" : "Read " + inputLabel(port.name) + " from"
-      : single ? "Write to" : "Write " + inputLabel(port.name) + " to",
+      : "Store " + inputLabel(port.name).toLowerCase() + " at",
     type: "path",
     access: direction === "receives" ? "read" : "write",
     required: true,
@@ -1754,20 +1835,27 @@ function portPathInput(operation, definition, direction, port) {
 function nextStepControls(operation) {
   const declared = displayOutcomes(operation);
   if (declared.length === 1) {
-    return `<button class="button" type="button" id="add-next-step"
-                    ${insertionAllowed(operation, declared[0]) ? "" : "disabled"}><i class="hud-symbol" data-symbol="plus" aria-hidden="true"></i>Add next Step</button>`;
+    const connection = outcomeConnection(operation, declared[0]);
+    return `<div class="next-step-controls"><span>Next: ${stepDestination(connection)}</span>
+      <button class="button" type="button" id="add-next-step"
+              ${insertionAllowed(operation, declared[0]) ? "" : "disabled"}><i class="hud-symbol" data-symbol="plus" aria-hidden="true"></i>Add next Step</button></div>`;
   }
   return `<section class="next-routes" aria-label="Next Steps">
     ${declared.map(outcome => {
       const connection = outcomeConnection(operation, outcome);
       const insertable = insertionAllowed(operation, outcome);
       return `<div>
-        <span><strong>${html(outcomeLabel(operation, outcome))}</strong><small>${html(connection.label)}</small></span>
+        <span><strong>${html(outcomeLabel(operation, outcome))}</strong>${stepDestination(connection)}</span>
         <button class="button" type="button" data-add-outcome="${html(outcome)}"
                 ${insertable ? "" : "disabled"}>Add Step</button>
       </div>`;
     }).join("")}
   </section>`;
+}
+
+function stepDestination(connection) {
+  return connection.target ? `<button type="button" class="step-destination" data-navigate-step="${html(connection.target)}">${html(connection.label)}</button>`
+    : `<small>${html(connection.label)}</small>`;
 }
 
 function outcomeConnection(operation, outcome) {
@@ -1777,7 +1865,7 @@ function outcomeConnection(operation, outcome) {
   const issue = destinations.length > 1 ? "Multiple links"
     : target && state.project.links.filter(link => link.to === target.id).length !== 1 ? "Repeated Step"
     : !target && destination !== "end" ? destination ? "Unknown Step" : "Missing link" : "";
-  return { invalid: Boolean(issue), label: issue || (target
+  return { invalid: Boolean(issue), target: !issue && target?.id, label: issue || (target
     ? stepPresentation(target.id).name || stepName(definitionFor(target)) : "End") };
 }
 
@@ -1849,7 +1937,8 @@ function pathInput(operation, input, locator, value) {
   return `
     <section class="inspector-section" data-input-name="${html(input.name)}">
       <div class="section-heading"><strong>${html(input.label || inputLabel(input.name))}</strong>
-        <div class="path-heading-actions"><span>${html(input.access.replace("_", " "))} path</span>${reset}</div>
+        <div class="path-heading-actions">${input.label ? ""
+          : `<span>${html(input.access.replace("_", " "))} path</span>`}${reset}</div>
       </div>${optional}
       <button class="path-button" type="button" id="${html(id)}-path"
               data-open-path="${locatorToken(locator)}" data-input-meta="${metaToken(input)}">
@@ -1859,10 +1948,40 @@ function pathInput(operation, input, locator, value) {
         Object.values(operation.receives || {}).some(path => samePath(path, selected))
           ? "Replaces the source field with the result." : "Writes the result to this field."
       }</p>` : ""}
-      <div class="path-values" data-path-observation="${locatorToken(locator)}"
-           data-input-meta="${metaToken(input)}" aria-live="polite">${pathValues(operation, input, selected, locator)}</div>
-      ${open ? pathBrowser(input, operation, locator) : ""}
+      ${open ? pathBrowser(input, operation, locator) : pathObservation(operation, input, locator)}
     </section>`;
+}
+
+function pathObservation(operation, input, locator) {
+  return `<div class="path-observation">
+    <small class="value-status">Selected Example value</small>
+    <div class="path-values" data-path-observation="${locatorToken(locator)}"
+         data-input-meta="${metaToken(input)}" aria-live="polite">${pathObservationValues(operation, input, locator)}</div>
+  </div>`;
+}
+
+function pathObservationValues(operation, input, locator) {
+  const open = state.pathPicker && samePath(state.pathPicker.locator, locator);
+  if (open && observedExampleContext(operation).status === "Not reached") {
+    return '<span class="value-status">This Example did not reach this Step.</span>';
+  }
+  const configured = hasAt(operation, locator) ? valueAt(operation, locator) : defaultInput(input);
+  return pathValues(operation, input, open ? state.pathDraft : configured, open ? [] : locator);
+}
+
+function refreshPathObservations(operation) {
+  document.querySelectorAll("[data-path-observation]").forEach(slot => {
+    const locator = parseToken(slot.dataset.pathObservation);
+    const input = parseToken(slot.dataset.inputMeta);
+    const content = pathObservationValues(operation, input, locator);
+    if (slot.railixMarkup === content) return;
+    const expanded = new Set([...slot.querySelectorAll("details[open] [data-path-value]")]
+      .map(value => value.dataset.pathValue));
+    renderDockMarkup(slot, content);
+    slot.querySelectorAll("details").forEach(detail => {
+      detail.open = expanded.has(detail.querySelector("[data-path-value]")?.dataset.pathValue);
+    });
+  });
 }
 
 function optionsInput(operation, input, locator, value) {
@@ -1890,8 +2009,10 @@ function candidatesInput(operation, input, locator, candidates, scopeInputs, sco
   return `
     <section class="inspector-section candidate-input" data-input-name="${html(input.name)}">
       <div class="section-heading"><strong>${html(inputLabel(input.name))}</strong><span>${
-        input.authored_outcomes ? "First matching case" : "First accepted value"
+        input.authored_outcomes ? "First matching case" : "First matching value"
       }</span></div>
+      ${!input.authored_outcomes && candidates.length > 1
+        ? '<p class="inspector-help">Checked from top to bottom. The first present value that passes its comparisons is used.</p>' : ""}
       <div class="candidate-list">
         ${candidates.map((candidate, index) => candidateEditor(
           operation,
@@ -1999,20 +2120,26 @@ function candidateEditor(
   view = {}
 ) {
   const option = input.options.find(available => available.name === candidate.option);
+  const sourceInput = candidateSourceInput(option);
+  const optionInputs = option?.inputs.map(field => field === sourceInput ? {
+    ...field,
+    label: field.type === "path" && field.access === "read" ? "Read from"
+      : field.type === "json" ? "Value" : field.label
+  } : field);
   const candidateLocator = [...locator, index];
   const path = view.selectable === false ? "" : inputDiagnosticPath(operation.id, locator);
   const selected = Boolean(path) && state.preview?.selected_candidates?.[path] === index;
   const authored = input.authored_outcomes === true;
-  const noun = authored ? "Case" : view.noun || "Candidate";
+  const noun = authored ? "Case" : view.noun || "Value choice";
   const removable = size > (view.minimum || 0)
     && (!authored || candidate.outcome && outcomeTarget(operation, candidate.outcome) === "end");
   const predicateName = view.predicateName || input.name + "[" + index + "].when";
   const condition = conditionOf(candidate.when);
   const predicateStatus = !condition.transforms.length && !condition.all.length
-    ? "value must exist"
+    ? "value must be present"
     : condition.all.length
       ? `${condition.all.length} ${condition.all.length === 1 ? "matcher" : "matchers"} must pass`
-      : "add matcher";
+      : "add comparison";
   return `
     <article class="candidate${view.selectable === false ? ' matcher-row' : ''}${selected ? " selected-candidate" : ""}" data-candidate-index="${index}"
              ${path ? `data-candidate-path="${html(path)}"` : ""}>
@@ -2036,17 +2163,17 @@ function candidateEditor(
                value="${html(stepPresentation(operation.id).outcomes?.[candidate.outcome] || "")}" data-candidate-label="${locatorToken(locator)}"
                data-candidate-index="${index}" autocomplete="off">` : ""}
       <div class="candidate-source">
-      <label class="candidate-source-label" for="${html(inputId(candidateLocator))}-option">Source</label>
+      <label class="candidate-source-label" for="${html(inputId(candidateLocator))}-option">Value source</label>
       <select id="${html(inputId(candidateLocator))}-option"
               data-candidate-option="${locatorToken(locator)}" data-candidate-index="${index}"
               data-input-meta="${metaToken(input)}">
         ${option ? "" : '<option value="" selected disabled>Choose a source</option>'}
         ${input.options.map(available => `
           <option value="${html(available.name)}" ${available.name === option?.name ? "selected" : ""}>
-            ${html(inputLabel(available.name))}
+            ${html(candidateSourceLabel(available, input.options))}
           </option>`).join("")}
       </select>
-      ${option ? inputFields(operation, option.inputs, [...candidateLocator, "inputs"]) : ""}
+      ${option ? inputFields(operation, optionInputs, [...candidateLocator, "inputs"]) : ""}
       </div>
       <div class="candidate-condition">
         <div class="section-heading"><strong>${html(view.condition || "Accept when")}</strong><span data-candidate-status
@@ -2097,9 +2224,8 @@ function conditionEditor(operation, input, option, candidateLocator, condition, 
   const token = locatorToken(candidateLocator);
   return `
     <details class="condition-transforms">
-      <summary title="Calculate the comparison value without changing the context">${condition.transforms.length
-        ? html(condition.transforms.map(step => stepName(definitionOf(step.use))).join(" / "))
-        : 'Calculate value'}</summary>
+      <summary title="Calculate the comparison value without changing the context">Prepare comparison value${condition.transforms.length
+        ? ": " + html(condition.transforms.map(step => stepName(definitionOf(step.use))).join(" / ")) : ""}</summary>
       ${programEditor(operation, transforms, transformLocator, condition.transforms, scopeInputs, scopeBase)}
     </details>
     <section class="condition-predicates">
@@ -2115,7 +2241,9 @@ function conditionEditor(operation, input, option, candidateLocator, condition, 
           preparedShape,
           scopeInputs,
           scopeBase
-        )).join("") || '<p class="empty-options">No matcher configured.</p>'}
+        )).join("") || `<p class="inspector-help">${condition.transforms.length
+          ? "Add a comparison for the prepared value."
+          : "Without a comparison, any present value is accepted. null, false and 0 are present values."}</p>`}
       </div>
       <details class="condition-add" ${condition.all.length ? '' : 'open'}><summary>Add comparison (AND)</summary>
       <input type="search" id="${html(inputId(queryLocator))}-search"
@@ -2215,16 +2343,34 @@ function predicateOptionsFor(operation, input, candidateLocator, scopeInputs, sc
   return predicateOptions(candidateLocator, shape);
 }
 
+function candidateSourceInput(option) {
+  return option?.value_source?.scope === "owned" && option.inputs.length === 1
+    ? option.inputs.find(input => input.name === option.value_source.input) : undefined;
+}
+
+function candidateSourceDescription(option) {
+  const input = candidateSourceInput(option);
+  if (input?.type === "path" && input.access === "read") return "Read a field";
+  if (input?.type === "json") return "Enter a fixed value";
+  return inputLabel(option.name);
+}
+
+function candidateSourceLabel(option, options) {
+  const description = candidateSourceDescription(option);
+  return options.some(other => other.name !== option.name && candidateSourceDescription(other) === description)
+    ? `${inputLabel(option.name)}: ${description}` : description;
+}
+
 function candidateOptions(input, locator) {
   const query = queryAt(state.candidateQueries, locator).trim().toLowerCase();
   return input.options
     .filter(option => !query || option.name.toLowerCase().includes(query)
-      || inputLabel(option.name).toLowerCase().includes(query))
+      || candidateSourceLabel(option, input.options).toLowerCase().includes(query))
     .map(option => `
       <button type="button" class="catalog-option compact-option"
               data-add-candidate="${html(option.name)}" data-candidate-locator="${locatorToken(locator)}"
               data-input-meta="${metaToken(input)}">
-        <strong>${html(inputLabel(option.name))}</strong>
+        <strong>${html(candidateSourceLabel(option, input.options))}</strong>
         <small>${html(option.name)}</small>
       </button>`).join("") || '<p class="empty-options">No value source matches.</p>';
 }
@@ -2234,13 +2380,13 @@ function matcherGroupOptions(input, locator) {
   const query = queryAt(state.candidateQueries, queryLocator).trim().toLowerCase();
   return input.options
     .filter(option => !query || option.name.toLowerCase().includes(query)
-      || inputLabel(option.name).toLowerCase().includes(query))
+      || candidateSourceLabel(option, input.options).toLowerCase().includes(query))
     .map(option => `
       <button type="button" class="catalog-option compact-option"
               data-add-matcher-group="${html(option.name)}"
               data-matcher-groups-locator="${locatorToken(locator)}"
               data-input-meta="${metaToken(input)}">
-        <strong>${html(inputLabel(option.name))}</strong>
+        <strong>${html(candidateSourceLabel(option, input.options))}</strong>
         <small>${html(option.name)}</small>
       </button>`).join("") || '<p class="empty-options">No value source matches.</p>';
 }
@@ -2291,7 +2437,7 @@ function jsonInput(operation, input, locator, value) {
     <section class="inspector-section${input.required ? "" : " compact"}"
              data-input-name="${html(input.name)}">
       ${optional}
-      <label for="${html(id)}-value">${html(inputLabel(input.name))}${input.required ? " <small>Required</small>" : ""}</label>
+      <label for="${html(id)}-value">${html(input.label || inputLabel(input.name))}${input.required ? " <small>Required</small>" : ""}</label>
       ${control}
       ${input.required && input.shape === "string" && !present ? `
         <button type="button" id="${html(id)}-empty"
@@ -2422,6 +2568,7 @@ function clearInputQueries() {
 
 function pathBrowser(input, operation, locator) {
   const writable = input.access !== "read";
+  const manualRead = !writable && !input.port;
   const available = availablePaths(operation).filter(entry => !writable
     || entry.path[0] !== "context"
     || entry.path[1] !== "runtime");
@@ -2444,24 +2591,27 @@ function pathBrowser(input, operation, locator) {
   }
   const draft = state.pathDraft;
   const selected = entries.find(entry => samePath(entry.path, draft));
-  const usable = writable
+  const usable = writable || manualRead
     ? draft.length >= 2
     : selectable.some(entry => samePath(entry.path, draft));
   const children = entries.filter(entry =>
     entry.path.length === draft.length + 1
     && draft.every((part, index) => part === entry.path[index])
   );
-  const canAddField = writable && (!selected || selected.shape === "object");
-  const canAddIndex = writable && (!selected || selected.shape === "array");
+  const canAddField = manualRead || writable && (!selected || selected.shape === "object");
+  const canAddIndex = draft.length >= 2
+    && (manualRead || writable && (!selected || selected.shape === "array"));
+  const unverified = manualRead && usable && !selected;
   const fieldValid = validPathField(state.pathField, draft);
   const indexValid = validPathIndex(state.pathIndex);
   const choicesLabel = selected?.shape === "array"
     ? "Choose one array index"
     : selected?.shape === "object" ? "Choose one field" : "Choose the next path segment";
   return `
-    <div class="path-browser" role="listbox">
+    <div class="path-browser" role="group" aria-label="Choose a field path">
       <div class="path-builder">
         <div class="path-crumbs" aria-label="Selected path">
+          <small class="path-crumbs-label">Selected path</small>
           ${draft.map((part, index) => `
             ${index ? "<i>&rsaquo;</i>" : ""}
             <button type="button" class="path-crumb" data-path-depth="${index}"
@@ -2477,30 +2627,35 @@ function pathBrowser(input, operation, locator) {
               <button type="button" class="path-choice" data-path-part="${html(pathPart(part))}"
                       data-path-draft-json="${encodeURIComponent(JSON.stringify(entry.path))}">
                 <span><strong>${html(pathPart(part))}</strong><small>${entry.shape}${
-                  entry.examples < entry.total ? ` · ${entry.examples}/${entry.total} examples` : ""
+                  entry.examples < entry.total ? ` · observed here in ${entry.examples} of ${entry.total} Examples` : ""
                 }</small></span>${pathChoiceValue(operation, entry.path)}
               </button>`;
           }).join("") || `<small class="path-hint">${
-            selected ? "Selected " + selected.shape + " value." : "New path."
+            selected ? "No deeper fields observed here." : "No fields observed here."
           }</small>`}
         </div>
         ${canAddField || canAddIndex ? `
           <div class="path-create">
+            <small class="path-create-label">${manualRead ? "Enter a path segment" : "Create a destination path"}</small>
             ${canAddField ? `
               <input id="new-path-field" value="${html(state.pathField)}"
-                     placeholder="New field name" autocomplete="off">
-              <button id="append-path-field" type="button" ${fieldValid ? "" : "disabled"}>Add field</button>` : ""}
+                     placeholder="Field name" aria-label="Field name" autocomplete="off">
+              <button id="append-path-field" type="button" ${fieldValid ? "" : "disabled"}>${manualRead ? "Append field" : "Add field"}</button>` : ""}
             ${canAddIndex ? `
-              <input id="new-path-index" type="number" min="0" step="1"
+              <input id="new-path-index" type="number" min="0" max="2147483647" step="1"
                      value="${html(state.pathIndex)}"
-                     aria-label="New array index">
-              <button id="append-path-index" type="button" ${indexValid ? "" : "disabled"}>Use index</button>` : ""}
+                     aria-label="Array index">
+              <button id="append-path-index" type="button" ${indexValid ? "" : "disabled"}>${manualRead ? "Append index" : "Use index"}</button>` : ""}
           </div>` : ""}
+        <div class="path-preview">
+          ${pathObservation(operation, input, locator)}
+          <small class="path-hint" data-path-verification ${unverified ? "" : "hidden"}>${unverified
+            ? "Path not verified by an Example. You can still use it." : ""}</small>
+        </div>
         <div class="path-actions">
-          <small>${html(inputLabel(input.name))}</small>
           <div class="path-action-buttons">
             <button class="path-cancel" id="cancel-path" type="button">Cancel</button>
-            <button id="apply-path" type="button" ${usable ? "" : "disabled"}>Use path</button>
+            <button id="apply-path" type="button" ${usable ? "" : "disabled"}>Use this path</button>
           </div>
         </div>
       </div>
@@ -2871,7 +3026,7 @@ function openPathPicker(locatorSource, inputSource) {
   const locator = parseToken(locatorSource);
   const input = parseToken(inputSource);
   state.pathPicker = { locator, input };
-  state.pathDraft = clone(valueAt(operation, locator) || defaultInput(input) || []);
+  state.pathDraft = clone(valueAt(operation, locator) || defaultInput(input) || ["context"]);
   state.pathField = "";
   state.pathIndex = "0";
   render();
@@ -2903,11 +3058,12 @@ function appendPathIndex(source) {
 
 function validPathField(source, draft) {
   const field = source.trim();
-  return Boolean(field) && !(draft.length === 1 && field === "runtime");
+  return Boolean(field) && (draft.length > 0 || field === "context")
+    && !(draft.length === 1 && field === "runtime" && state.pathPicker.input.access !== "read");
 }
 
 function validPathIndex(source) {
-  return /^(0|[1-9]\d*)$/.test(source);
+  return /^(0|[1-9]\d*)$/.test(source) && Number(source) <= 2147483647;
 }
 
 function applyPath() {
@@ -4538,13 +4694,12 @@ function renderPreview() {
   renderDockObservation();
   const operation = selectedOperation();
   if (!operation) return;
-  document.querySelectorAll("[data-path-observation]").forEach(slot => {
-    const locator = parseToken(slot.dataset.pathObservation);
-    const input = parseToken(slot.dataset.inputMeta);
-    const path = hasAt(operation, locator) ? valueAt(operation, locator) : defaultInput(input);
-    const content = pathValues(operation, input, path, locator);
-    if (slot.innerHTML !== content) slot.innerHTML = content;
-  });
+  const results = document.querySelector("#example-results-values");
+  if (results) {
+    const content = exampleResultsValues(operation);
+    if (results.innerHTML !== content) results.innerHTML = content;
+  }
+  refreshPathObservations(operation);
   const inputs = previewInputs(operation);
   document.querySelectorAll("[data-input-result]").forEach(slot => {
     const name = slot.dataset.inputResult;
@@ -5663,6 +5818,11 @@ document.addEventListener("click", event => {
     document.querySelector("#close-inspector").focus({ preventScroll: true });
     return;
   }
+  const destination = target.closest("[data-navigate-step]");
+  if (destination) {
+    void selectWorldNode(destination.dataset.navigateStep);
+    return;
+  }
   if (target.closest("#close-inspector")) {
     showInspector(false);
     return;
@@ -5674,6 +5834,7 @@ document.addEventListener("click", event => {
   }
   const inspectorMode = target.closest("[data-inspector-mode]");
   if (inspectorMode) {
+    closePathPicker();
     if (inspectorMode.dataset.inspectorMode === 'groups') { void openGroupManager(); return; }
     resetMetrics();
     state.inspectorMode = inspectorMode.dataset.inspectorMode;
@@ -6000,8 +6161,9 @@ document.addEventListener("change", event => {
   if (target.id === 'theme-variant') { changeSettings({theme_variant:target.value}); void applyTheme(); return; }
   if (target.id === 'reduced-motion') { changeSettings({reduced_motion:target.checked}); return; }
   if (target.id === "project-import-file") { void readProjectImportFile(target); return; }
-  if (target.id === "dock-example") {
-    selectExample(Number(target.value), state.hoverTrigger?.id === target.dataset.trigger ? state.hoverTrigger : node(target.dataset.trigger));
+  if (target.id === "dock-example" || target.id === "results-example") {
+    selectExample(Number(target.value), target.id === "dock-example" && state.hoverTrigger?.id === target.dataset.trigger
+      ? state.hoverTrigger : node(target.dataset.trigger));
     return;
   }
   if (target.matches("[data-input-json]")) {
