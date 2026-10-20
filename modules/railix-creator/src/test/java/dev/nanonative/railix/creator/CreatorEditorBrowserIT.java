@@ -1706,6 +1706,7 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         openProject(deepBranchProject(128));
         page.evaluate("() => state.world.fit()");
         awaitScene();
+        page.locator(".world-scenery").first().waitFor();
         assertThat(page.locator(".world-scenery").count()).isPositive();
         assertThat(page.evaluate("""
                 () => {
@@ -2663,7 +2664,9 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         clickOverview("#add-trigger");
         page.locator("[data-add-step='railix.trigger.cli']").click();
         com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(
-                page.locator("#selection-overview .dock-heading small")).hasText("Trigger");
+                page.locator("[data-inspector-mode=inspect]")).hasAttribute("aria-pressed", "true");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(
+                page.locator("#inspector-content .inspector-heading .eyebrow")).hasText("Trigger");
         clickOverview("#add-next-step");
         page.locator("#step-search").fill("field manipulation");
         page.locator("[data-add-step='railix.field-manipulation']").click();

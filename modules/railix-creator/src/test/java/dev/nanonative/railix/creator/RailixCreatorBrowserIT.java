@@ -5367,6 +5367,10 @@ abstract class RailixCreatorBrowserSupport {
                     .setChannel(System.getenv().getOrDefault("RAILIX_BROWSER_CHANNEL", "chrome"))
                     .setHeadless(true));
             capturePlaywrightProcesses();
+            // A fixed creation time keeps the fixture's procedural scenery repeatable.
+            Files.writeString(template.resolve("railix.creator.json"), """
+                    {"format":2,"created_at":1,"groups":[],"steps":{}}
+                    """);
             try (CreatorServer ignored = CreatorServer.start(
                     0,
                     template.resolve("project.json"),
