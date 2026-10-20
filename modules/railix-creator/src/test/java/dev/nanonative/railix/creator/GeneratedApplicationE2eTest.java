@@ -36,6 +36,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -641,6 +642,50 @@ final class GeneratedApplicationE2eTest {
             }
         } finally {
             server.stop(0);
+        }
+    }
+
+    @Test
+    void authHttpExampleRoutesPathsAndMethods() throws Exception {
+        final String source = Files.readString(Path.of("..", "..", "examples", "auth-http-app", "railix.project.json"));
+        final Path jar = productionArtifact(project(directory.resolve("auth-example"), source), source).jar();
+        record RequestCase(String method, String path, String body, int status, String expected) {}
+        final String registered = "{\"registered\":true,\"message\":\"Dummy registration response.\"}";
+        final String unauthorized = "{\"authenticated\":false,\"error\":\"unauthorized\"}";
+        final List<RequestCase> cases = new ArrayList<>(List.of(
+                new RequestCase("POST", "/login", "{\"email\":\"alice@example.com\",\"password\":\"demo-password\"}",
+                        200, "{\"authenticated\":true,\"token\":\"railix-demo-token\",\"user\":\"alice@example.com\"}"),
+                new RequestCase("POST", "/login", "null", 401, unauthorized),
+                new RequestCase("POST", "/login", "{\"email\":\"alice@example.com\",\"password\":\"wrong-password\"}",
+                        401, unauthorized),
+                new RequestCase("POST", "/register", "{\"email\":\"first@example.com\"}", 200, registered),
+                new RequestCase("POST", "/register", "null", 200, registered)
+        ));
+        for (final String path : List.of("/login", "/register")) {
+            for (final String method : List.of("GET", "PUT", "OPTIONS")) {
+                cases.add(new RequestCase(method, path, "null", 405, "{\"error\":\"method_not_allowed\"}"));
+            }
+        }
+        for (final String method : List.of("GET", "POST", "PUT", "OPTIONS")) {
+            cases.add(new RequestCase(method, "/missing", "null", 404, "{\"error\":\"not_found\"}"));
+        }
+        try (HttpProcess server = startHttpJar(jar); HttpClient client = HttpClient.newHttpClient()) {
+            for (final RequestCase scenario : cases) {
+                final HttpResponse<String> response = client.send(
+                        HttpRequest.newBuilder(server.uri().resolve(scenario.path()))
+                                .timeout(Duration.ofSeconds(10))
+                                .header("Content-Type", "application/json")
+                                .method(scenario.method(), HttpRequest.BodyPublishers.ofString(scenario.body()))
+                                .build(),
+                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+                );
+                assertThat(response.statusCode()).as("%s %s: %s", scenario.method(), scenario.path(), response.body())
+                        .isEqualTo(scenario.status());
+                assertThat(RailixJson.parse(response.body())).as("%s %s response", scenario.method(), scenario.path())
+                        .isEqualTo(RailixJson.parse(scenario.expected()));
+                if (scenario.status() == 405)
+                    assertThat(response.headers().firstValue("Allow")).contains("POST");
+            }
         }
     }
 

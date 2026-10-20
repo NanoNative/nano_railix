@@ -1182,6 +1182,43 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
+    void thirdPartyValueSourcesKeepTheirNamesWhenDescriptionsMatch() throws Exception {
+        final var alternatives = StepDefinition.Input.candidates(
+                StepDefinition.Input.option("primary")
+                        .input("value", StepDefinition.Input.json(ValueShape.ANY).defaultValue(RailixValue.bool(true)))
+                        .fromOwned("value"),
+                StepDefinition.Input.option("secondary")
+                        .input("value", StepDefinition.Input.json(ValueShape.ANY).defaultValue(RailixValue.bool(true)))
+                        .fromOwned("value")
+        ).withAuthoredOutcomes();
+        final var definition = StepDefinition.named("test.source-labels", "1")
+                .displayName("Source labels")
+                .receive("value", ValueShape.ANY)
+                .returns("value", ValueShape.BOOLEAN)
+                .input("cases", alternatives)
+                .run(MatcherConformanceSteps.AuthoredTrue.class);
+        creator.close();
+        GeneratedApplicationFixture.installedCatalog(directory, List.of(definition), MatcherConformanceSteps.AuthoredTrue.class);
+        creator = CreatorServer.start(0, directory.resolve("project.json"), directory.resolve("railix-home"));
+        page.navigate(creator.baseUri().toString());
+        waitForText("#build-state", "Built");
+        addTrigger();
+        clickOverview("#add-next-step");
+        page.locator("#step-search").fill("source labels");
+        page.locator("[data-add-step='test.source-labels']").click();
+        page.locator("[data-add-candidate='primary']").click();
+        assertThat(page.locator("#cases-0-option option").allTextContents().stream().map(String::strip).toList())
+                .containsExactly("Primary: Enter a fixed value", "Secondary: Enter a fixed value");
+        page.locator("#cases-0-option").selectOption("secondary");
+        waitForText("#build-state", "Built");
+        assertThat(page.evaluate("""
+                async () => (await (await fetch('/api/project')).json()).project.nodes
+                  .find(node => node.use === 'test.source-labels').inputs.cases[0].option
+                """)).isEqualTo("secondary");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
     void choiceAddsACompleteOrGroupAndPersistsItAcrossReload() {
         addChoiceAfterTrigger();
 
@@ -1419,9 +1456,9 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
         waitForText("#build-state", "Built");
 
         assertThat(page.locator("[data-matcher-group='0'] .condition-transforms").textContent())
-                .contains("Calculate value", "Add transform");
+                .contains("Prepare comparison value", "Add transform");
         assertThat(page.locator("[data-matcher-group='0'] .condition-predicates").textContent())
-                .contains("No matcher configured.", "Add comparison (AND)");
+                .contains("Without a comparison, any present value is accepted.", "Add comparison (AND)");
         assertThat(page.locator("[data-matcher-group='0'] [data-predicate-query]")
                 .getAttribute("placeholder")).isEqualTo("Search matchers");
     }
@@ -2027,10 +2064,10 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         addTrigger();
 
         assertThat(page.locator("[data-inspector-mode]").allTextContents())
-                .containsExactly("Overview", "Inputs", "Appearance", "Groups", "Examples");
+                .containsExactly("Overview", "Configure", "Results", "Appearance", "Groups", "Examples");
         assertThat(((String) page.locator(".inspector-tabs").evaluate(
                 "tabs => getComputedStyle(tabs).gridTemplateColumns"
-        )).split(" ")).hasSize(5);
+        )).split(" ")).hasSize(3);
         assertThat(page.locator("#target-path").count()).isEqualTo(1);
         assertThat(page.locator("#example-payload, #presentation-name").count()).isZero();
 
@@ -5002,15 +5039,30 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     }
 
     @Test
-    void sourcePathCannotInventNewSegments() {
+    void sourcePathCanUseUnobservedFieldsAndTypedArraySegments() {
         addTrigger();
         addManipulationAfterSelected();
         choosePath("field", "result");
         page.locator("#value-0-option").selectOption("field");
         page.locator("#value-0-source-path").click();
-        page.locator("[data-path-depth='0']").click();
+        page.locator("#new-path-field").fill("unobserved");
+        page.locator("#append-path-field").click();
+        page.locator("#new-path-index").fill("2");
+        page.locator("#append-path-index").click();
+        page.locator("#new-path-field").fill("full.name");
+        page.locator("#append-path-field").click();
+        page.locator("#new-path-field").fill("0");
+        page.locator("#append-path-field").click();
 
-        assertThat(page.locator(".path-create").count()).isZero();
+        assertThat(page.locator(".path-preview").textContent()).contains("Path not verified by an Example");
+        assertThat(page.locator("#apply-path").isEnabled()).isTrue();
+        page.locator("#apply-path").click();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => (await (await fetch('/api/project')).json()).project.nodes
+                  .find(node => node.inputs?.value?.[0]?.option === 'field').inputs.value[0].inputs.source
+                """)).isEqualTo(List.of("context", "payload", "unobserved", 2, "full.name", "0"));
     }
 
     @Test
@@ -5064,9 +5116,12 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     }
 
     @Test
-    void negativeArrayIndexCannotBeAdded() {
+    void invalidArrayIndexesCannotBeAdded() {
         openFieldBuilder("{\"payload\":{\"people\":[]}}", "payload", "people");
         page.locator("#new-path-index").fill("-1");
+
+        assertThat(page.locator("#append-path-index").isDisabled()).isTrue();
+        page.locator("#new-path-index").fill("2147483648");
 
         assertThat(page.locator("#append-path-index").isDisabled()).isTrue();
     }
@@ -5312,6 +5367,10 @@ abstract class RailixCreatorBrowserSupport {
                     .setChannel(System.getenv().getOrDefault("RAILIX_BROWSER_CHANNEL", "chrome"))
                     .setHeadless(true));
             capturePlaywrightProcesses();
+            // A fixed creation time keeps the fixture's procedural scenery repeatable.
+            Files.writeString(template.resolve("railix.creator.json"), """
+                    {"format":2,"created_at":1,"groups":[],"steps":{}}
+                    """);
             try (CreatorServer ignored = CreatorServer.start(
                     0,
                     template.resolve("project.json"),
