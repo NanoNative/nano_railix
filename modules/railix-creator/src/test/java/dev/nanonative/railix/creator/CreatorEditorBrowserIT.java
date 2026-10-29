@@ -953,7 +953,39 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         assertThat(pageErrors).isEmpty();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"sound", "music"})
+    @Tag("browser-diagnostics")
+    void audioSettingsRemainUsableWhileTheCatalogIsLoading(final String tab) {
+        final List<Route> pending = new ArrayList<>();
+        // Keep the catalog's five-second deadline from racing this deliberately held response.
+        page.clock().install();
+        page.clock().pauseAt(System.currentTimeMillis() + 1_000);
+        page.route("**/api/sounds", pending::add);
+        try {
+            page.reload();
+            page.locator("#open-settings").click();
+            page.locator("#settings-" + tab + "-tab").click();
+            page.waitForCondition(() -> !pending.isEmpty());
+            assertThat(pageErrors).as("Opening the editor before the catalog arrives").isEmpty();
+            page.locator("#sound-files > summary").click();
+            assertThat(page.locator("#sound-file").isVisible()).isTrue();
+            page.unroute("**/api/sounds");
+            pending.forEach(Route::resume);
+            pending.clear();
+            page.waitForFunction("() => document.querySelector('#sound-file').options.length > 1");
+            assertThat(page.locator("#sound-file option").allTextContents())
+                    .anyMatch(label -> label.contains(tab.equals("music") ? "music/" : "sounds/"));
+            assertThat(pageErrors).isEmpty();
+        } finally {
+            pending.forEach(Route::abort);
+            page.unroute("**/api/sounds");
+            page.clock().resume();
+        }
+    }
+
     @Test
+    @Tag("browser-diagnostics")
     void musicVolumeReachesFullOutputAndMutesWithoutStoppingPlayback() throws Exception {
         page.locator("#open-settings").click();
         page.locator("#settings-music-tab").click();
@@ -3356,6 +3388,8 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
                 () => Boolean(state.preview) && state.application.examples?.state === 'completed'
                   && !state.applicationRefreshing && state.observations?.nodes.get('matched')?.rate === 0
                 """);
+        // The independently loaded overview repaints scenery once it arrives.
+        page.locator("#world-map").waitFor();
         page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
         page.evaluate("""
                 () => {

@@ -115,7 +115,10 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                   });
                 }
                 """,plots)).as("Native scenery occupies the same cleared world plots as the CSS variant").isEqualTo(true);
-        final String source=(String)page.locator(".world-raster").evaluate("canvas=>canvas.toDataURL()");
+        final var source=page.locator(".world-raster").evaluateHandle("""
+                canvas => ({width:canvas.width,height:canvas.height,
+                  pixels:canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data})
+                """);
         final Path screenshots=Files.createDirectories(Path.of("target/renderer-scenery"));
         page.screenshot(new Page.ScreenshotOptions().setPath(screenshots.resolve(variant+".png")));
         page.evaluate("async()=>{state.world.zoom(1.4);await state.world.refresh();state.world.fit();await state.world.refresh();}");
@@ -124,7 +127,17 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         page.evaluate("async()=>{state.settings.theme_variant='hq';await applyTheme();}");
         assertThat(page.locator(".world-scenery").count()).isPositive();
         page.evaluate("async variant=>{state.settings.theme_variant=variant;await applyTheme();}",variant);
-        assertThat(page.locator(".world-raster").evaluate("canvas=>canvas.toDataURL()")).isEqualTo(source);
+        assertThat(source.evaluate("""
+                before => {
+                  const canvas=document.querySelector('.world-raster');
+                  if(canvas.width!==before.width || canvas.height!==before.height)return false;
+                  const pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+                  // Canvas readback can round translucent RGB channels by one unit after a redraw.
+                  // Keep opacity and pixel positions exact, including the scenery silhouettes.
+                  return pixels.every((value,i)=>Math.abs(value-before.pixels[i]) <= (i%4===3 ? 0 : 1));
+                }
+                """)).as("Theme round-trip preserves every pixel, allowing only one-unit RGB rounding").isEqualTo(true);
+        source.dispose();
         assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
         assertThat(pageErrors).isEmpty();
     }
@@ -1391,38 +1404,78 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
+    @Tag("browser-diagnostics")
     void navigatingKeepsObservationsForUnchangedVisibleStationsWhileTheNextReadIsPending() {
+        holdObservationsAfterFirstSample();
         openProject(fourStepProject());
         awaitScene();
         page.waitForFunction("() => document.querySelector('[data-world-id=one]')?.dataset.activity === 'active'");
-        final String before = page.locator("[data-world-id=one]").getAttribute("title");
-        page.evaluate("""
-                () => {
-                  const fetch = window.fetch;
-                  window.__releaseObservations = [];
-                  window.fetch = async (...args) => {
-                    const response = await fetch(...args);
-                    if (String(args[0]).startsWith('/api/scene/observations?'))
-                      await new Promise(resolve => window.__releaseObservations.push(resolve));
-                    return response;
-                  };
-                  window.__restoreFetch = () => {
-                    window.fetch = fetch;
-                    window.__releaseObservations.forEach(resolve => resolve());
-                  };
-                }
-                """);
         try {
+            // Hold the current read before taking the baseline. The first sample has no rate
+            // that could legitimately appear or expire while navigation is pending.
+            page.waitForFunction("() => window.__releaseObservations.some(held => held.signal === state.observationController?.signal)");
+            final String before = page.locator("[data-world-id=one]").getAttribute("title");
+            assertThat(before).doesNotContain("/s");
             final String query = (String) page.evaluate("() => state.world.query");
+            final var previousController = page.evaluateHandle("() => state.observationController");
             page.locator("#graph").press("ArrowRight");
             page.waitForFunction("query => state.world.query !== query", query);
-            page.waitForFunction("() => window.__releaseObservations.length > 0");
+            page.waitForFunction("""
+                    previous => state.observationController !== previous
+                      && window.__releaseObservations.some(held => held.signal === state.observationController?.signal)
+                    """, previousController);
             assertThat(page.locator("[data-world-id=one]").getAttribute("data-activity")).isEqualTo("active");
             assertThat(page.locator("[data-world-id=one]").getAttribute("title")).isEqualTo(before);
         } finally {
             page.evaluate("() => window.__restoreFetch()");
         }
         assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("browser-diagnostics")
+    void aSecondObservationAddsItsRateBeforeAnyNavigation() {
+        holdObservationsAfterFirstSample();
+        openProject(fourStepProject());
+        awaitScene();
+        page.waitForFunction("() => document.querySelector('[data-world-id=one]')?.dataset.activity === 'active'");
+        try {
+            final String before = page.locator("[data-world-id=one]").getAttribute("title");
+            final String query = (String) page.evaluate("() => state.world.query");
+            assertThat(before).doesNotContain("/s");
+            page.waitForFunction("() => window.__releaseObservations.some(held => held.signal === state.observationController?.signal)");
+            page.evaluate("() => window.__releaseObservations.find(held => held.signal === state.observationController.signal).resolve()");
+            page.waitForFunction("() => document.querySelector('[data-world-id=one]').title.includes('0.00/s')");
+            assertThat(page.evaluate("() => state.world.query")).isEqualTo(query);
+            assertThat(page.locator("[data-world-id=one]").getAttribute("title"))
+                    .isEqualTo(before.replace(" executions · ", " executions · 0.00/s · "));
+            assertThat(page.locator("[data-world-id=one]").getAttribute("data-activity")).isEqualTo("active");
+            assertThat(pageErrors).isEmpty();
+        } finally {
+            page.evaluate("() => window.__restoreFetch()");
+        }
+    }
+
+    private void holdObservationsAfterFirstSample() {
+        page.addInitScript("""
+                const observationFetch = window.fetch;
+                let holdObservations = false;
+                window.__releaseObservations = [];
+                window.fetch = async (...args) => {
+                  const response = await observationFetch(...args);
+                  if (String(args[0]).startsWith('/api/scene/observations?')) {
+                    // Once sampling is established, losing observations must not release later reads.
+                    holdObservations ||= Boolean(currentWorldObservations()?.nodes.has('one'));
+                    if (holdObservations)
+                      await new Promise(resolve => window.__releaseObservations.push({resolve, signal:args[1]?.signal}));
+                  }
+                  return response;
+                };
+                window.__restoreFetch = () => {
+                  window.fetch = observationFetch;
+                  window.__releaseObservations.forEach(held => held.resolve());
+                };
+                """);
     }
 
     @ParameterizedTest
