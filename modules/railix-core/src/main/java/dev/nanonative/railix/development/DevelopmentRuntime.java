@@ -328,6 +328,7 @@ public final class DevelopmentRuntime {
                 }
                 throw exception;
             } catch (final RuntimeException exception) {
+                call.exception = exception;
                 if (nested) {
                     close(call.invocation, "failed", "", null);
                 }
@@ -374,6 +375,21 @@ public final class DevelopmentRuntime {
             value.put("id", RailixValue.string(call.invocation));
             value.put("use", RailixValue.string(call.use));
             value.put("status", RailixValue.string(status));
+            if (call.exception != null) {
+                final List<RailixValue> causes = new ArrayList<>();
+                final Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+                for (Throwable failure = call.exception; failure != null && seen.add(failure) && causes.size() < 8;
+                     failure = failure.getCause()) {
+                    causes.add(RailixValue.object(Map.of(
+                            "type", RailixValue.string(failure.getClass().getName()),
+                            "frames", RailixValue.array(java.util.Arrays.stream(failure.getStackTrace()).limit(32)
+                                    .<RailixValue>map(frame -> RailixValue.string(frame.toString())).toList()))));
+                }
+                final Map<String, RailixValue> exception = new LinkedHashMap<>(
+                        ((RailixValue.ObjectValue) causes.getFirst()).values());
+                exception.put("causes", RailixValue.array(causes.subList(1, causes.size())));
+                value.put("exception", RailixValue.object(exception));
+            }
             if (!outcome.isEmpty()) {
                 value.put("outcome", RailixValue.string(outcome));
             }
@@ -572,6 +588,7 @@ public final class DevelopmentRuntime {
             private Map<String, RailixValue> inputs = Map.of();
             private Map<String, String> options = Map.of();
             private StepResult result;
+            private RuntimeException exception;
             private boolean entered;
 
             private Pending(

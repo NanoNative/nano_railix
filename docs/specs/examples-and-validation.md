@@ -3,7 +3,8 @@
 ## Human Review
 
 Status: **Accepted direction; detailed contract not implementation-ready.** Recorded
-on 2026-09-19, with real-I/O and output-fake clarification on 2026-09-21 from the user.
+on 2026-09-19, with real-I/O and output-fake clarification on 2026-09-21 and scenario needs
+raised on 2026-10-18 by the user.
 The file-separation and assertion proposals below do not change the current project schema.
 
 Outcome: use actual Example execution to build and connect Flows, discover fields and demonstrate
@@ -45,7 +46,7 @@ silently pruning a branch merely because a demonstration did not traverse it.
 | Presentation | Optional `railix.creator.json`, ignored by compiler/runtime execution. | Still presentation only; no expectations or validation policy. |
 | Execution | Generated development app runs compiled Examples once through normal routes and owns their results. | Same owner and execution path. |
 | Validation | Execution results and coverage are visible; no output-assertion evaluator or assertion-based release gate. | Creator validates current application-returned evidence. |
-| Production | Example manifest, development traces/metrics and management endpoints are physically omitted. | No expectation evaluator or test-only dependency added to the production application. |
+| Production | Example manifest, development traces/metrics and management endpoints are physically omitted. | Example inputs, fakes and expectation evaluation remain omitted; the separate [production observation direction](observation.md#accepted-production-observation-direction) includes baseline telemetry and bounded, enabled tracing. |
 
 Separating the authoring file does not move Example execution into Creator or make
 the development app load mutable authoring files at request time. Changes to Example
@@ -85,6 +86,21 @@ Example reaches the relevant point. If another Example omits it or gives it anot
 shape, Creator retains that provenance instead of inventing one always-present merged payload.
 Examples show concrete behavior; they do not prove a dynamic field exists for every future input.
 
+For multi-input and linked-use editing, preserve provenance by Example, originating
+invocation/route and selected occurrence, even if Creator draws one building. Do not mix observed
+fields from separate arrivals into a fictional context. At an explicit Join, show the actual
+combined context produced under [SYS-024](system-model.md#planned-merge-and-join), not a merge
+performed by Creator. Repeated writes are not inherently errors. Observations can expose a
+concrete conflict but cannot prove that every possible ordering is safe. Conflicting Join values
+produce the non-blocking warning in [CR-014](creator.md#example-guidance-and-circuit-metaphors). The observed result
+must show the actual last-arriving winner, not turn a warning into a failed execution. Authored
+assertions still evaluate the resulting context and may fail independently.
+
+Join/Limiter Examples will need explicit multi-arrival, timing and completion evidence under the
+owning control acceptance criteria. Current single-Trigger cases are not a coordinated concurrent
+scenario facility. Scenario inputs, bounds and controlled scheduling must be agreed before that
+extension. No new Example file format or forced concurrent execution is selected here.
+
 Keep four facts separate: connection/reachability in the graph, observed Example coverage,
 execution completion and optional assertion results. Coverage is measured against the authored
 graph/build revision, not made green by hiding omitted Steps from its denominator. Explicitly kept
@@ -105,8 +121,8 @@ Real I/O is already possible and explicitly permitted. `context.runtime.test` al
 ordinary Choice to route an Example around a side-effecting Step. Standard Field Manipulation
 already accepts a literal object and writes it to a target path, so constructing a replacement
 value does not inherently require a new Step type. The branches can then converge under the
-[Merge contract](system-model.md#planned-merge-and-join). That convergence work remains separately
-tracked; this HTTP specification update does not change its implementation status.
+[ordinary convergence contract](system-model.md#planned-merge-and-join), without a mandatory Merger.
+The convergence baseline is tracked separately from later coordinated branch execution.
 
 This explicit Flow is a valid authoring technique, not the future output-fake API. Per-Example,
 per-Step fakes are planned so users need not build bypass branches just for test data. Before
@@ -181,6 +197,26 @@ These block only their dependent implementation slices, not this documentation w
 4. **Before validation/headless delivery:** choose a public Creator validation boundary usable
    outside the browser, bounded access to required outputs, result invalidation and
    diagnostics. This is a recommendation, not an implemented endpoint.
+5. **Before dependent Example scenarios:** define how a later Trigger Example receives an ID or
+   other result produced by an earlier Example, including across different Triggers. Decide what
+   setup and cleanup the cases share, how a failed prerequisite affects its dependents, and which
+   cases may run concurrently. Agree dependency, value-transfer and isolation rules before
+   selecting a tree, graph, file format or scheduler.
+
+The 2026-10-18 authoring need includes standalone cases, variations of one Trigger event such as
+missing, JSON null, empty, blank and unusual characters, and ordered cases such as creating a
+record before modifying it. Some cases may share deliberate setup; others must remain isolated.
+These are distinct from parallel execution tests. Each case still supplies Trigger output rather
+than injecting an Example at an intermediate Step. A repeated input does not imply identical
+outcomes or permission to skip execution, especially with external state and side effects.
+For example, a Create Example may produce an ID that a later Modify Example on another Trigger
+uses in its own input. Creator should distinguish standalone cases from such dependent cases and
+show where a generated value came from. A single-parent sequence may look like a tree, but that
+does not select a tree-only execution model or automatic sharing of the entire context. The
+binding mechanism, shared-state lifetime and failure behavior remain open.
+Creator may eventually collapse identical observed section inputs for display, but must retain
+each case's identity, route, output, expectations and failure. The exact comparison and display
+contract are not selected here.
 
 Expected-error assertions, managed fixtures/test services and protocol-specific test clients
 require explicit scope. Real-I/O Examples do not wait for those features. A release-green claim
@@ -191,8 +227,9 @@ automatic test execution against that data.
 ### Proposed I/O Isolation
 
 The user suggested sequential execution and batching Examples with the same fake data to keep
-artifact overhead low. Recommendation awaiting approval: reuse expensive fixture startup, not
-mutable case state. Each Example starts from its declared baseline; reset or isolate writes,
+artifact overhead low. Recommendation awaiting approval for independent cases: reuse expensive
+fixture startup, not mutable case state. Each independent Example starts from its declared
+baseline; reset or isolate writes,
 fake-response cursors, clocks and resources between cases. Failed cleanup invalidates dependent
 cases rather than allowing a misleading pass. Sequential execution alone is not isolation.
 Sequential Example success also does not prove concurrent production safety; real resource and

@@ -18,5 +18,6 @@ Consult the relevant owner, not a mandatory reading chain.
 
 - Preserve unrelated work. Resolve repository facts yourself; ask before material design or scope changes.
 - Make the smallest working change through the owning public boundary. Report actual verification and gaps.
+- For nontrivial Creator changes, exercise a saved, branch-heavy project in the UI with examples and reuse; inspect desktop and narrow layouts, and show a screenshot.
 - Stop task-owned helper processes when finished; leave unrelated processes alone.
 - Review the intended diff before publication. Commit, push, and PR creation each need explicit, single-use permission.

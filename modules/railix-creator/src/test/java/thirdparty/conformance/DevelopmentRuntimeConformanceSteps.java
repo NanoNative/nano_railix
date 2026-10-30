@@ -187,6 +187,14 @@ public final class DevelopmentRuntimeConformanceSteps {
         }
     }
 
+    /** Returns a configured outcome to exercise generated result validation. */
+    public static final class ConfiguredOutcome {
+        /** Returns the configured outcome without changing context. */
+        public static StepResult process(final StepInput configuration, final StepInput input) {
+            return StepResult.outcome(configuration.string("outcome"));
+        }
+    }
+
     /** Raises one implementation fault through the real generated dispatch path. */
     public static final class Fault {
         /** Creates one stateless handler. */

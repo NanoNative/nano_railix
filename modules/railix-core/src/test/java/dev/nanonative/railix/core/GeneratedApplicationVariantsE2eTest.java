@@ -14,6 +14,22 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.assertj.core.api.Assertions.assertThat;
 
 final class GeneratedApplicationVariantsE2eTest {
+    @Test
+    void compilerRejectsAnInaccessibleImplementationClassBeforeGeneratingJava() {
+        assertThat(compileWith(InaccessibleProcess.class)).isInstanceOfSatisfying(CompileResult.Rejected.class,
+                rejected->assertThat(rejected.diagnostics()).anySatisfy(diagnostic->{
+                    assertThat(diagnostic.code()).isEqualTo("PROJECT_STEP_PROCESS_INVALID");
+                    assertThat(diagnostic.message()).contains("public implementation class");
+                    assertThat(diagnostic.path()).contains(".inputs.steps[0].use");
+                }));
+    }
+
+    static final class InaccessibleProcess {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
+            return StepResult.outcome("ok");
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(classes = {MissingProcess.class, InstanceProcess.class, WrongProcess.class,
             PrivateProcess.class, WrongReturn.class})

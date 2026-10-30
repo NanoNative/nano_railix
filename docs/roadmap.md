@@ -1,6 +1,6 @@
 # Railix II Roadmap
 
-Documentation reorganized: 2026-09-19; lifecycle/HTTP review updated 2026-09-21. Feature status is
+Documentation reorganized: 2026-09-19. Direct-editing/reuse review updated 2026-10-17. Feature status is
 retained from the previous roadmap, not recertified by this edit. Historical checkpoints and test counts live in
 [verification](verification.md). Railix is **not production-certified**.
 
@@ -57,9 +57,10 @@ spreading them across unconnected application, CI/CD, observability, and orchest
 ## Current Sequence
 
 Two of eight feature milestones are accepted. Checkpoint counts describe accepted
-scope, not estimated effort. Only accepted, implementation-ready slices proceed to code. Merge/fan-in,
-then Split and bounded Loop remain the pending flow-control sequence, not approval to bypass
-the workshop. The 2026-09-19 decisions put single-instance production readiness before Item 7;
+scope, not estimated effort. Only accepted, implementation-ready slices proceed to code. Ordinary
+multi-input convergence is the recommended first control slice. It does not wait for a full Join
+or Limiter design. Reuse, branching and coordination are sequenced below, not approved for coding
+by this documentation task. The 2026-09-19 decisions put single-instance production readiness before Item 7.
 the required single-instance packaging work from Item 8 therefore does not wait for the mesh.
 
 The 2026-09-21 HTTP review adds a P1 prerequisite to further HTTP work: remove privileged
@@ -83,8 +84,9 @@ does not block plain certificate configuration. Configurable primitive families 
 | Context-driven HTTP and HTTPS | [HTTP Trigger](specs/http-trigger.md), [HTTP Client](specs/http-client.md) | Common lifecycle first; resolve field shapes, limits and migration; real HTTPS tests for independent certificate/hostname options, CORS checks and resource measurements. | Planned; plain compiled settings now, secret manager later; binary/multipart/streaming deferred. |
 | Configurable Step families | [Consolidation candidates](specs/standard-library.md#planned-configurable-families) | Agree the first family, outcomes/output shape and version migration; prove existing modes and the generic third-party declaration path without numeric precision loss. | Direction accepted; no IDs merged or catalog rows changed. |
 | Compilation selection | [SYS-007](specs/system-model.md#planned-compilation-selection) | Resolve graph-unreachable versus Example-unvisited now; agree retention, validation and edge handling before pruning; inspect artifacts and authored-graph preservation. | Accepted omission/keep direction; classifier is blocking, current compiler rejects unreachable graphs. |
-| Configurable Merge/join | [SYS-008](specs/system-model.md#planned-merge-and-join) | Resolve correlation scope now; define non-waiting convergence first. Waiting joins additionally need branch activation, context combination and bounded suspension lifecycle. | Mode direction accepted; exact control/scheduling contract is not implementation-ready. |
-| Creator copy and shared editing | [CR-001 to CR-003](specs/creator.md#planned-group-copy-and-sharing) | Agree persistence, binding and edit transactions; prove independent copy plus two linked occurrences and flat compilation. | Planned; earlier blanket rejection superseded. |
+| Convergence, branching and Join | [SYS-008, SYS-023 to SYS-027](specs/system-model.md#planned-merge-and-join) | Resolve FC-1 to FC-6 only before their dependent branch or Join slice. | Ordinary convergence implemented. Branch scheduling and Join remain planned. Independent-message pairing, merge granularity and completion remain open. |
+| Step/group reuse and lanes | [CR-001 to CR-003, CR-009 to CR-013](specs/creator.md#planned-group-copy-and-sharing) | Prove independent copies, atomic shared edits, detachment and selectable lanes in the materialized graph. | Single-entrance copy/reuse, detach and complete-action history implemented. Advanced bindings and optional combined buildings remain planned. No implicit runtime sharing. |
+| General-purpose Limiters | [SYS-028 to SYS-031](specs/system-model.md#planned-limiters) | Resolve LM-1 to LM-4 and FC-6. Installed-bundle proof, bounded waiting and fairness with metrics/Creator absent. | Planned. Whole-job concurrency scope accepted. Rate limiting is separate. No persisted queues or implicit shared budgets. |
 | Environments, secrets and early rejection | [SEC-001 to SEC-006, SEC-008/009](specs/environments-and-security.md#accepted-goals), [Layer 4 Step scope](specs/environments-and-security.md#planned-layer-4-step-integration) | Static identities/access and credential rotation accepted; decide source format, trust, recovery/rollback, renewal failure and transport enforcement before the security milestone. | Planned; no live user-management subsystem; cryptographic architecture and Layer 4 tools/platforms remain unspecified. |
 | Security and compliance evidence | [SEC-007](specs/environments-and-security.md#security-and-compliance-support) | Threat model and applicable controls before security-sensitive implementation; select ISO/ASVS scope, operator duties and release evidence. | Support goal accepted; no certification or legal-compliance claim. |
 | Database and Creator data administration | [DATA-001 to DATA-004](specs/database-and-data-access.md#accepted-behavior) | Agree MongoDB-inspired behavior profile, durability, permission scope and concurrent edits; prove Creator/Flow CRUD, direct API denial, restart and packaged omission. | Planned; no engine or full MongoDB compatibility selected; dedicated time-series database excluded. |
@@ -92,7 +94,7 @@ does not block plain certificate configuration. Configurable primitive families 
 | Creator capability/resource guidance | [CR-004](specs/creator.md#planned-java-module-visibility), [CR-005](specs/creator.md#planned-step-capability-symbols), [proposed UI journeys](specs/creator.md#planned-capability-and-resource-guidance) | Define per-Step module attribution, capability evidence and unresolved states before this UI slice; agree observation/resource interactions and test comprehension, accessibility and bounded UI work. | Module visibility and capability symbols are planned requirements; detection contracts and UI remain unspecified. Other guidance remains proposed. |
 | Example authoring, ownership and coverage | [EX-001 to EX-003, EX-007/008](specs/examples-and-validation.md#behavior) | Actual field-mapping and coverage journeys; schema/migration before file separation; selected-build evidence before an inclusion or release gate. | Accepted direction; not equivalent to passing assertion tests. |
 | Per-Example Step output fakes | [EX-009/010](specs/examples-and-validation.md#real-io-and-output-fakes) | Agree fake replacement/output/outcome selection and persistence; prove case isolation, no accidental side effects, truthful coverage and production omission. | Planned; real-I/O Examples and explicit test-mode bypasses remain permitted today. |
-| Phase 1 execution validation | EX-001, EX-003, EX-006, EX-008 | Public Creator proof of reached versus completed/failed Steps, cancellation and stale evidence; release consequences await the selection contract. | Partial: selected-Example failures now explain broken downstream Steps after edits, with repair and stale-result checks. See [editing behavior](specs/creator.md#editing-an-existing-flow). Complete change-impact preview and release eligibility remain open; no blanket build gate approved. |
+| Phase 1 execution validation | EX-001, EX-003, EX-006, EX-008 | Public Creator proof of reached versus completed/failed Steps, cancellation and stale evidence; release consequences await the selection contract. | Partial: persistent Example selection, observed Step/group field changes and failure navigation explain actual results after edits. Large closed branch areas now have a derived overview with existing observations, separate corridors and elevated crossings. See [editing behavior](specs/creator.md#editing-an-existing-flow), [rendering scope](specs/creator.md#camera-and-rendering) and [observed values](specs/creator.md#world-state-and-selection). Predictive change-impact preview, domain-aware semantic grouping and release eligibility remain open. No blanket build gate approved. |
 | Phase 2 visual expectations | EX-004 to EX-006 | Phase 1 plus agreed operators/selection semantics; matching, failing and unreached-Step examples through Creator. | Planned. |
 
 These are dependencies, not approval to implement or an invented release date. Inputs
@@ -172,21 +174,51 @@ Behavior: [system model](specs/system-model.md), [Creator](specs/creator.md),
 1. **Done:** one flat graph and structural compilation; no group expansion or handler execution in the compiler.
 2. **Done:** metadata isolation and flat recovery without functional changes.
 3. **Done:** semantic zoom and group management; historical scoped UI follow-ups do not imply product certification.
-4. **Partial:** Filter, Choice and Switch accepted; Merge, Split and Loop remain unsupported.
+4. **Partial:** Filter, Choice, Switch and ordinary convergence are implemented. Multi-route execution, Join and Loop remain unsupported.
 5. **Done:** malformed metadata rejection, migration and recovery.
-6. **Planned:** [configured Merge/join](specs/system-model.md#planned-merge-and-join), Split/fan-out
-   and bounded Loop contracts and proof; waiting joins depend on activation and lifecycle rules.
+6. **Partial:** [Ordinary convergence](specs/system-model.md#planned-merge-and-join) has a working baseline.
+   Branch execution, Join and bounded Loop still need their contracts and proof. Waiting and
+   independent work need explicit lifecycle ownership.
 7. **Planned:** Examples, visual expectations and release eligibility according to the two-phase validation spec; fixtures and protocol clients require their own decisions.
 
-The newly accepted [copy/shared-edit slice](specs/creator.md#planned-group-copy-and-sharing)
-is additional planned work, not part of the previously accepted checkpoint counts. It must
-resolve its authoring contracts before implementation; compiler group expansion remains excluded.
+The accepted [Step/group reuse slice](specs/creator.md#planned-group-copy-and-sharing) is additional
+work, not part of the previously accepted checkpoint counts. Compiler group expansion
+remains excluded. The following small vertical slices are a recommended implementation order,
+not new completion counts. Their acceptance criteria stay in the owning specifications.
+
+| Slice | Observable outcome / requirements | Dependency and exit evidence | Status / blocker |
+| --- | --- | --- | --- |
+| F1: ordinary convergence | Multiple routes reach one ordinary Step without a Merger, SYS-008/013 and CR-013/015/016. | Verify same-Trigger and cross-Trigger arrivals, isolated contexts/responses, one placement lifecycle, preview/cancel and connection edits in Creator plus built JAR. | Baseline implemented. Generated routes have no exclusive Trigger owner. No Join or scheduler was added. Broader lane and large-graph interaction acceptance remains. |
+| F2: independent copy | Copy one Step, then group contents, CR-001/003. | Run original/copy, edit one, reopen and compile without graphics metadata. | Single-entrance placement implemented. Several group entrances still require a compound binding interaction under RE-1. |
+| F3: link and detach | Edit shared contents/mappings atomically and detach one use, CR-002/003/009/010/018. | Prove near/distant uses, related highlights, independent copies, rejected/stale edits and unchanged behavior after detachment. | Basic shared processing, internal insertion/deletion, detach, session history and startup rollback implemented. Advanced boundary changes and the full large-graph/browser matrix remain. |
+| F4: combined building and components | Select separate lanes in one linked building. Inspect a compact functional connector, CR-011/012/013. | Functional identities from F1/F3 and an actual declared connector capability, not placeholder Join/Limiter behavior. Pointer/keyboard/narrow-layout proof and screenshots. No runtime dependence on geometry. | Planned. Combined buildings are optional, not a prerequisite for reuse. |
+| F5: multiple selected routes, sequential execution | Explicitly choose one, several matching or all routes without implicit concurrency, SYS-023/025. | FC-1/2 and public result/declaration contract. Built-in/installed-bundle parity, ordered execution, no-match/error cases and unchanged existing Choice/Switch behavior. | Planned. Do not merge catalog IDs before mode and migration decisions. |
+| F6: independent branch execution | Owned concurrent work with bounded lifecycle and context rules, SYS-023/026/027. | FC-3/5 and current public-contract gap analysis. Real branches, failure/cancel/drain and retained-memory checks with the plain synchronous path unchanged. | Planned. No callback-only or global observer architecture selected. |
+| F7: explicit Join | Pair related arrivals, then merge contexts, SYS-024/025/027 and CR-014. | FC-4/5/6. Use F6 ownership capabilities where required. Prove overlapping jobs, last-arrival-wins and non-blocking Creator warnings, late/duplicate/failing inputs, original caller responses and bounded waiting via an installed bundle. | Planned. Independent-message pairing, merge granularity and completion open. |
+| F8: rate admission | Limit starts per interval with bounded fair waiting and overload, SYS-028 to SYS-031. | LM-2/3/4 and owned waiting from the common contract. Controlled-clock burst/fairness/overflow tests, private/shared budgets, no Creator/metrics dependency. | Planned. Independent of Join context-merge policy. Waiting semantics still need agreement. |
+| F9: whole-job concurrency limit | Hold each admitted place until its job is finished, SYS-027 to SYS-031. | LM-1/2/3 and FC-6. Hold downstream work, exercise branch/Join completion, cancellation, re-entry and starvation/deadlock cases. Prove no permit leaks or early release. | Planned. Whole-job scope accepted, exact accounting and interaction rules open. |
+
+This list adds no module, runtime dependency or alternate interpreter. Reuse does not require
+runtime parallelism. Rate admission need not wait for the Join feature. Coordination capabilities
+must be added only when a selected slice proves they are needed. Bounded Loop remains a separate
+later contract, not implied by these graph edits.
+
+The accepted [direct-editing journeys](specs/creator.md#planned-direct-editing), CR-015 to CR-020,
+add selection-based grouping and stable near/distant navigation. Presentation-only grouping can
+be delivered against the current graph independently of F1. Reuse needs F2/F3 bindings and atomic
+edits. Complete Undo/Redo uses the bounded-history and revision boundary recorded under RE-2.
+The baseline now includes connection handles/previews, separate Step/Group insertion search, selection and
+range grouping, source selection and complete-action Undo/Redo. This does not complete the wider
+acceptance matrix or add newly accepted checkpoint counts. Runtime F5 to F9 remain planned.
+
+Usability on complex saved flows is the current priority. Further graphic redesign and new renderer
+work are deferred. Concept art alone does not establish implementation readiness.
 
 Compiler/observation scaling and viewport-readiness scoped gates were locally accepted
 on 2026-09-08. [Earlier probes](verification.md#compiler-and-observation-scaling)
 are not proof of million-Step compilation, million concurrent requests or sustained
 thermal behavior. Streamed project/source processing remains unproven at that scale.
-The current renderer contract is native Canvas/CSS, not the historical PixiJS experiment.
+The current default renderer is native Canvas. CSS styles the HUD and palette, not world geometry.
 
 ## 6. Live Runtime, Operations, Bounded Work, And Permissions
 
@@ -196,11 +228,13 @@ Goal: make development observable and production behavior bounded.
 
 Scope:
 
-- explicit suspending Steps begin only as one lifecycle-complete slice: top-level suspension,
-  bounded admission, ingress-owned deadline/cancellation, idempotent application shutdown,
-  one-shot inline resume by integer node, and constrained-heap/classloader-retention proof;
-- independently includable project/build metadata, preview/trace, live-error, queue, and metrics
-  build capabilities;
+- coordinated waiting/independent work begins only with public Step capabilities and complete
+  ownership under [SYS-025 to SYS-027](specs/system-model.md#planned-merge-and-join): bounded
+  admission, completion, deadline/cancellation, shutdown and retained-memory proof. The exact
+  continuation API and scheduling mechanism are not selected in this roadmap.
+- independently includable project/build metadata, preview, live-error and queue capabilities;
+  the [accepted observation direction](specs/observation.md#accepted-production-observation-direction)
+  instead includes bounded baseline Step/Flow telemetry in every production build;
 - local and remote authenticated, read-only Creator attachment with explicit compatibility
   metadata and build-selected observation endpoints; observation never edits or invokes a Flow;
 - separately authorized Creator database administration through build-selected data capabilities,
@@ -215,18 +249,20 @@ Scope:
   and Step without workflow values;
 - deterministic configuration precedence, named environments, explicit placeholders, and restart
   behavior without hidden live mutation;
-- bounded issue and diagnostic registries with explicit overflow behavior, plus keyed rate limits
-  whose key, capacity, queue, and rejection paths are visible in the Flow;
+- bounded issue and diagnostic registries with explicit overflow behavior. General-purpose
+  [Limiters](specs/system-model.md#planned-limiters) separately own rate/concurrency admission,
+  explicit budgets, fair lanes, bounded in-memory waiting and overload paths.
 - bounded metric names, labels, and cardinality with an explicit overflow series instead of
   unbounded production memory;
-- traces only for explicit examples or user-supplied test contexts, never sampled production data;
+- development Example traces remain outside production; production tracing requires explicit
+  enablement, bounded capture and no workflow values by default;
 - bounded queues, concurrency, deadlines, cancellation, backpressure, and shutdown;
 - explicit filesystem, network, process, environment, and other permission requests;
 - optional resource measurement and enforceable execution policy.
 
-The synchronous generated route remains a separate zero-scheduler fast path. Suspension is not
-accepted as a callback-only API because an abandoned callback would retain its complete event
-context without a lifecycle owner.
+The ordinary synchronous route must remain free of an unused scheduler. Coordination extends the
+same compiled execution model, not a second interpreter. A callback alone is insufficient:
+abandoned work must not retain its context without completion, cancellation and cleanup ownership.
 
 Checkpoints:
 
@@ -234,7 +270,8 @@ Checkpoints:
 2. **Planned:** lifecycle-complete suspending Steps with bounded admission, deadline, cancellation,
    shutdown, and retained-context proof while preserving the synchronous fast path.
 3. **Planned:** independently includable development capabilities, named environments, deterministic
-   configuration precedence, and build-time physical omission per capability.
+   configuration precedence, and build-time physical omission of development-only capabilities,
+   while retaining bounded baseline production telemetry.
 4. **Planned:** authenticated local/remote read-only attachment, static identities/access policy,
    credential rotation and encrypted environment-secret delivery.
 5. **Planned:** bounded queues, backpressure, diagnostics, live errors, rate limits, metric

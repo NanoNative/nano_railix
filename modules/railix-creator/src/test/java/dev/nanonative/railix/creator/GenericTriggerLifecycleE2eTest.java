@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import thirdparty.production.ProductionRuntimeConcurrencySteps;
 
@@ -21,6 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -100,6 +102,136 @@ final class GenericTriggerLifecycleE2eTest {
             assertThat(Integer.parseInt(text(marker))).isEqualTo(port);
         }
         assertThat(Files.readString(directory.resolve("closed"))).isEqualTo("closed");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false,false", "true,false", "true,true"})
+    void failedSourceActivationDoesNotOverwriteAnInterveningExternalFileEdit(final boolean editor, final boolean metadata) throws Exception {
+        final Path marker = directory.resolve("source-port");
+        GeneratedApplicationFixture.installedCatalog(directory, List.of(definition()),
+                ProductionRuntimeConcurrencySteps.SocketSource.class);
+        final Path project = directory.resolve("railix.project.json");
+        final String accepted = source("normal", marker);
+        Files.writeString(project, accepted);
+        try (CreatorServer creator = CreatorServer.start(0, project, directory.resolve("railix-home"));
+             var tasks = Executors.newVirtualThreadPerTaskExecutor()) {
+            final var current = CreatorServerE2eSupport.object(CreatorServerE2eSupport.request(
+                    creator.baseUri(), "GET", "/api/project", "").body());
+            final String failedSource = source("hold-fail", marker);
+            final var failedProject = CreatorServerE2eSupport.object(failedSource);
+            final var changedNode = ((RailixValue.ArrayValue) failedProject.values().get("nodes")).values().stream()
+                    .map(RailixValue.ObjectValue.class::cast)
+                    .filter(node -> RailixValue.string("socket").equals(node.values().get("id"))).findFirst().orElseThrow();
+            final String body = editor ? RailixJson.write(RailixValue.object(Map.of(
+                    "revision", current.values().get("revision"), "creator_revision", current.values().get("creator_revision"),
+                    "command", RailixValue.object(Map.of("kind", RailixValue.string("patch"), "project", RailixValue.object(Map.of(
+                            "nodes", RailixValue.object(Map.of("socket", changedNode))))))))) : failedSource;
+            final var replacement = tasks.submit(() -> CreatorServerE2eSupport.request(
+                    creator.baseUri(), "POST", editor ? "/api/editor" : "/api/project", body));
+            final Path changedFile = metadata ? project.resolveSibling("railix.creator.json") : project;
+            final String external = metadata
+                    ? Files.readString(changedFile).replace("\"steps\":{}", "\"steps\":{\"message\":{\"name\":\"Outside edit\"}}")
+                    : accepted.replace("source-lifetime", "edited-outside");
+            try {
+                await(() -> Files.exists(directory.resolve("activating")));
+                Files.writeString(changedFile, external);
+            } finally {
+                Files.writeString(directory.resolve("activation-release"), "release");
+            }
+            final var response = replacement.get(20, TimeUnit.SECONDS);
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(409);
+            assertThat(response.body()).contains("outside Creator", "preserved", "\"recovery\":\"restarted\"");
+            assertThat(Files.readString(changedFile)).isEqualTo(external);
+            assertThat(directory.resolve(".railix/run/editor-transaction.json")).doesNotExist();
+        }
+    }
+
+    @Test
+    void failedEditorActivationPreservesPreviouslyInvalidMetadataWithoutReportingAnOutsideEdit() throws Exception {
+        final Path marker = directory.resolve("source-port");
+        GeneratedApplicationFixture.installedCatalog(directory, List.of(definition()),
+                ProductionRuntimeConcurrencySteps.SocketSource.class);
+        final Path project = directory.resolve("railix.project.json");
+        Files.writeString(project, source("normal", marker));
+        final Path metadata = project.resolveSibling("railix.creator.json");
+        final String invalid = "{\"format\":2,\"groups\":\"invalid\",\"steps\":{}}";
+        Files.writeString(metadata, invalid);
+        try (CreatorServer creator = CreatorServer.start(0, project, directory.resolve("railix-home"))) {
+            final var current = CreatorServerE2eSupport.object(CreatorServerE2eSupport.request(
+                    creator.baseUri(), "GET", "/api/project", "").body());
+            assertThat(((RailixValue.ArrayValue) current.values().get("diagnostics")).values()).isNotEmpty();
+            final var changedNode = ((RailixValue.ArrayValue) CreatorServerE2eSupport.object(source("fail", marker)).values().get("nodes"))
+                    .values().stream().map(RailixValue.ObjectValue.class::cast)
+                    .filter(node -> RailixValue.string("socket").equals(node.values().get("id"))).findFirst().orElseThrow();
+            final String body = RailixJson.write(RailixValue.object(Map.of(
+                    "revision", current.values().get("revision"), "creator_revision", current.values().get("creator_revision"),
+                    "command", RailixValue.object(Map.of("kind", RailixValue.string("patch"), "project", RailixValue.object(Map.of(
+                            "nodes", RailixValue.object(Map.of("socket", changedNode)))))))));
+            final var response = CreatorServerE2eSupport.request(creator.baseUri(), "POST", "/api/editor", body);
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(503);
+            assertThat(response.body()).contains("could not be activated").doesNotContain("outside Creator", "\"conflict\"");
+            assertThat(Files.readString(metadata)).isEqualTo(invalid);
+            assertThat(directory.resolve(".railix/run/editor-transaction.json")).doesNotExist();
+        }
+    }
+
+    @Test
+    void sourceActivationDoesNotBlockReadingTheApplicationStatus() throws Exception {
+        final Path marker = directory.resolve("source-port");
+        GeneratedApplicationFixture.installedCatalog(directory, List.of(definition()),
+                ProductionRuntimeConcurrencySteps.SocketSource.class);
+        final Path project = directory.resolve("railix.project.json");
+        Files.writeString(project, source("normal", marker));
+        try (CreatorServer creator = CreatorServer.start(0, project, directory.resolve("railix-home"));
+             var tasks = Executors.newVirtualThreadPerTaskExecutor();
+             var client = java.net.http.HttpClient.newHttpClient()) {
+            final var replacement = tasks.submit(() -> CreatorServerE2eSupport.request(
+                    creator.baseUri(), "POST", "/api/project", source("hold", marker)));
+            try {
+                await(() -> Files.exists(directory.resolve("activating")));
+                final var status = client.send(java.net.http.HttpRequest.newBuilder(creator.baseUri().resolve("/api/application"))
+                        .timeout(Duration.ofSeconds(2))
+                        .header("X-Railix-Creator-Token", creator.baseUri().getRawFragment().substring("token=".length()))
+                        .GET().build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+                assertThat(status.statusCode()).as(status.body()).isEqualTo(200);
+            } finally {
+                Files.writeString(directory.resolve("activation-release"), "release");
+                assertThat(replacement.get(20, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+            }
+        }
+    }
+
+    @Test
+    void failedSourceActivationRestoresTheAcceptedProjectWithItsRunningArtifact() throws Exception {
+        final Path marker = directory.resolve("source-port");
+        GeneratedApplicationFixture.installedCatalog(directory, List.of(definition()),
+                ProductionRuntimeConcurrencySteps.SocketSource.class);
+        final Path project = directory.resolve("railix.project.json");
+        final String accepted = source("normal", marker);
+        Files.writeString(project, accepted);
+        try (CreatorServer creator = CreatorServer.start(0, project, directory.resolve("railix-home"))) {
+            final String persisted = Files.readString(project);
+            final var before = CreatorServerE2eSupport.application(creator.baseUri());
+            final var rejected = CreatorServerE2eSupport.request(creator.baseUri(), "POST", "/api/project", source("fail", marker));
+
+            assertThat(rejected.statusCode()).as(rejected.body()).isEqualTo(503);
+            assertThat(rejected.body()).contains("\"recovery\":\"restarted\"");
+            assertThat(Files.readString(project)).isEqualTo(persisted);
+            final var document = CreatorServerE2eSupport.object(CreatorServerE2eSupport.request(
+                    creator.baseUri(), "GET", "/api/project", "").body());
+            assertThat(document.values().get("project")).isEqualTo(((RailixJson.Parsed) RailixJson.parse(accepted)).value());
+            final var after = CreatorServerE2eSupport.application(creator.baseUri());
+            assertThat(after.values().get("fingerprint")).isEqualTo(before.values().get("fingerprint"));
+            assertThat(after.values().get("pid")).isNotEqualTo(before.values().get("pid"));
+            assertThat(after.values().get("state")).isEqualTo(RailixValue.string("running"));
+            assertThat(CreatorServerE2eSupport.request(creator.baseUri(), "GET", "/api/examples", "").statusCode()).isEqualTo(200);
+            assertThat(exchange(Integer.parseInt(text(marker)), "live")).isEqualTo("\"live\"");
+
+            final var repaired = CreatorServerE2eSupport.request(creator.baseUri(), "POST", "/api/project",
+                    accepted.replace("cli-finished", "repaired"));
+            assertThat(repaired.statusCode()).as(repaired.body()).isEqualTo(200);
+            assertThat(Files.readString(project)).contains("repaired");
+        }
     }
 
     @Test

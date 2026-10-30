@@ -11,26 +11,51 @@
   <style id="theme-style"></style>
 </head>
 <body>
+  <header class="workbench-header">
+    <div class="workbench-brand" aria-label="Railix"><b aria-hidden="true">R</b><span>RAILIX</span></div>
+    <nav id="group-navigation" aria-label="Location"><div id="world-location"></div><button id="scope-overview" type="button" title="Fit this work area" aria-label="Overview">Overview</button><button id="leave-group" type="button" aria-label="Leave group" title="Leave group"><i class="hud-symbol" data-symbol="back" aria-hidden="true"></i></button></nav>
+    <div id="workbench-actions"></div>
+    <nav id="example-session" aria-label="Visible Example" hidden></nav>
+  </header>
   <main class="creator-shell">
     <section class="canvas-panel" aria-label="Project graph">
       <div id="graph" class="graph-stage" tabindex="0" aria-label="Flow diagram. Scroll to zoom, drag or Shift-scroll to pan.">
         <div id="world-plane" aria-hidden="true"></div>
         <div id="world-labels"></div>
+        <figure id="example-time-scale" data-world-overlay hidden aria-label="Visible sampled Step time scale" title="Outgoing belts show the previous Step's sampled average. Groups use their slowest measured Step. Colors compare the visible measured Steps and groups on a logarithmic scale. Gray means no current samples. Not CPU load or the selected Example's duration."></figure>
+        <button id="group-return" type="button" data-world-overlay hidden><i class="hud-symbol" data-symbol="back" aria-hidden="true"></i><span></span></button>
         <i id="world-cursor" aria-hidden="true" hidden></i>
-        <div id="trigger-example" data-world-overlay hidden></div>
         <p id="world-error" role="alert" hidden></p>
-        <nav id="group-navigation" data-world-overlay aria-label="Entered group" hidden><span></span><button id="leave-group" type="button" aria-label="Leave group" title="Leave group"><i class="hud-symbol" data-symbol="close" aria-hidden="true"></i></button></nav>
+        <section id="creator-startup" role="alert" hidden><h1 id="creator-startup-title"></h1><p id="creator-startup-detail"></p><button id="creator-retry" type="button" hidden>Retry connection</button></section>
         <section id="world-hud" data-world-overlay aria-label="World controls">
         <button id="world-map" type="button" aria-label="World minimap. Click to travel; arrow keys to pan." title="World map: click to travel" hidden>
-          <span class="map-cells" aria-hidden="true"></span><i class="map-camera" aria-hidden="true"></i>
+          <span class="map-content" aria-hidden="true"><span class="map-cells"></span><i class="map-camera"></i></span>
+          <span class="map-title" aria-hidden="true"></span>
         </button>
         <nav class="topbar" aria-label="World actions">
-    <button type="button" id="open-settings" popovertarget="audio-panel" aria-label="Settings" title="Settings"><i class="hud-symbol" data-symbol="configure" aria-hidden="true"></i></button>
+    <button type="button" id="open-settings" aria-controls="audio-panel" aria-expanded="false" aria-label="Settings" title="Settings"><i class="hud-symbol" data-symbol="configure" aria-hidden="true"></i></button>
     <button type="button" id="toggle-effects" data-audio-preference="effects" aria-pressed="true" aria-label="Toggle sounds" title="Toggle sounds"><i class="hud-symbol" data-symbol="audio" aria-hidden="true"></i></button>
     <button type="button" id="toggle-music" data-audio-preference="music_enabled" aria-pressed="true" aria-label="Play or pause music" title="Play or pause music"><i class="hud-symbol" data-symbol="music" aria-hidden="true"></i></button>
     <button type="button" id="zoom-fit" aria-label="Home" title="App start at 50% (Home)"><i class="hud-symbol" data-symbol="home" aria-hidden="true"></i></button>
-    <section id="audio-panel" popover aria-label="Settings">
-      <header><h2>Settings</h2><button type="button" popovertarget="audio-panel" popovertargetaction="hide" aria-label="Close Settings" title="Close Settings"><i class="hud-symbol" data-symbol="close" aria-hidden="true"></i></button></header>
+    <div class="build-status-controls"><button class="build-indicator" type="button" popovertarget="application-status" aria-label="Application build and runtime details"><strong id="build-state" role="status">Loading</strong></button><button id="issue-count" type="button" aria-label="Show problems" hidden></button></div>
+    <section id="application-status" popover aria-label="Application and build">
+      <div id="application-details"></div>
+      <details id="runtime-summary" class="facts"><summary>Runtime</summary><dl>
+        <div><dt>Process</dt><dd><span id="status-pid" hidden></span></dd></div>
+        <div><dt>Uptime</dt><dd><span id="status-uptime" hidden></span></dd></div>
+        <div><dt>Memory</dt><dd><span id="status-memory" hidden></span></dd></div>
+        <div><dt>CPU</dt><dd><span id="status-cpu" hidden></span></dd></div>
+        <div><dt>Last build</dt><dd><time id="last-build">Not built</time></dd></div>
+      </dl></details>
+    </section>
+        </nav>
+        </section>
+      </div>
+    </section>
+    <aside id="inspector" class="inspector" aria-label="Inspector" hidden>
+      <div id="inspector-resize" role="separator" tabindex="0" aria-label="Inspector width" aria-controls="inspector" aria-orientation="vertical" aria-valuemin="320" aria-valuemax="1000" aria-valuenow="420" title="Resize Inspector. Arrow keys adjust width, double-click resets."></div>
+    <section id="audio-panel" hidden aria-label="Settings">
+      <header><h2>Settings</h2><button type="button" id="close-settings" aria-label="Close Settings" title="Close Settings"><i class="hud-symbol" data-symbol="close" aria-hidden="true"></i></button></header>
       <nav class="settings-tabs" role="tablist" aria-label="Settings sections">
         <button type="button" role="tab" id="settings-appearance-tab" aria-controls="settings-appearance" aria-selected="true" data-settings-tab="appearance">Appearance</button>
         <button type="button" role="tab" id="settings-sound-tab" aria-controls="settings-sound" aria-selected="false" data-settings-tab="sound">Sound</button>
@@ -44,7 +69,7 @@
       <details class="theme-local"><summary>Local overrides</summary><p class="theme-folder"></p>
       <p>The embedded themes work without local files. Installed copies include their variants; existing files are kept.</p>
       <p id="theme-structure"></p></details><p id="theme-status" role="status"></p>
-      <label class="check-line"><span>Reduced motion</span><input id="reduced-motion" type="checkbox"></label><p id="settings-status" role="status"></p></section>
+      <label class="check-line"><span>Reduced motion</span><input id="reduced-motion" type="checkbox"></label></section>
       <section id="settings-sound" role="tabpanel" aria-labelledby="settings-sound-tab" hidden>
       <label class="check-line"><span>Effects</span><input id="audio-effects" type="checkbox"></label>
       <label for="effects-volume">Effects volume <output id="effects-volume-value" for="effects-volume" aria-hidden="true">35%</output></label><input id="effects-volume" type="range" min="0" max="100" step="1" value="35">
@@ -62,22 +87,18 @@
       <label for="music-group">Music</label><select id="music-group"></select>
       <nav aria-label="Music playback"><button id="music-play" type="button" disabled><i class="hud-symbol" data-symbol="play" aria-hidden="true"></i><span>Play</span></button><button id="music-stop" type="button"><i class="hud-symbol" data-symbol="stop" aria-hidden="true"></i>Stop</button><button id="music-next" type="button" disabled><i class="hud-symbol" data-symbol="next" aria-hidden="true"></i>Next</button></nav>
       </section>
+      <p id="settings-status" role="status"></p>
       <p id="audio-status" role="status">Loading sound library</p>
     </section>
-    <button class="build-indicator" type="button" popovertarget="application-status" aria-label="Application build and runtime details"><strong id="build-state" role="status">Loading</strong></button>
-    <section id="application-status" popover aria-label="Application and build"></section>
-        </nav>
-        </section>
-      </div>
-    </section>
-    <aside id="inspector" class="inspector" aria-label="Inspector" hidden>
       <header class="inspector-chrome">
+      <div id="inspector-identity"></div>
       <div id="inspector-navigation"></div>
       <div id="inspector-nav"></div>
       <button id="close-inspector" type="button" aria-label="Close Inspector" title="Close Inspector (Escape)">
         <i class="hud-symbol" data-symbol="close" aria-hidden="true"></i>
       </button>
       </header>
+      <section id="inspector-connections" aria-label="Connections" hidden><span>Connect</span><nav class="world-ports" aria-label="Step outputs"></nav></section>
       <div id="inspector-content"></div>
       <footer id="inspector-footer"></footer>
     </aside>
@@ -87,15 +108,12 @@
     <span id="flow-count">0 flows</span>
     <span id="step-count">0 steps</span>
     <span id="status-coverage" hidden></span>
-    <span id="status-pid" hidden></span>
-    <span id="status-uptime" hidden></span>
-    <span id="status-memory" hidden></span>
-    <span id="status-cpu" hidden></span>
     <span id="status-executions" hidden></span>
     <span id="status-observations" hidden role="status"></span>
-    <span class="status-build-time">Last build <time id="last-build">Not built</time></span>
     </div>
     <nav class="canvas-tools" aria-label="Canvas controls">
+      <button type="button" id="editor-undo" aria-label="Undo" title="Undo (Ctrl/Cmd+Z)" disabled><i class="hud-symbol" data-symbol="undo" aria-hidden="true"></i></button>
+      <button type="button" id="editor-redo" aria-label="Redo" title="Redo (Ctrl/Cmd+Shift+Z)" disabled><i class="hud-symbol" data-symbol="redo" aria-hidden="true"></i></button>
       <button type="button" id="zoom-out" aria-label="Zoom out" title="Zoom out (-)"><i class="hud-symbol" data-symbol="minus" aria-hidden="true"></i></button>
       <output id="zoom-level" aria-live="polite">100%</output>
       <button type="button" id="zoom-in" aria-label="Zoom in" title="Zoom in (+)"><i class="hud-symbol" data-symbol="plus" aria-hidden="true"></i></button>

@@ -146,7 +146,7 @@ class CreatorFirstProjectCompilationE2eTest {
         assertThat(ProjectCompiler.compileApplication(source, contextCatalog()))
                 .isInstanceOfSatisfying(CompileResult.Compiled.class, compiled -> {
                     assertThat(compiled.source()).contains("\"metrics\":false");
-                    assertThat(compiled.developmentApplicationSource())
+                    assertThat(compiled.developmentApplicationSource().replace('\n',' '))
                             .contains(
                                     "new DevelopmentRuntime.Metrics(PROJECT_ID, "
                                             + "new String[]{\"command\"}, "
@@ -161,7 +161,7 @@ class CreatorFirstProjectCompilationE2eTest {
     void nodeMetricsDefaultToEnabled() {
         assertThat(ProjectCompiler.compileApplication(contextProject(), contextCatalog()))
                 .isInstanceOfSatisfying(CompileResult.Compiled.class, compiled ->
-                        assertThat(compiled.developmentApplicationSource()).contains(
+                        assertThat(compiled.developmentApplicationSource().replace('\n',' ')).contains(
                                 "new String[]{\"command\", \"normalise-name\", \"return-name\"}"
                         ));
     }
@@ -175,7 +175,7 @@ class CreatorFirstProjectCompilationE2eTest {
 
         assertThat(ProjectCompiler.compileApplication(source, contextCatalog()))
                 .isInstanceOfSatisfying(CompileResult.Compiled.class, compiled ->
-                        assertThat(compiled.developmentApplicationSource()).contains(
+                        assertThat(compiled.developmentApplicationSource().replace('\n',' ')).contains(
                                 "new String[]{\"command\", \"normalise-name\", \"return-name\"}"
                         ));
     }

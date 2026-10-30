@@ -189,9 +189,9 @@ class RailixCharacter {
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   }
   begin(size,projection,origin,theme,camera={x:0,y:0,scale:1},unit=1) {
-    this.fixed.clear();this.moving.clear();this.paths=[];this.stations=[];this.sceneryCount=0;this.pending=true;
+    this.fixed.clear();this.moving.clear();this.paths=[];this.stations=[];this.pending=true;
     this.palette={};
-    const defaults={ground:'#1b302c',edge:'#172c30',metal:'#5c7872',cream:'#d1dbb9',roof:'#a4b9a4',dark:'#193739',mint:'#a2e4b9',teal:'#529f9c',copper:'#d2a773',warning:'#f4af69',error:'#dd7367',water:'#19434c',forest:'#60896b'};
+    const defaults={ground:'#1b302c',edge:'#172c30',metal:'#5c7872',cream:'#d1dbb9',roof:'#a4b9a4',dark:'#193739',mint:'#a2e4b9',teal:'#529f9c',copper:'#d2a773',warning:'#f4af69',error:'#dd7367'};
     for(const [name,fallback] of Object.entries(defaults)) {
       const token=theme.getPropertyValue('--character-'+name).trim(),value=/^#[\da-f]{6}$/i.test(token)?token:fallback;
       this.palette[name]=[1,3,5].map(i=>parseInt(value.slice(i,i+2),16)/255);
@@ -265,7 +265,7 @@ class RailixCharacter {
     }
     const station={node,box,look,unit};this.stations.push(station);
     if(!this.circuit)m.quad([box.x,-.1,box.y],[box.x+box.width+35*unit,-.1,box.y+20*unit],[box.x+box.width+35*unit,-.1,box.y+box.height+20*unit],[box.x,-.1,box.y+box.height],c.edge,2);
-    if(look.selected) {
+    if(look.selected || look.related || look.editing) {
       const b={x:box.x-8*unit,y:box.y-8*unit,width:box.width+16*unit,height:box.height+16*unit};
       const points=[[b.x,b.y],[b.x+b.width,b.y],[b.x+b.width,b.y+b.height],[b.x,b.y+b.height]];
       for(let i=0;i<4;i++){const a=points[i],p=points[(i+1)%4];m.line([a[0],.15,a[1]],[p[0],.15,p[1]],2*unit,0,signal,1);}
@@ -391,55 +391,6 @@ class RailixCharacter {
       m.box(-1.4,1,-.7,.04,.18,1.4,signal,1);
     }
   }
-  scenery(variant,box,unit) {
-    const m=this.fixed,c=this.palette;
-    m.transform=[box.x,box.y,unit,unit,unit];
-    if(this.circuit) {
-      m.housing(0,-1,0,306,2,230,c.dark,c.teal,18);
-      for(let i=0;i<5;i++) {
-        const x=24+i*11;
-        m.line([x,1.1,215],[x,1.1,182-i*7],2,0,c.teal);
-        m.line([x,1.1,182-i*7],[120+i*15,1.1,105],2,0,c.teal);
-      }
-      if(variant==='basin') {
-        m.housing(105,1,18,174,5,185,c.metal,null,12);
-        m.box(116,6.1,30,150,1,160,c.water,3);
-        for(let i=0;i<4;i++)m.box(126+i*32,7.2,38,12,.1,145,c.teal,3);
-        for(const z of [20,190])m.box(104,6,z,176,4,5,c.roof);
-        m.housing(15,1,28,66,38,95,c.metal,c.teal,10);
-        for(let i=0;i<4;i++)m.box(22+i*14,39,38,5,10,75,c.roof);
-      } else if(variant==='grove') {
-        for(let i=0;i<4;i++) {
-          const x=125+i%2*82,z=35+Math.floor(i/2)*98;
-          m.cylinder(x,1,z,26,9,c.metal,10);m.cylinder(x,10,z,22,43,c.dark,10);
-          m.cylinder(x,53,z,22,5,c.teal,10);m.cylinder(x,58,z,16,2,c.roof,10);
-          m.box(x-2,18,z-22,4,28,1,c.teal,1);
-        }
-      } else {
-        m.housing(102,1,32,175,30,152,c.metal,c.teal,12);
-        for(let i=0;i<9;i++)m.box(111+i*18,31,42,5,32,132,c.roof);
-        for(let i=0;i<6;i++)m.box(110+i*26,2,187,12,4,15,c.roof);
-      }
-    } else if(variant==='basin') {
-      m.box(0,-79,0,307,1,230,c.water,3);
-      for(const x of [0,285])m.box(x,-78,0,22,10,230,c.metal);
-      m.box(0,-66,70,307,7,30,c.roof);
-    } else if(variant==='grove') {
-      for(let i=0;i<7;i++) {
-        const x=25+(i%4)*70,y=24+Math.floor(i/4)*110;
-        m.box(x,-80,y,5,42,5,c.metal);
-        for(let j=0;j<3;j++)m.cylinder(x+2,-56+j*13,y+2,29-j*6,36,c.forest,5,2);
-      }
-    } else {
-      for(let i=0;i<3;i++) {
-        const x=12+i*94,h=35+i*15;
-        m.box(x,-80,35,72,h,100,c.metal);m.box(x-3,-80+h,32,78,7,106,c.roof);
-        m.box(x+15,-77+h,60,12,25,12,c.dark);
-        for(let j=0;j<3;j++)m.box(x+8+j*19,-65,32,12,9,4,c.teal,1);
-      }
-    }
-    m.transform=[0,0,1,1,1];this.sceneryCount++;return true;
-  }
   upload() {
     const gl=this.gl;
     for(const [mesh,target] of [[this.fixed,this.fixedBuffer],[this.moving,this.movingBuffer]]) {
@@ -449,7 +400,7 @@ class RailixCharacter {
     gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,this.routesTexture);
     gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA32F,17,Math.max(1,this.paths.length),0,gl.RGBA,gl.FLOAT,routes);this.textureSettings();
     this.canvas.dataset.stations=String(this.stations.length);this.canvas.dataset.routes=String(this.paths.length);
-    this.canvas.dataset.scenery=String(this.sceneryCount);this.canvas.dataset.geometryBuilds=String(++this.builds);
+    this.canvas.dataset.geometryBuilds=String(++this.builds);
     this.canvas.dataset.ground=JSON.stringify(this.ground);
     this.pending=false;
   }

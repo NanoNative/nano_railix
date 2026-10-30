@@ -13,6 +13,12 @@ as history, not permission to extend that exception. Generic source activation n
 launcher in generated applications and Creator. Remaining HTTP and resource-guidance gaps
 are tracked in the owning specifications; removing the launcher does not complete them.
 
+Amended 2026-10-30: declared compilation-module requirements also travel in the canonical
+bundle contract as optional `jdk_modules`. The existing contract and artifact digests protect
+them, and installed Steps retain them without a built-in-only inference path. The builder
+rejects unavailable system modules with a diagnostic naming the implementation. Contracts
+that declare none omit the field. Runtime-image and native packaging remain separate work.
+
 Behavior now belongs to [HTTP Trigger](../specs/http-trigger.md) and
 [HTTP Client](../specs/http-client.md): ordinary context data, reusable Step-owned resources and
 incoming HTTPS are in the accepted direction. Binary bodies, multipart and streaming remain
@@ -83,4 +89,4 @@ Originally deferred: route-level metadata, TLS, auth, streaming, multipart forms
 configuration, raw response bodies and JDK module metadata for third-party Step bundles.
 The 2026-09-21 amendment moves HTTPS, configurable limits and JSON/text/no-body handling into
 the next HTTP contract. Generic third-party capability declarations are required; their exact
-bundle schema is still to be specified. Other open details live in the linked specifications.
+bundle metadata is now implemented as described above. Other open details live in the linked specifications.

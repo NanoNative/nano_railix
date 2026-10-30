@@ -25,6 +25,8 @@ the HTTP Step's `host`/`port` inputs. Requests expose `method`, decoded
 `path`, raw `query`, lower-case multi-value `headers` and `body` at the configured target path.
 Only `application/json` is parsed as JSON; other bodies are UTF-8 strings; empty bodies are JSON null.
 Malformed JSON/UTF-8 returns 400; requests over the fixed 1 MiB limit return 413 before Flow execution.
+An unfinished body has a fixed 30-second read deadline. Expiry returns 408 with `HTTP_BODY_TIMEOUT`,
+interrupts the reader and closes the connection without running the Flow.
 Responses read context body/headers/status; non-null bodies are always JSON-encoded. Invalid header
 value shapes return 500. Admission closes before draining flow execution and its response write;
 subsequent requests receive 503 while the listener drains. Listener/executor cleanup uses the

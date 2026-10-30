@@ -1,4 +1,4 @@
-/* The original material palette and icon-plate machines, on the shared renderer. */
+/* The original palette and rectangular foundations, using the shared Canvas atlas. */
 :root {
   --world-buildings: 0;
   --world-near: #425965;

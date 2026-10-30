@@ -41,7 +41,7 @@ final class DevelopmentApplication implements AutoCloseable {
     private static final int ACCEPT_POLL_MILLIS = 250;
     private static final int FRAME_READ_MILLIS = 1_000;
     private static final int RESPONSE_LIMIT = RailixData.DEFAULT_MAX_SOURCE_BYTES;
-    private static final int OBSERVATION_RESPONSE_LIMIT = RESPONSE_LIMIT * 16;
+    static final int OBSERVATION_RESPONSE_LIMIT = RESPONSE_LIMIT * 16;
     private static final Duration READY_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(12);

@@ -18,7 +18,7 @@ public final class StepContractJson {
     private static final Set<String> CONTRACT_FIELDS = Set.of(
             "display_name", "example_target", "examples", "id", "inputs", "kind",
             "maximum_instances", "outcomes", "primary_outcome", "receives", "results",
-            "returns", "search_terms", "source", "version"
+            "returns", "search_terms", "source", "version", "jdk_modules"
     );
 
     private StepContractJson() {
@@ -32,6 +32,8 @@ public final class StepContractJson {
         final Map<String, RailixValue> value = new LinkedHashMap<>();
         value.put("id", RailixValue.string(definition.id()));
         value.put("version", RailixValue.string(definition.version()));
+        definition.implementationAddress().filter(address -> !address.jdkModules().isEmpty())
+                .ifPresent(address -> value.put("jdk_modules", strings(address.jdkModules())));
         value.put("display_name", RailixValue.string(definition.displayName()));
         value.put("search_terms", strings(definition.searchTerms()));
         value.put("kind", RailixValue.string(definition.kind().name().toLowerCase(Locale.ROOT)));
@@ -203,7 +205,8 @@ public final class StepContractJson {
         }
         return kind == StepDefinition.Kind.APP
                 ? builder.define()
-                : builder.implementedBy(implementation, implementationEntry);
+                : builder.implementedBy(implementation, implementationEntry,
+                        contract.values().containsKey("jdk_modules") ? strings(contract, "jdk_modules", "contract") : List.of());
     }
 
     private static String sha256(final byte[] bytes) {
@@ -632,7 +635,7 @@ public final class StepContractJson {
             final Set<String> fields,
             final String path
     ) {
-        object(value, fields, path, Set.of("example_target", "source"));
+        object(value, fields, path, Set.of("example_target", "source", "jdk_modules"));
     }
 
     private static void object(

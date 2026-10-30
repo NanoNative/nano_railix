@@ -250,13 +250,16 @@ final class RailixPackageIT {
             final long pid = number(object(request(creator.uri(), "GET", "/api/application", "").body()), "pid");
             assertThat(pid).isPositive();
             final String project = Files.readString(directory.resolve("project.json"));
-            assertThat(request(creator.uri(), "GET", "/api/themes", "").body()).contains("Railix Foundry", "Renderer Canvas", "Renderer CSS",
+            assertThat(request(creator.uri(), "GET", "/api/themes", "").body()).contains("Railix Foundry", "Renderer Canvas",
                     "Railix Signal (experiment)", "Railix Circuit (experiment)", "Renderer Characters", "Renderer Glyphs", "Renderer Pixels");
             assertThat(request(creator.uri(), "GET", "/world-canvas.js", "").body()).contains("class RailixCanvas");
             assertThat(request(creator.uri(), "GET", "/world-character.js", "").body()).contains("class RailixCharacter");
             assertThat(request(creator.uri(), "GET", "/api/themes/files/circuit/theme.css", "").body()).contains("--character-circuit: 1");
             assertThat(request(creator.uri(), "GET", "/api/themes/files/signal/variants/glyphs.css", "").body()).contains("--character-background: 0");
             assertThat(request(creator.uri(), "GET", "/api/themes/files/foundry/variants/canvas/atlas.json", "").statusCode()).isEqualTo(200);
+            final var builtInSprite = request(creator.uri(), "GET", "/api/themes/files/foundry/variants/canvas/region.svg", "");
+            assertThat(builtInSprite.statusCode()).isEqualTo(200);
+            assertThat(builtInSprite.headers().firstValue("content-type")).contains("image/svg+xml");
             assertThat(request(creator.uri(), "GET", "/api/sounds", "").body()).contains("builtin:");
             final Path theme = Files.createDirectories(home.resolve(".railix/themes/user/atelier"));
             Files.createDirectories(theme.resolve("assets"));

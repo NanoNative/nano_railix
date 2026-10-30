@@ -7,29 +7,29 @@ import dev.nanonative.railix.core.value.RailixValue;
 import java.math.BigDecimal;
 import java.util.Locale;
 
-final class TestStepHandlers {
+public final class TestStepHandlers {
     private TestStepHandlers() {
     }
 
-    static final class PrimaryOutcome {
+    public static final class PrimaryOutcome {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome());
         }
     }
 
-    static final class PrimaryIdentity {
+    public static final class PrimaryIdentity {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("value", input.value("value"));
         }
     }
 
-    static final class OkIdentity {
+    public static final class OkIdentity {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome("ok").output("value", input.value("value"));
         }
     }
 
-    static final class LowercaseValue {
+    public static final class LowercaseValue {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome("ok").output(
                     "value",
@@ -38,37 +38,37 @@ final class TestStepHandlers {
         }
     }
 
-    static final class SourceResultIdentity {
+    public static final class SourceResultIdentity {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("result", input.value("source"));
         }
     }
 
-    static final class WriteArguments {
+    public static final class WriteArguments {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).write("target", input.value("arguments"));
         }
     }
 
-    static final class RunOperationsWriteField {
+    public static final class RunOperationsWriteField {
         public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
             return input.run("operations").write("field");
         }
     }
 
-    static final class RunStepsWriteField {
+    public static final class RunStepsWriteField {
         public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
             return input.run("steps").write("field");
         }
     }
 
-    static final class RunStepsWriteWhenPresentField {
+    public static final class RunStepsWriteWhenPresentField {
         public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
             return input.run("steps").writeWhenPresent("field");
         }
     }
 
-    static final class EqualsExpected {
+    public static final class EqualsExpected {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output(
                     "value",
@@ -77,7 +77,7 @@ final class TestStepHandlers {
         }
     }
 
-    static final class BooleanNot {
+    public static final class BooleanNot {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output(
                     "value",
@@ -86,7 +86,7 @@ final class TestStepHandlers {
         }
     }
 
-    static final class TextLength {
+    public static final class TextLength {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output(
                     "value",
@@ -95,13 +95,13 @@ final class TestStepHandlers {
         }
     }
 
-    static final class True {
+    public static final class True {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("value", RailixValue.bool(true));
         }
     }
 
-    static final class GreaterThan {
+    public static final class GreaterThan {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output(
                     "value",
@@ -112,7 +112,7 @@ final class TestStepHandlers {
         }
     }
 
-    static final class LessThan {
+    public static final class LessThan {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output(
                     "value",
@@ -123,20 +123,20 @@ final class TestStepHandlers {
         }
     }
 
-    static final class InterruptAndTrue {
+    public static final class InterruptAndTrue {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             Thread.currentThread().interrupt();
             return StepResult.outcome(input.primaryOutcome()).output("value", RailixValue.bool(true));
         }
     }
 
-    static final class AlwaysFault {
+    public static final class AlwaysFault {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             throw new IllegalStateException("fault");
         }
     }
 
-    static final class CompilationMustNotExecute {
+    public static final class CompilationMustNotExecute {
         private static final boolean INITIALIZED = failInitialization();
 
         private static boolean failInitialization() {
@@ -152,32 +152,32 @@ final class TestStepHandlers {
         }
     }
 
-    static final class InvalidString {
+    public static final class InvalidString {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("value", RailixValue.string("wrong"));
         }
     }
 
-    static final class PrimaryConstantValue {
+    public static final class PrimaryConstantValue {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("value", RailixValue.string("value"));
         }
     }
 
-    static final class WriteMatches {
+    public static final class WriteMatches {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).write("target", input.value("matches"));
         }
     }
 
-    static final class ReadChoice {
+    public static final class ReadChoice {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             input.option("choice");
             return StepResult.outcome(input.primaryOutcome());
         }
     }
 
-    static final class ToNumber {
+    public static final class ToNumber {
         public static StepResult process(final StepInput configuration, final StepInput input) {
             try {
                 return StepResult.outcome("ok").output(

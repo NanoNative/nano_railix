@@ -93,6 +93,8 @@ final class GeneratedApplicationE2eTest {
         final var overview = ((RailixValue.ArrayValue) scene.view("").values().get("nodes")).values();
         assertThat(overview).hasSizeLessThan(33).anySatisfy(value -> assertThat(
                 ((RailixValue.ObjectValue) value).values().get("id")).isEqualTo(RailixValue.string("app")));
+        assertThat(overview).anySatisfy(value -> assertThat(((RailixValue.ObjectValue) value).values())
+                .containsEntry("name", RailixValue.string("Flows")).containsEntry("summary", RailixValue.string("area")));
         final var focused = ((RailixValue.ArrayValue) scene.view("focus=trigger-31").values().get("nodes")).values();
         assertThat(focused).anySatisfy(value -> assertThat(((RailixValue.ObjectValue) value).values().get("id"))
                 .isEqualTo(RailixValue.string("trigger-31")));
@@ -602,6 +604,26 @@ final class GeneratedApplicationE2eTest {
         }
     }
 
+    @Test
+    void productionHttpTriggerBoundsAnUnfinishedRequestBody() throws Exception {
+        final String source = httpEchoProject();
+        final Path jar = productionArtifact(project(directory.resolve("http-body-deadline"), source), source).jar();
+        try (HttpProcess server = startHttpJar(jar);
+             var socket = new java.net.Socket("127.0.0.1", server.uri().getPort())) {
+            socket.setSoTimeout(35_000);
+            socket.getOutputStream().write(("POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1000\r\n"
+                    + "Connection: close\r\n\r\nx").getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            final var response = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            assertThat(response.readLine()).contains("408");
+            assertThat(response.lines().collect(java.util.stream.Collectors.joining("\n"))).contains("HTTP_BODY_TIMEOUT");
+            try (HttpClient client = HttpClient.newHttpClient()) {
+                assertThat(client.send(HttpRequest.newBuilder(server.uri()).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode())
+                        .as("A timed-out body must not prevent subsequent requests").isEqualTo(200);
+            }
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(ints = {1048576, 1048577})
     void productionHttpClientBoundsResponseBodies(final int size) throws Exception {
@@ -638,6 +660,116 @@ final class GeneratedApplicationE2eTest {
             }
         } finally {
             server.stop(0);
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false,false", "true,false", "false,true"})
+    void productionHttpClientDeadlineIncludesAnUnfinishedResponseBody(final boolean shared, final boolean standalone) throws Exception {
+        final var headers = new java.util.concurrent.CountDownLatch(1);
+        final var release = new java.util.concurrent.CountDownLatch(1);
+        final var requests = new java.util.concurrent.atomic.AtomicInteger();
+        final var executor = Executors.newVirtualThreadPerTaskExecutor();
+        final var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.setExecutor(executor);
+        server.createContext("/", exchange -> {
+            try (exchange) {
+                if (requests.incrementAndGet() == 1) {
+                    exchange.sendResponseHeaders(200, 0);
+                    exchange.getResponseBody().write('x');
+                    exchange.getResponseBody().flush();
+                    headers.countDown();
+                    release.await();
+                } else {
+                    exchange.sendResponseHeaders(200, 5);
+                    exchange.getResponseBody().write("ready".getBytes(StandardCharsets.UTF_8));
+                }
+            } catch (final InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        server.start();
+        Process child = null;
+        try {
+            final String source = """
+                    {"format":1,"id":"http-body-deadline","nodes":[
+                      {"id":"app","use":"railix.app","inputs":{}},
+                      {"id":"cli","use":"railix.trigger.cli","inputs":{},"examples":[{"name":"default","payload":[]}]},
+                      {"id":"fetch","use":"railix.http.client","inputs":{"url":"http://127.0.0.1:%d/",
+                       "connection":{"option":"%s","inputs":{}}},
+                       "receives":{"body":["context","result"]},"returns":{"response":["context","result"]}}
+                    ],"links":[{"from":"app.start","to":"cli"},{"from":"cli.next","to":"fetch"},
+                               {"from":"fetch.next","to":"end"}]}
+                    """.formatted(server.getAddress().getPort(), shared ? "shared" : "private");
+            final Path jar = productionArtifact(project(directory.resolve("http-body-deadline"), source), source).jar();
+            final Path probe = directory.resolve("DeadlineProbe.java");
+            Files.writeString(probe, """
+                    package dev.nanonative.railix.core.project;
+                    import dev.nanonative.railix.core.runtime.RunResult;
+                    import dev.nanonative.railix.core.value.RailixJson;
+                    import dev.nanonative.railix.core.value.RailixValue;
+                    import java.util.List;
+                    import java.util.Map;
+                    public final class DeadlineProbe {
+                        public static void main(String[] arguments) {
+                            final var application = RailixApplication.runtime();
+                            try {
+                                for (int request = 0; request < 2; request++) {
+                                    final var response = application.runSource("application.arguments",
+                                            Map.of("arguments", RailixValue.array(List.of())));
+                                    if (!(response.result() instanceof RunResult.Succeeded result))
+                                        throw new AssertionError(response);
+                                    System.out.println(RailixJson.write(result.context().values().get("result")));
+                                }
+                            } finally {
+                                if (!(application.stop() instanceof RunResult.Succeeded))
+                                    throw new AssertionError("HTTP transport cleanup failed.");
+                            }
+                        }
+                    }
+                    """);
+            final Path classes = Files.createDirectories(directory.resolve("deadline-probe"));
+            tool("javac", "-cp", jar.toString(), "-d", classes.toString(), probe.toString());
+            final Path output = directory.resolve("http-body-deadline.log");
+            final List<String> command = new java.util.ArrayList<>(List.of(
+                    Path.of(System.getProperty("java.home"), "bin", "java").toString()));
+            command.addAll(standalone ? List.of("-jar", jar.toString())
+                    : List.of("-cp", jar + java.io.File.pathSeparator + classes, "dev.nanonative.railix.core.project.DeadlineProbe"));
+            child = new ProcessBuilder(command)
+                    .redirectErrorStream(true).redirectOutput(output.toFile()).start();
+            assertThat(headers.await(10, TimeUnit.SECONDS)).as("Response headers and a partial body arrived").isTrue();
+            final long deadline = System.nanoTime() + Duration.ofSeconds(35).toNanos();
+            while (Files.readString(output).isBlank() && child.isAlive() && System.nanoTime() < deadline) Thread.sleep(10);
+            assertThat(Files.readString(output)).as("The response deadline includes the unfinished body")
+                    .contains("HTTP_REQUEST_TIMEOUT");
+            final boolean finished = child.waitFor(10, TimeUnit.SECONDS);
+            String threads = "";
+            if (!finished) {
+                final Path dump = directory.resolve("http-deadline-threads.txt");
+                final Process diagnostic = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "jcmd").toString(),
+                        Long.toString(child.pid()), "Thread.print").redirectErrorStream(true).redirectOutput(dump.toFile()).start();
+                try { diagnostic.waitFor(5, TimeUnit.SECONDS); }
+                finally { diagnostic.destroyForcibly(); diagnostic.waitFor(5, TimeUnit.SECONDS); }
+                threads = Files.readString(dump);
+            }
+            assertThat(finished).as("Timed-out client remains reusable and cleanup terminates: %s", threads).isTrue();
+            assertThat(child.exitValue()).as(Files.readString(output)).isZero();
+            final List<String> responses = Files.readAllLines(output);
+            assertThat(responses).hasSize(standalone ? 1 : 2);
+            assertThat(CreatorServerE2eSupport.object(responses.getFirst()).values().get("status")).isEqualTo(RailixValue.number(0));
+            if (!standalone) {
+                assertThat(CreatorServerE2eSupport.object(responses.getLast()).values().get("status")).isEqualTo(RailixValue.number(200));
+                assertThat(CreatorServerE2eSupport.object(responses.getLast()).values().get("body")).isEqualTo(RailixValue.string("ready"));
+            }
+            assertThat(requests.get()).isEqualTo(standalone ? 1 : 2);
+        } finally {
+            release.countDown();
+            if (child != null) {
+                child.destroyForcibly();
+                assertThat(child.waitFor(5, TimeUnit.SECONDS)).isTrue();
+            }
+            server.stop(0);
+            executor.close();
         }
     }
 

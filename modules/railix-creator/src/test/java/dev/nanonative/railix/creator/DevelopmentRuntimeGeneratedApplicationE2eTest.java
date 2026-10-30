@@ -707,8 +707,9 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
                 .contains("\"status\":\"failed\"")
                 .contains("\"input_context\"")
                 .contains("\"context\"")
-                .doesNotContain("\"code\"")
-                .doesNotContain("\"type\"");
+                .doesNotContain("\"code\"");
+        assertThat(object(response.body()).values()).doesNotContainKey("type").containsKey("exception");
+        assertThat(response.body()).contains("thirdparty.conformance.DevelopmentRuntimeConformanceSteps$Fault.process");
     }
 
     @Test
@@ -1667,6 +1668,23 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
         assertThat(queryGroup(response.body(), "empty").values()).containsOnlyKeys("covered_count");
         assertThat(number(queryGroup(response.body(), "all"), "covered_count")).isEqualTo(number(coverage, "covered_steps"));
         assertThat(number(queryGroup(response.body(), "empty"), "covered_count")).isZero();
+    }
+
+    @Test
+    void exampleQueriesCanListReachingCasesWithoutLoadingTraceEvents() throws Exception {
+        awaitAutomaticExamples(shared, sharedUri);
+        final HttpResponse<String> response = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query",
+                "{\"groups\":{\"success\":[[14,14]]},\"cases\":true}", null);
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        assertThat(queryGroup(response.body(), "success").values().get("case_ids"))
+                .isEqualTo(RailixValue.array(List.of(RailixValue.string("success:0"))));
+        final HttpResponse<String> empty = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query",
+                "{\"groups\":{\"empty\":[]},\"cases\":true}", null);
+        assertThat(queryGroup(empty.body(), "empty").values().get("case_ids"))
+                .isEqualTo(RailixValue.array(List.of()));
+        final HttpResponse<String> invalid = request(shared, sharedUri, TOKEN, "POST", "/v1/examples/query",
+                "{\"groups\":{},\"cases\":\"yes\"}", null);
+        assertThat(invalid.statusCode()).isEqualTo(400);
     }
 
     @ParameterizedTest

@@ -1477,7 +1477,7 @@ public final class StepDefinition {
         /**
          * Completes an executable Trigger or ordinary Step definition.
          *
-         * <p>The named class supplies a public static {@code process(StepInput, StepInput)} method.
+         * <p>The public named class supplies a public static {@code process(StepInput, StepInput)} method.
          * The first argument is immutable compiled configuration; the second is invocation data.
          * No constructor is required. The compiler checks the method signature without executing
          * the class. Optional public static {@code pre} and {@code post} methods use the same
@@ -1526,10 +1526,10 @@ public final class StepDefinition {
         }
 
         /** Binds an implementation address while decoding a verified bundle manifest. */
-        StepDefinition implementedBy(final String className, final String classEntry) {
+        StepDefinition implementedBy(final String className, final String classEntry, final List<String> modules) {
             return new StepDefinition(
                     this,
-                    new ImplementationAddress(className, classEntry, List.of())
+                    new ImplementationAddress(className, classEntry, modules)
             );
         }
     }

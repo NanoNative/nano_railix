@@ -48,6 +48,91 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
     private static final int SNAPSHOT_REPLAY_STEPS = 40;
     private static final int SNAPSHOT_GATE_NODE = SNAPSHOT_REPLAY_STEPS + 3;
 
+    @Test
+    void longUnicodeFailureHeadersRemainBoundedAndSerializable() throws Exception {
+        final String prefix = "Step returned undeclared outcome: ";
+        final String outcome = "x".repeat(511 - prefix.length()) + "\uD83D\uDE80tail";
+        final Path project = directory.resolve("railix.project.json");
+        GeneratedApplicationFixture.installedCatalog(directory, List.of(
+                StepDefinition.named("test.outcome", "1").input("outcome", StepDefinition.Input.json(ValueShape.STRING))
+                        .implementation(DevelopmentRuntimeConformanceSteps.ConfiguredOutcome.class)),
+                DevelopmentRuntimeConformanceSteps.ConfiguredOutcome.class);
+        Files.writeString(project, """
+                {"format":1,"id":"unicode-error","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{"name":"unicode","payload":[]}]},
+                  {"id":"fault","use":"test.outcome","inputs":{"outcome":%s}}
+                ],"links":[{"from":"app.start","to":"command"},{"from":"command.next","to":"fault"},
+                  {"from":"fault.next","to":"end"}]}
+                """.formatted(RailixJson.write(RailixValue.string(outcome))), StandardCharsets.UTF_8);
+        try (final CreatorServer creator = start(project)) {
+            final var inventory = exampleCase(awaitExamples(creator, 1), "command:0");
+            final var result = (RailixValue.ObjectValue) inventory.values().get("result");
+            final var issue = (RailixValue.ObjectValue) ((RailixValue.ArrayValue) result.values().get("diagnostics"))
+                    .values().getFirst();
+            assertThat(string(issue, "message")).hasSize(511).startsWith(prefix);
+            assertThat(string(issue, "node")).isEqualTo("fault");
+            final var response = request(creator.baseUri(), "GET", "/api/examples/command:0/view", "");
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains("\uD83D\uDE80tail");
+        }
+    }
+
+    @Test
+    void failureInventoryLocatesTheStepWithoutReadingItsTraceOrRetainingContext() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        Files.writeString(project, CreatorEditorBrowserIT.attentionProject(), StandardCharsets.UTF_8);
+        try (final CreatorServer creator = start(project)) {
+            final var inventory = awaitExamples(creator, 2);
+            final var failed = exampleCase(inventory, "command:1");
+            final var result = (RailixValue.ObjectValue) failed.values().get("result");
+            final var issue = (RailixValue.ObjectValue) ((RailixValue.ArrayValue) result.values().get("diagnostics"))
+                    .values().getFirst();
+            assertThat(string(issue, "node")).isEqualTo("normalize");
+            assertThat(string(issue, "node_name")).isNotBlank();
+            assertThat(string(issue, "path")).isEqualTo("nodes[2].inputs.steps[0]");
+            assertThat(result.values()).containsOnlyKeys("diagnostics");
+            assertThat(issue.values()).doesNotContainKeys("context", "payload", "exception");
+            assertThat(exampleCase(inventory, "command:0").values()).doesNotContainKey("result");
+
+            Files.delete(runtimeDirectory(creator.baseUri()).resolve("1.ndjson"));
+            final var after = exampleCase(examples(creator.baseUri()), "command:1");
+            assertThat(after.values().get("result")).isEqualTo(result);
+            final var single = object(request(creator.baseUri(), "GET", "/api/examples/command:1", "").body());
+            assertThat(single.values().get("result")).isEqualTo(result);
+            assertThat(string(application(creator.baseUri()), "state")).isEqualTo("running");
+        }
+    }
+
+    @Test
+    void anImplementationFailureIsLocatedInBothInventoryAndRecordedView() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        GeneratedApplicationFixture.installedCatalog(directory, List.of(
+                StepDefinition.named("test.fault", "1").implementation(DevelopmentRuntimeConformanceSteps.Fault.class)),
+                DevelopmentRuntimeConformanceSteps.Fault.class);
+        Files.writeString(project, """
+                {"format":1,"id":"failure-location","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{"name":"fault","payload":[]}]},
+                  {"id":"fault","use":"test.fault","inputs":{}}
+                ],"links":[{"from":"app.start","to":"command"},{"from":"command.next","to":"fault"},
+                  {"from":"fault.next","to":"end"}]}
+                """, StandardCharsets.UTF_8);
+        try (final CreatorServer creator = start(project)) {
+            final var inventory = exampleCase(awaitExamples(creator, 1), "command:0");
+            final var view = object(request(creator.baseUri(), "GET", "/api/examples/command:0/view", "").body());
+            for (final var summary : List.of(inventory, view)) {
+                final var result = (RailixValue.ObjectValue) summary.values().get("result");
+                final var issue = (RailixValue.ObjectValue) ((RailixValue.ArrayValue) result.values().get("diagnostics"))
+                        .values().getFirst();
+                assertThat(string(issue, "node")).isEqualTo("fault");
+                assertThat(string(issue, "code")).isEqualTo("STEP_IMPLEMENTATION_FAULT");
+            }
+            assertThat(RailixJson.write(inventory.values().get("result")))
+                    .doesNotContain("private conformance detail", "\"exception\":");
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"normal", "pre-failure", "post-failure", "pre-fatal", "post-fatal"})
     void compiledLifecycleOrdersHooksAndCleansPartialStartup(final String mode) throws Exception {
@@ -1757,6 +1842,8 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
             assertThat(CreatorServerE2eSupport.string(example, "status")).isEqualTo("failed");
             assertThat(CreatorServerE2eSupport.string(example, "message"))
                     .isEqualTo("One development trace event exceeded 4194304 bytes.");
+            assertThat(RailixJson.write(example.values().get("result")))
+                    .contains("\"code\":\"TRACE_EVENT_TOO_LARGE\"").doesNotContain("\"context\"");
             assertThat(view.body()).contains("\"code\":\"TRACE_EVENT_TOO_LARGE\"");
             awaitText(downstream, "xx");
         }

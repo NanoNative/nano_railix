@@ -2,11 +2,13 @@ package dev.nanonative.railix.core.step;
 
 import dev.nanonative.railix.core.step.StepDefinition.Input;
 import dev.nanonative.railix.core.value.RailixValue;
+import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.ValueShape;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -22,6 +24,24 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 final class StepContractJsonE2eTest {
     private static final String IMPLEMENTATION = CodecHandler.class.getCanonicalName();
     private static final String IMPLEMENTATION_ENTRY = CodecHandler.class.getName().replace('.', '/') + ".class";
+
+    @Test
+    void jdkRequirementsRoundTripWithoutChangingContractsThatDeclareNone() {
+        assertThat(contract().values()).doesNotContainKey("jdk_modules");
+        final var definition=StepDefinition.named("codec.modules","1")
+                .implementation(CodecHandler.class,"java.net.http","jdk.httpserver");
+        final var decoded=StepContractJson.read(StepContractJson.value(definition),IMPLEMENTATION,IMPLEMENTATION_ENTRY);
+        assertThat(decoded.implementationAddress().orElseThrow().jdkModules()).containsExactly("java.net.http","jdk.httpserver");
+        assertThat(StepContractJson.write(decoded)).isEqualTo(StepContractJson.write(definition));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"\"java.net.http\"","[1]","[\"bad;module\"]","[\"java.net.http\",\"java.net.http\"]"})
+    void malformedModuleMetadataIsRejected(final String json) {
+        final var value=((RailixJson.Parsed)RailixJson.parse(json)).value();
+        assertThatThrownBy(()->StepContractJson.read(with(contract(),"jdk_modules",value),IMPLEMENTATION,IMPLEMENTATION_ENTRY))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("module");
+    }
 
     @Test
     void jsonInputRoundTripsItsShapeDefaultRangeAndRequirement() {

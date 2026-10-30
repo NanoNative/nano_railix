@@ -19,7 +19,6 @@ class RailixAudio {
     this.noiseBuffers = new WeakMap();
     this.dirtyEditor = false;
     const on = (target, type, action) => target.addEventListener(type, action, {signal:this.listeners.signal});
-    on(panel, 'toggle', event => { if (event.newState === 'open') void this.catalog(); });
     on(panel.querySelector('#audio-effects'), 'change', event => {
       this.preferences.effects = event.target.checked;
       this.change({effects:event.target.checked});
@@ -53,7 +52,13 @@ class RailixAudio {
     on(panel.querySelector('#music-play'), 'click', () => this.musicSession ? this.musicPaused ? void this.resumeMusic() : void this.pause() : void this.enableMusic());
     on(panel.querySelector('#music-stop'), 'click', () => this.muteMusic());
     on(panel.querySelector('#music-next'), 'click', () => void this.skipTrack());
-    on(panel.querySelector('#sound-file'), 'change', event => this.edit(event.target.value));
+    on(panel.querySelector('#sound-file'), 'change', event => {
+      if (this.dirtyEditor && !confirm('Discard unsaved changes to this score?')) {
+        event.target.value = this.editorKey;
+        return;
+      }
+      this.edit(event.target.value);
+    });
     on(panel.querySelector('#sound-score'), 'input', () => { this.dirtyEditor = true; this.editorVersion++; });
     on(panel.querySelector('#sound-id'), 'input', () => { this.dirtyEditor = true; this.editorVersion++; });
     on(panel.querySelector('#sound-instrument'), 'change', event => this.instrument(event.target.value));
@@ -210,6 +215,7 @@ class RailixAudio {
 
   edit(key) {
     this.editorVersion++;
+    this.editorKey = key;
     this.editorRevision = this.revision;
     this.panel.querySelector('#sound-file').value = key;
     const invalid = key.startsWith('invalid:') ? this.invalid?.find(item => item.id === key.slice('invalid:'.length)) : null;

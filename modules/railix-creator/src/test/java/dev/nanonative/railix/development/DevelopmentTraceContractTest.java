@@ -194,6 +194,42 @@ final class DevelopmentTraceContractTest {
         assertThat(events).extracting(DevelopmentTraceContractTest::type)
                 .containsExactly("trace", "step_start", "step_result");
         assertThat(events.getLast().values()).containsEntry("status", RailixValue.string("failed"));
+        final var fault = (RailixValue.ObjectValue) events.getLast().values().get("exception");
+        assertThat(fault).isNotNull();
+        assertThat(fault.values().get("type")).isEqualTo(RailixValue.string("java.lang.IllegalStateException"));
+        assertThat(RailixJson.write(fault)).contains("DevelopmentTraceContractTest")
+                .doesNotContain("\"message\"", "\"failed\"");
+    }
+
+    @Test
+    void exceptionDetailsBoundFramesAndCyclicCausesWithoutMessages() {
+        final List<RailixValue.ObjectValue> events = new ArrayList<>();
+        final RuntimeException failure = new IllegalStateException("private-token");
+        RuntimeException current = failure;
+        final StackTraceElement[] frames = java.util.stream.IntStream.range(0, 64)
+                .mapToObj(index -> new StackTraceElement("example.Step", "process", "Step.java", index + 1))
+                .toArray(StackTraceElement[]::new);
+        for (int index = 0; index < 12; index++) {
+            current.setStackTrace(frames);
+            final RuntimeException next = new IllegalArgumentException("private-token");
+            current.initCause(next);
+            current = next;
+        }
+        current.initCause(failure);
+        assertThatThrownBy(() -> DevelopmentRuntime.Trace.start(empty(), sink(events), () -> {
+            try {
+                DevelopmentRuntime.Trace.invoke("step", "test.step", input(), input(), (_, ignored) -> {throw failure;});
+            } catch (final InterruptedException interrupted) {
+                throw new AssertionError(interrupted);
+            }
+            return success();
+        })).isSameAs(failure);
+        final var exception = (RailixValue.ObjectValue) events.getLast().values().get("exception");
+        assertThat(((RailixValue.ArrayValue) exception.values().get("frames")).values()).hasSize(32);
+        final var causes = ((RailixValue.ArrayValue) exception.values().get("causes")).values();
+        assertThat(causes).hasSize(7).allSatisfy(cause -> assertThat(((RailixValue.ArrayValue)
+                ((RailixValue.ObjectValue) cause).values().get("frames")).values()).hasSize(32));
+        assertThat(RailixJson.write(exception)).doesNotContain("private-token", "\"message\"");
     }
 
     @Test

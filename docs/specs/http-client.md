@@ -20,10 +20,14 @@ containing status/headers/body. PRE registers a reusable JDK client through the 
 resource API; PROCESS retrieves it and application cleanup closes it after draining. The ordinary
 `connection` option defaults to `private`; `shared` reuses the same cookie-free default transport
 across this Step's placements in one application. No HTTP-specific registry or compiler branch is required.
+After admitted work drains, cleanup cancels remaining transport operations and waits at most the
+existing 30-second transport budget for termination. Expiry or interruption is an explicit cleanup
+failure, not an indefinitely blocking close. A request timeout does not close the reusable client.
 Its defaults use
 normal JDK certificate trust, HTTP/2 preference and no automatic redirects; outgoing HTTPS
 therefore already works with trusted servers. A fixed 30-second request timeout and 1 MiB
-response limit apply. Non-null outgoing bodies are JSON-encoded. Response text is tried as JSON
+response limit apply. The deadline covers response headers and the complete body. Expiry cancels
+the pending exchange and returns the current status-zero failure projection. Non-null outgoing bodies are JSON-encoded. Response text is tried as JSON
 without consulting its content type. I/O failures and invalid headers use normal `next` with
 status `0` and an error string in the body. These are current limitations, not the target API.
 

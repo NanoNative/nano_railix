@@ -18,6 +18,8 @@ Define the claimed behavior and choose evidence that can disprove it.
 3. Discover the repository's toolchain, commands, coverage policy and publication gate.
    Build prerequisites for focused tests and confirm nonempty discovery in reports;
    a successful command with skipped suites is not evidence. A focused run is not the full gate.
+   Direct test-plugin goals can load installed dependencies despite an earlier build.
+   Compile in the same reactor invocation and verify the actual runtime classpath.
 4. Protect active previews and user outputs from clean builds. Do not run competing
    builds against the same output directory. Use an isolated snapshot when necessary.
 

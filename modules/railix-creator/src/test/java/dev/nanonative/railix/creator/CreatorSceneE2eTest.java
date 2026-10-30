@@ -29,6 +29,192 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @Execution(ExecutionMode.SAME_THREAD)
 final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
+    @Test
+    void aFocusedStepExposesItsMeaningfulLocationWithoutIndexPartitions() throws Exception {
+        final var fixture = CreatorWorldBrowserIT.systemStressScene();
+        final Path project = directory.resolve("railix.project.json");
+        Files.writeString(project, fixture.project());
+        Files.writeString(directory.resolve("railix.creator.json"), fixture.creator());
+        try (CreatorServer creator = start(project)) {
+            final var scene = object(request(creator.baseUri(), "GET", "/api/scene?focus=stock-lane-0-0", "").body());
+            final var location = array(scene, "location").stream().map(RailixValue.ObjectValue.class::cast).toList();
+            assertThat(location.stream().map(part -> string(part, "name")))
+                    .containsExactly("stock", "stock: Path 1 Intake");
+            assertThat(location.stream().map(part -> string(part, "id"))).noneMatch(id -> id.startsWith("index:"));
+            assertThat(string((RailixValue.ObjectValue) scene.values().get("target"), "id"))
+                    .isEqualTo("stock-lane-0-0");
+        }
+    }
+
+    @Test
+    void removingAGroupEntryKeepsEveryRenderedConnectionValid() {
+        final var fixture = CreatorWorldBrowserIT.evidenceStressScene();
+        final var project = com.google.gson.JsonParser.parseString(fixture.project()).getAsJsonObject();
+        project.getAsJsonArray("nodes").asList().removeIf(value -> value.getAsJsonObject().get("id").getAsString().equals("lane-0-0"));
+        project.getAsJsonArray("links").asList().removeIf(value -> value.getAsJsonObject().get("from").getAsString().equals("lane-0-0.next"));
+        project.getAsJsonArray("links").forEach(value -> {
+            final var link = value.getAsJsonObject();
+            if (link.get("to").getAsString().equals("lane-0-0")) link.addProperty("to", "lane-0-1");
+        });
+        final var metadata = com.google.gson.JsonParser.parseString(fixture.creator()).getAsJsonObject();
+        metadata.getAsJsonObject("steps").remove("lane-0-0");
+        final var scene = new CreatorScene(project.toString(), object(metadata.toString()), StandardLibrary.catalog())
+                .view("x=928.3084347979694&y=233.70079959538538&width=244.41310622026867&height=250.697039622573&scale=8.387445887445887&focus=group:group-lane-0-0");
+        for (final var link : array(scene, "links")) assertThat(array((RailixValue.ObjectValue) link, "points"))
+                .as(RailixJson.write(link)).hasSizeGreaterThanOrEqualTo(2);
+    }
+
+    @Test
+    void automaticAreasDoNotHideCrossAreaConvergenceAndKeepTheirIdentityAfterEdits() {
+        final var fixture = CreatorWorldBrowserIT.systemStressScene();
+        final var metadata = object(fixture.creator());
+        final var source = com.google.gson.JsonParser.parseString(fixture.project()).getAsJsonObject();
+        for (final var value : source.getAsJsonArray("links")) {
+            final var link = value.getAsJsonObject();
+            if (link.get("from").getAsString().equals("payments-merge-right.next")) link.addProperty("to", "orders-lane-0-20");
+        }
+        final var scene = new CreatorScene(source.toString(), metadata, StandardLibrary.catalog()).view("scale=0.1");
+        assertThat(scene.values().get("limited")).isEqualTo(RailixValue.bool(false));
+        assertThat(nodes(scene).stream().map(part -> string(part, "id")))
+                .doesNotContain("area:orders-command", "area:payments-command").contains("area:stock-command");
+        final var edited = fixture.project().replace("  ADA LOVELACE  ", "  NEW EXAMPLE  ");
+        final var first = new CreatorScene(fixture.project(), metadata, StandardLibrary.catalog()).view("scale=0.1");
+        final var second = new CreatorScene(edited, metadata, StandardLibrary.catalog()).view("scale=0.1");
+        assertThat(nodes(first).stream().filter(part -> string(part, "id").startsWith("area:")).map(part -> string(part, "id")))
+                .containsExactlyElementsOf(nodes(second).stream().filter(part -> string(part, "id").startsWith("area:")).map(part -> string(part, "id")).toList());
+    }
+
+    @Test
+    void independentRoutesHaveSeparateCorridorsInABranchHeavySystem() {
+        final var fixture = CreatorWorldBrowserIT.systemStressScene();
+        final var indexed = new CreatorScene(fixture.project(), object(fixture.creator()), StandardLibrary.catalog());
+        final var overview = indexed.view("scale=0.1");
+        assertThat(nodes(overview).stream().filter(part -> string(part, "kind").equals("trigger"))).hasSize(2);
+        assertThat(nodes(overview)).hasSizeLessThanOrEqualTo(20);
+        final var areas = nodes(overview).stream().filter(part -> string(part, "id").startsWith("area:")).toList();
+        assertThat(areas).hasSize(8);
+        assertThat(areas.stream().map(part -> string(part, "name"))).containsExactlyInAnyOrder("orders", "payments", "stock", "shipping", "returns", "billing", "accounts", "support");
+        assertThat(areas.stream().mapToLong(part -> number(part, "count")).sum()).isEqualTo(1232);
+        final var view = indexed.view("inside=area:stock-command&scale=0.1");
+        assertThat(nodes(view).stream().filter(part -> part.values().containsKey("group"))
+                .map(part -> string(part, "group")).distinct()).hasSize(16);
+        final var links = array(view, "links").stream().map(RailixValue.ObjectValue.class::cast).toList();
+        for (final var link : links) {
+            final var points = array(link, "points");
+            for (final var crossing : link.values().containsKey("bridges") ? array(link, "bridges") : List.<RailixValue>of()) {
+                final var bridge = (RailixValue.ObjectValue) crossing;
+                final var at = (RailixValue.ArrayValue) bridge.values().get("at");
+                final double x = ((RailixValue.NumberValue) at.values().get(0)).value().doubleValue();
+                final double y = ((RailixValue.NumberValue) at.values().get(1)).value().doubleValue();
+                for (final var crossed : links) {
+                    if (crossed != link && !string(crossed, "id").equals(string(bridge, "under"))) continue;
+                    for (int index = 1; index < array(crossed, "points").size(); index++) {
+                        final double x1 = point(crossed, index - 1, 0), y1 = point(crossed, index - 1, 1);
+                        final double x2 = point(crossed, index, 0), y2 = point(crossed, index, 1);
+                        if (!(y1 == y && y2 == y && x > Math.min(x1, x2) && x < Math.max(x1, x2)
+                                || x1 == x && x2 == x && y > Math.min(y1, y2) && y < Math.max(y1, y2))) continue;
+                        assertThat(Math.min(Math.hypot(x-x1, y-y1), Math.hypot(x-x2, y-y2)))
+                                .as("A bridge needs room for its ramps, away from elbows: " + string(link, "id"))
+                                .isGreaterThanOrEqualTo((x1 == x2 ? 24 : 48) * decimal(link, "station_scale") - .001);
+                    }
+                }
+            }
+            for (int index = 1; index < points.size(); index++) {
+                final double x1 = point(link, index - 1, 0), y1 = point(link, index - 1, 1);
+                final double x2 = point(link, index, 0), y2 = point(link, index, 1);
+                assertThat(x1 == x2 || y1 == y2).as("Orthogonal route " + string(link, "id") + ": " + x1 + "," + y1 + " to " + x2 + "," + y2).isTrue();
+                for (final var station : nodes(view)) {
+                    if (RailixValue.bool(true).equals(station.values().get("expanded"))
+                            || string(station, "id").equals(string(link, "from")) || string(station, "id").equals(string(link, "to"))) continue;
+                    final double half = 68 * Math.min(1, decimal(station, "station_scale"));
+                    final double x = decimal(station, "x") + decimal(station, "width") / 2, y = centerY(station);
+                    assertThat(x1 == x2 && x1 > x - half && x1 < x + half && Math.max(y1, y2) > y - half && Math.min(y1, y2) < y + half
+                            || y1 == y2 && y1 > y - half && y1 < y + half && Math.max(x1, x2) > x - half && Math.min(x1, x2) < x + half)
+                            .as(string(link, "id") + " crosses " + string(station, "id")).isFalse();
+                }
+            }
+        }
+        for (int left = 0; left < links.size(); left++) for (int right = left + 1; right < links.size(); right++) {
+            final var a = links.get(left);
+            final var b = links.get(right);
+            if (string(a, "from").equals("app") || string(b, "from").equals("app")) continue;
+            final int aSize = array(a, "points").size();
+            final int bSize = array(b, "points").size();
+            for (int i = 1; i < aSize; i++) for (int j = 1; j < bSize; j++) {
+                final boolean horizontal = point(a, i, 1) == point(a, i - 1, 1);
+                if (horizontal != (point(b, j, 1) == point(b, j - 1, 1))) continue;
+                final int axis = horizontal ? 0 : 1;
+                if (Math.abs(point(a, i, 1 - axis) - point(b, j, 1 - axis)) > .001) continue;
+                final double overlap = Math.min(Math.max(point(a, i, axis), point(a, i - 1, axis)),
+                        Math.max(point(b, j, axis), point(b, j - 1, axis)))
+                        - Math.max(Math.min(point(a, i, axis), point(a, i - 1, axis)),
+                        Math.min(point(b, j, axis), point(b, j - 1, axis)));
+                final int ai = i, bj = j;
+                final boolean inlet = string(a, "to").equals(string(b, "to")) && aSize - i == bSize - j
+                        && IntStream.range(0, aSize - i).allMatch(offset -> point(a, ai + offset, 0) == point(b, bj + offset, 0)
+                        && point(a, ai + offset, 1) == point(b, bj + offset, 1));
+                final boolean outlet = i == 1 && j == 1 && string(a, "from").equals(string(b, "from"))
+                        && string(a, "outcome").equals(string(b, "outcome"));
+                if (!inlet && !outlet) assertThat(overlap).as(string(a, "id") + " coincides with " + string(b, "id")).isLessThanOrEqualTo(.001);
+            }
+        }
+    }
+
+    @Test
+    void sectionChangesFollowTheSelectedExampleFromDifferentEntrances() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final String source = """
+                {"format":1,"id":"section-passages","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"left","payload":[],"context":{"left":true}},
+                    {"name":"right","payload":[],"context":{"left":false}}]},
+                  {"id":"choice","use":"railix.choice","inputs":{"conditions":[[{"option":"field","inputs":{"field":["context","left"]},"when":{"transforms":[],"all":[[{"use":"value.equals","inputs":{"expected":true}}]]}}]]}},
+                  {"id":"a","use":"railix.field-manipulation","inputs":{"field":["context","route"],"value":[{"option":"literal","inputs":{"literal":"a"}}],"steps":[]}},
+                  {"id":"b","use":"railix.field-manipulation","inputs":{"field":["context","route"],"value":[{"option":"literal","inputs":{"literal":"b"}}],"steps":[]}},
+                  {"id":"merge","use":"railix.field-manipulation","inputs":{"field":["context","done"],"value":[{"option":"literal","inputs":{"literal":true}}],"steps":[]}}],
+                 "links":[{"from":"app.start","to":"command"},{"from":"command.next","to":"choice"},
+                  {"from":"choice.match","to":"a"},{"from":"choice.otherwise","to":"b"},
+                  {"from":"a.next","to":"merge"},{"from":"b.next","to":"merge"},{"from":"merge.next","to":"end"}]}
+                """;
+        Files.writeString(project, source);
+        Files.writeString(directory.resolve("railix.creator.json"), """
+                {"format":2,"groups":[{"id":"g","name":"Prepare result"}],"steps":{"a":{"group":"g"},"b":{"group":"g"},"merge":{"group":"g"}}}
+                """);
+        try (var creator = start(project)) {
+            final String accepted = Files.readString(project);
+            assertThat(awaitExampleView(creator.baseUri(), "command:0").statusCode()).isEqualTo(200);
+            assertThat(awaitExampleView(creator.baseUri(), "command:1").statusCode()).isEqualTo(200);
+            final var overview = object(request(creator.baseUri(), "GET", "/api/scene", "").body());
+            final var region = nodes(overview).stream().filter(node -> RailixValue.string("g").equals(node.values().get("group"))
+                    && RailixValue.string("region").equals(node.values().get("kind"))).findFirst().orElseThrow();
+            final String query = "/view?revision=" + string(overview, "revision")
+                    + "&region=" + URLEncoder.encode(string(region, "id"), StandardCharsets.UTF_8);
+            for (int index = 0; index < 2; index++) {
+                final var response = request(creator.baseUri(), "GET", "/api/examples/command:" + index + query, "");
+                assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+                final var result = (RailixValue.ObjectValue) object(response.body()).values().get("section");
+                assertThat(number(result, "reached")).isEqualTo(2);
+                assertThat(number(result, "count")).isEqualTo(3);
+                final var visits = array(result, "passages");
+                assertThat(visits).hasSize(1);
+                final var visit = (RailixValue.ObjectValue) visits.getFirst();
+                final var entry = (RailixValue.ObjectValue) visit.values().get("entry");
+                final var exit = (RailixValue.ObjectValue) visit.values().get("exit");
+                assertThat(string(entry, "id")).isEqualTo(index == 0 ? "a" : "b");
+                assertThat(string(exit, "id")).isEqualTo("merge");
+                final String projectionPath = "/api/examples/command:" + index + "/steps/" + number(exit, "index");
+                final var projection = request(creator.baseUri(), "GET", projectionPath, "");
+                assertThat(projection.statusCode()).as(projection.body()).isEqualTo(200);
+                final var context = (RailixValue.ObjectValue) object(projection.body()).values().get("input_context");
+                assertThat(string(context, "route")).isEqualTo(index == 0 ? "a" : "b");
+            }
+            assertThat(request(creator.baseUri(), "GET", "/api/examples/command:0/view?region=g", "").statusCode()).isEqualTo(400);
+            assertThat(request(creator.baseUri(), "GET", "/api/examples/command:0" + query.replace(string(overview, "revision"), "0".repeat(64)), "").statusCode()).isEqualTo(409);
+            assertThat(Files.readString(project)).isEqualTo(accepted);
+        }
+    }
+
     @TempDir
     static Path sceneDirectory;
     private static CreatorServer server;
@@ -98,8 +284,9 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
             }
             for (final var value : array(entered, "links")) {
                 final var link = (RailixValue.ObjectValue) value;
-                assertThat(point(link, 3, 0)).isGreaterThan(point(link, 0, 0));
-                assertThat(point(link, 3, 1)).isEqualTo(point(link, 0, 1));
+                final int last = array(link, "points").size() - 1;
+                assertThat(point(link, last, 0)).isGreaterThan(point(link, 0, 0));
+                assertThat(point(link, last, 1)).isEqualTo(point(link, 0, 1));
             }
             assertThat(Files.readString(project)).isEqualTo(accepted);
         }
@@ -147,6 +334,29 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
         assertThat(decimal((RailixValue.ObjectValue) scene.values().get("bounds"), "width")).isLessThan(2000);
         assertThat(scene.values()).doesNotContainKeys("project", "creator", "examples", "metrics");
         assertThat(scene.values().get("limited")).isEqualTo(RailixValue.bool(false));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {64, 3000})
+    @Timeout(90)
+    void branchingOverviewKeepsDecisionsAndSummarizesOnlyLinearRuns(final int length) throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        final String source = branchingRuns(length);
+        Files.writeString(project, source);
+        try (CreatorServer creator = start(project)) {
+            final String accepted = Files.readString(project);
+            final var overview = object(request(creator.baseUri(), "GET", "/api/scene?scale=0.1", "").body());
+            assertThat(nodes(overview)).anySatisfy(node -> assertThat(string(node, "id")).isEqualTo("choice"));
+            assertThat(nodes(overview).stream().filter(node -> RailixValue.string("run").equals(node.values().get("summary"))).toList())
+                    .hasSize(2).allSatisfy(node -> {
+                        assertThat(number(node, "count")).isEqualTo(length);
+                        assertThat(string(node, "name")).doesNotContain("Automatic section", ":");
+                    });
+            assertThat(array(overview, "links").stream().map(RailixValue.ObjectValue.class::cast)
+                    .filter(link -> "choice".equals(string(link, "from")))
+                    .map(link -> string(link, "outcome"))).containsExactlyInAnyOrder("match", "otherwise");
+            assertThat(Files.readString(project)).isEqualTo(accepted);
+        }
     }
 
     @Test
@@ -351,6 +561,27 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
+    void collapsedGroupRoofShowsBoundedRealMembersOnly() throws Exception {
+        final String focus = "?focus=group-region:normalize:step-0020";
+        final RailixValue.ObjectValue collapsed = node(scene(focus + "&scale=0.000001"),
+                "group-region:normalize:step-0020");
+        final var roof = ((RailixValue.ArrayValue) collapsed.values().get("roof")).values().stream()
+                .map(value -> (RailixValue.ObjectValue) value).toList();
+
+        assertThat(roof).hasSize(4);
+        assertThat(roof.stream().map(member -> string(member, "id"))).containsExactly(
+                "step-0020", "step-0021", "step-0022", "step-0023");
+        assertThat(roof.stream().map(member -> decimal(member, "x")).distinct().count()).isGreaterThan(1);
+        assertThat(roof).allSatisfy(member -> {
+            assertThat(decimal(member, "x")).isBetween(0.0, 1.0);
+            assertThat(decimal(member, "y")).isBetween(0.0, 1.0);
+        });
+        final RailixValue.ObjectValue expanded = node(scene(focus + "&scale="
+                + decimal(scene(focus), "focus_min_scale")), "group-region:normalize:step-0020");
+        assertThat(expanded.values()).doesNotContainKey("roof");
+    }
+
+    @Test
     void tallBranchGroupEntersAtItsOriginRatherThanItsTopmostBranch() throws Exception {
         final String nodes = IntStream.range(0, 15).mapToObj(index ->
                 "{\"id\":\"branch-" + index + "\",\"use\":\"railix.choice\",\"inputs\":{\"conditions\":[]}}")
@@ -442,7 +673,7 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
                 """);
         try (CreatorServer creator = start(project)) {
             final RailixValue.ObjectValue scene = object(request(creator.baseUri(), "GET",
-                    "/api/scene?x=-100&y=-100&width=2000&height=1000&scale=0.1", "").body());
+                    "/api/scene?scale=0.1", "").body());
             final RailixValue.ObjectValue trigger = node(scene, "command");
             final RailixValue.ObjectValue group = node(scene, "group-region:normalization:normalize");
 
@@ -465,8 +696,16 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
                     "/api/scene?scale=100000", "").body());
             final RailixValue.ObjectValue group = node(scene, "group-region:routing:choice");
             final RailixValue.ObjectValue otherwise = node(scene, "otherwise");
+            final RailixValue.ObjectValue collapsed = object(request(creator.baseUri(), "GET",
+                    "/api/scene?scale=0.000001", "").body());
+            final var roof = ((RailixValue.ArrayValue) node(collapsed, "group-region:routing:choice")
+                    .values().get("roof")).values().stream()
+                    .map(value -> (RailixValue.ObjectValue) value).toList();
 
             assertThat(decimal(otherwise, "x")).isGreaterThan(decimal(group, "x") + decimal(group, "width"));
+            assertThat(roof.stream().map(member -> string(member, "id"))).containsExactly("choice", "matched");
+            assertThat(roof.stream().filter(member -> RailixValue.bool(true).equals(member.values().get("branch"))))
+                    .hasSize(1);
         }
     }
 
@@ -649,6 +888,26 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
 
     @ParameterizedTest
     @ValueSource(ints = {3, 4, 8})
+    void parallelGroupsReserveSpaceForSquareBuildingsAndClearance(final int steps) throws Exception {
+        try (CreatorServer creator = start(groupedBranches(steps))) {
+            final var scene = object(request(creator.baseUri(), "GET", "/api/scene?scale=0.1", "").body());
+            final var groups = nodes(scene).stream()
+                    .filter(part -> RailixValue.string("reply").equals(part.values().get("group")))
+                    .sorted(java.util.Comparator.comparingDouble(CreatorSceneE2eTest::centerY)).toList();
+            assertThat(groups).hasSize(steps);
+            for (int index = 1; index < groups.size(); index++) {
+                final var previous = groups.get(index - 1);
+                final var next = groups.get(index);
+                final double foundations = 68 * (decimal(previous, "station_scale") + decimal(next, "station_scale"));
+                assertThat(centerY(next) - centerY(previous) - foundations)
+                        .as("Parallel group foundations need breathing space, not touching or overlapping tiles")
+                        .isGreaterThanOrEqualTo(32);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {3, 4, 8})
     void aBranchsLastStepAndTerminalShareTheirLane(final int steps) throws Exception {
         try (CreatorServer creator = start(groupedBranches(steps))) {
             final RailixValue.ObjectValue scene = object(request(creator.baseUri(), "GET",
@@ -676,14 +935,17 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
                     .filter(link -> "route".equals(string(link, "from"))).toList();
             assertThat(branches).hasSize(steps);
             assertThat(branches).allSatisfy(link -> {
+                assertThat(array(link, "points")).hasSizeLessThanOrEqualTo(3);
+                assertThat(link.values()).doesNotContainKey("bridges");
+            });
+            assertThat(branches).allSatisfy(link -> {
                 final var target = node(scene, string(link, "to"));
                 final double delta = centerY(target) - centerY(route);
                 if (Math.abs(delta) < .000001) {
                     assertThat(point(link, 0, 0)).isCloseTo(decimal(route, "x") + decimal(route, "width"),
                             org.assertj.core.data.Offset.offset(.000001));
                 } else {
-                    assertThat(point(link, 0, 0)).isCloseTo(decimal(route, "x") + decimal(route, "width") / 2,
-                            org.assertj.core.data.Offset.offset(.000001));
+                    assertThat(point(link, 0, 0)).isBetween(decimal(route, "x"), decimal(route, "x") + decimal(route, "width"));
                     assertThat(point(link, 0, 1)).isCloseTo(centerY(route) + Math.copySign(decimal(route, "height") / 2, delta),
                             org.assertj.core.data.Offset.offset(.000001));
                 }
@@ -740,11 +1002,11 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
                 .map(RailixValue.ObjectValue.class::cast)
                 .filter(link -> byId.containsKey(string(link, "from")))
                 .filter(link -> "region".equals(string(byId.get(string(link, "from")), "kind")))
-                .filter(link -> point(link, 3, 0) > point(link, 0, 0))
+                .filter(link -> point(link, array(link, "points").size() - 1, 0) > point(link, 0, 0))
                 .findFirst().orElseThrow();
         final double startX = point(rail, 0, 0);
         final double y = point(rail, 0, 1);
-        final double span = point(rail, 3, 0) - startX;
+        final double span = point(rail, array(rail, "points").size() - 1, 0) - startX;
         final double margin = span / 10;
         final RailixValue.ObjectValue before = scene("?scale=1&x=" + (startX - margin)
                 + "&y=" + (y - margin) + "&width=" + span * 2 + "&height=" + margin * 2);
@@ -897,6 +1159,29 @@ final class CreatorSceneE2eTest extends CreatorServerE2eSupport {
         }
         links.append(",{\"from\":\"").append(previous).append(".next\",\"to\":\"end\"}");
         return "{\"format\":1,\"id\":\"scene-world\",\"nodes\":[" + nodes + "],\"links\":[" + links + "]}";
+    }
+
+    private static String branchingRuns(final int length) {
+        final StringBuilder nodes = new StringBuilder("""
+                {"id":"app","use":"railix.app","inputs":{}},
+                {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{"name":"empty","payload":[]}]},
+                {"id":"choice","use":"railix.choice","inputs":{"conditions":[]}}
+                """);
+        final StringBuilder links = new StringBuilder("""
+                {"from":"app.start","to":"command"},{"from":"command.next","to":"choice"}
+                """);
+        for (final String lane : List.of("match", "otherwise")) {
+            String previous = "choice";
+            for (int index = 0; index < length; index++) {
+                final String id = lane + "-%04d".formatted(index);
+                nodes.append(",{\"id\":\"").append(id).append("\",\"use\":\"railix.field-manipulation\",\"inputs\":{}}");
+                links.append(",{\"from\":\"").append(previous).append(".")
+                        .append(index == 0 ? lane : "next").append("\",\"to\":\"").append(id).append("\"}");
+                previous = id;
+            }
+            links.append(",{\"from\":\"").append(previous).append(".next\",\"to\":\"end\"}");
+        }
+        return "{\"format\":1,\"id\":\"branching-runs\",\"nodes\":[" + nodes + "],\"links\":[" + links + "]}";
     }
 
     private static String metadata(final String name) {

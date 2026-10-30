@@ -133,9 +133,8 @@ public final class ProjectCompiler {
             return rejected(graph.get());
         }
 
-        final int[] owners = owners(index);
         final List<ApplicationPlan.NodePlan> plans = nodeRead.nodes().stream()
-                .map(node -> plan(node, index.destinations()[node.index()], owners[node.index()]))
+                .map(node -> plan(node, index.destinations()[node.index()]))
                 .toList();
         final List<ApplicationPlan.TriggerPlan> triggers = new ArrayList<>();
         final List<ApplicationPlan.ExamplePlan> examples = new ArrayList<>();
@@ -1551,7 +1550,7 @@ public final class ProjectCompiler {
                     && index.incoming()[current.index()] == 0) {
                 return Optional.of(Diagnostic.atPath(
                         "PROJECT_NODE_INPUT_CONNECTION_REQUIRED",
-                        "Step must have exactly one incoming connection: " + current.id() + ".",
+                        "Step must have an incoming connection: " + current.id() + ".",
                         "nodes[" + current.index() + "]"
                 ));
             }
@@ -1617,7 +1616,8 @@ public final class ProjectCompiler {
             if (current.definition().kind() == StepDefinition.Kind.APP) {
                 continue;
             }
-            if (index.incoming()[current.index()] != 1) {
+            if (current.definition().kind() == StepDefinition.Kind.TRIGGER
+                    && index.incoming()[current.index()] != 1) {
                 return Optional.of(Diagnostic.atPath(
                         "PROJECT_NODE_INPUT_CONNECTION_REQUIRED",
                         "Step must have exactly one incoming connection: " + current.id() + ".",
@@ -1628,32 +1628,9 @@ public final class ProjectCompiler {
         return Optional.empty();
     }
 
-    private static int[] owners(final GraphIndex index) {
-        final int[] owners = new int[index.nodes().size()];
-        Arrays.fill(owners, ApplicationPlan.END);
-        final List<Integer> pending = new ArrayList<>();
-        for (final Link link : index.outgoing().get(index.app())) {
-            if (link.to() != ApplicationPlan.END) {
-                owners[link.to()] = link.to();
-                pending.add(link.to());
-            }
-        }
-        for (int pendingIndex = 0; pendingIndex < pending.size(); pendingIndex++) {
-            final int current = pending.get(pendingIndex);
-            for (final Link link : index.outgoing().get(current)) {
-                if (link.to() != ApplicationPlan.END) {
-                    owners[link.to()] = owners[current];
-                    pending.add(link.to());
-                }
-            }
-        }
-        return owners;
-    }
-
     private static ApplicationPlan.NodePlan plan(
             final Node node,
-            final int[] destinations,
-            final int owner
+            final int[] destinations
     ) {
         return new ApplicationPlan.NodePlan(
                 node.id(),
@@ -1664,7 +1641,6 @@ public final class ProjectCompiler {
                 destinations,
                 node.outcomes(),
                 node.metrics(),
-                owner,
                 "nodes[" + node.index() + "]"
         );
     }

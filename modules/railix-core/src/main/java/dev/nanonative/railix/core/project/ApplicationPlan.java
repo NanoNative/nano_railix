@@ -47,7 +47,6 @@ record ApplicationPlan(
             int[] destinations,
             List<String> outcomes,
             boolean metrics,
-            int owner,
             String path
     ) {
         NodePlan {

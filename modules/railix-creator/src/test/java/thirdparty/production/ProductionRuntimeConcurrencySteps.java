@@ -38,13 +38,20 @@ public final class ProductionRuntimeConcurrencySteps {
                 });
                 source.onStart(() -> {
                     try {
-                        if (configuration.string("mode").equals("fail")) {
+                        if (configuration.string("mode").startsWith("hold")) {
+                            Files.writeString(marker.resolveSibling("activating"), "activating");
+                            while (!Files.exists(marker.resolveSibling("activation-release"))) Thread.sleep(5);
+                        }
+                        if (configuration.string("mode").equals("fail") || configuration.string("mode").equals("hold-fail")) {
                             throw new IllegalStateException("Requested source activation failure.");
                         }
                         server.bind(new java.net.InetSocketAddress("127.0.0.1", 0));
                         Files.writeString(marker, Integer.toString(server.getLocalPort()));
                     } catch (final IOException failure) {
                         throw new java.io.UncheckedIOException(failure);
+                    } catch (final InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("Source activation interrupted.", interrupted);
                     }
                     Thread.startVirtualThread(() -> {
                         try {
@@ -135,6 +142,7 @@ public final class ProductionRuntimeConcurrencySteps {
         private static final AtomicReference<CountDownLatch> RELEASE =
                 new AtomicReference<>(new CountDownLatch(0));
         private static final AtomicBoolean IGNORE_CANCELLATION = new AtomicBoolean();
+        private static final AtomicBoolean FAIL_POST = new AtomicBoolean();
         private static final AtomicInteger CLOSED = new AtomicInteger();
 
         /** Creates one stateless handler. */
@@ -170,8 +178,13 @@ public final class ProductionRuntimeConcurrencySteps {
             return CLOSED.get();
         }
 
+        public static boolean failPost() {
+            return FAIL_POST.getAndSet(true);
+        }
+
         public static StepResult post(final StepInput configuration, final StepInput context) {
             CLOSED.incrementAndGet();
+            if (FAIL_POST.get()) throw new IllegalStateException("Requested POST failure.");
             return StepResult.outcome(context.primaryOutcome());
         }
 

@@ -234,7 +234,7 @@ public final class StepCatalog {
                         Ownership.BUNDLE,
                         closure,
                         contract,
-                        List.of()
+                        installed.definition().implementationAddress().orElseThrow().jdkModules()
                 ));
             }
             if (!manifest.keySet().equals(lockedSteps)) {
@@ -759,10 +759,14 @@ public final class StepCatalog {
          * @throws DependencyException when the declared class bytes cannot be read or parsed
          */
         public Optional<String> processProblem() throws DependencyException {
+            final var model = classModel();
+            if ((model.flags().flagsMask() & ClassFile.ACC_PUBLIC) == 0) {
+                return Optional.of(className + " must be a public implementation class for direct Step calls.");
+            }
             final String descriptor = "(Ldev/nanonative/railix/core/step/StepInput;"
                     + "Ldev/nanonative/railix/core/step/StepInput;)"
                     + "Ldev/nanonative/railix/core/step/StepResult;";
-            final var methods = classModel().methods().stream()
+            final var methods = model.methods().stream()
                     .filter(method -> method.methodName().equalsString("process")
                             && method.methodType().equalsString(descriptor)).toList();
             final int modifiers = ClassFile.ACC_PUBLIC | ClassFile.ACC_STATIC;

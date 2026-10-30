@@ -13,7 +13,26 @@ The compiler remains group-unaware. Artifact capability changes require rebuildi
 mesh is later than single-instance readiness and coordinates already-running, compatible
 instances of the same project. These decisions do not mark their implementation complete.
 
+Amended on 2026-09-27 from the user's reuse and flow-control specification: linked editing also
+applies to individual Steps and includes field mappings. One occurrence can be detached without
+changing its behavior. Ordinary multi-input convergence needs no Merger. Coordination remains
+explicit. Join/Limiter use public Step contracts and may have compact connector presentation,
+without privileged built-in IDs. Detailed semantics and unresolved decisions stay in the owners
+below. This amendment does not implement them or select a scheduler or persistence schema.
+
+Amended on 2026-10-17: direct editing uses visible connection/placement previews, selection-based
+grouping and local reuse at near or distant destinations. Deterministic wiring is automatic.
+Unresolved destinations stay visible for a user decision. Spatial proximity never creates linked
+editing. The [Creator interaction contract](../specs/creator.md#planned-direct-editing) owns the
+journeys and acceptance. Compiler ownership and the flat application model remain as decided below.
+
 ## Context
+
+Amended on 2026-10-27 following the accepted whole-Creator usability review: the primary surface
+becomes a compact flow workbench with shallow-depth modules, a docked Inspector and meaningful
+location navigation. The existing scene and native Canvas pipeline remain shared. The temporary
+Map comparison is not a second authoring product. Visual scope and zoom remain Creator-only and
+do not change functional connections, Example selection or compiler inputs.
 
 Railix Creator is the product entrypoint. One project must describe exactly the application that
 the compiler executes and the release build will package. Visual grouping must help people manage
@@ -32,10 +51,23 @@ application executes. Creator owns editing, building and child-process lifecycle
 Groups, geometry and themes remain presentation only. Development observations belong to
 the generated application and are physically omitted from current production artifacts.
 
-Creator may additionally copy and share a group's functional contents. It resolves those edits
+Creator may additionally copy and share a Step or group's functional contents. It resolves those edits
 into ordinary Steps and links before compilation; a deployed application never follows a live
 group reference. Visual grouping itself still has no execution semantics. This preserves the
 single compiler model without prohibiting useful authoring reuse.
+
+Linked editing, a combined building with separate lanes, and shared runtime state are different
+relationships. Detaching an occurrence changes the editing relationship, not its execution.
+Functional routing, correlation and budget identities cannot depend on optional graphics data.
+Simply connecting more incoming belts processes each arrival separately. Waiting and context
+combination belong to an explicitly configured Join. This keeps convenience in Creator without
+making a visual change secretly schedule work or combine requests.
+
+Interaction references support this direction. [Node-RED wiring](https://nodered.org/docs/user-guide/editor/workspace/wires)
+demonstrates insertion feedback and direct connection operations. [Factorio remote view](https://www.factorio.com/blog/post/fff-380)
+motivates consistent local and distant interaction. Its [Undo/Redo work](https://www.factorio.com/blog/post/fff-412)
+shows the importance of complete changes and previews. These are design evidence, not adopted
+execution models or proof of Railix usability.
 
 The detailed contracts formerly accumulated here now have explicit owners:
 
@@ -70,6 +102,14 @@ rejected.
 The earlier blanket rejection of authoring-side shared-edit propagation is superseded by the
 2026-09-19 clarification. Reuse identity and persistence will be specified in Creator; the old
 format-2 metadata restrictions describe the current implementation, not a permanent prohibition.
+
+On 2026-10-17 the direct-editing baseline keeps processing materialized in the functional graph
+and adds optional identity correspondence to Creator metadata. It does not introduce a second
+compiler graph or a runtime group reference. Complete editor actions replace the browser's two
+independent document writes, so one shared edit and its Undo cover processing, connections and
+membership together. A temporary backup restores the previous graph/metadata pair after a process
+interruption. Session history and renderer state are not application dependencies. Advanced
+multi-entrance placement remains open rather than inventing routes or enabling parallel execution.
 
 ## Acceptance And Evidence
 

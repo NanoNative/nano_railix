@@ -326,6 +326,20 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
+    void exampleScopeListsOnlyPublishedReachingCasesAndRejectsMissingScopes() throws Exception {
+        final HttpResponse<String> response = observations(server.baseUri(), "scale=1", "&cases=one");
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        assertThat(object(response.body()).values().get("case_ids"))
+                .isEqualTo(RailixValue.array(List.of(RailixValue.string("command:0"))));
+        assertThat(string(object(response.body()), "scope")).isEqualTo("one");
+        final HttpResponse<String> empty = observations(server.baseUri(), "scale=1", "&cases=app");
+        assertThat(empty.statusCode()).as(empty.body()).isEqualTo(200);
+        assertThat(object(empty.body()).values().get("case_ids"))
+                .isEqualTo(RailixValue.array(List.of()));
+        assertThat(observations(server.baseUri(), "scale=1", "&cases=missing").statusCode()).isEqualTo(404);
+    }
+
+    @Test
     void selectedExampleDoesNotMarkTheUnvisitedBranch() throws Exception {
         final Path project = directory.resolve("railix.project.json");
         Files.writeString(project, branchGroupProject());
@@ -351,6 +365,40 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
                 if (string(link, "id").equals("choice.otherwise>otherwise")) {
                     assertThat(string(link, "selection")).isEqualTo(reached.contains(4L) ? "reached" : "unreached");
                 }
+            }
+        }
+    }
+
+    @Test
+    void aReachedMergeTargetDoesNotMarkAnUnvisitedIncomingBranch() throws Exception {
+        final Path project = directory.resolve("merge-path.project.json");
+        Files.writeString(project, """
+                {"format":1,"id":"merge-path","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"one-arrival","payload":[],"context":{"payload":{}}}]},
+                  {"id":"choice","use":"railix.choice","inputs":{"conditions":[]}},
+                  {"id":"matched","use":"railix.field-manipulation","inputs":{}},
+                  {"id":"otherwise","use":"railix.field-manipulation","inputs":{}},
+                  {"id":"joined","use":"railix.field-manipulation","inputs":{}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},{"from":"command.next","to":"choice"},
+                  {"from":"choice.match","to":"matched"},{"from":"choice.otherwise","to":"otherwise"},
+                  {"from":"matched.next","to":"joined"},{"from":"otherwise.next","to":"joined"},
+                  {"from":"joined.next","to":"end"}]}
+                """);
+        try (CreatorServer creator = start(project)) {
+            assertThat(awaitExampleView(creator.baseUri(), "command:0").statusCode()).isEqualTo(200);
+            final var response = observations(creator.baseUri(), "scale=10", "&example=command%3A0");
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            final var observed = object(response.body());
+            assertThat(number(entry(observed, "joined"), "selected_count")).isEqualTo(1);
+            for (final String source : List.of("matched", "otherwise")) {
+                final String expected = number(entry(observed, source), "selected_count") == 0 ? "unreached" : "reached";
+                assertThat(entries(observed, "links")).anySatisfy(link -> {
+                    assertThat(string(link, "id")).isEqualTo(source + ".next>joined");
+                    assertThat(string(link, "selection")).isEqualTo(expected);
+                });
             }
         }
     }
@@ -482,8 +530,12 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
             assertThat(awaitExampleView(creator.baseUri(), "command:0").statusCode()).isEqualTo(200);
             final String viewport = "x=-1000&y=-1000&width=10000000&height=10000000&scale=100000000";
             awaitStartupAndExample(creator.baseUri(), "step-5999");
+            final RailixValue.ObjectValue visibleScene = scene(creator.baseUri(), viewport);
+            assertThat(entries(visibleScene, "links").stream().mapToInt(link ->
+                    ((RailixValue.ArrayValue) link.values().get("points")).values().size() - 1).sum())
+                    .isLessThanOrEqualTo(4096);
             final String path = "/api/scene/observations?revision="
-                    + string(scene(creator.baseUri(), viewport), "revision") + "&" + viewport
+                    + string(visibleScene, "revision") + "&" + viewport
                     + (selected ? "&example=command%3A0" : "");
             final List<Long> timings = new ArrayList<>();
             HttpResponse<String> response = null;
@@ -498,7 +550,8 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
             assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
             final RailixValue.ObjectValue observed = object(response.body());
             assertThat(entries(observed, "nodes")).hasSizeLessThanOrEqualTo(2048);
-            assertThat(entries(observed, "links")).hasSizeLessThanOrEqualTo(4096 / 3);
+            assertThat(entries(observed, "links").stream().map(link -> string(link, "id")))
+                    .containsExactlyInAnyOrderElementsOf(entries(visibleScene, "links").stream().map(link -> string(link, "id")).toList());
             assertThat(observed.values().get("limited")).isEqualTo(RailixValue.bool(true));
             assertThat(entries(observed, "links").stream().filter(link -> link.values().containsKey("metrics")))
                     .isNotEmpty().allSatisfy(link -> assertThat(metricNumber(link, "executions"))

@@ -41,7 +41,19 @@ final class IconLibrary {
             svg("database", "Database", "<ellipse cx='12' cy='5' rx='8' ry='3'/><path d='M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6'/>"),
             svg("terminal", "Terminal", "<rect x='3' y='4' width='18' height='16' rx='2'/><path d='m7 9 3 3-3 3m6 0h4'/>"),
             svg("network", "Network", "<circle cx='5' cy='12' r='3'/><circle cx='19' cy='5' r='3'/><circle cx='19' cy='19' r='3'/><path d='m8 11 8-4M8 13l8 4'/>"),
-            svg("shield", "Shield", "<path d='M12 2 4 5v6c0 5 3.4 9.1 8 11 4.6-1.9 8-6 8-11V5z'/>")
+            svg("shield", "Shield", "<path d='M12 2 4 5v6c0 5 3.4 9.1 8 11 4.6-1.9 8-6 8-11V5z'/>"),
+            svg("globe", "Web", "<circle cx='12' cy='12' r='9'/><ellipse cx='12' cy='12' rx='4' ry='9'/><path d='M3 12h18'/>"),
+            svg("filter", "Filter", "<path d='M3 4h18l-7 8v7l-4 2v-9z'/>"),
+            svg("route", "Route", "<path d='M5 20V7h13m-4-4 4 4-4 4M5 13h9l4 5'/><circle cx='5' cy='20' r='2'/><circle cx='19' cy='19' r='2'/>"),
+            svg("transform", "Transform", "<path d='M3 7h18m-4-4 4 4-4 4M21 17H3m4-4-4 4 4 4'/>"),
+            svg("code", "Code", "<path d='m8 5-6 7 6 7m8-14 6 7-6 7M14 3l-4 18'/>"),
+            svg("clock", "Schedule", "<circle cx='12' cy='12' r='9'/><path d='M12 6v6l4 2'/>"),
+            svg("mail", "Message", "<rect x='3' y='5' width='18' height='14' rx='2'/><path d='m3 6 9 7 9-7'/>"),
+            svg("file", "File", "<path d='M14 2H5v20h14V7zM14 2v5h5M8 12h8M8 16h8'/>"),
+            svg("queue", "Queue", "<rect x='3' y='5' width='4' height='14' rx='1'/><rect x='10' y='5' width='4' height='14' rx='1'/><rect x='17' y='5' width='4' height='14' rx='1'/>"),
+            svg("lock", "Secret", "<rect x='4' y='10' width='16' height='11' rx='2'/><path d='M8 10V6a4 4 0 0 1 8 0v4M12 15v2'/>"),
+            svg("check", "Validate", "<circle cx='12' cy='12' r='9'/><path d='m7 12 3 3 7-7'/>"),
+            svg("calculator", "Calculate", "<rect x='5' y='2' width='14' height='20' rx='2'/><path d='M8 6h8M8 11h1m6 0h1M8 15h1m6 0h1M8 19h1m6 0h1'/>")
     );
     private final Path directory;
 

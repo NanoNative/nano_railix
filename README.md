@@ -2,30 +2,14 @@
 
 ## What Railix Is
 
-Railix is being built as a product-building system for cross-functional teams. People author an
-application as visual **Flows** of **Steps** in Creator; a successful Railix build will compile
-that static model into one immutable monolithic application. Java is Railix's current
-implementation language, not its product boundary.
+Railix builds systems from visual **Flows** of reusable **Steps**. Creator compiles the static graph
+into one immutable application, currently implemented in Java, not a runtime-interpreted workflow
+or an editable production graph.
+Groups organize the editor and do not enter the compiler. Executable Examples show recorded routes,
+values and failures. Assertions, encrypted secrets and distributed operation remain planned.
 
-Railix is neither diagram-to-code nor a runtime-interpreted workflow engine. Creator groups
-help people navigate; cross-project Blueprints and Templates remain planned. The compiler sees
-only materialized Flows and Steps. It builds one fixed application with no reflection, runtime Step
-scanning, hidden coercion, or production graph editing.
-
-Railix calls its end-to-end model **Railway-Oriented Programming**: the application path from an
-external trigger through policy, processing, and storage is made from Flows and Steps. Examples are
-functional project inputs: the project owns their definitions, and the generated development
-application owns their compiled copy, execution, and results. They show the real path and context
-changes now; assertions and a later production-build gate remain roadmap work. Test-only behavior
-uses real test services or explicit test-client Steps that may be omitted from a production artifact.
-
-The product direction is to use that same executable model for local verification, build,
-operations, and eventually distributed operation. External protocols and security still exist;
-Railix aims to express and wire them through Flows and Steps, reducing hand-managed infrastructure
-configuration rather than pretending it is unnecessary. Platform user authorization and encrypted
-environment-secret delivery are a protected boundary: application Flows may enforce product
-policy, but cannot grant themselves project, build, deployment, or production-observation access.
-The planned operating model and its status live in [docs/roadmap.md](docs/roadmap.md).
+Read [the vision](docs/vision.md) for the reasoning, the [system model](docs/specs/system-model.md)
+for execution contracts and the [roadmap](docs/roadmap.md) for supported and planned capabilities.
 
 ## Documentation Map
 
@@ -87,9 +71,14 @@ For a focused change, select its public-entrypoint suite without rebuilding the 
 ./mvnw -pl modules/railix-creator -am -Dtest=RailixValueNullContractTest,PrimitiveStepsCreatorProjectE2eTest,CreatorEditorE2eTest -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
-For UI work, replace `CreatorEditorE2eTest` with a browser suite such as `CreatorEditorBrowserIT`.
-Keep the two upstream smoke suites: each reactor module requires at least one test. Check that
-the selected suite was discovered.
+For UI work, compile the reactor and run its browser suite directly:
+
+```sh
+./mvnw -pl modules/railix-creator -am test-compile failsafe:integration-test failsafe:verify -Dit.test=CreatorEditorBrowserIT -Dfailsafe.failIfNoSpecifiedTests=false
+```
+
+The focused unit-test command retains upstream smoke suites because each module requires a test.
+Check that the selected suite was discovered.
 Normal verification still requires every configured suite. For asynchronous UI changes, assert
 the visible result with Playwright's retrying assertions; a completed build does not mean its
 canvas refresh has finished.
@@ -146,7 +135,7 @@ Or select both:
 
 Creator prints the URL to open. `Ctrl-C` stops Creator and its owned development-application JVM.
 `./mvnw clean` removes the generated JAR and application image. Railix has no third-party Java runtime
-libraries or graphics framework. Creator renders its factory with native Canvas2D or HTML/CSS;
+libraries or graphics framework. Creator renders its factory with native Canvas2D and a CSS-themed HUD;
 Playwright is test-only.
 
 The printed URL contains a random Creator token in its fragment. Every Creator API request requires
@@ -155,13 +144,13 @@ in project files. Treat the complete local URL as a credential while Creator is 
 
 ## Create The First Flow
 
-1. Select the Application, then **Add Trigger** in Inspector Overview.
+1. Select the Application, then **Data > Add Trigger** in the Inspector.
 2. Search the installed Trigger catalog for **CLI**.
-3. Select the Trigger to edit Target; use **Edit** beside its Example chooser to edit its payload.
+3. Select the Trigger. **Configure** edits Target and **Examples** edits the payload.
    Use `context.payload.arguments` and `["Hello RAILIX"]` respectively for this flow.
-4. Choose **Add next Step**, search for **Lowercase**, and add it as an ordinary graph Step.
-5. Select the Step, keep Source at `context.payload.arguments[0]`, and set Target to `context.result`.
-6. Wait for **Running** and select the CLI Trigger. Creator shows the Example result automatically.
+4. Choose **Data > Add next Step**, search for **Lowercase**, and add it as an ordinary graph Step.
+5. In **Configure**, keep Source at `context.payload.arguments[0]` and set Target to `context.result`.
+6. Wait for **Running**, choose the Example in the toolbar and open the Step's **Data** tab to see the change.
 
 Each ordinary Step remains one graph node whether or not the user assigns it to a visual group.
 Project persistence, structural compilation, development-application replacement, and example
@@ -204,21 +193,9 @@ in [`.agents/skills/`](.agents/skills/). These cover Java/compiler work, CSS and
 asset extensions, music/sound design, and verification. These ordinary repository files need no
 global skill installation and can also be read directly by tools without skill discovery.
 
-Import and build the root `pom.xml`; there is no second build system or module-specific setup.
-Change the smallest owning module: keep contracts and generated-application runtime capabilities in
-core, built-in implementations in stdlib, and project editing, build orchestration, lifecycle, and
-display in Creator. Do not add a module, runtime dependency, execution path, compatibility layer,
-or abstraction without current public behavior that requires it.
-Use Java 25, JDK types first, final values by default, stateless Step handlers, and explicit
-boundary results. Public methods do not return Java null. Reflection, parallel streams, hidden
-fallback execution, and interfaces without a current second implementation are not accepted.
-
-Each behavior or rejection belongs in its own highest-practical public-entrypoint test. During work,
-run `./mvnw test`; before requesting review, run `./mvnw clean verify`. Run
-`scripts/coverage.sh` only when updating the advisory coverage report. Do not commit `target`,
-`.railix`, IDE state, local project files, or `brainstorming`; all are ignored. GitHub Actions
-runs the same clean verification for every pull request, with two test forks to fit the
-hosted runner's resource budget. The acceptance suites are unchanged.
+Import the root `pom.xml`; there is no second build system. Keep generated files, local projects,
+IDE state and review artifacts out of Git. The build and verification commands above are the
+contributor entrypoints; AGENTS.md and the relevant skill own engineering rules.
 
 ## Support And Verification
 

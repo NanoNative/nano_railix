@@ -2,7 +2,7 @@
 
 ## Human Review
 
-Status: **Existing baseline with planned consolidation**, updated on 2026-09-26.
+Status: **Existing baseline with planned consolidation**, updated on 2026-10-17.
 The user accepted reviewing related operations as configurable Step families; exact
 replacement contracts remain open. The ordinary `value.is-type` predicate now supports
 type guards without changing those planned families.
@@ -63,7 +63,8 @@ invoking host code, so a handler cannot inject an unrelated source value.
 - Standard Field Manipulation writes only when the composed value is present. Missing input,
   `invalid`, or `empty` therefore preserves the target and the host follows its ordinary `next`.
 - Creator does not synthesize `missing`, `invalid`, or `empty` graph routes for standard Field
-  Manipulation. Termination, Choice, fan-in, fan-out, and loops remain explicit control Steps.
+  Manipulation. Branch selection, Join and loops require explicit functional behavior. Ordinary
+  multi-input convergence requires no Merger under [SYS-008](system-model.md#planned-merge-and-join).
 - A third-party ordinary Step may explicitly propagate fixed declared nested outcomes through the
   same generic core contract, but it must declare and connect those outcomes itself; no Step id
   receives magic handling.
@@ -207,7 +208,7 @@ Creator presentation alone does not justify changing stored Step IDs or runtime 
 | Rounding | Floor, ceiling and half-up rounding. | One rounding operation with declared mode; preserve existing negative-number and tie behavior. |
 | Text matching | Contains, starts-with, ends-with. | One match operation with mode and ordinary operands; do not silently introduce regex or change case rules. |
 | Text case | Locale-independent upper/lower conversion. | One case mode if the declaration remains simpler than separate operations. |
-| Branching | Filter, Choice, Switch, planned Split. | Related output-selection modes in one authoring family; execution-count, ordering and later parallelism still require the [control contract](system-model.md). |
+| Branching | Filter, Choice, Switch, planned Split. | Accepted direction separates route selection (one, multiple matching, all) from sequential/independent execution. A common editor/family must not infer scheduling from wires. IDs, defaults and migration remain open under the [control contract](system-model.md#planned-merge-and-join). |
 
 These are consolidation candidates, not newly supported Steps. A summary object is not a
 drop-in replacement for a scalar sum. Do not adopt Java double-based statistics and lose the
@@ -227,6 +228,12 @@ prove old-project migration without changed results, and verify a third-party co
 uses the same declaration path. Measure any changed collection hot path against the current
 operation; consolidation must not compute unused aggregates or introduce new runtime machinery
 without a demonstrated need.
+
+Planned Join and Limiter definitions must use the same public contracts as installed third-party
+Steps. Their execution requirements and open decisions belong to
+[SYS-024 to SYS-031](system-model.md#planned-merge-and-join). Compact connector artwork is not a
+new Step kind. There is no supported Join/Limiter catalog row or chosen ID/schema yet. Plain
+convergence needs no library Step, and library names must not select privileged runtime behavior.
 
 ## Acceptance Derivation
 

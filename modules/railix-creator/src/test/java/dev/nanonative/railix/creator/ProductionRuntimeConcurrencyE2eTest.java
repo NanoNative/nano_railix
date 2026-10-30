@@ -117,6 +117,13 @@ final class ProductionRuntimeConcurrencyE2eTest {
         assertThat(result.output()).isEqualTo("DEADLINE|closed=1");
     }
 
+    @Test
+    void concurrentShutdownCallersRetainTheSameCleanupFailure() throws Exception {
+        final ProcessResult result = probe.run("concurrent-stop");
+        assertThat(result.exitCode()).as(result.output()).isZero();
+        assertThat(result.output()).isEqualTo("CONCURRENT_STOP|failed=3|closed=1");
+    }
+
     private static List<StepDefinition> definitions() {
         return List.of(
                 StepDefinition.named("production.concurrent.barrier", "1")
@@ -219,6 +226,10 @@ final class ProductionRuntimeConcurrencyE2eTest {
                         final Path directory = Path.of(arguments[1]);
                         Files.createDirectories(directory);
                         final RuntimeApplication application = RailixApplication.runtime();
+                        if ("concurrent-stop".equals(scenario)) {
+                            concurrentStop(application, directory);
+                            return;
+                        }
                         if ("drain".equals(scenario) || "deadline".equals(scenario)) {
                             shutdown(application, directory, "deadline".equals(scenario));
                             return;
@@ -252,6 +263,48 @@ final class ProductionRuntimeConcurrencyE2eTest {
                                 observed.add(future.get());
                             }
                             return List.copyOf(observed);
+                        }
+                    }
+
+                    private static void concurrentStop(final RuntimeApplication application, final Path directory)
+                            throws Exception {
+                        ProductionRuntimeConcurrencySteps.Barrier.arm(1);
+                        ProductionRuntimeConcurrencySteps.Barrier.failPost();
+                        final var first = new java.util.concurrent.atomic.AtomicReference<RunResult>();
+                        final var second = new java.util.concurrent.atomic.AtomicReference<RunResult>();
+                        final Thread a = Thread.ofPlatform().unstarted(() -> first.set(application.stop(java.time.Duration.ofSeconds(10))));
+                        final Thread b = Thread.ofPlatform().unstarted(() -> second.set(application.stop(java.time.Duration.ofSeconds(10))));
+                        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                            final var request = executor.submit(() -> invoke(application, directory, 0));
+                            try {
+                                if (!ProductionRuntimeConcurrencySteps.Barrier.awaitEntered(10_000)) {
+                                    throw new AssertionError("Request did not enter the Step.");
+                                }
+                                a.start();
+                                b.start();
+                                final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                                while (a.getState() != Thread.State.TIMED_WAITING || b.getState() != Thread.State.TIMED_WAITING) {
+                                    if (System.nanoTime() > deadline) throw new AssertionError("Both shutdown callers must be draining.");
+                                    Thread.sleep(1);
+                                }
+                            } finally {
+                                ProductionRuntimeConcurrencySteps.Barrier.release();
+                                a.join(10_000);
+                                b.join(10_000);
+                            }
+                            request.get(10, TimeUnit.SECONDS);
+                            if (a.isAlive() || b.isAlive()) throw new AssertionError("Shutdown caller did not finish.");
+                            final var repeated = application.stop();
+                            for (final var result : List.of(first.get(), second.get(), repeated)) {
+                                if (!(result instanceof RunResult.Failed failed) || !failed.failure().code().equals("STEP_POST_FAILED")) {
+                                    throw new AssertionError("Cleanup failure must survive concurrent and repeated stop: " + result);
+                                }
+                            }
+                            if (!first.get().equals(second.get()) || !first.get().equals(repeated)
+                                    || ProductionRuntimeConcurrencySteps.Barrier.closed() != 1) {
+                                throw new AssertionError("Cleanup must run once and retain its result.");
+                            }
+                            System.out.print("CONCURRENT_STOP|failed=3|closed=1");
                         }
                     }
 

@@ -772,37 +772,47 @@ final class ApplicationGenerator {
             final int[] metricIndexes,
             final Variant variant
     ) {
-        final Map<Integer, List<Integer>> owned = new LinkedHashMap<>();
+        final List<Integer> ordinary = new ArrayList<>();
         for (int index = 0; index < nodes.size(); index++) {
             final ApplicationPlan.NodePlan node = nodes.get(index);
-            if (node.step().kind() == StepDefinition.Kind.TRIGGER) {
-                owned.computeIfAbsent(index, ignored -> new ArrayList<>());
-            }
             if (node.step().kind() == StepDefinition.Kind.STEP) {
-                owned.computeIfAbsent(node.owner(), ignored -> new ArrayList<>()).add(index);
+                ordinary.add(index);
             }
         }
+        final Map<Integer, List<Integer>> shared = partitions(ordinary);
         root.append("    static int missingPlan(\n")
                 .append("            final WorkflowRuntime.Execution execution, final int current) {\n")
                 .append("        return execution.abort(WorkflowRuntime.failedResult(\n")
                 .append("                \"RUN_PLAN_MISSING\", \"Compiled Step plan is missing.\",\n")
                 .append("                Integer.toString(current)));\n")
                 .append("    }\n\n");
-        for (final Map.Entry<Integer, List<Integer>> entry : owned.entrySet()) {
+        boolean emitted = false;
+        for (final Map.Entry<Integer, StringBuilder> entry : flows.entrySet()) {
             final int trigger = entry.getKey();
-            final StringBuilder source = flows.get(trigger);
-            final Map<Integer, List<Integer>> partitions = partitions(entry.getValue());
+            final StringBuilder source = entry.getValue();
+            final java.util.BitSet reachable = new java.util.BitSet(nodes.size());
+            final List<Integer> pending = new ArrayList<>();
+            pending.add(trigger);
+            for (int cursor = 0; cursor < pending.size(); cursor++) {
+                final int current = pending.get(cursor);
+                if (reachable.get(current)) continue;
+                reachable.set(current);
+                for (final int next : nodes.get(current).destinations()) if (next >= 0) pending.add(next);
+            }
+            final Map<Integer, List<Integer>> partitions = partitions(ordinary.stream().filter(reachable::get).toList());
             final Map<Integer, String> cases = new LinkedHashMap<>();
             final String arguments = variant == Variant.DEVELOPMENT
                     ? "execution, current, calls" : "execution, current";
             for (final int partition : partitions.keySet()) {
-                cases.put(partition, "Routes_" + trigger + "_" + partition + ".dispatch(" + arguments + ")");
+                cases.put(partition, "Routes_" + partition + ".dispatch(" + arguments + ")");
             }
             appendSelector(source, classes, "dispatch_" + trigger, "int",
                     "final WorkflowRuntime.Execution execution, final int current"
                             + (variant == Variant.DEVELOPMENT ? ", final WorkflowRuntime.StepCall[] calls" : ""),
                     arguments, cases, "missingPlan(execution, current)");
-            appendRouting(source, classes, trigger, partitions, nodes, handlers, metricIndexes, variant);
+            appendRouting(source, classes, trigger, partitions, emitted ? Map.of() : shared,
+                    nodes, handlers, metricIndexes, variant);
+            emitted = true;
         }
     }
 
@@ -811,6 +821,7 @@ final class ApplicationGenerator {
             final StringBuilder classes,
             final int trigger,
             final Map<Integer, List<Integer>> partitions,
+            final Map<Integer, List<Integer>> shared,
             final List<ApplicationPlan.NodePlan> nodes,
             final Map<String, Integer> handlers,
             final int[] metricIndexes,
@@ -832,8 +843,8 @@ final class ApplicationGenerator {
         );
 
         final StringBuilder source = classes;
-        for (final Map.Entry<Integer, List<Integer>> partition : partitions.entrySet()) {
-            final String owner = "Routes_" + trigger + "_" + partition.getKey();
+        for (final Map.Entry<Integer, List<Integer>> partition : shared.entrySet()) {
+            final String owner = "Routes_" + partition.getKey();
             source.append("final class ").append(owner).append(" {\n");
             source.append("        static int dispatch(\n")
                     .append("                final WorkflowRuntime.Execution execution, final int current")
@@ -925,7 +936,7 @@ final class ApplicationGenerator {
     ) {
         final Map<Integer, String> cases = new LinkedHashMap<>();
         for (final int partition : partitions.keySet()) {
-            cases.put(partition, "Routes_" + trigger + "_" + partition + "." + name + "(" + arguments + ")");
+            cases.put(partition, "Routes_" + partition + "." + name + "(" + arguments + ")");
         }
         appendSelector(source, classes, name + "_" + trigger, type,
                 "final int current" + (usesOutcome ? ", final int outcome" : ""), arguments, cases, fallback);
@@ -1101,8 +1112,31 @@ final class ApplicationGenerator {
                     "Plans_" + node / PLAN_PARTITION_SIZE + "::" + methodName
             );
             final StringBuilder statements = new StringBuilder();
+            final Map<String, Integer> lifecycleInputs = new LinkedHashMap<>();
             for (final Map.Entry<String, ApplicationPlan.Binding> entry : bindings.entrySet()) {
+                final int start = lifecycle.size();
                 binding(entry.getKey(), entry.getValue(), statements);
+                final List<StepDefinition.InputReference> references = switch (entry.getValue()) {
+                    case ApplicationPlan.StepsBinding steps -> List.of(new StepDefinition.InputReference(
+                            StepDefinition.ReferenceScope.PARENT, steps.valueSource().input()));
+                    case ApplicationPlan.ChoiceBinding choice -> choice.valueSources();
+                    case ApplicationPlan.CandidatesBinding candidates -> candidates.candidates().stream()
+                            .flatMap(candidate -> candidate.source().valueSources().stream()).toList();
+                    case ApplicationPlan.MatcherGroupsBinding groups -> groups.groups().stream().flatMap(List::stream)
+                            .flatMap(candidate -> candidate.source().valueSources().stream()).toList();
+                    default -> List.of();
+                };
+                final int before = references.stream()
+                        .filter(reference -> reference.scope() == StepDefinition.ReferenceScope.PARENT)
+                        .mapToInt(reference -> lifecycleInputs.getOrDefault(reference.input(), start)).min().orElse(start);
+                // Data still resolves in declaration order. Only lifecycle blocks move before their producers.
+                if (before < start) {
+                    final List<String> block = new ArrayList<>(lifecycle.subList(start, lifecycle.size()));
+                    lifecycle.subList(start, lifecycle.size()).clear();
+                    lifecycle.addAll(before, block);
+                    lifecycleInputs.replaceAll((name, position) -> position >= before ? position + block.size() : position);
+                }
+                if (lifecycle.size() > start || before < start) lifecycleInputs.put(entry.getKey(), before);
             }
             methods.append("private static WorkflowRuntime.Inputs ").append(methodName).append("(\n")
                     .append("        final WorkflowRuntime.Execution execution,\n")
@@ -1210,12 +1244,14 @@ final class ApplicationGenerator {
                 for (final List<ApplicationPlan.NestedStepPlan> predicate : candidate.predicates()) {
                     predicates.add(program(predicate));
                 }
+                final String transforms = program(candidate.transforms());
+                final String resolveSource = resolver(dataName(), source.inputs());
                 plans.add(field(
                         "WorkflowRuntime.CandidatePlan",
                         "new WorkflowRuntime.CandidatePlan(" + quote(source.option()) + ", "
                                 + quote(candidate.outcome()) + ", "
-                                + resolver(dataName(), source.inputs()) + ", "
-                                + references(source.valueSources()) + ", " + program(candidate.transforms())
+                                + resolveSource + ", "
+                                + references(source.valueSources()) + ", " + transforms
                                 + ", " + list(predicates) + ")"
                 ));
             }
@@ -1406,7 +1442,7 @@ final class ApplicationGenerator {
 
     private static String array(final StringBuilder classes, final String name, final String type, final List<String> values) {
         if (values.size() <= PLAN_PARTITION_SIZE) {
-            return "new " + type + "[]{" + String.join(", ", values) + "}";
+            return "new " + type + "[]{" + String.join(",\n", values) + "}";
         }
         appendArray(classes, name, type, values, 0, values.size());
         classes.append("final class Constants_").append(name).append(" {\n    static ").append(type).append("[] create() {\n")

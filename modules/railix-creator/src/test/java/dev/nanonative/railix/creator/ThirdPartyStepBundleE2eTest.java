@@ -77,6 +77,23 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     @Test
+    void installedStepsRetainDeclaredJdkModulesThroughCompilationAndPackaging() throws Exception {
+        final var definition=StepDefinition.named("external.modules","1")
+                .receive("value",ValueShape.STRING).returns("value",ValueShape.STRING)
+                .implementation(RuntimeBoundaryProbeStep.class,"java.net.http","jdk.httpserver");
+        final var catalog=GeneratedApplicationFixture.installedCatalog(directory,List.of(definition),RuntimeBoundaryProbeStep.class);
+        assertThat(catalog.implementation(definition.id()).orElseThrow().jdkModules())
+                .containsExactly("java.net.http","jdk.httpserver");
+        final var compiled=ProjectCompiler.compileApplication(projectSource(definition.id(),"VALUE"),catalog);
+        assertThat(compiled).isInstanceOf(CompileResult.Compiled.class);
+        final var application=(CompileResult.Compiled)compiled;
+        assertThat(application.applicationDependencies().stream().filter(owner->owner.className().equals(RuntimeBoundaryProbeStep.class.getCanonicalName())))
+                .singleElement().satisfies(owner->assertThat(owner.jdkModules()).containsExactly("java.net.http","jdk.httpserver"));
+        final var artifact=ApplicationBuilder.buildProduction(project(directory,definition.id(),"VALUE"),application);
+        assertThat(runJar(artifact.jar(),"VALUE")).isEqualTo(new ProcessResult(0,"\"VALUE\""));
+    }
+
+    @Test
     void nestedExternalStepExecutesFromTheGeneratedJar() throws Exception {
         final Workspace workspace = workspace(List.of(bundle("alpha", "external.alpha", "helper-", "-resource", Map.of(), Map.of())));
 
@@ -234,7 +251,7 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     @Test
-    void sceneObservationsRejectAnUnactivatedSourceButKeepTheAcceptedApplicationObservable() throws Exception {
+    void sceneObservationsKeepTheAcceptedProjectObservableAfterReplacementFails() throws Exception {
         final Bundle working = bundle(
                 "observationworking", "external.observationworking", "helper-", "-resource", Map.of(), Map.of());
         final Bundle failing = interferingBundle("observationactivation", "activation-token");
@@ -269,22 +286,23 @@ final class ThirdPartyStepBundleE2eTest {
             assertThat(failed.statusCode()).isEqualTo(503);
             assertThat(failed.body()).contains("Generated application could not be activated.",
                     "\"recovery\":\"restarted\"");
-            assertThat(Files.readString(project, StandardCharsets.UTF_8)).isNotEqualTo(persisted);
+            assertThat(Files.readString(project, StandardCharsets.UTF_8)).isEqualTo(persisted);
             final long restartedPid = CreatorServerE2eSupport.number(
                     CreatorServerE2eSupport.application(creator.baseUri()), "pid");
             assertThat(restartedPid).isNotEqualTo(CreatorServerE2eSupport.number(before, "pid"));
-            final HttpResponse<String> unactivatedScene = CreatorServerE2eSupport.request(
+            final HttpResponse<String> restoredScene = CreatorServerE2eSupport.request(
                     creator.baseUri(), "GET", "/api/scene", "");
-            assertThat(unactivatedScene.statusCode()).isEqualTo(200);
-            final String unactivatedRevision = CreatorServerE2eSupport.string(
-                    CreatorServerE2eSupport.object(unactivatedScene.body()), "revision");
-            assertThat(unactivatedRevision).isNotEqualTo(acceptedRevision);
+            assertThat(restoredScene.statusCode()).isEqualTo(200);
+            final String restoredRevision = CreatorServerE2eSupport.string(
+                    CreatorServerE2eSupport.object(restoredScene.body()), "revision");
+            assertThat(restoredRevision).isEqualTo(acceptedRevision);
             for (final String selection : List.of("", "&example=command%3A0")) {
-                final HttpResponse<String> unavailable = CreatorServerE2eSupport.request(creator.baseUri(), "GET",
-                        "/api/scene/observations?revision=" + unactivatedRevision + selection, "");
-                assertThat(unavailable.statusCode()).as(selection + ": " + unavailable.body()).isEqualTo(503);
-                assertThat(CreatorServerE2eSupport.object(unavailable.body())).isEqualTo(RailixValue.object(Map.of(
-                        "status", RailixValue.string("unavailable"), "reason", RailixValue.string("application"))));
+                final HttpResponse<String> accepted = CreatorServerE2eSupport.request(creator.baseUri(), "GET",
+                        "/api/scene/observations?revision=" + restoredRevision + selection, "");
+                assertThat(accepted.statusCode()).as(selection + ": " + accepted.body()).isEqualTo(200);
+                assertThat(CreatorServerE2eSupport.number(
+                        CreatorServerE2eSupport.object(accepted.body()), "application_pid"))
+                        .isEqualTo(restartedPid);
             }
 
             final Map<String, RailixValue> restoredNodes = new LinkedHashMap<>();
@@ -539,7 +557,10 @@ final class ThirdPartyStepBundleE2eTest {
             final Path project = project(directory, bundle.definition().id());
             try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
                  HttpClient client = HttpClient.newHttpClient()) {
-                for (final int bytes : List.of(limit - 1, limit, limit + 1, limit + 1, 2)) {
+                final boolean inventory=path.equals("/api/examples");
+                final long pid=CreatorServerE2eSupport.number(CreatorServerE2eSupport.application(creator.baseUri()),"pid");
+                final byte[] prefix=(inventory?"{\"application_pid\":"+pid+",\"cases\":[]}":"").getBytes(StandardCharsets.UTF_8);
+                for (final int bytes : List.of(limit - 1, limit, limit + 1, limit + 1, Math.max(2,prefix.length))) {
                     final var pending = observationRequest(client, creator, path);
                     try (Socket socket = observationConnection(upstream)) {
                         final OutputStream output = socket.getOutputStream();
@@ -548,7 +569,12 @@ final class ThirdPartyStepBundleE2eTest {
                                 + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
                         final byte[] padding = new byte[8192];
                         java.util.Arrays.fill(padding, (byte) ' ');
-                        for (int remaining = bytes; remaining > 0;) {
+                        if(prefix.length>0) {
+                            if(chunked) output.write((Integer.toHexString(prefix.length)+"\r\n").getBytes(StandardCharsets.US_ASCII));
+                            output.write(prefix);
+                            if(chunked) output.write("\r\n".getBytes(StandardCharsets.US_ASCII));
+                        }
+                        for (int remaining = bytes-prefix.length; remaining > 0;) {
                             final int length = Math.min(remaining, padding.length);
                             if (chunked) output.write((Integer.toHexString(length) + "\r\n").getBytes(StandardCharsets.US_ASCII));
                             output.write(padding, 0, length);
@@ -560,7 +586,12 @@ final class ThirdPartyStepBundleE2eTest {
                         final HttpResponse<byte[]> response = pending.get(10, TimeUnit.SECONDS);
                         assertThat(response.statusCode()).as("body bytes: " + bytes).isEqualTo(bytes <= limit ? 200 : 502);
                         if (bytes <= limit) {
-                            assertThat(response.body()).hasSize(bytes);
+                            if(inventory) {
+                                final var body=CreatorServerE2eSupport.object(new String(response.body(),StandardCharsets.UTF_8));
+                                assertThat(body.values().get("application_pid")).isEqualTo(RailixValue.number(pid));
+                                assertThat(body.values().get("cases")).isEqualTo(RailixValue.array(List.of()));
+                                assertThat(body.values()).containsKey("scene_revision");
+                            } else assertThat(response.body()).hasSize(bytes);
                         } else {
                             assertThat(response.body()).hasSizeLessThan(1024);
                             assertThat(new String(response.body(), StandardCharsets.UTF_8)).contains(Integer.toString(limit));

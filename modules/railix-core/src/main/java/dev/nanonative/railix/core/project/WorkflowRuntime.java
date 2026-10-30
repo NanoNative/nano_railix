@@ -220,6 +220,9 @@ public final class WorkflowRuntime {
                     return new RunResult.Cancelled();
                 }
             }
+            if (shutdown != null) {
+                return shutdown;
+            }
             shutdown = SUCCESS;
             boolean interrupted = Thread.interrupted();
             Error fatal = null;

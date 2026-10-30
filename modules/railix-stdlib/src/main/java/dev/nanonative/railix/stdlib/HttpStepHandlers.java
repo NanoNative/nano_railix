@@ -28,6 +28,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /** HTTP-only standard Step implementations kept isolated from CLI-only applications. */
 public final class HttpStepHandlers {
@@ -190,12 +194,24 @@ public final class HttpStepHandlers {
     public static final class Client {
         /** Prepares a reusable transport; request URL, method and headers do not identify a connection pool. */
         public static StepResult pre(final StepInput configuration, final StepInput context) {
+            final java.util.function.Consumer<java.net.http.HttpClient> close = client -> {
+                // Admitted requests have drained. Cancel residual transport work before bounded cleanup.
+                client.shutdownNow();
+                try {
+                    if (!client.awaitTermination(HTTP_TIMEOUT)) {
+                        throw new IllegalStateException("HTTP client cleanup exceeded its 30-second deadline.");
+                    }
+                } catch (final InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("HTTP client cleanup was interrupted.", interrupted);
+                }
+            };
             if (configuration.option("connection").equals("shared")) {
                 context.resource("client", java.net.http.HttpClient.class, "jdk-defaults-no-cookies",
-                        java.net.http.HttpClient::newHttpClient, java.net.http.HttpClient::close);
+                        java.net.http.HttpClient::newHttpClient, close);
             } else {
                 context.resource("client", java.net.http.HttpClient.class,
-                        java.net.http.HttpClient::newHttpClient, java.net.http.HttpClient::close);
+                        java.net.http.HttpClient::newHttpClient, close);
             }
             return StepResult.outcome(context.primaryOutcome());
         }
@@ -229,11 +245,26 @@ public final class HttpStepHandlers {
                             StandardCharsets.UTF_8
                     ));
                 }
-                final HttpResponse<String> response = client.send(
+                final var pending = client.sendAsync(
                         builder.build(),
                         HttpResponse.BodyHandlers.limiting(
                                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8), HTTP_BODY_LIMIT)
                 );
+                final HttpResponse<String> response;
+                try {
+                    response = pending.get(HTTP_TIMEOUT.toNanos(), TimeUnit.NANOSECONDS);
+                } catch (final TimeoutException timeout) {
+                    pending.cancel(true);
+                    return failure(input, "HTTP_REQUEST_TIMEOUT: Request exceeded its 30-second deadline.");
+                } catch (final InterruptedException interrupted) {
+                    pending.cancel(true);
+                    throw interrupted;
+                } catch (final ExecutionException failed) {
+                    if (failed.getCause() instanceof IOException failure) throw failure;
+                    if (failed.getCause() instanceof RuntimeException failure) throw failure;
+                    if (failed.getCause() instanceof Error failure) throw failure;
+                    throw new IOException("HTTP request failed.", failed.getCause());
+                }
                 return StepResult.outcome(input.primaryOutcome()).output("response", RailixValue.object(Map.of(
                         "status", RailixValue.number(response.statusCode()),
                         "headers", headerObject(response.headers().map()),
@@ -256,7 +287,32 @@ public final class HttpStepHandlers {
     }
 
     private static Optional<RailixValue> requestBody(final HttpExchange exchange) throws IOException {
-        final byte[] bytes = exchange.getRequestBody().readNBytes(HTTP_BODY_LIMIT + 1);
+        final FutureTask<byte[]> read = new FutureTask<>(() -> exchange.getRequestBody().readNBytes(HTTP_BODY_LIMIT + 1));
+        Thread.ofVirtual().name("railix-http-body").start(read);
+        final byte[] bytes;
+        try {
+            bytes = read.get(HTTP_TIMEOUT.toNanos(), TimeUnit.NANOSECONDS);
+        } catch (final TimeoutException timeout) {
+            final byte[] response = RailixJson.write(error("HTTP_BODY_TIMEOUT", "HTTP body exceeded its 30-second deadline."))
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+            exchange.getResponseHeaders().set("Connection", "close");
+            exchange.sendResponseHeaders(408, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.getResponseBody().flush();
+            // Interrupt the reader before closing the exchange, which otherwise drains its unfinished body.
+            return Optional.empty();
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("HTTP body read interrupted.", interrupted);
+        } catch (final ExecutionException failed) {
+            if (failed.getCause() instanceof IOException failure) throw failure;
+            if (failed.getCause() instanceof RuntimeException failure) throw failure;
+            if (failed.getCause() instanceof Error failure) throw failure;
+            throw new IOException("HTTP body read failed.", failed.getCause());
+        } finally {
+            read.cancel(true);
+        }
         if (bytes.length > HTTP_BODY_LIMIT) {
             return rejectBody(exchange, 413, "HTTP_BODY_TOO_LARGE",
                     "HTTP body exceeds the " + HTTP_BODY_LIMIT + "-byte limit.");
