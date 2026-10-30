@@ -266,6 +266,8 @@ final class ThirdPartyStepBundleE2eTest {
                     creator.baseUri(), "POST", "/api/project", projectSource(failing.definition().id()));
             assertThat(failed.statusCode()).isEqualTo(503);
             assertThat(failed.body()).contains("Generated application could not be activated.");
+            final RailixValue.ObjectValue failedReceipt = CreatorServerE2eSupport.object(failed.body());
+            assertThat(failedReceipt.values().get("saved")).isEqualTo(RailixValue.bool(true));
             assertThat(Files.readString(project, StandardCharsets.UTF_8)).isNotEqualTo(persisted);
             assertThat(CreatorServerE2eSupport.number(
                     CreatorServerE2eSupport.application(creator.baseUri()), "pid"))
@@ -284,8 +286,15 @@ final class ThirdPartyStepBundleE2eTest {
                         "status", RailixValue.string("unavailable"), "reason", RailixValue.string("application"))));
             }
 
+            final Map<String, RailixValue> restoredNodes = new LinkedHashMap<>();
+            ((RailixValue.ArrayValue) CreatorServerE2eSupport.object(persisted).values().get("nodes"))
+                    .values().forEach(value -> restoredNodes.put(
+                            CreatorServerE2eSupport.string((RailixValue.ObjectValue) value, "id"), value));
             final HttpResponse<String> recovered = CreatorServerE2eSupport.request(
-                    creator.baseUri(), "POST", "/api/project", persisted);
+                    creator.baseUri(), "PATCH", "/api/project", RailixJson.write(RailixValue.object(Map.of(
+                            "revision", failedReceipt.values().get("revision"),
+                            "changes", RailixValue.object(Map.of("nodes", RailixValue.object(restoredNodes)))
+                    ))));
             assertThat(recovered.statusCode()).isEqualTo(200);
             assertThat(CreatorServerE2eSupport.number(
                     CreatorServerE2eSupport.application(creator.baseUri()), "pid"))

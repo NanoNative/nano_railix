@@ -8,6 +8,7 @@ class RailixAudio {
     this.listeners = new AbortController();
     this.scores = [];
     this.events = [];
+    this.invalid = [];
     this.preferences = {effects:true, effects_volume:.35, music_volume:.25, music_enabled:true, music:'', sounds:{}};
     this.queue = [];
     this.catalogGeneration = 0;

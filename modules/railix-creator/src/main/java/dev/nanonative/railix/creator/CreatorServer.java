@@ -2408,11 +2408,14 @@ public final class CreatorServer implements AutoCloseable {
         }
         if (activationFailure != null) {
             discard(candidate);
-            return json(503, RailixValue.object(Map.of(
-                    "status", RailixValue.string("failed"),
-                    "message", RailixValue.string("Generated application could not be activated."),
-                    "application", application()
-            )));
+            synchronized (applicationLock) {
+                final Map<String, RailixValue> receipt = new LinkedHashMap<>(projectPayloadLocked(false).values());
+                receipt.remove("diagnostics");
+                receipt.put("status", RailixValue.string("failed"));
+                receipt.put("message", RailixValue.string("Generated application could not be activated."));
+                receipt.put("saved", RailixValue.bool(true));
+                return json(503, RailixValue.object(receipt));
+            }
         }
         cleanupRetirement();
         return json(200, projectPayload(fullDocument));

@@ -25,3 +25,12 @@ jobs:
           java-version: '25'
           cache: maven
       - run: ./mvnw --batch-mode --no-transfer-progress -Drailix.test.forks=2 clean verify
+      - name: Preserve test failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: test-failure-evidence
+          path: |
+            modules/*/target/surefire-reports/
+            modules/*/target/failsafe-reports*/
+            modules/railix-creator/target/browser-diagnostics/

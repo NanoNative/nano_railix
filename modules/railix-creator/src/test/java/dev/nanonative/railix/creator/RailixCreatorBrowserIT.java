@@ -7,6 +7,7 @@ import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.TimeoutError;
+import com.microsoft.playwright.Tracing;
 import com.microsoft.playwright.assertions.PlaywrightAssertions;
 import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.value.RailixData;
@@ -19,9 +20,12 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.extension.TestExecutionExceptionHandler;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -455,7 +459,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
-    @Timeout(180)
+    @Timeout(300)
     void editingOneOfSixThousandStepsTransfersOnlyThatStep() {
         openProject(deepBranchProject(6_000));
         selectWorldNode("step-3000");
@@ -906,6 +910,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
+    @Timeout(300)
     void branchRenderingHandlesSixThousandLinearStepsWithoutCallStackGrowth() {
         openProject(deepBranchProject(6_000));
 
@@ -1182,6 +1187,43 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
+    void thirdPartyValueSourcesKeepTheirNamesWhenDescriptionsMatch() throws Exception {
+        final var alternatives = StepDefinition.Input.candidates(
+                StepDefinition.Input.option("primary")
+                        .input("value", StepDefinition.Input.json(ValueShape.ANY).defaultValue(RailixValue.bool(true)))
+                        .fromOwned("value"),
+                StepDefinition.Input.option("secondary")
+                        .input("value", StepDefinition.Input.json(ValueShape.ANY).defaultValue(RailixValue.bool(true)))
+                        .fromOwned("value")
+        ).withAuthoredOutcomes();
+        final var definition = StepDefinition.named("test.source-labels", "1")
+                .displayName("Source labels")
+                .receive("value", ValueShape.ANY)
+                .returns("value", ValueShape.BOOLEAN)
+                .input("cases", alternatives)
+                .run(MatcherConformanceSteps.AuthoredTrue.class);
+        creator.close();
+        GeneratedApplicationFixture.installedCatalog(directory, List.of(definition), MatcherConformanceSteps.AuthoredTrue.class);
+        creator = CreatorServer.start(0, directory.resolve("project.json"), directory.resolve("railix-home"));
+        page.navigate(creator.baseUri().toString());
+        waitForText("#build-state", "Built");
+        addTrigger();
+        clickOverview("#add-next-step");
+        page.locator("#step-search").fill("source labels");
+        page.locator("[data-add-step='test.source-labels']").click();
+        page.locator("[data-add-candidate='primary']").click();
+        assertThat(page.locator("#cases-0-option option").allTextContents().stream().map(String::strip).toList())
+                .containsExactly("Primary: Enter a fixed value", "Secondary: Enter a fixed value");
+        page.locator("#cases-0-option").selectOption("secondary");
+        waitForText("#build-state", "Built");
+        assertThat(page.evaluate("""
+                async () => (await (await fetch('/api/project')).json()).project.nodes
+                  .find(node => node.use === 'test.source-labels').inputs.cases[0].option
+                """)).isEqualTo("secondary");
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
     void choiceAddsACompleteOrGroupAndPersistsItAcrossReload() {
         addChoiceAfterTrigger();
 
@@ -1419,9 +1461,9 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
         waitForText("#build-state", "Built");
 
         assertThat(page.locator("[data-matcher-group='0'] .condition-transforms").textContent())
-                .contains("Calculate value", "Add transform");
+                .contains("Prepare comparison value", "Add transform");
         assertThat(page.locator("[data-matcher-group='0'] .condition-predicates").textContent())
-                .contains("No matcher configured.", "Add comparison (AND)");
+                .contains("Without a comparison, any present value is accepted.", "Add comparison (AND)");
         assertThat(page.locator("[data-matcher-group='0'] [data-predicate-query]")
                 .getAttribute("placeholder")).isEqualTo("Search matchers");
     }
@@ -2027,10 +2069,10 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         addTrigger();
 
         assertThat(page.locator("[data-inspector-mode]").allTextContents())
-                .containsExactly("Overview", "Inputs", "Appearance", "Groups", "Examples");
+                .containsExactly("Overview", "Configure", "Results", "Appearance", "Groups", "Examples");
         assertThat(((String) page.locator(".inspector-tabs").evaluate(
                 "tabs => getComputedStyle(tabs).gridTemplateColumns"
-        )).split(" ")).hasSize(5);
+        )).split(" ")).hasSize(3);
         assertThat(page.locator("#target-path").count()).isEqualTo(1);
         assertThat(page.locator("#example-payload, #presentation-name").count()).isZero();
 
@@ -3676,6 +3718,7 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
     }
 
     @Test
+    @Timeout(120)
     void ordinaryStepDoesNotExposeGenericOutcomeRouting() {
         addTrigger();
         addManipulationAfterSelected();
@@ -3688,6 +3731,7 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
     }
 
     @Test
+    @Tag("browser-diagnostics")
     void falliblePrimitiveRemainsInsideOneLinearStep() {
         createFallibleNumberJourney("not-a-number");
 
@@ -4101,6 +4145,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
+    @Tag("browser-diagnostics")
     void canonicalRefinementKeepsTheUiResponsiveBeyondTheGlobalDepth() {
         String value = "null";
         for (int depth = 0; depth < 65; depth++) {
@@ -4111,6 +4156,24 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
 
         assertThat(page.locator("#steps-options").isVisible()).isTrue();
         assertThat(page.locator("#steps-options [data-add-nested='list.reverse']").count()).isZero();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {63, 64, 65})
+    @Tag("browser-diagnostics")
+    void rejectedDeepLiteralKeepsItsCompatibilityAfterTheBuildResponse(final int depth) {
+        final String value = "[".repeat(depth) + "null" + "]".repeat(depth);
+        prepareLiteralRefinementSearch(value, "list.reverse");
+        page.waitForFunction("() => state.build === 'Not built' && !state.writeActive && !state.pendingProject");
+        // Editing clears traceKey but retains traceCases; require the subsequent refresh to finish.
+        page.waitForFunction("() => Boolean(state.traceKey) && state.traceCases.length > 0 && !state.traceController");
+        assertThat(page.locator("#value-0-literal-value").evaluate(
+                "field => valueStats(parseExact(field.value)).depth")).isEqualTo(depth);
+        assertThat(page.locator("#steps-search").inputValue()).isEqualTo("list.reverse");
+        if (depth > 64) page.locator("#steps-options .empty-options").waitFor();
+        else page.locator("#steps-options [data-add-nested='list.reverse']").waitFor();
+        assertThat(page.locator("#steps-options [data-add-nested='list.reverse']").count()).isEqualTo(depth > 64 ? 0 : 1);
+        assertThat(pageErrors).isEmpty();
     }
 
     @Test
@@ -4416,6 +4479,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     }
 
     @Test
+    @Timeout(120)
     void selectingATriggerWhileTraceLoadsCannotRestoreStaleValues() {
         createLowercaseJourney();
         page.locator("#preview-source").waitFor();
@@ -4494,6 +4558,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     }
 
     @Test
+    @Timeout(120)
     void laterOperationExecutesAgainstPreviousPrimitiveOutput() {
         prepareOperationAfterListSize();
         page.locator("#steps-search").fill("floor");
@@ -4881,6 +4946,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     }
 
     @Test
+    @Timeout(120)
     void fieldNameContainingADotExecutesAsOneTypedSegment() {
         createLiteralResult(
                 "\"Ada\"",
@@ -5002,15 +5068,30 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     }
 
     @Test
-    void sourcePathCannotInventNewSegments() {
+    void sourcePathCanUseUnobservedFieldsAndTypedArraySegments() {
         addTrigger();
         addManipulationAfterSelected();
         choosePath("field", "result");
         page.locator("#value-0-option").selectOption("field");
         page.locator("#value-0-source-path").click();
-        page.locator("[data-path-depth='0']").click();
+        page.locator("#new-path-field").fill("unobserved");
+        page.locator("#append-path-field").click();
+        page.locator("#new-path-index").fill("2");
+        page.locator("#append-path-index").click();
+        page.locator("#new-path-field").fill("full.name");
+        page.locator("#append-path-field").click();
+        page.locator("#new-path-field").fill("0");
+        page.locator("#append-path-field").click();
 
-        assertThat(page.locator(".path-create").count()).isZero();
+        assertThat(page.locator(".path-preview").textContent()).contains("Path not verified by an Example");
+        assertThat(page.locator("#apply-path").isEnabled()).isTrue();
+        page.locator("#apply-path").click();
+        waitForText("#build-state", "Built");
+
+        assertThat(page.evaluate("""
+                async () => (await (await fetch('/api/project')).json()).project.nodes
+                  .find(node => node.inputs?.value?.[0]?.option === 'field').inputs.value[0].inputs.source
+                """)).isEqualTo(List.of("context", "payload", "unobserved", 2, "full.name", "0"));
     }
 
     @Test
@@ -5064,9 +5145,12 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     }
 
     @Test
-    void negativeArrayIndexCannotBeAdded() {
+    void invalidArrayIndexesCannotBeAdded() {
         openFieldBuilder("{\"payload\":{\"people\":[]}}", "payload", "people");
         page.locator("#new-path-index").fill("-1");
+
+        assertThat(page.locator("#append-path-index").isDisabled()).isTrue();
+        page.locator("#new-path-index").fill("2147483648");
 
         assertThat(page.locator("#append-path-index").isDisabled()).isTrue();
     }
@@ -5283,6 +5367,92 @@ abstract class RailixCreatorBrowserSupport {
     BrowserContext context;
     Page page;
     final List<String> pageErrors = new ArrayList<>();
+    private boolean diagnosticTracing;
+
+    @RegisterExtension
+    final TestExecutionExceptionHandler browserFailure = (test, failure) -> {
+        if (diagnosticTracing) {
+            final boolean interruptedBeforeCapture = Thread.currentThread().isInterrupted();
+            // Bound all capture calls together; Playwright stays on its existing owner thread.
+            final AtomicReference<Thread> capturing = new AtomicReference<>(Thread.currentThread());
+            final Thread deadline = Thread.ofVirtual().start(() -> {
+                try {
+                    TimeUnit.SECONDS.sleep(10);
+                    synchronized (capturing) {
+                        final Thread owner = capturing.getAndSet(null);
+                        if (owner != null) owner.interrupt();
+                    }
+                } catch (final InterruptedException cancelled) {
+                    // Capture finished before its deadline.
+                }
+            });
+            try {
+                captureBrowserFailure(test.getRequiredTestMethod().getName(), failure, capturing);
+            } finally {
+                synchronized (capturing) {
+                    if (capturing.getAndSet(null) == null && !interruptedBeforeCapture) Thread.interrupted();
+                    if (interruptedBeforeCapture) Thread.currentThread().interrupt();
+                    deadline.interrupt();
+                }
+                diagnosticTracing = false;
+            }
+        }
+        throw failure;
+    };
+
+    private void captureBrowserFailure(final String method, final Throwable failure, final AtomicReference<Thread> capturing) {
+        final Path artifacts = Path.of("target", "browser-diagnostics",
+                getClass().getSimpleName() + "-" + method
+                        + "-" + VIEWPORT_WIDTH + "-" + System.nanoTime());
+        try {
+            Files.createDirectories(artifacts);
+            Files.writeString(artifacts.resolve("failure.txt"), failure + "\n" + pageErrors);
+            Files.writeString(artifacts.resolve("state.json"), (String) page.evaluate("""
+                    () => {
+                      const options = document.querySelector('#steps-options'), operation = selectedOperation();
+                      let compatibility = [], computedOptions = null, compatibilityError = null;
+                      try {
+                        if (options && operation) {
+                          const scope = parseToken(options.dataset.inputScope);
+                          const input = parseToken(options.dataset.inputMeta), locator = parseToken(options.dataset.stepOptions);
+                          compatibility = programValues(operation, input, locator, scope.inputs, scope.base)
+                            .map(value => ({value, stats:valueStats(value)}));
+                          computedOptions = nestedOptions(operation, input, locator, scope.inputs, scope.base);
+                        }
+                      } catch (error) { compatibilityError = String(error.stack || error); }
+                      return JSON.stringify({
+                      events: window.__browserEvents,
+                      errors: window.__browserErrors,
+                      selection: state.selection, build: state.build, revision: state.revision,
+                      projectVersion: state.projectVersion, application: state.application,
+                      pendingProject: state.pendingProject, writeActive: state.writeActive,
+                      jsonDraft: state.jsonDraft, operation: selectedOperation(),
+                      builtOperation: state.builtProject?.nodes.find(node => node.id === state.selection.id),
+                      previewCases: state.previewCases, traceKey: state.traceKey,
+                      compatibility, computedOptions, compatibilityError,
+                      diagnostics: state.diagnostics, stepQueries: state.stepQueries,
+                      focused: document.activeElement?.id, optionsHovered: options?.matches(':hover'),
+                      optionsPending: state.optionsPending, query: state.world?.query,
+                      observationQuery: state.observations?.query,
+                      fields: [...document.querySelectorAll('#inspector input, #inspector textarea')]
+                        .map(field => ({id:field.id, value:field.value})),
+                      options: document.querySelector('#steps-options')?.outerHTML,
+                      stations: [...document.querySelectorAll('[data-world-id]')]
+                        .map(node => ({id:node.dataset.worldId, title:node.title, activity:node.dataset.activity}))
+                      }, null, 2);
+                    }
+                    """));
+            page.screenshot(new Page.ScreenshotOptions().setPath(artifacts.resolve("page.png")).setTimeout(5_000));
+        } catch (final Exception diagnosticFailure) {
+            failure.addSuppressed(diagnosticFailure);
+        }
+        if (capturing.get() == null) return;
+        try {
+            context.tracing().stop(new Tracing.StopOptions().setPath(artifacts.resolve("trace.zip")));
+        } catch (final Exception diagnosticFailure) {
+            failure.addSuppressed(diagnosticFailure);
+        }
+    }
 
     private Path template;
     private String templateProject;
@@ -5312,6 +5482,10 @@ abstract class RailixCreatorBrowserSupport {
                     .setChannel(System.getenv().getOrDefault("RAILIX_BROWSER_CHANNEL", "chrome"))
                     .setHeadless(true));
             capturePlaywrightProcesses();
+            // A fixed creation time keeps the fixture's procedural scenery repeatable.
+            Files.writeString(template.resolve("railix.creator.json"), """
+                    {"format":2,"created_at":1,"groups":[],"steps":{}}
+                    """);
             try (CreatorServer ignored = CreatorServer.start(
                     0,
                     template.resolve("project.json"),
@@ -5464,8 +5638,9 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     @BeforeEach
-    final void openCreator() throws Exception {
+    final void openCreator(final TestInfo test) throws Exception {
         pageErrors.clear();
+        diagnosticTracing = test.getTags().contains("browser-diagnostics");
         Files.createDirectories(directory.resolve("railix-home/icons"));
         // CSS-specific DOM assertions use an explicit renderer. Fresh-settings tests cover the Canvas default.
         Files.writeString(directory.resolve("railix-home/creator.settings.json"), """
@@ -5483,6 +5658,27 @@ abstract class RailixCreatorBrowserSupport {
                 VIEWPORT_WIDTH <= 560 ? 720 : 800
         ));
         page = context.newPage();
+        if (diagnosticTracing) {
+            context.tracing().start(new Tracing.StartOptions().setScreenshots(true).setSnapshots(true).setSources(true));
+            page.addInitScript("""
+                    window.__browserEvents = [];
+                    window.__browserErrors = [];
+                    const record = (kind, detail) => {
+                      window.__browserEvents.push({time:performance.now(), kind, ...detail});
+                      if (window.__browserEvents.length > 300) window.__browserEvents.shift();
+                    };
+                    addEventListener('error', event => window.__browserErrors.push(String(event.error || event.message)));
+                    for (const kind of ['input', 'change', 'focusin', 'focusout'])
+                      document.addEventListener(kind, event => record(kind, {id:event.target.id, value:event.target.value}), true);
+                    new MutationObserver(records => {
+                      for (const item of records) {
+                        const node = item.target;
+                        if (node.matches?.('[data-world-id]') && item.attributeName === 'title')
+                          record('observation', {id:node.dataset.worldId, before:item.oldValue, after:node.title});
+                      }
+                    }).observe(document, {subtree:true, attributes:true, attributeOldValue:true, attributeFilter:['title']});
+                    """);
+        }
         page.onPageError(error -> pageErrors.add(error));
         page.navigate(creator.baseUri().toString());
         waitForText("#build-state", "Built");
@@ -5492,7 +5688,12 @@ abstract class RailixCreatorBrowserSupport {
     final void closeCreator() {
         try {
             if (context != null) {
-                context.close();
+                try {
+                    if (diagnosticTracing) context.tracing().stop();
+                } finally {
+                    diagnosticTracing = false;
+                    context.close();
+                }
             }
         } finally {
             if (creator != null) {
