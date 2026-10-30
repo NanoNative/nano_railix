@@ -674,7 +674,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 })).status
                 """, fixture.creator())).isEqualTo(200);
         page.reload();
-        page.waitForFunction("() => state.application.examples?.state === 'completed'");
+        page.waitForFunction("() => typeof state !== 'undefined' && state.application?.examples?.state === 'completed'");
         assertThat(Files.readString(Path.of((String)page.evaluate("() => state.application.source_path")))).isEqualTo(generated);
         Files.writeString(output.resolve("examples.json"),(String)page.evaluate("async () => JSON.stringify(await (await fetch('/api/examples')).json())"));
         assertThat(page.evaluate("() => state.application.examples.succeeded")).isEqualTo(27);
@@ -1057,7 +1057,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 })).status
                 """, fixture.creator())).isEqualTo(200);
         page.reload();
-        page.waitForFunction("() => state.application.examples?.state === 'completed'");
+        page.waitForFunction("() => typeof state !== 'undefined' && state.application?.examples?.state === 'completed'");
         assertThat(page.evaluate("() => state.application.examples.succeeded")).isEqualTo(3);
         page.locator("#open-settings").click();
         page.locator("#theme-variant").selectOption(variant);
@@ -1243,7 +1243,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 })).status
                 """, fixture.creator())).isEqualTo(200);
         page.reload();
-        page.waitForFunction("() => state.creator.groups.length === 13 && state.world.scene?.nodes.length > 0");
+        page.waitForFunction("() => typeof state !== 'undefined' && state.creator?.groups?.length === 13 && state.world?.scene?.nodes.length > 0");
         final Path screenshots = Files.createDirectories(Path.of("target/usability-baseline"));
         Files.writeString(screenshots.resolve("project.json"), fixture.project());
         Files.writeString(screenshots.resolve("creator.json"), fixture.creator());
@@ -1272,7 +1272,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 })).status
                 """, fixture.creator())).isEqualTo(200);
         page.reload();
-        page.waitForFunction("() => state.creator.groups.length === 13 && state.world.scene?.nodes.length > 0");
+        page.waitForFunction("() => typeof state !== 'undefined' && state.creator?.groups?.length === 13 && state.world?.scene?.nodes.length > 0");
         page.locator("#open-settings").click();
         page.locator("#theme-variant").selectOption("canvas");
         page.waitForFunction("() => document.querySelector('#graph').dataset.renderer === 'canvas'");
@@ -1505,6 +1505,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         final List<String> decorativeReads=new ArrayList<>();
         page.onRequest(request->{if(request.url().contains("/scenery-"))decorativeReads.add(request.url());});
         page.reload();
+        awaitScene();
         page.evaluate("() => {state.creator.created_at=1;state.settings.reduced_motion=true;state.world.fit();}");
         awaitScene();
         page.waitForFunction("() => state.world._surface?.assets.sprites.has('step')");

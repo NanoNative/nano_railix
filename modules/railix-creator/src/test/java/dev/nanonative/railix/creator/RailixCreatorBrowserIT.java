@@ -994,6 +994,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
                     && node.y + node.height <= region.y + region.height)
                 """, region);
 
+        page.locator("#world-labels > *").first().waitFor();
         assertThat(page.locator("#world-labels > *").count()).isGreaterThan(0);
         assertThat(page.locator("#world-labels > *").count()).isLessThanOrEqualTo(256);
         assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
@@ -4409,7 +4410,8 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     void falliblePrimitiveInvalidPreviewLeavesTheTargetUnchangedAndContinues() {
         createFallibleNumberJourney("not-a-number");
 
-        page.locator(".step-node").first().click();
+        selectWorldNode("result");
+        chooseVisibleExample("command:0");
         page.locator("[data-preview-stage='0']").waitFor();
 
         assertThat(page.locator("[data-preview-stage='0']").textContent()).isEqualTo("invalid");
@@ -5343,9 +5345,12 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         addManipulationAfterSelected();
         choosePath("field", "payload", "value");
         addLiteralCandidate("\"RAILIX\"");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.locator("#preview-source"))
+                .hasText("null");
         fillStepSearch("#steps-search", "lower");
 
-        assertThat(page.locator("#steps-options [data-add-nested='text.lowercase']").count()).isZero();
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(
+                page.locator("#steps-options [data-add-nested='text.lowercase']")).hasCount(0);
     }
 
     @Test
@@ -6251,6 +6256,7 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void selectWorldNode(final String id) {
+        page.waitForFunction("() => typeof state !== 'undefined' && Boolean(state.world)");
         if (page.locator("#inspector").isVisible()) page.locator("#close-inspector").click();
         page.evaluate("id => void state.world.focus(id)", id);
         awaitScene();
@@ -6966,7 +6972,7 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void awaitScene(final boolean populated) {
-        page.waitForFunction("() => state.world && document.querySelector('#graph').dataset.cameraMoving !== 'true'");
+        page.waitForFunction("() => typeof state !== 'undefined' && state.world && document.querySelector('#graph').dataset.cameraMoving !== 'true'");
         page.evaluate("""
                 async () => {
                   await state.world.refresh();
