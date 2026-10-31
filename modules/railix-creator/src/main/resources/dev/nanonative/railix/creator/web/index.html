@@ -12,7 +12,8 @@
 </head>
 <body>
   <header class="workbench-header">
-    <div class="workbench-brand" aria-label="Railix"><b aria-hidden="true">R</b><span>RAILIX</span></div>
+    <button type="button" id="project-menu" class="workbench-brand" popovertarget="project-actions" aria-label="Project actions" title="Project actions" disabled><b aria-hidden="true">R</b><span>RAILIX</span></button>
+    <nav id="project-actions" popover aria-label="Project actions"><button type="button" id="open-project-import" aria-controls="project-import-panel"><i class="hud-symbol" data-symbol="enter" aria-hidden="true"></i>Import project</button></nav>
     <nav id="group-navigation" aria-label="Location"><div id="world-location"></div><button id="scope-overview" type="button" title="Fit this work area" aria-label="Overview">Overview</button><button id="leave-group" type="button" aria-label="Leave group" title="Leave group"><i class="hud-symbol" data-symbol="back" aria-hidden="true"></i></button></nav>
     <div id="workbench-actions"></div>
     <nav id="example-session" aria-label="Visible Example" hidden></nav>
@@ -54,6 +55,17 @@
     </section>
     <aside id="inspector" class="inspector" aria-label="Inspector" hidden>
       <div id="inspector-resize" role="separator" tabindex="0" aria-label="Inspector width" aria-controls="inspector" aria-orientation="vertical" aria-valuemin="320" aria-valuemax="1000" aria-valuenow="420" title="Resize Inspector. Arrow keys adjust width, double-click resets."></div>
+      <section id="project-import-panel" hidden aria-label="Import project">
+        <header><h2>Import project</h2><button id="close-project-import" type="button" aria-label="Close import" title="Close import"><i class="hud-symbol" data-symbol="close" aria-hidden="true"></i></button></header>
+        <label for="project-import-file">Project JSON file</label>
+        <input id="project-import-file" type="file" accept="application/json,.json" aria-describedby="project-import-status">
+        <details id="project-import-paste"><summary>Paste JSON</summary><label class="visually-hidden" for="project-import-source">Project JSON</label><textarea id="project-import-source" rows="9" spellcheck="false" aria-describedby="project-import-status"></textarea><button id="project-import-preview-source" type="button">Preview JSON</button></details>
+        <section id="project-import-preview" aria-label="Selected project" hidden></section>
+        <section id="project-import-target" aria-label="Replacement target"></section>
+        <p id="project-import-status" role="status"></p>
+        <details id="project-import-diagnostics" hidden><summary>Technical details</summary><pre></pre></details>
+        <nav aria-label="Project import"><button id="project-import-submit" class="danger" type="button" disabled>Replace project</button><button id="project-import-reload" type="button" hidden>Reload project</button><button id="project-import-clear" type="button" disabled>Discard</button></nav>
+      </section>
     <section id="audio-panel" hidden aria-label="Settings">
       <header><h2>Settings</h2><button type="button" id="close-settings" aria-label="Close Settings" title="Close Settings"><i class="hud-symbol" data-symbol="close" aria-hidden="true"></i></button></header>
       <nav class="settings-tabs" role="tablist" aria-label="Settings sections">

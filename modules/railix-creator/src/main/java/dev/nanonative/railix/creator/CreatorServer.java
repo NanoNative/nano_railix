@@ -3000,6 +3000,7 @@ public final class CreatorServer implements AutoCloseable {
                 "application", visibleEdit == null ? applicationSnapshotLocked() : visibleApplication,
                 "workspace", RailixValue.object(Map.of(
                         "project_path", RailixValue.string(projectFile.toString()),
+                        "source_limit_bytes", RailixValue.number(MAX_REQUEST_BYTES),
                         "flow_count", RailixValue.number(index.flowCount()),
                         "step_count", RailixValue.number(index.stepCount())
                 ))

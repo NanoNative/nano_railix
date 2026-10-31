@@ -770,6 +770,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @ParameterizedTest
+    @Tag("browser-diagnostics")
     @CsvSource({"1280,false","390,false","320,false","1280,true","390,true","320,true"})
     void choiceComparisonAndExpectedValueStayAlignedAtSupportedWidths(final int width,final boolean jsonOperand) {
         page.setViewportSize(width,900);
@@ -781,11 +782,16 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
             selectWorldNode("choice");
         } else addSizeBounds(2);
         final Locator comparison=page.locator("[data-condition-predicate='0'] [data-replace-comparison]");
-        final Locator expected=page.locator("[data-condition-predicate='0'] [data-input-json]");
         comparison.scrollIntoViewIfNeeded();
-        final var left=comparison.boundingBox();final var right=expected.boundingBox();
-        assertThat(left.y+left.height).isCloseTo(right.y+right.height,within(1.0));
-        assertThat(right.height).isGreaterThanOrEqualTo(width<650?44:36);
+        final var bounds = (List<?>) comparison.evaluate("""
+                select => {
+                  const left=select.getBoundingClientRect();
+                  const right=select.closest('[data-condition-predicate]').querySelector('[data-input-json]').getBoundingClientRect();
+                  return [left.bottom,right.bottom,right.height];
+                }
+                """);
+        assertThat(((Number) bounds.get(0)).doubleValue()).isCloseTo(((Number) bounds.get(1)).doubleValue(),within(1.0));
+        assertThat(((Number) bounds.get(2)).doubleValue()).isGreaterThanOrEqualTo(width<650?44:36);
         assertThat(page.evaluate("() => document.documentElement.scrollWidth<=innerWidth")).isEqualTo(true);
         assertThat(page.locator(".matcher-add").first().getAttribute("open")).isNull();
         assertThat(pageErrors).isEmpty();
@@ -1410,7 +1416,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
                 .receive("value", ValueShape.ANY)
                 .returns("value", ValueShape.BOOLEAN)
                 .input("cases", alternatives)
-                .run(MatcherConformanceSteps.AuthoredTrue.class);
+                .implementation(MatcherConformanceSteps.AuthoredTrue.class);
         creator.close();
         GeneratedApplicationFixture.installedCatalog(directory, List.of(definition), MatcherConformanceSteps.AuthoredTrue.class);
         creator = CreatorServer.start(0, directory.resolve("project.json"), directory.resolve("railix-home"));
@@ -1720,6 +1726,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
+    @Tag("browser-diagnostics")
     void numericMatchersArePersistedAsIndependentAndLanes() {
         addSizeBounds(1);
 
@@ -2232,7 +2239,8 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         page.locator("#step-search").fill("cli");
 
         assertThat(page.locator("[data-add-step]").count()).isEqualTo(1);
-        assertThat(page.locator("[data-add-step]").textContent()).contains("CLI", "railix.trigger.cli");
+        assertThat(page.locator("[data-add-step]").textContent()).contains("CLI");
+        assertThat(page.locator("[data-add-step]").getAttribute("title")).isEqualTo("railix.trigger.cli");
     }
 
     @Test
@@ -2753,36 +2761,20 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         addTrigger();
         waitForText("#build-state", "Built");
         selectTrigger();
-        page.locator(".run-result").waitFor();
-        page.evaluate("""
-                () => {
-                  const request = window.fetch.bind(window);
-                  state.application.examples = {...state.application.examples, state: 'running'};
-                  window.__railixApplicationAttempts = 0;
-                  window.__railixApplicationAttemptTimes = [];
-                  window.fetch = (input, options = {}) => {
-                    const url = typeof input === 'string' ? input : input.url;
-                    if (url === '/api/application') {
-                      window.__railixApplicationAttempts++;
-                      window.__railixApplicationAttemptTimes.push(performance.now());
-                      if (window.__railixApplicationAttempts === 1) {
-                        return Promise.resolve(new Response(
-                          '{"status":"unavailable"}',
-                          {status: 503, headers: {'Content-Type': 'application/json'}}
-                        ));
-                      }
-                    }
-                    return request(input, options);
-                  };
-                  scheduleApplicationPoll(0);
-                }
-                """);
-
-        page.waitForFunction("() => window.__railixApplicationAttempts >= 2");
-
-        assertThat(((Number) page.evaluate(
-                "window.__railixApplicationAttemptTimes[1] - window.__railixApplicationAttemptTimes[0]"
-        )).doubleValue()).isGreaterThanOrEqualTo(400);
+        PlaywrightAssertions.assertThat(page.locator(".run-result")).containsText("\"status\": \"succeeded\"");
+        final var attempts = new ArrayList<Long>();
+        page.route("**/api/application", route -> {
+            attempts.add(System.nanoTime());
+            if (attempts.size() == 1) route.abort(); else route.resume();
+        });
+        try {
+            page.waitForCondition(() -> attempts.size() >= 2);
+            assertThat(java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(attempts.get(1) - attempts.getFirst()))
+                    .isGreaterThanOrEqualTo(400);
+            assertThat(pageErrors).isEmpty();
+        } finally {
+            page.unroute("**/api/application");
+        }
     }
 
     @Test
@@ -2995,6 +2987,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
+    @Tag("browser-diagnostics")
     void selectedGraphStepSourcePickerDoesNotOfferItsOwnReturnedPath() {
         prepareTextPayloadTrigger();
         clickOverview("#add-next-step");
@@ -3004,6 +2997,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         openInspectorTab("inspect");
         chooseCustomPathFor("target", "payload", "lower");
         waitForText("#build-state", "Built");
+        page.locator("#visible-example").selectOption(new com.microsoft.playwright.options.SelectOption().setIndex(1));
         page.locator("#preview-source").waitFor();
 
         page.locator("[data-input-name='source'] .path-button").click();
@@ -3623,7 +3617,7 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
         page.locator("#world-location [data-inspect-region]").click();
         page.locator("[data-inspector-mode=groups]").click();
 
-        assertThat(page.locator(".manager-heading .eyebrow").textContent()).isEqualTo("Groups");
+        assertThat(page.locator(".manager-heading .eyebrow").textContent()).isEqualTo("Group");
         assertThat(page.locator("[data-manage-group='" + group + "']").getAttribute("class"))
                 .contains("active");
     }
@@ -4624,6 +4618,31 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
 
 final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupport {
     @Test
+    @Tag("responsive")
+    @Tag("browser-diagnostics")
+    void aKnownExampleResultRemainsVisibleWhenStepValuesCannotBeRead() {
+        openProject(fourStepProject());
+        final var summaries = new ArrayList<String>();
+        page.onRequest(request -> {
+            if (request.url().endsWith("/api/examples/command%3A0/view")) summaries.add(request.url());
+        });
+        page.route("**/api/examples/steps/**", Route::abort);
+        try {
+            selectWorldNode("command");
+            page.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,
+                    new Page.GetByRoleOptions().setName("Retry Example values").setExact(true)).waitFor();
+            PlaywrightAssertions.assertThat(page.locator(".run-result"))
+                    .containsText("\"one\": 1");
+            PlaywrightAssertions.assertThat(page.locator(".run-result"))
+                    .containsText("\"two\": 2");
+            assertThat(summaries).hasSize(1);
+            assertThat(pageErrors).isEmpty();
+        } finally {
+            page.unroute("**/api/examples/steps/**");
+        }
+    }
+
+    @Test
     void selectedFieldOperationAutomaticallyPreviewsItsActualSourceValue() {
         createLowercaseJourney();
         page.locator("#preview-source").waitFor();
@@ -4767,6 +4786,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
 
     @Test
     @Timeout(120)
+    @Tag("browser-diagnostics")
     void laterOperationExecutesAgainstPreviousPrimitiveOutput() {
         prepareOperationAfterListSize();
         fillStepSearch("#steps-search", "floor");
@@ -5645,6 +5665,11 @@ abstract class RailixCreatorBrowserSupport {
                       jsonDraft: state.jsonDraft, operation: selectedOperation(),
                       builtOperation: state.builtProject?.nodes.find(node => node.id === state.selection.id),
                       previewCases: state.previewCases, traceKey: state.traceKey,
+                      traceSummaryKey: state.traceSummaryKey, tracePending: Boolean(state.traceController),
+                      selectedExample: selectedExampleId(), exampleTrigger: state.exampleTrigger,
+                      exampleIndex: state.exampleIndex, runResultLength: state.runResult.length,
+                      traceContext: state.traceContext, traceStep: state.traceStep,
+                      traceCases: state.traceCases, traceReadError: state.traceReadError,
                       compatibility, computedOptions, compatibilityError,
                       diagnostics: state.diagnostics, stepQueries: state.stepQueries,
                       focused: document.activeElement?.id, optionsHovered: options?.matches(':hover'),

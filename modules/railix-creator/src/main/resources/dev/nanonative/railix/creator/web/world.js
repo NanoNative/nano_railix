@@ -85,7 +85,9 @@
       }
       this._listen(this._editOverlay.querySelector('[data-cancel-connection]'), 'click', event => {
         event.stopPropagation();
+        const origin=this._ports?.querySelector('[aria-pressed="true"],[data-output-chooser]');
         this.connection(null);
+        origin?.focus({preventScroll:true});
       });
       const chooseOutput = event => {
         if(!event.target.matches('[data-output-chooser]') || !event.target.value) return;
@@ -233,7 +235,12 @@
 
     _finishConnection(event, dragged) {
       const target = this._connectionTarget(event);
-      if (target) { this._callbacks.connect?.(this._connection.from,target); return; }
+      if (target) {
+        const from=this._connection.from;
+        this.connection(null);
+        this._callbacks.connect?.(from,target);
+        return;
+      }
       if (!dragged && !this._eventNode(event)) {
         this._callbacks.insert?.(this._connection.node,this._connection.outcome);
       }
@@ -637,7 +644,11 @@
       }
       this._size = {width, height};
       this._changedCamera();
-      if (focus) this.focus(focus, scale);
+      if (focus) {
+        this._pendingFocus = focus;
+        this._focusScale = scale;
+        this.refresh();
+      }
       else this._revealSelection();
     }
 

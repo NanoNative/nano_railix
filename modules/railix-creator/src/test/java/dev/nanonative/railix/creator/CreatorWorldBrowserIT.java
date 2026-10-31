@@ -892,6 +892,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @ParameterizedTest
+    @org.junit.jupiter.api.Tag("browser-diagnostics")
     @ValueSource(ints={390,1280})
     void aStoppedExampleKeepsItsRecordedInputInspectableWithoutInventingOutput(final int width) {
         page.setViewportSize(width,900);
@@ -902,7 +903,8 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 new Page.GetByRoleOptions().setName("Inspect Example: invalid-name").setExact(true)).click();
         openInspectorTab("overview");
         final Locator evidence=page.locator("#selection-evidence");
-        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence).containsText("Stopped here");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence.locator("[role=img]"))
+                .hasAttribute("aria-label", "Stopped here");
         final Locator eye=page.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,
                 new Page.GetByRoleOptions().setName("Show input context").setExact(true));
         com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(eye).isVisible();
@@ -914,8 +916,8 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         page.onRequest(request->{if(request.url().matches(".*/api/examples/(?:steps/.*|.*/view.*)"))reads.add(request.url());});
         eye.focus();page.keyboard().press("Enter");
         assertThat(details.getAttribute("open")).as("Opening input keeps technical details open").isNotNull();
-        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence.getByText("Input context",
-                new Locator.GetByTextOptions().setExact(true))).isVisible();
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence.locator("[aria-label='Recorded input context']"))
+                .isVisible();
         final Locator input=evidence.locator("[aria-label='Recorded input context']");
         input.locator("[data-context-change='payload'] > summary").click();
         input.locator("[data-context-change='payload.name']").waitFor();
@@ -943,8 +945,29 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(eye).isVisible();
         assertThat(evidence.locator(".context-tree").count()).isZero();
         selectWorldNode("result");openInspectorTab("overview");
-        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence).containsText("Not reached");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence.locator("[role=img]"))
+                .hasAttribute("aria-label", "Not reached by this Example");
         assertThat(evidence.locator("[data-evidence-fields],.context-tree").count()).isZero();
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void jumpingToAFailedExampleReadsOnlyTheDestinationEvidence() {
+        openProject(CreatorEditorBrowserIT.attentionProject());
+        final var summaries = new ArrayList<String>();
+        page.onRequest(request -> {
+            if (request.url().endsWith("/api/examples/command%3A1/view")) summaries.add(request.url());
+        });
+        page.locator("#issue-count").click();
+        page.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,
+                new Page.GetByRoleOptions().setName("Inspect Example: invalid-name").setExact(true)).click();
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.locator("#inspector"))
+                .hasAttribute("data-selection", "normalize");
+        openInspectorTab("overview");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.getByRole(
+                com.microsoft.playwright.options.AriaRole.BUTTON,
+                new Page.GetByRoleOptions().setName("Show input context").setExact(true))).isVisible();
+        assertThat(summaries).hasSize(1);
         assertThat(pageErrors).isEmpty();
     }
 
@@ -962,7 +985,8 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         final var reads=new ArrayList<String>();
         page.route("**/api/examples/steps/**",route->{reads.add(route.request().url());route.abort();});
         selectWorldNode("normalize");openInspectorTab("overview");
-        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence).containsText("Unavailable");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence.locator("[role=img]"))
+                .hasAttribute("data-state", "unavailable");
         assertThat(evidence.locator(".context-tree,[data-evidence-fields]").count()).isZero();
         final int failedReads=reads.size();
         assertThat(failedReads).isPositive();
@@ -971,13 +995,15 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         page.unroute("**/api/examples/steps/**");
         page.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,
                 new Page.GetByRoleOptions().setName("Retry Example values").setExact(true)).click();
-        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence).containsText("Stopped here");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence.locator("[role=img]"))
+                .hasAttribute("aria-label", "Stopped here");
         com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence.locator("[data-evidence-fields]"))
                 .isVisible();
         assertThat(pageErrors).isEmpty();
     }
 
     @Test
+    @org.junit.jupiter.api.Tag("browser-diagnostics")
     void failedInputKeepsLargeBranchesAndLongValuesBoundedUntilExpanded() {
         final var payload=new JsonObject();
         payload.add("name",com.google.gson.JsonNull.INSTANCE);
@@ -1026,7 +1052,8 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         page.locator("#world-location [data-inspect-region]").click();
         openInspectorTab("overview");
         final Locator evidence=page.locator("#selection-evidence");
-        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence).containsText("Stopped at");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(evidence.locator("[role=img]"))
+                .hasAttribute("data-state", "failed");
         page.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,
                 new Page.GetByRoleOptions().setName("Show input context").setExact(true)).click();
         evidence.locator("[data-context-change='payload'] > summary").click();
@@ -1120,7 +1147,8 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
         }
         page.locator("#visible-example").selectOption("command:1");
         inspectGroup("group-lane-0-0");
-        page.waitForFunction("() => document.querySelector('#selection-evidence')?.textContent.includes('Not reached by this Example')");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.locator("#selection-evidence [role=img]"))
+                .hasAttribute("data-state", "unreached");
         assertThat(page.locator("#selection-evidence").textContent()).doesNotContain("ada lovelace");
         inspectGroup("audit-group-1");
         page.waitForFunction("() => document.querySelector('#selection-evidence')?.textContent.includes('recorded')");
@@ -1171,7 +1199,9 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
             throw new AssertionError((String)page.evaluate("() => JSON.stringify({error:document.querySelector('#world-error').textContent,query:state.world.query,nodes:state.world.scene?.nodes.map(node=>node.id)})"),failure);
         }
         assertThat(page.locator("#dock-observation").textContent()).contains("standard-order", "work.name");
-        assertThat(page.locator("#selection-evidence").textContent()).contains("Stopped here").doesNotContain("No fields changed");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.locator("#selection-evidence [role=img]"))
+                .hasAttribute("aria-label", "Stopped here");
+        assertThat(page.locator("#selection-evidence").textContent()).doesNotContain("No fields changed");
         page.screenshot(new Page.ScreenshotOptions().setPath(screenshots.resolve("missing-producer-desktop.png")));
         page.setViewportSize(390, 760);
         awaitScene();
@@ -1223,7 +1253,8 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                     .setContentType("application/json").setBody("{\"status\":\"unavailable\",\"reason\":\"saturated\"}"));
         });
         selection.run();
-        page.waitForFunction("() => document.querySelector('#example-session output')?.textContent === 'Unavailable'");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.locator("#example-session .example-context-state [role=img]"))
+                .hasAttribute("data-state", "unavailable");
         for (int poll = 0; poll < 3; poll++) page.waitForResponse(response -> response.url().endsWith("/api/application"), () -> {});
         assertThat(reads.get()).as("A failed read must stay paused across application polls").isEqualTo(1);
         page.unroute(path);

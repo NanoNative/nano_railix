@@ -146,7 +146,8 @@ class RailixAudio {
       this.panel.querySelector('#music-play').disabled = !music.length;
       this.panel.querySelector('#music-next').disabled = !music.length;
       const unavailable = this.unavailableChoices();
-      this.status(`Sound scores ready.${this.invalid.length ? ` ${this.invalid.length} invalid file(s); select one to repair it.` : ''}${unavailable ? ` ${unavailable} saved choice${unavailable === 1 ? ' is' : 's are'} unavailable; embedded fallback in use.` : ''}`);
+      this.status([this.invalid.length ? `${this.invalid.length} invalid file(s); select one to repair it.` : '',
+        unavailable ? `${unavailable} saved choice${unavailable === 1 ? ' is' : 's are'} unavailable; embedded fallback in use.` : ''].filter(Boolean).join(' '));
     } catch (error) {
       if (!this.disposed && request === this.request) this.status(error.name === 'AbortError' ? 'Sound library request timed out.' : error.message);
     } finally { clearTimeout(timeout); }

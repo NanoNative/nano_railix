@@ -425,8 +425,26 @@ application facts, not the documents. The original compiler and metadata validat
 acceptance. Individual HTTP requests retain their size budget; trusted local files and assembled
 documents do not inherit that transport limit. Explicit whole-document import
 uses POST; it is not a fallback for failed edits. Stale edits fail without overwriting accepted work.
+Project actions open whole-document import in the existing Inspector, not runtime status.
+Choosing a UTF-8 JSON file or pasting JSON prepares a name/count preview without replacing anything.
+This preview does not claim compiler acceptance. Source and file selection survive navigation and
+reopening until explicitly discarded or successfully replaced. File reads are cancelled when
+superseded, and the server's source-byte budget also bounds browser reads and pasted uploads.
+The preview identifies the current project file and that replacement cannot be undone.
+Only the explicit Replace project action starts replacement. It uses the existing edit-action
+exclusion, waits for earlier writes and prevents concurrent edits or a duplicate replacement.
+Rejection retains the draft and the accepted application. A lost response or failed editor refresh
+requires reading the authoritative editor before editing resumes, never blindly repeating POST.
+Unconfirmed import source survives that read, which cannot confirm replacement itself.
+A successful replacement response clears the source even if the editor refresh is still pending.
+Successful replacement reloads editor/history and returns to the App at its normal scale.
 Queued edits are compared with separately acknowledged functional and presentation snapshots, so
 an older save cannot swallow a newer reversal or discard a rejected draft.
+An unreadable edit response pauses further writes and retains the local draft. Reload project
+reopens the authoritative editor instead of blindly repeating a mutation. The existing browser
+unload warning lets the user keep that draft or explicitly discard it when reloading. This path
+does not infer whether an unanswered request committed or merge concurrent edits automatically.
+Reload remains available when a local JSON or Example draft is invalid.
 Undo/Redo keeps bounded deltas for the current Creator session. History is not persisted.
 Oldest deltas are evicted above the scene-response byte budget, retaining the latest action.
 Legacy document writes invalidate history. Revision conflicts preserve accepted work, and
@@ -454,6 +472,9 @@ and wrapped paths keep a reachable choice area inside a scrolling picker. Append
 waits during a press. Destructive updates wait until the interaction ends. Surrounding Inspector
 evidence waits until the path dialog or group naming form closes. World traffic stays live and the draft path
 does not change automatically.
+The Step/Group insertion chooser keeps search fields stationary when its results change. Result
+rows retain readable labels and scroll independently. Short landscape windows keep the primary
+toolbar accessible while the chooser temporarily covers the lower navigation rows.
 
 ### Editing An Existing Flow
 
@@ -567,6 +588,9 @@ No other Example is chosen automatically.
 Scope filtering reads cached, revision-bound reachability summaries, never replays traces from render,
 hover or paint. Loading, unavailable and empty results are distinct from the global list.
 Inspector tabs use Configure, Data, Appearance and Grouping, with consistent symbols and text labels.
+Data owns recorded context changes and the observed branch exit. It uses the central Example
+selection, with changed JSON fields visible by default and the eye action revealing the full context.
+There is no separate Results tab, before/after JSON renderer or local Example selector.
 The desktop Inspector can be resized from its left edge with pointer or keyboard. Narrow layouts use
 the full available width. Resizing is presentation state, not a project edit.
 Appearance offers searchable embedded and user-supplied SVG/PNG symbols through the existing icon
@@ -610,6 +634,10 @@ Opening or resizing the Inspector keeps the selected Step visible at the current
 space remains. Narrow split views reserve room for the Step, return portal and timing legend.
 Short narrow windows use a full-screen Inspector instead of collapsing its form.
 Closing it does not recenter the camera or discard the selection.
+On narrow screens, choosing an outgoing connection temporarily clears the Inspector from the canvas
+so destinations and Cancel remain reachable. The Cancel control restores the same Inspector and output
+focus. Once a destination is submitted, destination-picking ends. The pending save cannot be cancelled
+through the connection controls.
 Undo/Redo use curved action arrows, not navigation arrows. Navigation and Example selection do not
 create history. Automated mutation checks use isolated projects, never the user's active preview.
 For a Step reachable from several Triggers, its Inspector source follows the selected Example.
@@ -621,7 +649,7 @@ Step Data shows added, changed and removed context fields from the recorded befo
 Group Data compares the first entered member's input with the last reached member's output for
 the selected Example in that particular visual occurrence. These endpoints follow the recorded
 execution order, not spatial order or the first/last roof sample. The current graph executes one
-selected path per Example. An unvisited occurrence says that this Example did not reach it.
+selected path per Example. An unvisited occurrence has a neutral visual status, not an error.
 Both Data views show a JSON context tree. Initially only added, changed and removed fields are
 visible, with changed ancestor branches expanded. An eye button includes unchanged fields without
 opening their branches. Removed values remain distinguishable from null, false, zero and empty
@@ -645,7 +673,7 @@ current scene revision. A missing RECEIVE names its configured field when that S
 Dirty, rebuilding, unavailable and current observations remain distinct. Pending edits cannot show
 old values as current evidence. Selected paths have a steady visual mark as well as replay motion,
 and not reached by any Example is distinct from an execution failure or unknown observation.
-An arrived-but-failed Step shows its diagnostic and "Stopped here", not a successful change summary.
+An arrived-but-failed Step shows its diagnostic and failure mark, not a successful change summary.
 Its Data view offers the recorded input through the existing eye control. A stopped group offers its
 recorded entrance the same way. Input starts hidden, uses the bounded JSON tree with collapsed
 containers, and is labeled as input rather than additions, removals or successful output. Missing or
@@ -660,6 +688,18 @@ of that Example. Recorded error totals remain available in metrics. Switching se
 Inspector's scroll position so its identity and observed changes are immediately visible.
 An unavailable Example read retains its failed selection key. Status polling does not repeat the
 trace scan. Retry, a new selection or a changed build may request the recorded values again.
+A failure jump loads its destination before requesting recorded values. Summary and Step reads
+stay within the application's existing concurrent-read budget.
+A failed Step-value read does not discard an independently validated Example result or its reached
+path. The read error remains visible and explicitly retryable, separate from an execution failure.
+Example observation status appears once per inspected selection as an accessible visual mark.
+Hover, keyboard, touch and assistive technology expose its meaning. Configure does not repeat loading, unavailable
+or unreached messages under every field, and no Example selection shows no observation status.
+Known missing fields and explicit null values remain visible. Actual failures remain actionable
+at their owning field and through the failing-Step link. Configure omits a duplicate summary when
+the same diagnostic is already shown at its field. Data retains its diagnostic details and uses compact change counts or section
+progress alongside the visual mark, without a second paragraph for unchanged context. Existing
+interaction sounds supplement feedback when enabled, never replace visible or accessible state.
 Selected membership and union coverage are captured together at one application-owned suite revision;
 reached Steps cannot precede the corresponding coverage bits. Read budgets and lifecycle are owned by
 [observation](observation.md#scene-observation).

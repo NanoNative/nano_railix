@@ -305,15 +305,8 @@ final class ThirdPartyStepBundleE2eTest {
                         .isEqualTo(restartedPid);
             }
 
-            final Map<String, RailixValue> restoredNodes = new LinkedHashMap<>();
-            ((RailixValue.ArrayValue) CreatorServerE2eSupport.object(persisted).values().get("nodes"))
-                    .values().forEach(value -> restoredNodes.put(
-                            CreatorServerE2eSupport.string((RailixValue.ObjectValue) value, "id"), value));
             final HttpResponse<String> recovered = CreatorServerE2eSupport.request(
-                    creator.baseUri(), "PATCH", "/api/project", RailixJson.write(RailixValue.object(Map.of(
-                            "revision", failedReceipt.values().get("revision"),
-                            "changes", RailixValue.object(Map.of("nodes", RailixValue.object(restoredNodes)))
-                    ))));
+                    creator.baseUri(), "POST", "/api/project", persisted);
             assertThat(recovered.statusCode()).isEqualTo(200);
             assertThat(CreatorServerE2eSupport.number(
                     CreatorServerE2eSupport.application(creator.baseUri()), "pid"))

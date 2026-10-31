@@ -2009,6 +2009,7 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
             assertThat(payload.values().get("workspace")).isEqualTo(RailixValue.object(
                     java.util.Map.of(
                             "project_path", RailixValue.string(project.toString()),
+                            "source_limit_bytes", RailixValue.number(dev.nanonative.railix.core.value.RailixData.DEFAULT_MAX_SOURCE_BYTES),
                             "flow_count", RailixValue.number(0),
                             "step_count", RailixValue.number(1)
                     )
