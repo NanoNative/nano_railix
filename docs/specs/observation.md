@@ -2,9 +2,10 @@
 
 ## Human Review
 
-Status: **Existing baseline with scope clarification**, updated on 2026-09-19.
-Time-series database exclusion and planned data-administration separation do not change
-current endpoints or establish a fresh test pass. The roadmap owns delivery status.
+Status: **Existing development baseline; accepted production direction**, updated on 2026-10-18.
+Time-series database exclusion, planned data-administration separation and the production
+direction below do not change current endpoints or establish a fresh test pass. The roadmap owns
+delivery status.
 
 Owns: application-owned Example execution, management APIs, metrics and bounded Creator reads.
 It does not define the planned [validation contract](examples-and-validation.md).
@@ -23,6 +24,12 @@ its path and shows the real input/output change at each reached Step; union cove
 identifies Steps reached by any Example. Trace payloads do not contain timing data. Example execution increments normal operational
 metrics; visual replay of a retained trace does not execute Steps or increment counters.
 
+Unexpected Step runtime exceptions retain their Java type and stack in the protected development
+trace and selected-Step projection. Details contain at most eight causes and 32 frames per cause,
+handle cyclic causes and omit exception messages. Creator discloses them on demand in the failing
+Step's evidence. Ordinary failure results and public HTTP responses retain their existing contract.
+Production artifacts do not gain exception-tracing machinery.
+
 Development traces are bounded to 4 MiB per event, 64 MiB per Example, and 256 MiB per suite.
 The application runs at most 16 Examples per chunk, retains one terminal result or error for every
 started trace, waits for every admitted worker to physically exit before admitting another chunk,
@@ -32,8 +39,10 @@ to return, the generated development process exits instead of retaining that wor
 Creator reports the application as stopped and never fabricates a result.
 The full Example inventory and every projection are bounded to 16 MiB. The Creator server drains
 each application response into a transient bounded buffer, closes the application read, and then
-sends it to the browser. At most four such response payloads are held concurrently; Creator never
-parses, persists, or caches them. For the current application process, the browser caches only the
+sends it to the browser. At most four such response payloads are held concurrently. On-demand
+Example summaries are parsed transiently to attach current scene identities to diagnostics and
+resolve the selected visual section's visits. Creator never persists or caches these payloads.
+For the current application process, the browser caches only the
 application-returned Trigger/index-to-ID lookup, selected case, and bounded all-Example projection
 for the selected deployed node; it never derives an Example ID or result.
 The all-Example projection for one Step has one in-flight owner from its frozen case snapshot through
@@ -49,9 +58,30 @@ primitive counter bytes, lookup-index bytes, and their sum from JVM-dependent ob
 Every metric JSON response carries the owning application PID; Creator and its browser discard a
 response when rolling replacement changes the current PID or artifact fingerprint.
 
-Production artifacts physically omit Example tracing, development endpoints, and metrics. They do
-not merely disable dormant code. Protocol-specific test clients, assertions, remote attachment,
-and environment-selected development capabilities remain roadmap work.
+Current production artifacts physically omit Example tracing, development endpoints, and metrics.
+They do not merely disable dormant code. Protocol-specific test clients, assertions, remote
+attachment, and environment-selected development capabilities remain roadmap work.
+
+## Accepted Production Observation Direction
+
+Accepted on 2026-10-18: generated production applications will include low-cost, bounded Step
+and Flow telemetry so a connected Creator can show live activity without a separate observability
+stack. Baseline measurements are available by default. Detailed production tracing is separately
+enabled and bounded; it must not collect workflow values by default. Examples, their output fakes,
+and expectation evaluation remain development-only and are omitted from production artifacts.
+
+Development and production must retain one generated Step execution path and compatible metric
+meanings. An Example supplies Trigger output to that path; selecting or replaying its evidence does
+not run it again. Optional development-only fake behavior must not add a test branch to every Step
+implementation. Production telemetry observes execution; it does not depend on Creator being
+connected and cannot be inferred from Pod or host metrics alone. Showing traffic at a Step has a
+measurable cost, so the production baseline requires a resource budget and packaged-artifact proof.
+
+Before implementation, agree the baseline measurements and overhead bound, tracing admission and
+retention, payload redaction, authentication and remote attachment, and how unavailable or stale
+production data appears in Creator. No production trace endpoint, storage format, sampling rate or
+test harness is selected by this direction. The current development-only behavior above remains
+the implementation baseline until that work is verified.
 
 The current generated development application binds an ephemeral loopback management port and
 requires its per-process bearer token on every route:
@@ -78,6 +108,15 @@ requires its per-process bearer token on every route:
 - `POST /v1/trace/{trigger}` admits one explicit traced development invocation with a caller-owned
   trace ID; `DELETE /v1/traces/{id}` requests its cancellation.
 
+The inventory and individual case status retain an optional `result` error header at completion.
+It contains the first stopping diagnostic, or the implementation failure, without replaying trace
+files. Only `code`, `message`, `path` and `step` strings are retained, bounded to 128, 512, 1,024 and
+128 characters respectively. Payloads, contexts and exception stacks remain outside this header.
+Successful cases omit it. Creator resolves the header's canonical path or Step identity to its
+display node and containing groups, using the captured project revision. This supports error-list
+navigation even when recorded-value reads fail. It does not change production artifacts or infer
+that an aggregate error count identifies the failing Step.
+
 Run and trace request bodies are limited to 1 MiB, must finish within five seconds, and are read
 before the separate 32-run or 16-trace admission budget is acquired. At most 48 incomplete bodies
 with a valid token can be held. Missing or invalid tokens have an independent four-body budget, so
@@ -86,6 +125,12 @@ without executing a Flow.
 
 Scoped queries share the authenticated body deadline and their existing two-reader admission.
 Each query allows at most 4,096 groups, 1,048,576 range-member visits, and a 1 MiB request/response.
+An optional boolean `cases:true` requests reaching `case_ids` for exactly one group, using the
+already recorded interval membership. It does not load trace events or add production hooks.
+Pending cases without a published path do not appear. Ordinary queries omit this field and its work.
+Creator resolves a selected Step/group/work area through the same bounded membership batches using
+`GET /api/scene/observations?revision=<scene revision>&cases=<scene ID>`. Responses include the
+application PID, suite revision, scope and case IDs. Scene replacement rejects stale requests.
 Creator batches larger selections; these are per-read resource budgets, not project-size limits.
 For example, the metric query
 `{"steps":{"region":[[0,9]]},"flows":{},"application":"app"}` returns two counter groups.
@@ -105,6 +150,10 @@ observations carry values under `metrics`, separate from node IDs and Example co
 combines query batches using each definition's `sum` or `max`; nonaggregatable values stay separate.
 Absent measurements are omitted, not fabricated as zero. Timing definitions identify their sample
 counter, so an unsampled duration is displayed as unavailable.
+
+A reached destination does not by itself establish that every incoming connection was reached.
+An incoming connection from a known unvisited source remains unreached. Missing source evidence
+remains unknown, rather than inventing an arrival through a shared destination.
 
 Metric queries include `steps` and `flows` objects, empty when unused. For example,
 `{"steps":{"region":[[0,9]]},"flows":{},"metrics":["executions","duration_nanos_max"]}`
@@ -137,8 +186,8 @@ path, returning the transformed context, and serving connected Step and Flow met
 Creator edits, persists, invokes compilation, publishes one development artifact and starts its
 JVM. A Step projection returns the explicit Example context captured immediately before that
 Step plus its normal post-Step result. Observation backpressure or storage failure stops trace
-recording, never the Flow. Unlike transparent Example relays, bounded scene-observation reads
-may parse coverage, route summaries and metrics, but never Example contexts or production payloads.
+recording, never the Flow. Coarse scene-observation reads may parse coverage, route summaries
+and metrics, but never Example contexts or production payloads.
 The application's all-case Step projection lets the browser derive union field choices and
 compatibility without decoding trace events or invoking Steps.
 Contract-declared default paths form an authoring floor when management data is unavailable;
@@ -181,6 +230,16 @@ together with their catalog unit. Unavailable cells stay empty; differing units 
 identities within one scope retain separate rows. JVM heap limits remain JVM measurements.
 
 ## Visual Group Timing
+
+Selected-Example group inspection is a separate on-demand read of recorded data. Creator's existing
+Example-view endpoint accepts `region=<region>&revision=<scene revision>`. It intersects that
+occurrence's membership with the application-returned path and resolves actual entry/exit identities
+for that Example. The browser reads those Steps' existing projections to compare values. This covers
+the current acyclic, single-outcome execution contract. Multiple visits in one Example require an
+ordered invocation projection before introducing multi-route execution. The summary and section share
+one application read under the Example payload budget, separate from coarse scene observations.
+PID/revision checks reject stale evidence. No group instrumentation, production hook, per-group
+polling loop or new Example execution is introduced.
 
 Groups remain visual summaries of underlying Step metrics, never runtime spans or execution units.
 Group timing is the sum of individual sampled means, not the pooled total/sample ratio and not a

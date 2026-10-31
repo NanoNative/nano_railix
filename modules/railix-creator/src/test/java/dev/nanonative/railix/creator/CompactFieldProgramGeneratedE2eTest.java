@@ -386,22 +386,22 @@ final class CompactFieldProgramGeneratedE2eTest {
         FLOWS.forEach(flow -> definitions.add(StepDefinition.named(trigger(flow.id()), "1")
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source("compact.source." + flow.id())
-                .run(CompactFieldProgramSteps.Trigger.class)));
+                .implementation(CompactFieldProgramSteps.Trigger.class)));
         definitions.add(StepDefinition.named("value.identity", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.ANY)
                 .returns("value", ValueShape.ANY)
-                .run(CompactFieldProgramSteps.Identity.class));
+                .implementation(CompactFieldProgramSteps.Identity.class));
         definitions.add(StepDefinition.named("value.interrupt", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.ANY)
                 .returns("value", ValueShape.BOOLEAN)
-                .run(CompactFieldProgramSteps.Interrupt.class));
+                .implementation(CompactFieldProgramSteps.Interrupt.class));
         definitions.add(StepDefinition.named("value.fault", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.ANY)
                 .returns("value", ValueShape.BOOLEAN)
-                .run(CompactFieldProgramSteps.Fault.class));
+                .implementation(CompactFieldProgramSteps.Fault.class));
         definitions.add(StepDefinition.named("compact.change-field", "1")
                 .input("field", StepDefinition.Input.path(READ_WRITE))
                 .input("value", StepDefinition.Input.candidates(
@@ -416,7 +416,7 @@ final class CompactFieldProgramGeneratedE2eTest {
                 .input("steps", StepDefinition.Input.steps(
                         StepDefinition.ValueSource.from("value").onMissing("unresolved")
                 ))
-                .run(CompactFieldProgramSteps.Change.class));
+                .implementation(CompactFieldProgramSteps.Change.class));
         return List.copyOf(definitions);
     }
 

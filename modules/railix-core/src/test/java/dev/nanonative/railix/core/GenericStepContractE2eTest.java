@@ -43,12 +43,12 @@ final class GenericStepContractE2eTest {
                                 .defaultPath("context", "payload"))
                         .exampleTarget("target")
                         .example("example", RailixValue.object(Map.of()))
-                        .run(TestStepHandlers.PrimaryOutcome.class),
+                        .implementation(TestStepHandlers.PrimaryOutcome.class),
                 StepDefinition.named("example.identity", "1")
                         .primaryOutcome("ok")
                         .receive("source", ValueShape.ANY)
                         .returns("result", ValueShape.ANY)
-                        .run(TestStepHandlers.SourceResultIdentity.class),
+                        .implementation(TestStepHandlers.SourceResultIdentity.class),
                 StepDefinition.named("example.generic-operation", "1")
                         .input("field", StepDefinition.Input.path(READ_WRITE))
                         .input("value", StepDefinition.Input.candidates(
@@ -62,7 +62,7 @@ final class GenericStepContractE2eTest {
                         .input("operations", StepDefinition.Input.steps(
                                 StepDefinition.ValueSource.from("value").onMissing("missing")
                         ).propagateOutcomes())
-                        .run(TestStepHandlers.RunOperationsWriteField.class)
+                        .implementation(TestStepHandlers.RunOperationsWriteField.class)
         );
     }
 

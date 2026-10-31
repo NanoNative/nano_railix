@@ -1,6 +1,5 @@
 package thirdparty.conformance;
 
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -8,14 +7,13 @@ import dev.nanonative.railix.core.value.RailixValue;
 import java.util.List;
 
 /** Real bundle-owned Step used by generated-runtime boundary tests. */
-public final class RuntimeBoundaryProbeStep implements StepHandler {
-    /** Creates one stateless Step implementation. */
-    public RuntimeBoundaryProbeStep() {
+public final class RuntimeBoundaryProbeStep {
+    private RuntimeBoundaryProbeStep() {
+        throw new AssertionError("Static Steps must never be constructed.");
     }
 
     /** Returns the bound value, or the explicitly requested invalid output test value. */
-    @Override
-    public StepResult run(final StepInput input) {
+    public static StepResult process(final StepInput configuration, final StepInput input) {
         if (input.optionalValue("invalid")
                 .map(RailixValue.BooleanValue.class::cast)
                 .map(RailixValue.BooleanValue::value)

@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
 /** Parser and validator for presentation-only Creator metadata. */
 final class CreatorDocument {
     static final String EMPTY = "{\"format\":2,\"groups\":[],\"steps\":{}}";
-    private static final Set<String> FIELDS = Set.of("format", "groups", "steps", "created_at", "theme");
+    private static final Set<String> FIELDS = Set.of("format", "groups", "steps", "created_at", "theme", "reuse");
     private static final Set<String> PRESENTATION_FIELDS = Set.of("name", "color", "icon", "outcomes", "group", "shape", "aspect", "roundness");
     private static final Set<String> LEGACY_PRESENTATION_FIELDS = Set.of("name", "color", "icon", "outcomes");
     private static final Set<String> GROUP_FIELDS = Set.of("id", "name", "color", "icon", "boundary", "shape", "aspect", "roundness");
@@ -92,12 +92,85 @@ final class CreatorDocument {
         final Result result = BigDecimal.ONE.equals(format.value())
                 ? legacy(document, graph(project, catalog, true))
                 : current(document, graph(project, catalog, false));
-        if (!result.diagnostics().isEmpty() || created == null && theme == null) return result;
+        if (!result.diagnostics().isEmpty()) return result;
         final Map<String, RailixValue> values = new LinkedHashMap<>(result.value().values());
+        if (document.values().containsKey("reuse")) {
+            final Optional<Diagnostic> reuse = reuse(document.values().get("reuse"), project, catalog);
+            if (reuse.isPresent()) return Result.rejected(reuse.get());
+            values.put("reuse", document.values().get("reuse"));
+        }
         if (created != null) values.put("created_at", created);
         if (theme != null) values.put("theme", theme);
         final RailixValue.ObjectValue valueWithSettings = RailixValue.object(values);
         return new Result(RailixJson.write(valueWithSettings), valueWithSettings, List.of());
+    }
+
+    private static Optional<Diagnostic> reuse(final RailixValue value, final RailixValue.ObjectValue project,
+                                               final StepCatalog catalog) {
+        if (!(value instanceof RailixValue.ArrayValue relationships))
+            return Optional.of(Diagnostic.atPath("CREATOR_REUSE_INVALID", "Reuse relationships must be an array.", "reuse"));
+        final Set<String> nodes = new LinkedHashSet<>();
+        final Map<String, RailixValue.ObjectValue> definitions = new LinkedHashMap<>();
+        CreatorChanges.array(project, "nodes").forEach(item -> {
+            final var node = CreatorChanges.object(item);
+            if (catalog.find(CreatorChanges.text(node, "use")).orElseThrow().kind() == StepDefinition.Kind.STEP)
+                nodes.add(CreatorChanges.text(node, "id"));
+            definitions.put(CreatorChanges.text(node, "id"), node);
+        });
+        final Map<String, List<RailixValue.ObjectValue>> outgoing = new LinkedHashMap<>();
+        for (final RailixValue edgeValue : CreatorChanges.array(project, "links")) {
+            final var edge = CreatorChanges.object(edgeValue);
+            final String from = CreatorChanges.text(edge, "from");
+            outgoing.computeIfAbsent(from.substring(0, from.lastIndexOf('.')), ignored -> new java.util.ArrayList<>()).add(edge);
+        }
+        final Set<String> identities = new LinkedHashSet<>();
+        final Set<String> claimed = new LinkedHashSet<>();
+        for (final RailixValue item : relationships.values()) {
+            final var relationship = CreatorChanges.object(item);
+            if (!relationship.values().keySet().equals(Set.of("id", "uses"))
+                    || !validId(CreatorChanges.text(relationship, "id"))
+                    || !identities.add(CreatorChanges.text(relationship, "id"))
+                    || !(relationship.values().get("uses") instanceof RailixValue.ArrayValue uses) || uses.values().size() < 2)
+                return Optional.of(Diagnostic.atPath("CREATOR_REUSE_INVALID", "A reuse relationship needs an ID and at least two uses.", "reuse"));
+            Set<String> roles = null;
+            final Map<String, RailixValue> processing = new LinkedHashMap<>();
+            Map<String, String> topology = null;
+            final Set<String> occurrences = new LinkedHashSet<>(), members = new LinkedHashSet<>();
+            for (final RailixValue entry : uses.values()) {
+                final var use = CreatorChanges.object(entry);
+                if (!Set.of("id", "members", "group").containsAll(use.values().keySet())
+                        || !validId(CreatorChanges.text(use, "id")) || !occurrences.add(CreatorChanges.text(use, "id"))
+                        || !(use.values().get("members") instanceof RailixValue.ObjectValue mapping) || mapping.values().isEmpty())
+                    return Optional.of(Diagnostic.atPath("CREATOR_REUSE_INVALID", "Each use needs a unique ID and member mapping.", "reuse"));
+                if (roles != null && !roles.equals(mapping.values().keySet()))
+                    return Optional.of(Diagnostic.atPath("CREATOR_REUSE_INVALID", "Linked uses must have corresponding members.", "reuse"));
+                roles = mapping.values().keySet();
+                for (final var member : mapping.values().entrySet()) {
+                    if (!validId(member.getKey()) || !(member.getValue() instanceof RailixValue.StringValue id)
+                            || !nodes.contains(id.value()) || !members.add(id.value()) || !claimed.add(id.value()))
+                        return Optional.of(Diagnostic.atPath("CREATOR_REUSE_INVALID", "Reuse members must identify distinct ordinary Steps without overlapping relationships.", "reuse"));
+                    final var normalized = CreatorChanges.with(definitions.get(id.value()), "id", RailixValue.string(member.getKey()));
+                    final RailixValue previous = processing.putIfAbsent(member.getKey(), normalized);
+                    if (previous != null && !previous.equals(normalized))
+                        return Optional.of(Diagnostic.atPath("CREATOR_REUSE_INVALID", "Linked members must have the same processing and field mappings.", "reuse"));
+                }
+                final Map<String, String> byNode = new LinkedHashMap<>(), edges = new LinkedHashMap<>();
+                mapping.values().forEach((role, id) -> byNode.put(((RailixValue.StringValue) id).value(), role));
+                for (final var edge : byNode.keySet().stream().flatMap(id -> outgoing.getOrDefault(id, List.of()).stream()).toList()) {
+                    final String from = CreatorChanges.text(edge, "from");
+                    final int separator = from.lastIndexOf('.');
+                    final String role = byNode.get(from.substring(0, separator));
+                    final String target = byNode.get(CreatorChanges.text(edge, "to"));
+                    edges.put(role + from.substring(separator), target == null ? "external" : "member:" + target);
+                }
+                if (topology != null && !topology.equals(edges))
+                    return Optional.of(Diagnostic.atPath("CREATOR_REUSE_INVALID", "Linked uses must have the same internal connections. External destinations may differ.", "reuse"));
+                topology = edges;
+                if (use.values().containsKey("group") && !(use.values().get("group") instanceof RailixValue.StringValue))
+                    return Optional.of(Diagnostic.atPath("CREATOR_REUSE_INVALID", "A use group must be a group ID.", "reuse"));
+            }
+        }
+        return Optional.empty();
     }
 
     private static Result current(

@@ -13,6 +13,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 final class CreatorEditorE2eTest extends CreatorServerE2eSupport {
     @Test
+    void repeatedGroupNamesExposeTheirIncomingRoutes() throws Exception {
+        final var fixture = CreatorWorldBrowserIT.systemStressScene();
+        final var path = directory.resolve("railix.project.json");
+        Files.writeString(path, fixture.project());
+        Files.writeString(directory.resolve("railix.creator.json"), fixture.creator());
+        try (var creator = start(path)) {
+            final var response = request(creator.baseUri(), "GET", "/api/editor?node=app&group=stock-audit-group-0", "");
+            assertThat(response.statusCode()).isEqualTo(200);
+            final var editor = (RailixValue.ObjectValue) object(response.body()).values().get("editor");
+            final var groups = (RailixValue.ObjectValue) editor.values().get("groups");
+            final var group = (RailixValue.ObjectValue) groups.values().get("stock-audit-group-0");
+            assertThat(((RailixValue.ArrayValue) group.values().get("routes")).values())
+                    .contains(RailixValue.string("Audit path 1"));
+        }
+    }
+
+    @Test
     void themeSelectionDoesNotInvalidateSceneGeometry() throws Exception {
         final var path = directory.resolve("project.json");
         Files.writeString(path, threeStepProject());
@@ -142,6 +159,42 @@ final class CreatorEditorE2eTest extends CreatorServerE2eSupport {
             assertThat(((RailixValue.ArrayValue) child(search, "creator").values().get("groups")).values()).hasSize(1);
             assertThat(child(child(child(search, "editor"), "groups"), "g129").values().get("steps"))
                     .isEqualTo(RailixValue.number(1));
+        }
+    }
+
+    @Test
+    void reusableSearchFiltersStepsAndGroupsBeforePaging() throws Exception {
+        final var project = directory.resolve("project.json");
+        Files.writeString(project, threeStepProject());
+        Files.writeString(directory.resolve("railix.creator.json"),
+                "{\"format\":2,\"groups\":[{\"id\":\"g\",\"name\":\"Shared work\"}],\"steps\":{\"one\":{\"group\":\"g\"}}}");
+        try (var creator = start(project)) {
+            final var steps = child(object(request(creator.baseUri(), "GET", "/api/editor?reuse=1&reuse_kind=step", "").body()), "editor");
+            final var groups = child(object(request(creator.baseUri(), "GET", "/api/editor?reuse=1&reuse_kind=group", "").body()), "editor");
+            assertThat(((RailixValue.ArrayValue) steps.values().get("reusable")).values())
+                    .allSatisfy(value -> assertThat(((RailixValue.ObjectValue) value).values().get("kind")).isEqualTo(RailixValue.string("step")));
+            assertThat(((RailixValue.ArrayValue) groups.values().get("reusable")).values())
+                    .hasSize(1).allSatisfy(value -> assertThat(((RailixValue.ObjectValue) value).values().get("kind")).isEqualTo(RailixValue.string("group")));
+            assertThat(request(creator.baseUri(), "GET", "/api/editor?reuse=1&reuse_kind=unknown", "").statusCode()).isEqualTo(400);
+        }
+    }
+
+    @Test
+    void identicallyNamedReusableGroupsHaveDistinctLabels() throws Exception {
+        final var project = directory.resolve("project.json");
+        Files.writeString(project, threeStepProject());
+        Files.writeString(directory.resolve("railix.creator.json"),
+                "{\"format\":2,\"groups\":[{\"id\":\"g1\",\"name\":\"Shared work\"},{\"id\":\"g2\",\"name\":\"Shared work\"}],"
+                        + "\"steps\":{\"one\":{\"group\":\"g1\"},\"three\":{\"group\":\"g2\"}}}");
+        try (var creator = start(project)) {
+            assertThat(Files.readString(directory.resolve("railix.creator.json"))).contains("g1", "g2");
+            final var response = request(creator.baseUri(), "GET", "/api/editor?reuse=1&reuse_kind=group", "");
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            final var editor = child(object(response.body()), "editor");
+            assertThat(((RailixValue.ArrayValue) editor.values().get("reusable")).values()).as(response.body()).hasSize(2);
+            assertThat(((RailixValue.ArrayValue) editor.values().get("reusable")).values())
+                    .extracting(value -> ((RailixValue.StringValue) ((RailixValue.ObjectValue) value).values().get("label")).value())
+                    .containsExactly("Shared work (1 of 2)", "Shared work (2 of 2)");
         }
     }
 

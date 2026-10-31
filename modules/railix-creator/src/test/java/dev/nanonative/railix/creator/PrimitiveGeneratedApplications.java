@@ -188,6 +188,7 @@ final class PrimitiveGeneratedApplications implements AutoCloseable {
                 List.of("number.to-text", "text.length"),
                 List.of("value.wrap-list", "list.size"),
                 List.of("value.to-json", "text.length"),
+                List.of("value.is-type", "boolean.not"),
                 List.of("list.size", "number.floor"),
                 List.of("date.is-utc-millis", "boolean.not")
         ).forEach(primitives -> add(scenarios, Mode.RESULT, primitives, "", DEFAULT_CONFIG));
@@ -258,6 +259,10 @@ final class PrimitiveGeneratedApplications implements AutoCloseable {
     }
 
     private static void valueScenarios(final Map<String, Scenario> scenarios) {
+        for (final String type : List.of("null", "boolean", "number", "string", "array", "object")) {
+            add(scenarios, Mode.RESULT, List.of("value.is-type"), "value.is-type",
+                    "{\"type\":{\"option\":\"" + type + "\",\"inputs\":{}}}");
+        }
         final List<String> expected = List.of(
                 "null",
                 "1",

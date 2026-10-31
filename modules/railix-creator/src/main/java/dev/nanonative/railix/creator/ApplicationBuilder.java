@@ -54,7 +54,6 @@ final class ApplicationBuilder {
             "dev/nanonative/railix/core/project/RuntimeApplication",
             "dev/nanonative/railix/core/project/WorkflowRuntime",
             "dev/nanonative/railix/core/runtime/",
-            "dev/nanonative/railix/core/step/StepHandler",
             "dev/nanonative/railix/core/step/StepInput",
             "dev/nanonative/railix/core/step/StepResult",
             "dev/nanonative/railix/core/value/"
@@ -241,10 +240,10 @@ final class ApplicationBuilder {
                     StandardOpenOption.CREATE,
                     StandardOpenOption.WRITE
             ); FileLock ignored = channel.lock()) {
-                if (!Files.isRegularFile(artifact.jar())) {
-                    throw new IOException("Development application artifact no longer exists.");
-                }
-                return new DevelopmentBuild(artifact);
+                // Reserve the location even after artifact loss; launch owns startup diagnostics.
+                // Existing artifacts must survive a failed launch.
+                return new DevelopmentBuild(new Artifact(artifact.directory(), artifact.source(), artifact.classes(),
+                        artifact.jar(), artifact.fingerprint(), artifact.builtAt(), true));
             }
         }
     }
@@ -288,7 +287,8 @@ final class ApplicationBuilder {
         }
     }
 
-    static void cleanRuntime(final Artifact artifact) throws IOException {
+    /** Returns false while publication ownership defers cleanup; live sibling runtimes are retained. */
+    static boolean cleanRuntime(final Artifact artifact) throws IOException {
         final Path build = artifact.directory().getParent();
         synchronized (ApplicationBuilder.class) {
             try (FileChannel channel = FileChannel.open(
@@ -296,20 +296,21 @@ final class ApplicationBuilder {
                     StandardOpenOption.CREATE,
                     StandardOpenOption.WRITE
             ); FileLock ignored = channel.lock()) {
-                cleanRuntimeLocked(artifact);
+                return cleanRuntimeLocked(artifact);
             } catch (final NoSuchFileException removedWorkspace) {
                 // The workspace may disappear before the child process's exit callback runs.
+                return true;
             }
         }
     }
 
-    private static void cleanRuntimeLocked(final Artifact artifact) throws IOException {
+    private static boolean cleanRuntimeLocked(final Artifact artifact) throws IOException {
         final Path root = artifact.directory().resolve(".railix-runtime");
         if (!Files.isDirectory(root)) {
-            return;
+            return true;
         }
         if (ArtifactLease.active(root)) {
-            return;
+            return false;
         }
         try (var entries = Files.list(root)) {
             for (final Path entry : entries.filter(Files::isDirectory).toList()) {
@@ -318,13 +319,14 @@ final class ApplicationBuilder {
                 }
             }
         } catch (final NoSuchFileException removedConcurrently) {
-            return;
+            return true;
         }
         try {
             Files.deleteIfExists(root);
         } catch (final DirectoryNotEmptyException ignoredSiblingProcess) {
             // Another generated application owns a sibling process directory.
         }
+        return true;
     }
 
     private static Artifact artifact(final Path directory, final boolean reused) throws IOException {
@@ -409,62 +411,40 @@ final class ApplicationBuilder {
             final List<StepCatalog.Implementation> implementations
     ) {
         final List<String> lines = applicationSource.lines().toList();
-        int invalidIndex = implementations.size();
         for (final javax.tools.Diagnostic<? extends JavaFileObject> diagnostic : diagnostics) {
-            final int index = handlerIndex(diagnostic, applicationSourceFile, lines);
-            if (index < 0 || index >= invalidIndex) {
+            if (diagnostic.getKind() != javax.tools.Diagnostic.Kind.ERROR
+                    || diagnostic.getSource() == null
+                    || diagnostic.getLineNumber() < 1
+                    || diagnostic.getLineNumber() > lines.size()
+                    || !sameFile(diagnostic.getSource(), applicationSourceFile)) {
                 continue;
             }
-            final StepCatalog.Implementation implementation = implementations.get(index);
-            final String declaration = "static final " + implementation.className()
-                    + " HANDLER_" + index + " = new " + implementation.className() + "();";
-            if (lines.stream().map(String::strip).anyMatch(declaration::equals)) {
-                invalidIndex = index;
+            final String line = lines.get((int) diagnostic.getLineNumber() - 1);
+            for (final StepCatalog.Implementation implementation : implementations) {
+                if (line.contains("= " + implementation.className() + "::process;")
+                        || List.of("pre", "post").stream().anyMatch(method ->
+                        line.contains("List.of(" + implementation.className() + "::" + method + ")"))) {
+                    return GeneratedCompilationException.invalidImplementation(implementation.className());
+                }
             }
         }
-        return invalidIndex < implementations.size()
-                ? GeneratedCompilationException.invalidImplementation(implementations.get(invalidIndex).className())
-                : GeneratedCompilationException.generatedSource();
+        return GeneratedCompilationException.generatedSource();
     }
 
-    private static String jdkModules(final List<StepCatalog.Implementation> implementations) {
+    private static String jdkModules(final List<StepCatalog.Implementation> implementations)
+            throws GeneratedCompilationException {
         final Set<String> modules = new java.util.TreeSet<>();
+        final var available = java.lang.module.ModuleFinder.ofSystem();
         for (final StepCatalog.Implementation implementation : implementations) {
-            modules.addAll(implementation.jdkModules());
+            for (final String module : implementation.jdkModules()) {
+                if (available.find(module).isEmpty()) {
+                    throw new GeneratedCompilationException("STEP_IMPLEMENTATION_INVALID",
+                            "Step implementation " + implementation.className() + " requires unavailable JDK module: " + module + ".");
+                }
+                modules.add(module);
+            }
         }
         return String.join(",", modules);
-    }
-
-    private static int handlerIndex(
-            final javax.tools.Diagnostic<? extends JavaFileObject> diagnostic,
-            final Path applicationSourceFile,
-            final List<String> lines
-    ) {
-        if (diagnostic.getKind() != javax.tools.Diagnostic.Kind.ERROR
-                || diagnostic.getSource() == null
-                || diagnostic.getLineNumber() < 1
-                || diagnostic.getLineNumber() > lines.size()
-                || !sameFile(diagnostic.getSource(), applicationSourceFile)) {
-            return -1;
-        }
-        final String line = lines.get((int) diagnostic.getLineNumber() - 1);
-        final int marker = line.indexOf("HANDLER_");
-        if (marker < 0) {
-            return -1;
-        }
-        final int start = marker + "HANDLER_".length();
-        int end = start;
-        while (end < line.length() && Character.isDigit(line.charAt(end))) {
-            end++;
-        }
-        if (end == start) {
-            return -1;
-        }
-        try {
-            return Integer.parseInt(line, start, end, 10);
-        } catch (final NumberFormatException ignored) {
-            return -1;
-        }
     }
 
     private static boolean sameFile(final JavaFileObject source, final Path expected) {
@@ -1058,7 +1038,7 @@ final class ApplicationBuilder {
         static GeneratedCompilationException invalidImplementation(final String implementation) {
             return new GeneratedCompilationException(
                     "STEP_IMPLEMENTATION_INVALID",
-                    "Generated application cannot construct or invoke Step implementation: " + implementation + "."
+                    "Generated application cannot invoke Step implementation: " + implementation + "."
             );
         }
 

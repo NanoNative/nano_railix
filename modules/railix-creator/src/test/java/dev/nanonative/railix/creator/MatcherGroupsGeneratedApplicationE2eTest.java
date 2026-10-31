@@ -542,20 +542,20 @@ final class MatcherGroupsGeneratedApplicationE2eTest {
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source("matcher.source." + flow.id().replace('-', '.'))
                 .result("result", ValueShape.ANY, RailixValue.nullValue())
-                .run(MatcherConformanceSteps.Trigger.class)));
+                .implementation(MatcherConformanceSteps.Trigger.class)));
         definitions.add(StepDefinition.named("value.non-boolean", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.ANY)
                 .returns("value", ValueShape.ANY)
-                .run(MatcherConformanceSteps.Identity.class));
+                .implementation(MatcherConformanceSteps.Identity.class));
         definitions.add(StepDefinition.named("value.text-boolean", "1")
                 .primaryOutcome("ok")
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.BOOLEAN)
-                .run(MatcherConformanceSteps.True.class));
-        definitions.add(predicate("value.fault").run(MatcherConformanceSteps.Fault.class));
-        definitions.add(predicate("value.interrupt").run(MatcherConformanceSteps.Interrupt.class));
-        definitions.add(predicate("value.invalid").run(MatcherConformanceSteps.Invalid.class));
+                .implementation(MatcherConformanceSteps.True.class));
+        definitions.add(predicate("value.fault").implementation(MatcherConformanceSteps.Fault.class));
+        definitions.add(predicate("value.interrupt").implementation(MatcherConformanceSteps.Interrupt.class));
+        definitions.add(predicate("value.invalid").implementation(MatcherConformanceSteps.Invalid.class));
         definitions.add(StepDefinition.named("matcher.probe", "1")
                 .input("source", StepDefinition.Input.path(READ)
                         .defaultPath("context", "payload", "source"))
@@ -567,7 +567,7 @@ final class MatcherGroupsGeneratedApplicationE2eTest {
                 ))
                 .input("target", StepDefinition.Input.path(WRITE)
                         .defaultPath("context", "payload", "match"))
-                .run(MatcherConformanceSteps.Probe.class));
+                .implementation(MatcherConformanceSteps.Probe.class));
         return List.copyOf(definitions);
     }
 

@@ -1,6 +1,5 @@
 package thirdparty.conformance;
 
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 
@@ -13,13 +12,12 @@ import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 
 /** Real bundle-owned Step that starts process trees for ownership verification. */
-public final class ProcessTreeStepHandler implements StepHandler {
+public final class ProcessTreeStepHandler {
     /** Creates one stateless handler. */
     public ProcessTreeStepHandler() {
     }
 
-    @Override
-    public StepResult run(final StepInput input) {
+    public static StepResult process(final StepInput configuration, final StepInput input) {
         start(input.string("mode"), ProcessHandle.current().pid(), Path.of(input.string("marker")));
         return StepResult.outcome(input.primaryOutcome());
     }

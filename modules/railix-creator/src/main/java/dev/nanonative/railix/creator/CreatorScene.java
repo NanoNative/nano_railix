@@ -24,8 +24,8 @@ import java.util.Set;
 
 /**
  * Immutable, derived Creator geometry, absent from compiled applications and project files.
- * The compiler establishes a rooted acyclic graph with one incoming connection per Step;
- * contracting connected user groups therefore preserves a tree.
+ * Functional connections form a rooted acyclic graph. Each station has one spatial identity
+ * even when several routes or sources reach it.
  */
 final class CreatorScene {
     static final int MAX_NODES = 2048;
@@ -34,28 +34,46 @@ final class CreatorScene {
     private static final double NODE_WIDTH = 168;
     private static final double NODE_HEIGHT = 64;
     private static final double COLUMN = 248;
-    private static final double ROW = 144;
+    // Reserve ground between 136-unit foundations for raised buildings and lateral belt exits.
+    private static final double ROW = 224;
     private static final double REGION_DETAIL_WIDTH = 520;
     private static final double REGION_DETAIL_HEIGHT = 280;
+    private static final java.util.regex.Pattern NODE_DIAGNOSTIC = java.util.regex.Pattern.compile("^nodes\\[([0-9]{1,9})](?:\\.|$)");
     private final String source;
     private final RailixValue.ObjectValue metadata;
     private final String revision;
     private final Part root;
     private final Routes routes;
     private final List<Part> leaves;
+    private final List<Part> indexedNodes;
     private final Map<String, RailixValue> icons;
     private final Map<String, Part> identities = new HashMap<>();
+    private final Map<String, Routing> routingViews = new LinkedHashMap<>();
+    private final double[] detailScales;
 
     CreatorScene(final String source, final RailixValue.ObjectValue metadata, final StepCatalog catalog) {
         this.source = source;
-        this.metadata = RailixValue.object(Map.of("groups", metadata.values().get("groups"),
-                "steps", metadata.values().get("steps")));
+        final Map<String, RailixValue> presentation = new LinkedHashMap<>();
+        for (final String field : List.of("groups", "steps", "reuse")) if (metadata.values().containsKey(field)) presentation.put(field, metadata.values().get(field));
+        this.metadata = RailixValue.object(presentation);
         revision = identity(source, RailixJson.write(this.metadata));
         final RailixValue.ObjectValue project =
                 (RailixValue.ObjectValue) ((RailixJson.Parsed) RailixJson.parse(source)).value();
         final Map<String, RailixValue> styles = object(metadata.values().get("steps"));
         final Map<String, RailixValue> groups = new HashMap<>();
         array(metadata, "groups").forEach(value -> groups.put(text(object(value), "id"), value));
+        final Map<String, List<RailixValue>> shared = new HashMap<>();
+        for (final RailixValue relationship : array(metadata, "reuse")) {
+            final String family = text(object(relationship), "id");
+            for (final RailixValue occurrence : array((RailixValue.ObjectValue) relationship, "uses")) {
+                final var use = object(occurrence);
+                object(use.get("members")).forEach((role, id) -> shared.computeIfAbsent(((RailixValue.StringValue) id).value(), ignored -> new ArrayList<>()).add(RailixValue.string(family + "/" + role)));
+                final String group = text(use, "group");
+                if (!group.isEmpty()) shared.computeIfAbsent("group:" + group, ignored -> new ArrayList<>()).add(RailixValue.string(family));
+            }
+        }
+        groups.replaceAll((id, value) -> shared.containsKey("group:" + id)
+                ? CreatorChanges.with((RailixValue.ObjectValue) value, "shared", RailixValue.array(shared.get("group:" + id))) : value);
         final Map<String, Part> nodes = new LinkedHashMap<>();
         int metricIndex = 0;
         for (final RailixValue value : array(project, "nodes")) {
@@ -68,7 +86,8 @@ final class CreatorScene {
                 case TRIGGER -> "trigger";
                 default -> "step";
             };
-            final Map<String, RailixValue> style = object(styles.get(id));
+            final Map<String, RailixValue> style = new LinkedHashMap<>(object(styles.get(id)));
+            if (shared.containsKey(id)) style.put("shared", RailixValue.array(shared.get(id)));
             final String name = style.containsKey("name") ? text(style, "name")
                     : "app".equals(kind) ? text(project.values(), "id") : definition.displayName();
             final Part part = new Part(id, kind, name, use, text(style, "group"), style, List.of());
@@ -86,6 +105,7 @@ final class CreatorScene {
                     ? examples.values().size() : 0;
             nodes.put(id, part);
         }
+        indexedNodes = List.copyOf(nodes.values());
         final List<Route> edges = new ArrayList<>();
         for (final RailixValue value : array(project, "links")) {
             final Map<String, RailixValue> link = object(value);
@@ -106,7 +126,10 @@ final class CreatorScene {
         }
         final Part app = nodes.values().stream().filter(node -> "app".equals(node.kind)).findFirst().orElseThrow();
         final List<Part> order = layout(app);
+        final Set<Part> destinations = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        final boolean converging = edges.stream().anyMatch(edge -> !destinations.add(edge.to));
         final Map<Part, Part> occurrences = groups(order, groups);
+        retainAcyclicGroups(occurrences, edges);
         if (!occurrences.isEmpty()) {
             order.forEach(node -> node.outgoing.clear());
             for (final Route edge : edges) {
@@ -116,12 +139,27 @@ final class CreatorScene {
                     from.outgoing.add(new Route(edge.id, from, to, edge.outcome));
                 }
             }
-            layout(app);
+        }
+        final List<Part> grouped = layout(app);
+        final Map<Part, Part> areas = areas(grouped);
+        if (!areas.isEmpty()) {
+            grouped.forEach(part -> part.outgoing.clear());
+            for (final Route edge : edges) {
+                final Part originalFrom = occurrences.getOrDefault(edge.from, edge.from);
+                final Part originalTo = occurrences.getOrDefault(edge.to, edge.to);
+                final Part from = areas.getOrDefault(originalFrom, originalFrom);
+                final Part to = areas.getOrDefault(originalTo, originalTo);
+                if (from != to) from.outgoing.add(new Route(edge.id, from, to, edge.outcome));
+            }
+            order.forEach(part -> {
+                final Part area = areas.get(occurrences.getOrDefault(part, part));
+                if (area != null) occurrences.put(part, area);
+            });
         }
         final List<Part> world = new ArrayList<>();
         world.add(app);
         double flowTop = 0;
-        for (final Route triggerRoute : app.outgoing) {
+        for (final Route triggerRoute : converging ? List.<Route>of() : app.outgoing) {
             final Part trigger = triggerRoute.to;
             final double flowHeight = Math.max(280, trigger.rows * ROW);
             trigger.box = new Box(COLUMN, flowTop + (flowHeight - NODE_HEIGHT) / 2, NODE_WIDTH, NODE_HEIGHT);
@@ -133,9 +171,8 @@ final class CreatorScene {
             while (!pending.isEmpty()) {
                 final Part node = pending.removeFirst();
                 final Part unit = occurrences.getOrDefault(node, node);
-                if (added.add(unit)) {
-                    units.add(unit);
-                }
+                if (!added.add(unit)) continue;
+                units.add(unit);
                 node.outgoing.forEach(edge -> pending.addLast(edge.to));
             }
             if (!units.isEmpty()) {
@@ -150,10 +187,19 @@ final class CreatorScene {
             }
             flowTop += flowHeight + 120;
         }
+        if (converging) {
+            final List<Part> visible = layout(app).stream().filter(part -> part != app).toList();
+            if (!visible.isEmpty()) {
+                final Part section = hierarchy(sections(visible, "region:connected"), "index:connected", false);
+                place(section, section.box);
+                world.add(section);
+            }
+        }
         app.box = new Box(0, app.outgoing.isEmpty() ? 108
                 : (app.outgoing.getFirst().to.box.y + app.outgoing.getLast().to.box.y) / 2, NODE_WIDTH, NODE_HEIGHT);
         root = container("index", "world", "Application", "", Map.of(),
-                world.size() <= 8 ? world : List.of(app, hierarchy(world.subList(1, world.size()), "region:world", true)));
+                world.size() <= 8 ? world : List.of(app, container("region", "area:flows", "Flows", "", Map.of(),
+                        List.of(hierarchy(world.subList(1, world.size()), "index:flows", false)))));
         int sequence = 0;
         final ArrayDeque<Part> pending = new ArrayDeque<>();
         pending.add(root);
@@ -205,12 +251,37 @@ final class CreatorScene {
         groupFocus.forEach((group, part) -> {
             identities.put("group:" + group, part);
         });
+        hierarchy.stream().filter(part -> "region".equals(part.kind) && (!part.group.isEmpty() || part.id.startsWith("area:")))
+                .forEach(part -> {
+                    final List<Part> members = leaves.subList(part.first, part.last + 1).stream()
+                            .filter(member -> !"end".equals(member.kind)).toList();
+                    final int count = Math.min(6, members.size());
+                    final List<RailixValue> roof = new ArrayList<>(count);
+                    final double minX = members.stream().mapToDouble(member -> member.box.x + member.box.width / 2).min().orElse(0);
+                    final double maxX = members.stream().mapToDouble(member -> member.box.x + member.box.width / 2).max().orElse(minX);
+                    final double minY = members.stream().mapToDouble(member -> member.box.y + member.box.height / 2).min().orElse(0);
+                    final double maxY = members.stream().mapToDouble(member -> member.box.y + member.box.height / 2).max().orElse(minY);
+                    for (int index = 0; index < count; index++) {
+                        final Part member = members.get(count == 1 ? 0
+                                : (int) Math.round((double) index * (members.size() - 1) / (count - 1)));
+                        roof.add(RailixValue.object(Map.of(
+                                "id", RailixValue.string(member.id),
+                                "node", RailixValue.number(member.node),
+                                "use", RailixValue.string(member.use),
+                                "x", decimal(maxX == minX ? .5 : (member.box.x + member.box.width / 2 - minX) / (maxX - minX)),
+                                "y", decimal(maxY == minY ? .5 : (member.box.y + member.box.height / 2 - minY) / (maxY - minY)),
+                                "branch", RailixValue.bool(member.exits > 1))));
+                    }
+                    part.roof = List.copyOf(roof);
+                });
         routes = edges.isEmpty() ? null : new Routes(edges);
+        detailScales = hierarchy.stream().filter(part -> "region".equals(part.kind))
+                .mapToDouble(CreatorScene::detailScale).distinct().sorted().toArray();
     }
 
     boolean matches(final String source, final RailixValue.ObjectValue metadata) {
-        return this.source.equals(source) && this.metadata.values().entrySet().stream()
-                .allMatch(entry -> entry.getValue().equals(metadata.values().get(entry.getKey())));
+        return this.source.equals(source) && List.of("groups", "steps", "reuse").stream()
+                .allMatch(field -> java.util.Objects.equals(this.metadata.values().get(field), metadata.values().get(field)));
     }
 
     /** Returns a bounded viewport projection; an omitted viewport fits the world or requested identity. */
@@ -234,7 +305,7 @@ final class CreatorScene {
             throw new NoSuchElementException("Scene focus does not identify a Step or region.");
         }
         final Part inside = parameters.containsKey("inside") ? identities.get(parameters.get("inside")) : null;
-        if (parameters.containsKey("inside") && (inside == null || !"region".equals(inside.kind))) {
+        if (parameters.containsKey("inside") && (inside == null || inside.children.isEmpty())) {
             throw new NoSuchElementException("Entered group is not in this scene.");
         }
         final Box basis = focused != null ? focused.box : inside != null ? inside.box : root.box;
@@ -300,7 +371,8 @@ final class CreatorScene {
                 }
                 final Part start = representative(leaves.get(next.fromFirst), scale, focused, constrained, inside);
                 final Part end = representative(leaves.get(next.toFirst), scale, focused, constrained, inside);
-                if (start.last < next.fromLast || end.last < next.toLast) {
+                if (start.last < next.fromLast || end.last < next.toLast
+                        || start.children.isEmpty() && next.outcome.isEmpty() && next.left != null) {
                     routeQueue.addLast(next.right);
                     routeQueue.addLast(next.left);
                     continue;
@@ -310,14 +382,30 @@ final class CreatorScene {
                 }
                 connections.computeIfAbsent(start.id + ">" + end.id, ignored -> new Connection(start, end, next.outcome))
                         .add(next);
-                if (connections.size() * 3 > MAX_SEGMENTS) {
-                    return view(parameters, connections, Math.max(1, budget / 2));
-                }
             }
         }
         final Map<String, RailixValue> response = new LinkedHashMap<>();
         response.put("revision", RailixValue.string(revision));
         response.put("bounds", root.box.value());
+        response.put("scope", (inside == null ? root : inside).box.value());
+        final List<RailixValue> location = new ArrayList<>();
+        for (Part ancestor = focused != null ? focused.children.isEmpty() ? focused.parent : focused : inside;
+             ancestor != null && ancestor.parent != null; ancestor = ancestor.parent) {
+            if (!ancestor.group.isEmpty() || ancestor.id.startsWith("area:")
+                    || "region".equals(ancestor.kind) && (ancestor == focused || ancestor == inside)) {
+                Part entry = ancestor;
+                while (!entry.children.isEmpty()) entry = entry.children.stream()
+                        .min(Comparator.comparingDouble(child -> child.box.x)).orElseThrow();
+                final Map<String, RailixValue> part = new LinkedHashMap<>();
+                part.put("id", RailixValue.string(ancestor.id));
+                part.put("name", RailixValue.string(ancestor.displayName()));
+                part.put("group", RailixValue.string(ancestor.group));
+                part.put("count", RailixValue.number(ancestor.count));
+                part.put("unit", decimal(Math.min(1, entry.stationScale())));
+                location.addFirst(RailixValue.object(part));
+            }
+        }
+        response.put("location", RailixValue.array(location));
         if (inside != null) {
             response.put("inside", RailixValue.string(inside.id));
             Part entry = inside;
@@ -327,6 +415,7 @@ final class CreatorScene {
             response.put("entry", entry.value(false));
         }
         if (focused != null) {
+            response.put("target", focused.value(false));
             response.put("focus", focused.box.value());
             response.put("focus_min_scale", RailixValue.number(BigDecimal.valueOf(focusScale(focused, inside))));
         }
@@ -338,9 +427,72 @@ final class CreatorScene {
             }
         }
         response.put("icons", RailixValue.object(visibleIcons));
-        response.put("links", RailixValue.array(connections.values().stream().<RailixValue>map(Connection::value).toList()));
+        final Routing routing = routing(scale, focused, inside, constrained);
+        if (connections.values().stream().anyMatch(link -> !routing.paths.containsKey(link.from.id + ">" + link.to.id))) {
+            if (budget > 1) return view(parameters, connections, Math.max(1, budget / 2));
+            return collapsedView(response, connections, inside == null ? root : inside);
+        }
+        final List<RailixValue> links = connections.values().stream().<RailixValue>map(connection ->
+                connection.value(routing.paths.get(connection.from.id + ">" + connection.to.id),
+                        routing.bridges.getOrDefault(connection.from.id + ">" + connection.to.id, List.of()))).toList();
+        if (links.stream().mapToInt(link -> array((RailixValue.ObjectValue) link, "points").size() - 1).sum() > MAX_SEGMENTS) {
+            if (budget > 1) return view(parameters, connections, Math.max(1, budget / 2));
+            return collapsedView(response, connections, inside == null ? root : inside);
+        }
+        response.put("links", RailixValue.array(links));
         response.put("limited", RailixValue.bool(limited || budget < MAX_NODES));
         return RailixValue.object(response);
+    }
+
+    private static RailixValue.ObjectValue collapsedView(final Map<String, RailixValue> response,
+                                                        final Map<String, Connection> connections, final Part scope) {
+        connections.clear();
+        response.put("nodes", RailixValue.array(List.of(scope.value(false))));
+        response.put("links", RailixValue.array(List.of()));
+        response.put("icons", RailixValue.object(Map.of()));
+        response.put("limited", RailixValue.bool(true));
+        return RailixValue.object(response);
+    }
+
+    private Routing routing(final double scale, final Part focused, final Part inside,
+                                         final List<Part> constrained) {
+        final int threshold = java.util.Arrays.binarySearch(detailScales, scale);
+        final List<String> revealed = new ArrayList<>();
+        for (Part part = focused; part != null; part = part.parent)
+            if (!part.children.isEmpty() && !expands(part, scale, null, inside)) revealed.add(part.id);
+        final String key = (threshold < 0 ? -threshold - 1 : threshold + 1) + ":"
+                + String.join(",", revealed) + ":" + (inside == null ? "" : inside.id) + ":"
+                + constrained.stream().map(part -> part.id).collect(java.util.stream.Collectors.joining(","));
+        synchronized (routingViews) {
+            final Routing cached = routingViews.get(key);
+            if (cached != null) return cached;
+        }
+        // Route the complete detail level, not just its viewport. Panning cannot move an existing lane.
+        final Map<Part, Part> owners = new java.util.IdentityHashMap<>();
+        final Map<String, Connection> links = new LinkedHashMap<>();
+        final Set<Part> stations = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (final Part leaf : leaves) {
+            if (inside != null && (leaf.first < inside.first || leaf.last > inside.last)) continue;
+            final Part owner = representative(leaf, scale, focused, constrained, inside);
+            owners.put(leaf, owner);
+            stations.add(owner);
+        }
+        final ArrayDeque<Routes> pending = new ArrayDeque<>();
+        if (routes != null) pending.add(routes);
+        while (!pending.isEmpty()) {
+            final Routes next = pending.removeLast();
+            if (next.left != null) { pending.add(next.right); pending.add(next.left); continue; }
+            final Part from = owners.get(leaves.get(next.fromFirst));
+            final Part to = owners.get(leaves.get(next.toFirst));
+            if (from == null || to == null || from == to) continue;
+            links.computeIfAbsent(from.id + ">" + to.id, ignored -> new Connection(from, to, next.outcome)).add(next);
+        }
+        final Routing result = new Routing(stations, links.values());
+        synchronized (routingViews) {
+            if (routingViews.size() == 3) routingViews.remove(routingViews.keySet().iterator().next());
+            routingViews.put(key, result);
+        }
+        return result;
     }
 
     static Map<String, String> observationParameters(final String query) {
@@ -348,7 +500,7 @@ final class CreatorScene {
             throw new IllegalArgumentException("Scene observation query exceeds 8192 characters.");
         }
         final Set<String> allowed = new java.util.HashSet<>(VIEW_PARAMETERS);
-        allowed.addAll(Set.of("revision", "example", "metrics", "members", "cursor"));
+        allowed.addAll(Set.of("revision", "example", "metrics", "members", "cursor", "cases"));
         final Map<String, String> parameters = parameters(query, allowed);
         if (!parameters.getOrDefault("revision", "").matches("[0-9a-f]{64}")) {
             throw new IllegalArgumentException("Scene observations require the current scene revision.");
@@ -369,6 +521,56 @@ final class CreatorScene {
             throw new IllegalArgumentException("Member cursor requires a region and a nonnegative integer.");
         }
         return parameters;
+    }
+
+    Iterable<RailixValue.ObjectValue> exampleQueries(final String id) {
+        if (!identities.containsKey(id)) throw new NoSuchElementException("Example scope is not in this scene.");
+        return new Observation(RailixValue.object(Map.of("nodes", RailixValue.array(List.of(
+                RailixValue.object(Map.of("id", RailixValue.string(id))))))), List.of(), null, List.of())
+                .queries("example_cases");
+    }
+
+    static Map<String, String> inspectionParameters(final String query) {
+        if (query != null && query.length() > 8192) throw new IllegalArgumentException("Section inspection query exceeds 8192 characters.");
+        final var selected = parameters(query, Set.of("revision", "region"));
+        if (!selected.isEmpty() && (!selected.containsKey("region")
+                || !selected.getOrDefault("revision", "").matches("[0-9a-f]{64}"))) {
+            throw new IllegalArgumentException("Section inspection requires a region and current scene revision.");
+        }
+        return selected;
+    }
+
+    /** Resolves observed section endpoints from the application's selected path. */
+    RailixValue.ObjectValue passage(final String id, final RailixValue.ObjectValue summary) throws IOException {
+        final Part region = identities.get(id);
+        if (region == null || !"region".equals(region.kind) || region.children.isEmpty()) throw new NoSuchElementException("Section is not in this scene.");
+        if (!(summary.values().get("nodes") instanceof RailixValue.ArrayValue)) throw new IOException("Example path is unavailable.");
+        int first = -1, last = -1, reached = 0;
+        for (final RailixValue value : array(summary, "nodes")) {
+            if (!(value instanceof RailixValue.NumberValue number)) throw new IOException("Example Step index is invalid.");
+            final int index;
+            try { index = number.value().intValueExact(); }
+            catch (final ArithmeticException failure) { throw new IOException("Example Step index is invalid.", failure); }
+            if (index < 0 || index >= indexedNodes.size()) throw new IOException("Example Step index is outside the current application.");
+            final int position = java.util.Arrays.binarySearch(region.members, index);
+            if (position >= 0 || ((-position - 1) & 1) == 1) {
+                if (first < 0) first = index;
+                last = index;
+                reached++;
+            } else if (first >= 0) break;
+        }
+        final List<RailixValue> passages = first < 0 ? List.of() : List.of(passageValue(first, last, reached));
+        return RailixValue.object(Map.of("region", RailixValue.string(id), "revision", RailixValue.string(revision),
+                "application_pid", summary.values().get("application_pid"), "count", RailixValue.number(region.count),
+                "reached", RailixValue.number(reached), "passages", RailixValue.array(passages)));
+    }
+
+    private RailixValue.ObjectValue passageValue(final int entry, final int exit, final int count) {
+        final var first = indexedNodes.get(entry);
+        final var last = indexedNodes.get(exit);
+        return RailixValue.object(Map.of("count", RailixValue.number(count),
+                "entry", RailixValue.object(Map.of("id", RailixValue.string(first.id), "name", RailixValue.string(first.name), "index", RailixValue.number(first.node))),
+                "exit", RailixValue.object(Map.of("id", RailixValue.string(last.id), "name", RailixValue.string(last.name), "index", RailixValue.number(last.node)))));
     }
 
     /** A bounded page of individual counters, for Creator-side reductions without runtime group semantics. */
@@ -402,6 +604,36 @@ final class CreatorScene {
 
     boolean observesRevision(final String expected) {
         return revision.equals(expected);
+    }
+
+    /** Adds authoring identities to application diagnostics without changing their execution meaning. */
+    RailixValue.ObjectValue exampleView(final RailixValue.ObjectValue summary) throws IOException {
+        final Map<String, RailixValue> value = new LinkedHashMap<>(summary.values());
+        value.put("scene_revision", RailixValue.string(revision));
+        if (!(value.get("result") instanceof RailixValue.ObjectValue result)) return RailixValue.object(value);
+        final List<RailixValue> diagnostics = new ArrayList<>();
+        final List<RailixValue> problems = new ArrayList<>(array(result, "diagnostics"));
+        if (result.values().get("failure") instanceof RailixValue.ObjectValue failure) problems.add(failure);
+        for (final RailixValue item : problems) {
+            if (!(item instanceof RailixValue.ObjectValue diagnostic)) throw new IOException("Example diagnostic is invalid.");
+            final String path = text(diagnostic.values(), "path");
+            final var match = NODE_DIAGNOSTIC.matcher(path);
+            final Part node = match.find() && Integer.parseInt(match.group(1)) < indexedNodes.size()
+                    ? indexedNodes.get(Integer.parseInt(match.group(1))) : identities.get(text(diagnostic.values(), "step"));
+            if (node == null) {
+                diagnostics.add(item);
+                continue;
+            }
+            final Map<String, RailixValue> fields = new LinkedHashMap<>(diagnostic.values());
+            fields.put("node", RailixValue.string(node.id));
+            fields.put("node_name", RailixValue.string(node.name));
+            fields.put("regions", RailixValue.array(node.regions()));
+            diagnostics.add(RailixValue.object(fields));
+        }
+        final Map<String, RailixValue> fields = new LinkedHashMap<>(result.values());
+        fields.put("diagnostics", RailixValue.array(diagnostics));
+        value.put("result", RailixValue.object(fields));
+        return RailixValue.object(value);
     }
 
     Observation observationView(final Map<String, String> parameters) {
@@ -475,6 +707,7 @@ final class CreatorScene {
                     if (!hasNext()) throw new NoSuchElementException();
                     first = false;
                     final Map<String, RailixValue> body = new LinkedHashMap<>();
+                    if (read.equals("example_cases")) body.put("cases", RailixValue.bool(true));
                     if (metric && !selectedMetrics.isEmpty()) body.put("metrics", RailixValue.array(selectedMetrics.stream()
                             .<RailixValue>map(RailixValue::string).toList()));
                     final Map<String, Map<String, RailixValue>> categories = new LinkedHashMap<>();
@@ -613,6 +846,7 @@ final class CreatorScene {
 
         RailixValue.ObjectValue response(final long applicationRevision, final long applicationPid) {
             final List<RailixValue> nodes = new ArrayList<>();
+            final Map<String, RailixValue> selectedNodes = new HashMap<>();
             int index = 0;
             for (final RailixValue value : array(projection, "nodes")) {
                 final Part part = identities.get(text(object(value), "id"));
@@ -624,7 +858,11 @@ final class CreatorScene {
                 if (metricsAvailable) entry.put("metrics", RailixValue.object(metrics.get(key)));
                 if (examplesAvailable) {
                     entry.put("covered_count", examples.get(key).get("covered_count"));
-                    if (selectionAvailable) entry.put("selected_count", examples.get(key).get("selected_count"));
+                    if (selectionAvailable) {
+                        final RailixValue selected = examples.get(key).get("selected_count");
+                        entry.put("selected_count", selected);
+                        selectedNodes.put(part.id, selected);
+                    }
                 }
                 nodes.add(RailixValue.object(entry));
             }
@@ -636,9 +874,12 @@ final class CreatorScene {
                 entry.put("id", RailixValue.string(connection.id()));
                 if (metricsAvailable && !connection.unknownMetrics) entry.put("metrics", RailixValue.object(metrics.get(key)));
                 if (examplesAvailable && selectionAvailable) {
-                    final boolean reached = !RailixValue.number(0).equals(examples.get(key).get("selected_count"));
+                    final RailixValue source = selectedNodes.get(connection.from.id);
+                    final boolean unvisitedSource = !"app".equals(connection.from.kind) && RailixValue.number(0).equals(source);
+                    final boolean reached = source != null && !unvisitedSource
+                            && !RailixValue.number(0).equals(examples.get(key).get("selected_count"));
                     entry.put("selection", RailixValue.string(reached ? "reached"
-                            : connection.unknownSelection ? "unknown" : "unreached"));
+                            : unvisitedSource ? "unreached" : source == null || connection.unknownSelection ? "unknown" : "unreached"));
                 }
                 links.add(RailixValue.object(entry));
             }
@@ -703,19 +944,35 @@ final class CreatorScene {
     }
 
     private static List<Part> layout(final Part app) {
-        final List<Part> order = new ArrayList<>();
-        order.add(app);
-        for (int index = 0; index < order.size(); index++) {
-            final Part node = order.get(index);
+        final List<Part> discovered = new ArrayList<>();
+        final Map<Part, Integer> incoming = new java.util.IdentityHashMap<>();
+        incoming.put(app, 0);
+        discovered.add(app);
+        for (int index = 0; index < discovered.size(); index++) {
+            final Part node = discovered.get(index);
             node.outgoing.sort(Comparator.comparing(Route::outcome).thenComparing(edge -> edge.to.id));
             for (final Route edge : node.outgoing) {
-                edge.to.depth = node.depth + 1;
-                order.add(edge.to);
+                if (!incoming.containsKey(edge.to)) {
+                    incoming.put(edge.to, 0);
+                    discovered.add(edge.to);
+                }
+                incoming.merge(edge.to, 1, Integer::sum);
+            }
+        }
+        final List<Part> order = new ArrayList<>();
+        final Map<Part, Integer> remaining = new java.util.IdentityHashMap<>(incoming);
+        discovered.forEach(part -> { part.depth = 0; if (remaining.get(part) == 0) order.add(part); });
+        for (int index = 0; index < order.size(); index++) {
+            final Part node = order.get(index);
+            for (final Route edge : node.outgoing) {
+                edge.to.depth = Math.max(edge.to.depth, node.depth + 1);
+                if (remaining.merge(edge.to, -1, Integer::sum) == 0) order.add(edge.to);
             }
         }
         for (int index = order.size() - 1; index >= 0; index--) {
             final Part node = order.get(index);
-            node.rows = node.outgoing.isEmpty() ? 1 : node.outgoing.stream().mapToInt(edge -> edge.to.rows).sum();
+            node.rows = node.outgoing.isEmpty() ? 1 : (int) Math.min(order.size(),
+                    node.outgoing.stream().mapToLong(edge -> edge.to.rows).sum());
         }
         for (final Part node : order) {
             node.station = true;
@@ -728,32 +985,92 @@ final class CreatorScene {
                 row += edge.to.rows;
             }
         }
-        // Centre sockets on the next stations, not on the number of leaves in each subtree.
-        for (int index = order.size() - 1; index >= 0; index--) {
-            final Part node = order.get(index);
-            if (!node.outgoing.isEmpty()) {
+        // Align parents only after their children's column has its final clearance.
+        final Map<Integer, List<Part>> columns = new java.util.TreeMap<>(Comparator.reverseOrder());
+        order.forEach(part -> columns.computeIfAbsent(part.depth, ignored -> new ArrayList<>()).add(part));
+        for (final List<Part> column : columns.values()) {
+            for (final Part node : column) if (!node.outgoing.isEmpty()) {
                 final Box first = node.outgoing.getFirst().to.box;
                 final Box last = node.outgoing.getLast().to.box;
                 node.box = new Box(node.box.x, (first.y + first.height / 2 + last.y + last.height / 2) / 2
                         - NODE_HEIGHT / 2, NODE_WIDTH, NODE_HEIGHT);
             }
+            column.sort(Comparator.comparingDouble((Part part) -> part.box.y).thenComparing(part -> part.id));
+            double bottom = Double.NEGATIVE_INFINITY;
+            for (final Part part : column) {
+                final double y = Math.max(part.box.y, bottom);
+                part.box = new Box(part.box.x, y, part.box.width, part.box.height);
+                bottom = y + ROW;
+            }
         }
+        final Map<Integer, List<double[]>> spans = new HashMap<>();
+        final Set<Integer> lateral = new java.util.HashSet<>();
+        for (final Part part : order) for (final Route edge : part.outgoing) {
+            final double from = part.box.y + part.box.height / 2, to = edge.to.box.y + edge.to.box.height / 2;
+            if (from != to) lateral.add(part.depth);
+            final List<double[]> events = spans.computeIfAbsent(part.depth, ignored -> new ArrayList<>());
+            events.add(new double[]{from == to ? from - ROW / 2 : Math.min(from, to), 1});
+            events.add(new double[]{from == to ? from + ROW / 2 : Math.max(from, to), -1});
+        }
+        final double[] offsets = new double[order.stream().mapToInt(part -> part.depth).max().orElse(0) + 1];
+        for (int column = 1; column < offsets.length; column++) {
+            final List<double[]> events = spans.getOrDefault(column - 1, List.of());
+            if (!events.isEmpty()) events.sort(Comparator.comparingDouble((double[] event) -> event[0]).thenComparingDouble(event -> event[1]));
+            int active = 0, lanes = 0;
+            for (final double[] event : events) { active += (int) event[1];lanes = Math.max(lanes, active); }
+            // A reserved lane needs belt pitch plus space for a crossing's ramp.
+            final double gap = lateral.contains(column - 1) ? Math.max(COLUMN, NODE_WIDTH + 96) : COLUMN;
+            offsets[column] = offsets[column - 1] + gap + Math.max(0, lanes - 1) * 84;
+        }
+        for (final Part part : order) part.box = new Box(offsets[part.depth], part.box.y, part.box.width, part.box.height);
         return order;
+    }
+
+    // A non-convex visual selection can create a cycle only in its contracted drawing.
+    // Keep those regions expanded instead of changing or dropping functional connections.
+    private static void retainAcyclicGroups(final Map<Part, Part> groups, final List<Route> edges) {
+        while (!groups.isEmpty()) {
+            final Map<Part, Integer> incoming = new java.util.IdentityHashMap<>();
+            final Map<Part, List<Part>> outgoing = new java.util.IdentityHashMap<>();
+            for (final Route edge : edges) {
+                final Part from = groups.getOrDefault(edge.from, edge.from);
+                final Part to = groups.getOrDefault(edge.to, edge.to);
+                incoming.putIfAbsent(from, 0);
+                incoming.putIfAbsent(to, 0);
+                if (from != to) {
+                    outgoing.computeIfAbsent(from, ignored -> new ArrayList<>()).add(to);
+                    incoming.merge(to, 1, Integer::sum);
+                }
+            }
+            final ArrayDeque<Part> ready = new ArrayDeque<>();
+            incoming.forEach((part, count) -> { if (count == 0) ready.add(part); });
+            while (!ready.isEmpty()) for (final Part target : outgoing.getOrDefault(ready.removeFirst(), List.of())) {
+                if (incoming.merge(target, -1, Integer::sum) == 0) ready.add(target);
+            }
+            if (!groups.entrySet().removeIf(entry -> incoming.getOrDefault(entry.getValue(), 0) > 0)) return;
+        }
     }
 
     private static Map<Part, Part> groups(final List<Part> order, final Map<String, RailixValue> styles) {
         final Map<Part, Part> result = new java.util.IdentityHashMap<>();
+        final Map<Part, List<Part>> adjacent = new java.util.IdentityHashMap<>();
+        for (final Part node : order) for (final Route edge : node.outgoing) {
+            adjacent.computeIfAbsent(node, ignored -> new ArrayList<>()).add(edge.to);
+            adjacent.computeIfAbsent(edge.to, ignored -> new ArrayList<>()).add(node);
+        }
         for (final Part node : order) {
             if (node.group.isEmpty() || result.containsKey(node)) {
                 continue;
             }
             final List<Part> members = new ArrayList<>();
+            final Set<Part> visited = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             final ArrayDeque<Part> pending = new ArrayDeque<>();
             pending.add(node);
             while (!pending.isEmpty()) {
                 final Part member = pending.removeFirst();
+                if (!visited.add(member)) continue;
                 members.add(member);
-                member.outgoing.stream().map(edge -> edge.to).filter(child -> child.group.equals(node.group))
+                adjacent.getOrDefault(member, List.of()).stream().filter(child -> child.group.equals(node.group))
                         .forEach(pending::addLast);
             }
             final String first = members.stream().map(member -> member.id).min(String::compareTo).orElseThrow();
@@ -767,6 +1084,63 @@ final class CreatorScene {
             final Part group = container("region", "group-region:" + node.group + ":" + first, name, node.group, style,
                     "index".equals(content.kind) ? content.children : List.of(content));
             members.forEach(member -> result.put(member, group));
+        }
+        return result;
+    }
+
+    private static Map<Part, Part> areas(final List<Part> order) {
+        final Map<Part, Part> result = new java.util.IdentityHashMap<>();
+        // Small scenes already fit the existing named-group and run hierarchy.
+        if (order.stream().mapToInt(part -> part.count).sum() <= MAX_NODES / 4) return result;
+        final Map<Part, Integer> positions = new java.util.IdentityHashMap<>();
+        final Map<Part, List<Part>> incoming = new java.util.IdentityHashMap<>();
+        for (int index = 0; index < order.size(); index++) {
+            positions.put(order.get(index), index);
+            for (final Route edge : order.get(index).outgoing) incoming.computeIfAbsent(edge.to, ignored -> new ArrayList<>()).add(edge.from);
+        }
+        final int levels = 32 - Integer.numberOfLeadingZeros(order.size());
+        final int[][] ancestors = new int[levels][order.size()];
+        final int[] depth = new int[order.size()];
+        final Map<Part, List<Part>> dominated = new java.util.IdentityHashMap<>();
+        for (int index = 1; index < order.size(); index++) {
+            final Part part = order.get(index);
+            final List<Part> parents = incoming.get(part);
+            int parent = positions.get(parents.getFirst());
+            for (int next = 1; next < parents.size(); next++) {
+                int other = positions.get(parents.get(next));
+                if (depth[parent] < depth[other]) { final int swap = parent; parent = other; other = swap; }
+                final int difference = depth[parent] - depth[other];
+                for (int bit = 0; bit < levels; bit++) if ((difference & (1 << bit)) != 0) parent = ancestors[bit][parent];
+                if (parent != other) {
+                    for (int bit = levels - 1; bit >= 0; bit--) if (ancestors[bit][parent] != ancestors[bit][other]) {
+                        parent = ancestors[bit][parent];other = ancestors[bit][other];
+                    }
+                    parent = ancestors[0][parent];
+                }
+            }
+            ancestors[0][index] = parent;
+            depth[index] = depth[parent] + 1;
+            for (int bit = 1; bit < levels; bit++) ancestors[bit][index] = ancestors[bit - 1][ancestors[bit - 1][index]];
+            dominated.computeIfAbsent(order.get(parent), ignored -> new ArrayList<>()).add(part);
+        }
+        for (final Part entry : order) {
+            final List<Part> parents = incoming.getOrDefault(entry, List.of());
+            if (result.containsKey(entry) || parents.size() != 1 || parents.getFirst().outgoing.size() < 2
+                    || "app".equals(parents.getFirst().kind) || "trigger".equals(entry.kind)) continue;
+            final Set<Part> members = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            final ArrayDeque<Part> pending = new ArrayDeque<>();pending.add(entry);
+            while (!pending.isEmpty()) {
+                final Part part = pending.removeLast();members.add(part);
+                pending.addAll(dominated.getOrDefault(part, List.of()));
+            }
+            if (members.stream().mapToInt(part -> part.count).sum() < 16
+                    || members.stream().noneMatch(part -> part.outgoing.size() > 1)
+                    || members.stream().flatMap(part -> part.outgoing.stream()).anyMatch(edge -> !members.contains(edge.to))) continue;
+            final List<Part> contents = members.stream().sorted(Comparator.comparingInt(positions::get)).toList();
+            final Part index = hierarchy(contents, "index:area:" + entry.id, false);
+            final Part area = container("region", "area:" + entry.id, entry.name, "", Map.of(),
+                    "index".equals(index.kind) ? index.children : List.of(index));
+            members.forEach(part -> result.put(part, area));
         }
         return result;
     }
@@ -998,7 +1372,7 @@ final class CreatorScene {
     }
 
     private static List<RailixValue> array(final RailixValue.ObjectValue value, final String name) {
-        return ((RailixValue.ArrayValue) value.values().get(name)).values();
+        return value.values().get(name) instanceof RailixValue.ArrayValue array ? array.values() : List.of();
     }
 
     private static String text(final Map<String, RailixValue> value, final String name) {
@@ -1065,6 +1439,7 @@ final class CreatorScene {
         private boolean station;
         private int exampleCount;
         private String iconRef = "";
+        private List<RailixValue> roof = List.of();
         private Part parent;
 
         private Part(final String id, final String kind, final String name, final String use, final String group,
@@ -1084,13 +1459,13 @@ final class CreatorScene {
             final Map<String, RailixValue> value = new LinkedHashMap<>(box.value().values());
             value.put("id", RailixValue.string(id));
             value.put("kind", RailixValue.string("index".equals(kind) ? "region" : kind));
-            value.put("name", RailixValue.string(name));
+            value.put("name", RailixValue.string(displayName()));
             value.put("count", RailixValue.number(count));
-            value.put("station_scale", decimal(stationScale()));
-            final List<RailixValue> regions = new ArrayList<>();
-            for (Part ancestor = parent; ancestor != null; ancestor = ancestor.parent) {
-                if (ancestor.parent != null) regions.add(RailixValue.string(ancestor.id));
+            if (!children.isEmpty() && group.isEmpty()) {
+                value.put("summary", RailixValue.string("region".equals(kind) && !id.startsWith("area:") ? "run" : "area"));
             }
+            value.put("station_scale", decimal(stationScale()));
+            final List<RailixValue> regions = regions();
             if (!regions.isEmpty()) value.put("regions", RailixValue.array(regions));
             if (!iconRef.isEmpty()) {
                 value.put("icon_ref", RailixValue.string(iconRef));
@@ -1107,16 +1482,36 @@ final class CreatorScene {
             if (!children.isEmpty()) {
                 value.put("expanded", RailixValue.bool(expanded));
                 value.put("group_count", RailixValue.number(groupCount));
+                if (!expanded && !roof.isEmpty()) value.put("roof", RailixValue.array(roof));
             }
-            for (final String field : List.of("color", "boundary", "shape", "aspect", "roundness")) {
+            for (final String field : List.of("color", "boundary", "shape", "aspect", "roundness", "shared")) {
                 if (style.containsKey(field)) value.put(field, style.get(field));
             }
             return RailixValue.object(value);
         }
 
+        private List<RailixValue> regions() {
+            final List<RailixValue> result = new ArrayList<>();
+            for (Part ancestor = parent; ancestor != null; ancestor = ancestor.parent)
+                if (ancestor.parent != null) result.add(RailixValue.string(ancestor.id));
+            return result;
+        }
+
+        private String displayName() {
+            if (id.startsWith("area:")) return name;
+            if (!group.isEmpty() || children.isEmpty()) return name;
+            if (!"region".equals(kind)) return "Flow area";
+            Part first = this;
+            Part last = this;
+            while (!first.children.isEmpty()) first = first.children.getFirst();
+            while (!last.children.isEmpty()) last = last.children.getLast();
+            return first.name.equals(last.name) ? first.name : first.name + " to " + last.name;
+        }
+
         private double stationScale() {
             // Internal index regions describe a whole cell, including space around its machine.
-            return Math.min(box.width / (station ? NODE_WIDTH : COLUMN), box.height / (station ? NODE_HEIGHT : ROW));
+            return Math.min(box.width / (station ? NODE_WIDTH : COLUMN),
+                    box.height / (station ? NODE_HEIGHT : ROW));
         }
     }
 
@@ -1144,37 +1539,13 @@ final class CreatorScene {
     }
 
     private record Route(String id, Part from, Part to, String outcome) {
-        RailixValue.ObjectValue value(final String identity, final Part start, final Part end) {
-            final double startX = start.box.x + start.box.width / 2;
-            final double startY = start.box.y + start.box.height / 2;
-            final double endX = end.box.x + end.box.width / 2;
-            final double endY = end.box.y + end.box.height / 2;
-            if (start.exits > 1 && !"app".equals(start.kind) && endY != startY) {
-                final double y1 = startY + Math.copySign(start.box.height / 2, endY - startY);
-                final double x2 = endX - Math.copySign(end.box.width / 2, endX - startX);
-                return value(identity, start, end, List.of(point(startX, y1), point(startX, endY),
-                        point((startX + x2) / 2, endY), point(x2, endY)));
-            }
-            final boolean horizontal = start.box.x + start.box.width <= end.box.x
-                    || end.box.x + end.box.width <= start.box.x
-                    || Math.abs(endX - startX) >= Math.abs(endY - startY);
-            final double direction = Math.signum(horizontal ? endX - startX : endY - startY);
-            final double x1 = startX + (horizontal ? start.box.width * direction / 2 : 0);
-            final double y1 = startY + (horizontal ? 0 : start.box.height * direction / 2);
-            final double x2 = endX - (horizontal ? end.box.width * direction / 2 : 0);
-            final double y2 = endY - (horizontal ? 0 : end.box.height * direction / 2);
-            final double middle = horizontal ? (x1 + x2) / 2 : (y1 + y2) / 2;
-            return value(identity, start, end, List.of(point(x1, y1),
-                    horizontal ? point(middle, y1) : point(x1, middle),
-                    horizontal ? point(middle, y2) : point(x2, middle), point(x2, y2)));
-        }
-
         private RailixValue.ObjectValue value(final String identity, final Part start, final Part end,
                                              final List<RailixValue> points) {
-            return RailixValue.object(Map.of("id", RailixValue.string(identity),
+            final var value = RailixValue.object(Map.of("id", RailixValue.string(identity),
                     "from", RailixValue.string(start.id), "to", RailixValue.string(end.id),
                     "station_scale", decimal(Math.min(1, Math.min(start.stationScale(), end.stationScale()))),
                     "outcome", RailixValue.string(outcome), "points", RailixValue.array(points)));
+            return "app".equals(start.kind) ? CreatorChanges.with(value, "power", RailixValue.bool(true)) : value;
         }
 
         private Box bounds() {
@@ -1203,6 +1574,7 @@ final class CreatorScene {
         private final Part from;
         private final Part to;
         private String outcome;
+        private final Set<String> outcomes = new java.util.LinkedHashSet<>();
         private int[] members = new int[0];
         private int[] metricMembers = new int[0];
         private boolean unknownMetrics;
@@ -1215,6 +1587,7 @@ final class CreatorScene {
         }
 
         private void add(final Routes routes) {
+            if (!routes.outcome.isEmpty()) outcomes.add(routes.outcome);
             if (!outcome.equals(routes.outcome)) outcome = "";
             members = union(members, routes.members);
             metricMembers = union(metricMembers, routes.metricMembers);
@@ -1226,8 +1599,300 @@ final class CreatorScene {
             return from.id + "." + outcome + ">" + to.id;
         }
 
-        private RailixValue.ObjectValue value() {
-            return new Route(id(), from, to, outcome).value(id(), from, to);
+        private RailixValue.ObjectValue value(final List<RailixValue> points, final List<RailixValue> bridges) {
+            final var value = new Route(id(), from, to, outcome).value(id(), from, to, points);
+            final var described = from.children.isEmpty() && outcome.isEmpty() ? CreatorChanges.with(value, "outcomes",
+                    RailixValue.array(outcomes.stream().<RailixValue>map(RailixValue::string).toList())) : value;
+            return bridges.isEmpty() ? described : CreatorChanges.with(described, "bridges", RailixValue.array(bridges));
+        }
+    }
+
+    /** Deterministic, footprint-aware routing for one complete semantic detail level. */
+    private static final class Routing {
+        private static final int MAX_SEARCH_CELLS = 16_384;
+        private final Map<String, List<RailixValue>> paths = new HashMap<>();
+        private final Map<String, List<RailixValue>> bridges = new HashMap<>();
+        private final java.util.NavigableMap<Double, List<Part>> columns = new java.util.TreeMap<>();
+        private final List<java.util.NavigableMap<Double, List<Segment>>> tracks = List.of(new java.util.TreeMap<>(), new java.util.TreeMap<>());
+        private final Map<Connection, Double> outlets = new java.util.IdentityHashMap<>();
+        private final Map<Part, List<List<double[]>>> approaches = new java.util.IdentityHashMap<>();
+
+        private Routing(final Set<Part> stations, final java.util.Collection<Connection> connections) {
+            stations.forEach(part -> columns.computeIfAbsent(part.box.x + part.box.width / 2, ignored -> new ArrayList<>()).add(part));
+            final List<Connection> ordered = connections.stream().sorted(Comparator
+                    .comparingDouble((Connection link) -> link.from.box.x)
+                    .thenComparingDouble(link -> link.from.box.y)
+                    .thenComparingDouble(link -> link.to.box.y).thenComparing(Connection::id)).toList();
+            final Map<String, List<Connection>> ports = new LinkedHashMap<>();
+            ordered.stream().filter(link -> link.from.exits > 1 && !"app".equals(link.from.kind)).forEach(link ->
+                    ports.computeIfAbsent(link.from.id + ":" + Math.signum(link.to.box.y - link.from.box.y), ignored -> new ArrayList<>()).add(link));
+            ports.values().forEach(port -> {
+                port.sort(Comparator.comparingDouble((Connection link) -> link.to.box.y).thenComparing(Connection::id));
+                final Connection first = port.getFirst();
+                final double direction = first.to.box.y > first.from.box.y ? -1 : 1;
+                for (int index = 0; index < port.size(); index++) outlets.put(port.get(index), (index - (port.size() - 1) / 2.0) * 36 * direction);
+            });
+            for (final Connection connection : ordered) {
+                final List<double[]> path = path(connection);
+                if (path.isEmpty()) continue;
+                approaches.computeIfAbsent(connection.to, ignored -> new ArrayList<>()).add(path);
+                paths.put(connection.from.id + ">" + connection.to.id,
+                        path.stream().map(point -> Route.point(point[0], point[1])).toList());
+                for (int index = 1; index < path.size(); index++) {
+                    final Segment segment = new Segment(path.get(index - 1), path.get(index), connection, index == 1);
+                    tracks.get(segment.axis()).computeIfAbsent(segment.fixed(), ignored -> new ArrayList<>()).add(segment);
+                }
+            }
+            for (final var verticals : tracks.get(1).values()) for (final Segment vertical : verticals) {
+                if ("app".equals(vertical.link.from.kind)) continue;
+                for (final var horizontals : tracks.get(0).subMap(vertical.low(), false, vertical.high(), false).values())
+                    for (final Segment horizontal : horizontals) {
+                        if (vertical.link == horizontal.link || vertical.link.to == horizontal.link.to || "app".equals(horizontal.link.from.kind)
+                                || vertical.fixed() <= horizontal.low() || vertical.fixed() >= horizontal.high()) continue;
+                        final String key = horizontal.link.from.id + ">" + horizontal.link.to.id;
+                        final var bridge = RailixValue.object(Map.of("at", Route.point(vertical.fixed(), horizontal.fixed()),
+                                "under", RailixValue.string(vertical.link.id())));
+                        final var crossings = bridges.computeIfAbsent(key, ignored -> new ArrayList<>());
+                        if (!crossings.contains(bridge)) crossings.add(bridge);
+                    }
+            }
+        }
+
+        private List<double[]> path(final Connection link) {
+            final double unit = Math.min(1, Math.min(link.from.stationScale(), link.to.stationScale()));
+            final Box from = link.from.box, to = link.to.box;
+            final double fromWidth = NODE_WIDTH * Math.min(1, link.from.stationScale());
+            final double fromHeight = NODE_HEIGHT * Math.min(1, link.from.stationScale());
+            final double toWidth = NODE_WIDTH * Math.min(1, link.to.stationScale());
+            final double sx = from.x + from.width / 2, sy = from.y + from.height / 2;
+            final double tx = to.x + to.width / 2, ty = to.y + to.height / 2;
+            final double direction = Math.copySign(1, tx - sx);
+            final boolean branch = link.from.exits > 1 && !"app".equals(link.from.kind) && Math.abs(ty - sy) > .000001;
+            if (branch && Math.abs(outlets.getOrDefault(link, 0.0) * unit) > fromWidth / 2) return List.of();
+            final double[] start = branch ? new double[]{sx + outlets.getOrDefault(link, 0.0) * unit, sy + Math.copySign(fromHeight / 2, ty - sy)}
+                    : new double[]{sx + direction * fromWidth / 2, sy};
+            final double[] end = {tx - direction * toWidth / 2, ty};
+            final List<List<double[]>> candidates = new ArrayList<>();
+            if (Math.abs(start[1] - end[1]) < .000001 * unit) {
+                end[1] = start[1];
+                candidates.add(List.of(start, end));
+            }
+            if (branch) candidates.add(List.of(start, new double[]{start[0], ty}, end));
+            final double left = sx + direction * (fromWidth / 2 + 36 * unit);
+            final double right = tx - direction * (toWidth / 2 + 36 * unit);
+            final double exit = sy + Math.copySign(100 * unit, ty - sy);
+            for (final double fraction : new double[]{0, 1, .5, .25, .75}) {
+                final double x = left + (right - left) * fraction;
+                if (!branch) candidates.add(List.of(start, new double[]{x, sy}, new double[]{x, ty}, end));
+                else candidates.add(List.of(start, new double[]{start[0], exit}, new double[]{x, exit}, new double[]{x, ty}, end));
+            }
+            // Long bypasses use the empty row gutters, not the neighbouring machine's centre line.
+            for (final double y : new double[]{sy - 112 * unit, sy + 112 * unit, ty - 112 * unit, ty + 112 * unit}) {
+                for (final double fraction : new double[]{.5, 0, 1}) {
+                    final double x1 = left + direction * fraction * 32 * unit;
+                    final double x2 = right - direction * fraction * 32 * unit;
+                    candidates.add(branch ? List.of(start, new double[]{start[0], exit}, new double[]{x1, exit},
+                            new double[]{x1, y}, new double[]{x2, y}, new double[]{x2, ty}, end)
+                            : List.of(start, new double[]{x1, sy}, new double[]{x1, y}, new double[]{x2, y}, new double[]{x2, ty}, end));
+                }
+            }
+            return candidates.stream().map(Routing::simplify)
+                    .sorted(Comparator.<List<double[]>>comparingInt(List::size).thenComparingDouble(Routing::length))
+                    .map(path -> merge(path, link))
+                    .filter(path -> clear(path, link, unit))
+                    .findFirst()
+                    .orElseGet(() -> detour(link, start, end, unit, branch));
+        }
+
+        private List<double[]> merge(final List<double[]> path, final Connection link) {
+            for (int index = 1; index < path.size(); index++) {
+                final double[] a = path.get(index - 1), b = path.get(index);
+                final int axis = a[1] == b[1] ? 0 : 1;
+                double nearest = Double.POSITIVE_INFINITY;
+                List<double[]> suffix = null;
+                double[] junction = null;
+                for (final List<double[]> existing : approaches.getOrDefault(link.to, List.of())) {
+                    for (int next = 1; next < existing.size(); next++) {
+                        final double[] c = existing.get(next - 1), d = existing.get(next);
+                        final int other = c[1] == d[1] ? 0 : 1;
+                        final double[] point = a.clone();
+                        if (axis == other) {
+                            if (a[1-axis] != c[1-axis]) continue;
+                            point[axis] = Math.clamp(a[axis], Math.min(c[axis], d[axis]), Math.max(c[axis], d[axis]));
+                        } else point[axis] = c[axis];
+                        if (point[axis] < Math.min(a[axis], b[axis]) || point[axis] > Math.max(a[axis], b[axis])
+                                || point[other] < Math.min(c[other], d[other]) || point[other] > Math.max(c[other], d[other])) continue;
+                        final double distance = Math.abs(point[axis] - a[axis]);
+                        if (distance >= nearest) continue;
+                        nearest = distance;junction = point;suffix = existing.subList(next, existing.size());
+                    }
+                }
+                if (junction != null) {
+                    final List<double[]> merged = new ArrayList<>(path.subList(0, index));
+                    merged.add(junction);merged.addAll(suffix);
+                    return simplify(merged);
+                }
+            }
+            return path;
+        }
+
+        private List<double[]> detour(final Connection link, final double[] start, final double[] end,
+                                      final double unit, final boolean branch) {
+            final var xs = new java.util.TreeSet<Double>();
+            final var ys = new java.util.TreeSet<Double>();
+            xs.add(start[0]);xs.add(end[0]);ys.add(start[1]);ys.add(end[1]);
+            final double lowX = Math.min(start[0], end[0]), highX = Math.max(start[0], end[0]);
+            final double lowY = Math.min(start[1], end[1]) - ROW * unit, highY = Math.max(start[1], end[1]) + ROW * unit;
+            for (final var column : columns.subMap(lowX - 132, true, highX + 132, true).values()) for (final Part part : column) {
+                final double cx = part.box.x + part.box.width / 2, cy = part.box.y + part.box.height / 2;
+                final double half = 68 * Math.min(1, part.stationScale()) + 20 * unit;
+                if (cy + half < lowY || cy - half > highY) continue;
+                final double horizontal = NODE_WIDTH / 2 * Math.min(1, part.stationScale()) + 50 * unit;
+                xs.add(cx - horizontal);xs.add(cx + horizontal);ys.add(cy - half);ys.add(cy + half);
+            }
+            for (int axis = 0; axis < 2; axis++) for (final var lane : tracks.get(axis).values()) for (final Segment segment : lane) {
+                if (segment.high() < (axis == 0 ? lowX : lowY) || segment.low() > (axis == 0 ? highX : highY)
+                        || segment.fixed() < (axis == 0 ? lowY : lowX) || segment.fixed() > (axis == 0 ? highY : highX)) continue;
+                final var coordinates = axis == 0 ? ys : xs;
+                coordinates.add(segment.fixed() - 36 * unit);coordinates.add(segment.fixed() + 36 * unit);
+                coordinates.add(segment.fixed() - (axis == 0 ? 24 : 48) * unit);
+                coordinates.add(segment.fixed() + (axis == 0 ? 24 : 48) * unit);
+                final var along = axis == 0 ? xs : ys;
+                along.add(segment.low() + (axis == 0 ? 48 : 24) * unit);
+                along.add(segment.high() - (axis == 0 ? 48 : 24) * unit);
+            }
+            final double[] x = xs.stream().mapToDouble(Double::doubleValue).filter(value -> value >= lowX && value <= highX).toArray();
+            final double[] y = ys.stream().mapToDouble(Double::doubleValue).filter(value -> value >= lowY && value <= highY).toArray();
+            if ((long) x.length * y.length > MAX_SEARCH_CELLS) return List.of();
+            final int width = x.length, origin = java.util.Arrays.binarySearch(y, start[1]) * width + java.util.Arrays.binarySearch(x, start[0]);
+            final int destination = java.util.Arrays.binarySearch(y, end[1]) * width + java.util.Arrays.binarySearch(x, end[0]);
+            final double[] costs = new double[width * y.length * 2];
+            java.util.Arrays.fill(costs, Double.POSITIVE_INFINITY);
+            final int[] previous = new int[costs.length];java.util.Arrays.fill(previous, -1);
+            final var queue = new java.util.PriorityQueue<double[]>(Comparator.comparingDouble((double[] item) -> item[0]).thenComparingDouble(item -> item[1]));
+            final int first = origin * 2 + (branch ? 1 : 0);
+            final int direction = end[0] >= start[0] ? 1 : -1;
+            costs[first] = 0;queue.add(new double[]{0, first});
+            int searched = 0;
+            while (!queue.isEmpty() && searched++ < MAX_SEARCH_CELLS * 4) {
+                final double[] item = queue.remove();
+                final int state = (int) item[1], cell = state / 2, ix = cell % width, iy = cell / width;
+                if (item[0] != costs[state]) continue;
+                if (cell == destination) {
+                    final List<double[]> path = new ArrayList<>();
+                    for (int cursor = state; cursor >= 0; cursor = previous[cursor]) path.add(new double[]{x[cursor / 2 % width], y[cursor / 2 / width]});
+                    java.util.Collections.reverse(path);
+                    final List<double[]> simplified = merge(simplify(path), link);
+                    return clear(simplified, link, unit) ? simplified : List.of();
+                }
+                for (int move = 0; move < 4; move++) {
+                    final int axis = move / 2, directionStep = (move % 2) * 2 - 1;
+                    final int nx = ix + (axis == 0 ? directionStep : 0), ny = iy + (axis == 1 ? directionStep : 0);
+                    if (nx < 0 || nx >= width || ny < 0 || ny >= y.length) continue;
+                    final int next = ny * width + nx;
+                    if (cell == origin && (axis != (branch ? 1 : 0)
+                            || branch && directionStep != Math.signum(end[1] - start[1]) || !branch && directionStep != direction)) continue;
+                    if (next == destination && (axis != 0 || directionStep != direction)) continue;
+                    final double[] a = {x[ix], y[iy]}, b = {x[next % width], y[next / width]};
+                    if (state % 2 != axis && !turnClear(a, link, unit)) continue;
+                    if (!clear(new Segment(a, b, link, cell == origin), unit)) continue;
+                    final double cost = item[0] + Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + (state % 2 == axis ? 0 : 64 * unit);
+                    final int target = next * 2 + axis;
+                    if (cost >= costs[target]) continue;
+                    costs[target] = cost;previous[target] = state;queue.add(new double[]{cost, target});
+                }
+            }
+            return List.of();
+        }
+
+        private boolean clear(final List<double[]> points, final Connection link, final double unit) {
+            if (points.size() < 2) return false;
+            for (int index = 1; index < points.size(); index++) {
+                final Segment segment = new Segment(points.get(index - 1), points.get(index), link, index == 1);
+                if (!clear(segment, unit)) return false;
+                if ("app".equals(link.from.kind)) continue;
+                for (final var lane : tracks.get(1 - segment.axis()).subMap(segment.low(), false, segment.high(), false).values())
+                    for (final Segment other : lane) {
+                        if (other.link.to == link.to || "app".equals(other.link.from.kind) || segment.fixed() <= other.low() || segment.fixed() >= other.high()) continue;
+                        final double crossingUnit = Math.max(unit, Math.min(1, Math.min(other.link.from.stationScale(), other.link.to.stationScale())));
+                        if (Math.min(other.fixed() - segment.low(), segment.high() - other.fixed()) < (segment.axis() == 0 ? 48 : 24) * crossingUnit - .000001) return false;
+                    }
+            }
+            return true;
+        }
+
+        private boolean turnClear(final double[] point, final Connection link, final double unit) {
+            if ("app".equals(link.from.kind)) return true;
+            for (int axis = 0; axis < 2; axis++) {
+                final double clearance = (axis == 0 ? 48 : 24) * unit;
+                for (final var lane : tracks.get(1 - axis).subMap(point[axis] - clearance + .000001, true, point[axis] + clearance - .000001, true).values())
+                    for (final Segment other : lane) if (other.link.to != link.to && !"app".equals(other.link.from.kind)
+                            && point[1-axis] > other.low() && point[1-axis] < other.high()) return false;
+            }
+            return true;
+        }
+
+        private boolean clear(final Segment segment, final double unit) {
+            final Connection link = segment.link;
+            final double x1 = Math.min(segment.a[0], segment.b[0]) - 132;
+            final double x2 = Math.max(segment.a[0], segment.b[0]) + 132;
+            for (final var column : columns.subMap(x1, true, x2, true).values()) for (final Part part : column) {
+                if (part == link.from || part == link.to) continue;
+                // Keep the socket approaches free for later routes and their crossing ramps.
+                final double scale = Math.min(1, part.stationScale());
+                final double[] half = {NODE_WIDTH / 2 * scale + 48 * unit, 68 * scale + 18 * unit};
+                final double[] center = {part.box.x + part.box.width / 2, part.box.y + part.box.height / 2};
+                if (segment.fixed() > center[1 - segment.axis()] - half[1 - segment.axis()] + .000001
+                        && segment.fixed() < center[1 - segment.axis()] + half[1 - segment.axis()] - .000001
+                        && segment.high() > center[segment.axis()] - half[segment.axis()] + .000001
+                        && segment.low() < center[segment.axis()] + half[segment.axis()] - .000001) {
+                    return false;
+                }
+            }
+            final double pitch = 36 * unit;
+            for (final var lane : tracks.get(segment.axis()).subMap(segment.fixed() - pitch + .000001, true,
+                    segment.fixed() + pitch - .000001, true).values()) for (final Segment other : lane) {
+                if (Math.min(segment.high(), other.high()) - Math.max(segment.low(), other.low()) <= .000001) continue;
+                if ((segment.first && other.first || "app".equals(link.from.kind))
+                        && link.from == other.link.from && link.outcome.equals(other.link.outcome)
+                        || link.to == other.link.to && segment.fixed() == other.fixed()) continue;
+                return false;
+            }
+            if (!"app".equals(link.from.kind)) for (final var lane : tracks.get(1 - segment.axis())
+                    .subMap(segment.low(), false, segment.high(), false).values()) for (final Segment other : lane) {
+                if (other.link.to == link.to || "app".equals(other.link.from.kind) || segment.fixed() <= other.low() || segment.fixed() >= other.high()) continue;
+                final double clearance = (other.axis() == 0 ? 48 : 24) * Math.max(unit, Math.min(1, Math.min(other.link.from.stationScale(), other.link.to.stationScale())));
+                if (Math.min(segment.fixed() - other.low(), other.high() - segment.fixed()) < clearance - .000001) return false;
+            }
+            return true;
+        }
+
+        private static List<double[]> simplify(final List<double[]> points) {
+            final List<double[]> result = new ArrayList<>();
+            for (final double[] point : points) {
+                if (!result.isEmpty() && java.util.Arrays.equals(result.getLast(), point)) continue;
+                while (result.size() > 1) {
+                    final double[] a = result.get(result.size() - 2), b = result.getLast();
+                    if (!(a[0] == b[0] && b[0] == point[0] || a[1] == b[1] && b[1] == point[1])) break;
+                    result.removeLast();
+                }
+                result.add(point);
+            }
+            return result;
+        }
+
+        private static double length(final List<double[]> points) {
+            double length = 0;
+            for (int index = 1; index < points.size(); index++) length += Math.abs(points.get(index)[0] - points.get(index - 1)[0])
+                    + Math.abs(points.get(index)[1] - points.get(index - 1)[1]);
+            return length;
+        }
+
+        private record Segment(double[] a, double[] b, Connection link, boolean first) {
+            private int axis() { return a[1] == b[1] ? 0 : 1; }
+            private double fixed() { return a[1 - axis()]; }
+            private double low() { return Math.min(a[axis()], b[axis()]); }
+            private double high() { return Math.max(a[axis()], b[axis()]); }
         }
     }
 

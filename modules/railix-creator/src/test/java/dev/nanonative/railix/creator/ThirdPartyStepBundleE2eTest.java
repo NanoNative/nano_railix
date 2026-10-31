@@ -5,7 +5,7 @@ import dev.nanonative.railix.core.project.ProjectCompiler;
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepContractJson;
 import dev.nanonative.railix.core.step.StepDefinition;
-import dev.nanonative.railix.core.step.StepHandler;
+import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueShape;
@@ -72,8 +72,25 @@ final class ThirdPartyStepBundleE2eTest {
         final CompileResult.Compiled compiled = compile(workspace, "external.alpha");
 
         assertThat(compiled.productionApplicationSource())
-                .contains("new thirdparty.alpha.Handlers.BundleStep()")
+                .contains("thirdparty.alpha.Handlers.BundleStep::process")
                 .doesNotContain("Class.forName", "java.class.path", "ServiceLoader");
+    }
+
+    @Test
+    void installedStepsRetainDeclaredJdkModulesThroughCompilationAndPackaging() throws Exception {
+        final var definition=StepDefinition.named("external.modules","1")
+                .receive("value",ValueShape.STRING).returns("value",ValueShape.STRING)
+                .implementation(RuntimeBoundaryProbeStep.class,"java.net.http","jdk.httpserver");
+        final var catalog=GeneratedApplicationFixture.installedCatalog(directory,List.of(definition),RuntimeBoundaryProbeStep.class);
+        assertThat(catalog.implementation(definition.id()).orElseThrow().jdkModules())
+                .containsExactly("java.net.http","jdk.httpserver");
+        final var compiled=ProjectCompiler.compileApplication(projectSource(definition.id(),"VALUE"),catalog);
+        assertThat(compiled).isInstanceOf(CompileResult.Compiled.class);
+        final var application=(CompileResult.Compiled)compiled;
+        assertThat(application.applicationDependencies().stream().filter(owner->owner.className().equals(RuntimeBoundaryProbeStep.class.getCanonicalName())))
+                .singleElement().satisfies(owner->assertThat(owner.jdkModules()).containsExactly("java.net.http","jdk.httpserver"));
+        final var artifact=ApplicationBuilder.buildProduction(project(directory,definition.id(),"VALUE"),application);
+        assertThat(runJar(artifact.jar(),"VALUE")).isEqualTo(new ProcessResult(0,"\"VALUE\""));
     }
 
     @Test
@@ -184,7 +201,7 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     @Test
-    void failedRollingDevelopmentChildStartupKeepsTheRunningApplication() throws Exception {
+    void failedRollingDevelopmentChildStartupRestartsThePreviousApplication() throws Exception {
         final Bundle working = bundle(
                 "rollingworking",
                 "external.rollingworking",
@@ -219,9 +236,11 @@ final class ThirdPartyStepBundleE2eTest {
             }
 
             assertThat(response.statusCode()).isEqualTo(503);
-            assertThat(response.body()).contains("Generated application did not build and start.");
+            assertThat(response.body()).contains("Generated application did not build and start.",
+                    "\"recovery\":\"restarted\"");
             assertThat(CreatorServerE2eSupport.number(after, "pid"))
-                    .isEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+                    .isNotEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+            assertThat(CreatorServerE2eSupport.string(after, "state")).isEqualTo("running");
             assertThat(CreatorServerE2eSupport.string(after, "fingerprint"))
                     .isEqualTo(CreatorServerE2eSupport.string(before, "fingerprint"));
             assertThat(Files.readString(project, StandardCharsets.UTF_8)).isEqualTo(persisted);
@@ -232,7 +251,7 @@ final class ThirdPartyStepBundleE2eTest {
     }
 
     @Test
-    void sceneObservationsRejectAnUnactivatedSourceButKeepTheAcceptedApplicationObservable() throws Exception {
+    void sceneObservationsKeepTheAcceptedProjectObservableAfterReplacementFails() throws Exception {
         final Bundle working = bundle(
                 "observationworking", "external.observationworking", "helper-", "-resource", Map.of(), Map.of());
         final Bundle failing = interferingBundle("observationactivation", "activation-token");
@@ -265,40 +284,33 @@ final class ThirdPartyStepBundleE2eTest {
             final HttpResponse<String> failed = CreatorServerE2eSupport.request(
                     creator.baseUri(), "POST", "/api/project", projectSource(failing.definition().id()));
             assertThat(failed.statusCode()).isEqualTo(503);
-            assertThat(failed.body()).contains("Generated application could not be activated.");
-            final RailixValue.ObjectValue failedReceipt = CreatorServerE2eSupport.object(failed.body());
-            assertThat(failedReceipt.values().get("saved")).isEqualTo(RailixValue.bool(true));
-            assertThat(Files.readString(project, StandardCharsets.UTF_8)).isNotEqualTo(persisted);
-            assertThat(CreatorServerE2eSupport.number(
-                    CreatorServerE2eSupport.application(creator.baseUri()), "pid"))
-                    .isEqualTo(CreatorServerE2eSupport.number(before, "pid"));
-            final HttpResponse<String> unactivatedScene = CreatorServerE2eSupport.request(
+            assertThat(failed.body()).contains("Generated application could not be activated.",
+                    "\"recovery\":\"restarted\"");
+            assertThat(Files.readString(project, StandardCharsets.UTF_8)).isEqualTo(persisted);
+            final long restartedPid = CreatorServerE2eSupport.number(
+                    CreatorServerE2eSupport.application(creator.baseUri()), "pid");
+            assertThat(restartedPid).isNotEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+            final HttpResponse<String> restoredScene = CreatorServerE2eSupport.request(
                     creator.baseUri(), "GET", "/api/scene", "");
-            assertThat(unactivatedScene.statusCode()).isEqualTo(200);
-            final String unactivatedRevision = CreatorServerE2eSupport.string(
-                    CreatorServerE2eSupport.object(unactivatedScene.body()), "revision");
-            assertThat(unactivatedRevision).isNotEqualTo(acceptedRevision);
+            assertThat(restoredScene.statusCode()).isEqualTo(200);
+            final String restoredRevision = CreatorServerE2eSupport.string(
+                    CreatorServerE2eSupport.object(restoredScene.body()), "revision");
+            assertThat(restoredRevision).isEqualTo(acceptedRevision);
             for (final String selection : List.of("", "&example=command%3A0")) {
-                final HttpResponse<String> unavailable = CreatorServerE2eSupport.request(creator.baseUri(), "GET",
-                        "/api/scene/observations?revision=" + unactivatedRevision + selection, "");
-                assertThat(unavailable.statusCode()).as(selection + ": " + unavailable.body()).isEqualTo(503);
-                assertThat(CreatorServerE2eSupport.object(unavailable.body())).isEqualTo(RailixValue.object(Map.of(
-                        "status", RailixValue.string("unavailable"), "reason", RailixValue.string("application"))));
+                final HttpResponse<String> accepted = CreatorServerE2eSupport.request(creator.baseUri(), "GET",
+                        "/api/scene/observations?revision=" + restoredRevision + selection, "");
+                assertThat(accepted.statusCode()).as(selection + ": " + accepted.body()).isEqualTo(200);
+                assertThat(CreatorServerE2eSupport.number(
+                        CreatorServerE2eSupport.object(accepted.body()), "application_pid"))
+                        .isEqualTo(restartedPid);
             }
 
-            final Map<String, RailixValue> restoredNodes = new LinkedHashMap<>();
-            ((RailixValue.ArrayValue) CreatorServerE2eSupport.object(persisted).values().get("nodes"))
-                    .values().forEach(value -> restoredNodes.put(
-                            CreatorServerE2eSupport.string((RailixValue.ObjectValue) value, "id"), value));
             final HttpResponse<String> recovered = CreatorServerE2eSupport.request(
-                    creator.baseUri(), "PATCH", "/api/project", RailixJson.write(RailixValue.object(Map.of(
-                            "revision", failedReceipt.values().get("revision"),
-                            "changes", RailixValue.object(Map.of("nodes", RailixValue.object(restoredNodes)))
-                    ))));
+                    creator.baseUri(), "POST", "/api/project", persisted);
             assertThat(recovered.statusCode()).isEqualTo(200);
             assertThat(CreatorServerE2eSupport.number(
                     CreatorServerE2eSupport.application(creator.baseUri()), "pid"))
-                    .isEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+                    .isEqualTo(restartedPid);
             for (final String selection : List.of("", "&example=command%3A0")) {
                 final HttpResponse<String> accepted = CreatorServerE2eSupport.request(creator.baseUri(), "GET",
                         "/api/scene/observations?revision=" + acceptedRevision + selection, "");
@@ -538,7 +550,10 @@ final class ThirdPartyStepBundleE2eTest {
             final Path project = project(directory, bundle.definition().id());
             try (CreatorServer creator = CreatorServer.start(0, project, workspace.railixHome());
                  HttpClient client = HttpClient.newHttpClient()) {
-                for (final int bytes : List.of(limit - 1, limit, limit + 1, limit + 1, 2)) {
+                final boolean inventory=path.equals("/api/examples");
+                final long pid=CreatorServerE2eSupport.number(CreatorServerE2eSupport.application(creator.baseUri()),"pid");
+                final byte[] prefix=(inventory?"{\"application_pid\":"+pid+",\"cases\":[]}":"").getBytes(StandardCharsets.UTF_8);
+                for (final int bytes : List.of(limit - 1, limit, limit + 1, limit + 1, Math.max(2,prefix.length))) {
                     final var pending = observationRequest(client, creator, path);
                     try (Socket socket = observationConnection(upstream)) {
                         final OutputStream output = socket.getOutputStream();
@@ -547,7 +562,12 @@ final class ThirdPartyStepBundleE2eTest {
                                 + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
                         final byte[] padding = new byte[8192];
                         java.util.Arrays.fill(padding, (byte) ' ');
-                        for (int remaining = bytes; remaining > 0;) {
+                        if(prefix.length>0) {
+                            if(chunked) output.write((Integer.toHexString(prefix.length)+"\r\n").getBytes(StandardCharsets.US_ASCII));
+                            output.write(prefix);
+                            if(chunked) output.write("\r\n".getBytes(StandardCharsets.US_ASCII));
+                        }
+                        for (int remaining = bytes-prefix.length; remaining > 0;) {
                             final int length = Math.min(remaining, padding.length);
                             if (chunked) output.write((Integer.toHexString(length) + "\r\n").getBytes(StandardCharsets.US_ASCII));
                             output.write(padding, 0, length);
@@ -559,7 +579,12 @@ final class ThirdPartyStepBundleE2eTest {
                         final HttpResponse<byte[]> response = pending.get(10, TimeUnit.SECONDS);
                         assertThat(response.statusCode()).as("body bytes: " + bytes).isEqualTo(bytes <= limit ? 200 : 502);
                         if (bytes <= limit) {
-                            assertThat(response.body()).hasSize(bytes);
+                            if(inventory) {
+                                final var body=CreatorServerE2eSupport.object(new String(response.body(),StandardCharsets.UTF_8));
+                                assertThat(body.values().get("application_pid")).isEqualTo(RailixValue.number(pid));
+                                assertThat(body.values().get("cases")).isEqualTo(RailixValue.array(List.of()));
+                                assertThat(body.values()).containsKey("scene_revision");
+                            } else assertThat(response.body()).hasSize(bytes);
                         } else {
                             assertThat(response.body()).hasSizeLessThan(1024);
                             assertThat(new String(response.body(), StandardCharsets.UTF_8)).contains(Integer.toString(limit));
@@ -1731,13 +1756,12 @@ final class ThirdPartyStepBundleE2eTest {
         final StepDefinition definition = StepDefinition.named(stepId, "1")
                 .receive("value", ValueShape.STRING)
                 .returns("value", ValueShape.STRING)
-                .run(RuntimeBoundaryProbeStep.class);
+                .implementation(RuntimeBoundaryProbeStep.class);
         final String contractDigest = "sha256:" + sha256(
                 StepContractJson.write(definition).getBytes(StandardCharsets.UTF_8)
         );
         final Path stepSource = source(root, packageName, "Handlers", """
                 package %s;
-                import dev.nanonative.railix.core.step.StepHandler;
                 import dev.nanonative.railix.core.step.StepInput;
                 import dev.nanonative.railix.core.step.StepResult;
                 import dev.nanonative.railix.core.value.RailixValue;
@@ -1745,8 +1769,8 @@ final class ThirdPartyStepBundleE2eTest {
                 import java.nio.charset.StandardCharsets;
                 public final class Handlers {
                     private Handlers() {}
-                    public static final class BundleStep implements StepHandler {
-                        static {
+                    public static final class BundleStep {
+                        public static StepResult pre(final StepInput configuration, final StepInput context) {
                             final String output = %s;
                             if (!output.isEmpty()) {
                                 System.out.print(output);
@@ -1756,6 +1780,7 @@ final class ThirdPartyStepBundleE2eTest {
                             if (!interference.isEmpty()) {
                                 interfere(interference);
                             }
+                            return StepResult.outcome(context.primaryOutcome());
                         }
                         private static void interfere(final String interference) {
                             try {
@@ -1865,12 +1890,11 @@ final class ThirdPartyStepBundleE2eTest {
                                     }
                                 }
                             } catch (final java.io.IOException | NumberFormatException failure) {
-                                throw new ExceptionInInitializerError(failure);
+                                throw new IllegalStateException("Startup interference failed.", failure);
                             }
                         }
                         public BundleStep() {}
-                        @Override
-                        public StepResult run(final StepInput input) {
+                        public static StepResult process(final StepInput configuration, final StepInput input) {
                             if (%s) {
                                 System.out.println("RAILIX_READY malformed");
                                 final byte[] output = new byte[8192];
@@ -1901,7 +1925,7 @@ final class ThirdPartyStepBundleE2eTest {
                         javaString("/" + packagePath + "/message.txt")
                 ));
         final Path stepClasses = root.resolve("step-classes");
-        compileJava(stepSource, stepClasses, List.of(location(StepHandler.class), helperJar));
+        compileJava(stepSource, stepClasses, List.of(location(StepInput.class), helperJar));
         final Path rootJar = root.resolve("bundle.jar");
         final Map<String, byte[]> rootEntries = classEntries(stepClasses);
         rootEntries.put(packagePath + "/message.txt", resource.getBytes(StandardCharsets.UTF_8));

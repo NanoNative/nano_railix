@@ -8,6 +8,7 @@ import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.stdlib.StandardLibrary;
 
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
@@ -27,6 +28,7 @@ import java.util.TreeMap;
 import java.util.UUID;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
+import javax.tools.ToolProvider;
 
 /** Builds and owns one real generated application from a locked test Step bundle. */
 final class GeneratedApplicationFixture implements AutoCloseable {
@@ -154,6 +156,20 @@ final class GeneratedApplicationFixture implements AutoCloseable {
         }
     }
 
+    /** Compiles a separate caller against a produced JAR, without editing generated application code. */
+    static Path compileProbe(final Path workspace, final Path jar, final String className, final String source)
+            throws IOException {
+        final Path classes = Files.createDirectories(workspace.resolve("classes"));
+        final Path java = workspace.resolve(className + ".java");
+        Files.writeString(java, source, StandardCharsets.UTF_8);
+        final var errors = new ByteArrayOutputStream();
+        if (ToolProvider.getSystemJavaCompiler().run(null, errors, errors, "-proc:none", "-classpath", jar.toString(),
+                "-d", classes.toString(), java.toString()) != 0) {
+            throw new IOException("Generated application caller did not compile: " + errors.toString(StandardCharsets.UTF_8));
+        }
+        return classes;
+    }
+
     static StepCatalog installedCatalog(
             final Path workspace,
             final List<StepDefinition> definitions,
@@ -164,6 +180,16 @@ final class GeneratedApplicationFixture implements AutoCloseable {
             throw new IllegalArgumentException("Generated application fixture requires definitions and bundle classes.");
         }
         final String manifest = StepContractJson.writeManifest(definitions);
+        return installedCatalog(workspace, manifest, bundleClasses);
+    }
+
+    static StepCatalog installedCatalog(final Path workspace, final Class<?> provider,
+                                        final List<StepDefinition> definitions, final Class<?>... bundleClasses) throws IOException {
+        return installedCatalog(workspace, StepContractJson.writeManifest(provider, definitions), bundleClasses);
+    }
+
+    private static StepCatalog installedCatalog(final Path workspace, final String manifest,
+                                                final Class<?>... bundleClasses) throws IOException {
         final Map<String, byte[]> entries = classes(bundleClasses);
         entries.put("META-INF/railix/steps.json", manifest.getBytes(StandardCharsets.UTF_8));
         final Path bundle = workspace.resolve("conformance-steps.jar");

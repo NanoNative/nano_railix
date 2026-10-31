@@ -1,9 +1,9 @@
 ---
-name: railix-specification
-description: Draft, change, or review Railix specifications and sequence an implementation roadmap with a human before coding. Use for collaborative requirements discovery, scope and architecture decisions, acceptance criteria, requirement drift, and implementation-readiness review. Not a mandatory documentation phase for routine fixes or fully specified small changes.
+name: product-specification
+description: Draft, change, or review specifications and sequence an implementation roadmap with a human before coding. Use for requirements discovery, architecture decisions, acceptance criteria, requirement drift and implementation readiness. Not mandatory for routine fixes or fully specified small changes.
 ---
 
-# Railix Specification Workflow
+# Product Specification Workflow
 
 Turn an intended outcome into a reviewable contract and an evidence-driven
 roadmap. Humans decide material tradeoffs; the AI researches, recommends,
@@ -20,8 +20,7 @@ area within it. Keep its specifications, ADRs, and roadmap in that project.
   their indexes. Read relevant public code and tests to distinguish current
   behavior from the proposed change; do not scan unrelated modules by default.
 - Locate existing documents and their ownership, stable IDs, language, status
-  vocabulary, and review gates. Preserve those contracts while using the
-  canonical paths below; existing locations do not override them.
+  vocabulary, and review gates. Preserve the project's established document layout.
 - Do not impose a framework, technology, delivery process, or empty documentation
   scaffold when arranging the project's documents.
 - When sources conflict, expose the conflict and its owner. Ask for authority
@@ -35,25 +34,15 @@ targets exist. Do not embed machine-local absolute paths or inherit rules and
 document ownership from unrelated projects. Relevant external documentation
 may be cited as reference evidence; it does not expand the work to those projects.
 
-### Canonical paths
+### Document ownership
 
-Use these exact, case-sensitive paths relative to the resolved project root,
-not the skill directory. They are required locations, not fallbacks:
-
-| Location | Owns |
-| --- | --- |
-| `docs/specs/` | Behavioral contracts, requirements, and acceptance criteria: what the system must do. |
-| `docs/adr/` | Significant architectural decisions, their context, alternatives, and consequences: why a direction was chosen. |
-| `docs/roadmap.md` | Implementation order, dependencies, progress, and links to the owning specifications. |
-| `docs/verification.md` | Historical verification reports and measurements when a separate evidence record is needed; not current requirements or CI status. |
-
-For authorized documentation changes, move affected documents from other
-locations into these paths, preserving stable IDs, unique content, history and
-ownership. Update inbound and relative links, navigation and path references;
-do not retain duplicate documents or competing roots such as `doc/`, root-level
-`adr/` or `ROADMAP.md`. In a review-only task, report noncanonical locations
-without moving files. Root `README.md` and `AGENTS.md` remain entrypoints that
-link to the canonical owners rather than duplicating their contracts.
+Skills own reusable methods, specifications own product behavior, ADRs own
+architectural decisions and rationale, and roadmaps own sequence and status.
+Verification records own historical evidence, not current requirements or CI status.
+Keep repository-specific commands and navigation in the existing contributor entrypoint.
+Do not impose a directory tree or reorganize documents merely to match this skill.
+When consolidation is requested, preserve stable IDs, unique facts and history,
+update inbound links, and remove duplicates rather than maintain competing owners.
 
 Create only artifacts needed for the requested work, not empty folders or
 placeholder indexes. Keep acceptance criteria inside the owning specification;
@@ -153,7 +142,7 @@ time, randomness, and external dependencies where relevant.
 
 ## Sequence the roadmap
 
-When planning is requested, update `docs/roadmap.md`. Derive work from
+When planning is requested, update the project's roadmap. Derive work from
 requirement IDs; do not copy the specification into
 tasks. Sequence the smallest useful end-to-end slices by dependencies and risk,
 not by arbitrary layers or file inventories.
@@ -182,7 +171,7 @@ implementation, publication, or deployment.
 
 Review the complete intended document diff before calling a slice ready:
 
-- Paths use the canonical layout, links resolve, and IDs, ownership and
+- Paths use the project's layout, links resolve, and IDs, ownership and
   terminology fit this project; no hidden dependency on the source project's
   documents or conventions remains.
 - Material decisions and consequences are visible, with genuine acceptance;

@@ -1106,15 +1106,22 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
         Files.createDirectories(home.resolve("sounds/music"));
         Files.writeString(home.resolve("sounds/legacy.json"), legacy);
         Files.writeString(home.resolve("sounds/music/legacy.json"), legacy.replace("Legacy", "Legacy music"));
+        Files.writeString(home.resolve("sounds/bad.json"), "{");
 
         try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
             final HttpResponse<String> listing = request(creator.baseUri(), "GET", "/api/sounds", "");
             final HttpResponse<String> installed = soundMutation(creator.baseUri(), "{\"action\":\"install-defaults\"}");
 
             assertThat(listing.body()).contains("\"id\":\"sounds/legacy.mml\"", "\"id\":\"music/legacy.mml\"");
+            for (final String id : List.of("sounds/legacy.mml", "music/legacy.mml", "sounds/bad.mml")) {
+                final var deleted = soundMutation(creator.baseUri(), "{\"action\":\"delete\",\"id\":\"" + id + "\"}");
+                assertThat(deleted.statusCode()).as(deleted.body()).isEqualTo(400);
+                assertThat(deleted.body()).contains("legacy score", "Save an MML copy");
+            }
             assertThat(installed.statusCode()).isEqualTo(200);
             assertThat(home.resolve("sounds/legacy.json")).exists();
             assertThat(home.resolve("sounds/music/legacy.json")).exists();
+            assertThat(Files.readString(home.resolve("sounds/bad.json"))).isEqualTo("{");
             assertThat(home.resolve("sounds/idle.mml")).exists();
             assertThat(home.resolve("music/orbital.mml")).exists();
         }
@@ -1586,16 +1593,72 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
         try (CreatorServer creator = start(directory.resolve("project.json"))) {
             final HttpResponse<String> listing = request(creator.baseUri(), "GET", "/api/themes", "");
             final HttpResponse<String> variant = request(creator.baseUri(), "GET",
-                    "/api/themes/files/foundry/variants/hq/style.css", "");
+                    "/api/themes/files/foundry/variants/canvas/style.css", "");
             final HttpResponse<String> missing = request(creator.baseUri(), "GET",
                     "/api/themes/files/not-embedded.css", "");
 
             assertThat(listing.statusCode()).isEqualTo(200);
-            assertThat(listing.body()).contains("\"id\":\"\"", "\"name\":\"Renderer Canvas\"", "\"name\":\"Renderer CSS\"", "\"defaultVariant\":\"canvas\"")
-                    .doesNotContain("\"id\":\"standard\"", "\"id\":\"canvas-hq\"");
+            assertThat(listing.body()).contains("\"id\":\"\"", "\"name\":\"Renderer Canvas\"", "\"defaultVariant\":\"canvas\"", "\"defaultRenderer\":")
+                    .doesNotContain("Renderer CSS", "\"renderer\":\"css\"", "\"id\":\"hq\"");
+            assertThat(listing.body()).contains("\"atlas\":\"/themes/foundry/variants/canvas/atlas.json\"");
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/foundry/variants/hq/style.css", "").statusCode()).isEqualTo(404);
             assertThat(variant.statusCode()).isEqualTo(200);
             assertThat(variant.headers().firstValue("Content-Type")).contains("text/css; charset=utf-8");
             assertThat(missing.statusCode()).isEqualTo(404);
+        }
+    }
+
+    @Test
+    void removedWorldRendererIsDiagnosedWithoutOverwritingLocalThemeFiles() throws Exception {
+        final Path home = directory.resolve("renderer-home");
+        final Path theme = Files.createDirectories(home.resolve("themes/legacy"));
+        final String descriptor = """
+                {"name":"Local palette","defaultVariant":"old","variants":[
+                  {"id":"old","name":"Old renderer","stylesheet":"theme.css","renderer":"css"}]}
+                """;
+        Files.writeString(theme.resolve("theme.css"), ":root {--world-near:#123456;}");
+        Files.writeString(theme.resolve("theme.json"), descriptor);
+        try (CreatorServer creator = start(directory.resolve("project.json"), home)) {
+            final HttpResponse<String> response = request(creator.baseUri(), "GET", "/api/themes", "");
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains("Theme renderer 'css' is not supported. Use canvas or character.", "Renderer Canvas");
+            assertThat(Files.readString(theme.resolve("theme.json"))).isEqualTo(descriptor);
+            assertThat(Files.readString(theme.resolve("theme.css"))).isEqualTo(":root {--world-near:#123456;}");
+        }
+    }
+
+    @Test
+    void characterThemeIsOptionalInstallableAndEditableWithoutChangingTheProject() throws Exception {
+        final Path home = directory.resolve("character-home");
+        final Path project = directory.resolve("project.json");
+        try (CreatorServer creator = start(project, home)) {
+            final String before = Files.readString(project);
+            final HttpResponse<String> catalog = request(creator.baseUri(), "GET", "/api/themes", "");
+            assertThat(catalog.body()).contains("\"id\":\"signal/theme.css\"", "\"renderer\":\"character\"",
+                    "\"name\":\"Renderer Characters\"", "\"defaultVariant\":\"canvas\"",
+                    "\"id\":\"circuit/theme.css\"");
+            assertThat(request(creator.baseUri(), "GET", "/world-character.js", "").statusCode()).isEqualTo(200);
+            assertThat(request(creator.baseUri(), "POST", "/api/themes",
+                    "{\"action\":\"install\",\"id\":\"signal/theme.css\"}").statusCode()).isEqualTo(200);
+            final Path stylesheet = home.resolve("themes/signal/theme.css");
+            assertThat(Files.readString(stylesheet)).contains("--character-cell", "--character-ground");
+            Files.writeString(stylesheet, ":root { --character-cream: #abcdef; --character-cell: 6; }");
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/signal/theme.css", "").body())
+                    .contains("#abcdef", "--character-cell: 6");
+            request(creator.baseUri(), "POST", "/api/themes", "{\"action\":\"install\",\"id\":\"signal/theme.css\"}");
+            assertThat(Files.readString(stylesheet)).contains("#abcdef");
+            assertThat(request(creator.baseUri(), "POST", "/api/themes",
+                    "{\"action\":\"install\",\"id\":\"circuit/theme.css\"}").statusCode()).isEqualTo(200);
+            assertThat(Files.readString(home.resolve("themes/circuit/theme.css"))).contains("--character-circuit: 1");
+            assertThat(Files.readString(home.resolve("themes/circuit/theme.json")))
+                    .contains("Renderer Characters", "Renderer Glyphs", "Renderer Pixels");
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/circuit/ascii.css", "").body())
+                    .contains("--character-background: .45", "--character-pixels: 0");
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/circuit/glyphs.css", "").body())
+                    .contains("--character-background: 0", "--character-pixels: 0");
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/circuit/pixels.css", "").body())
+                    .contains("--character-pixels: 1");
+            assertThat(Files.readString(project)).isEqualTo(before);
         }
     }
 
@@ -1700,6 +1763,25 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
+    void themeCopiesCreateNestedFoldersWithoutReplacingOrFollowingExistingFiles() throws Exception {
+        final Path home=directory.resolve("home");
+        try(CreatorServer creator=start(directory.resolve("project.json"),home)) {
+            final String copy="{\"action\":\"copy\",\"id\":\"studio/night/theme.css\",\"content\":\"body { color: teal; }\"}";
+            assertThat(request(creator.baseUri(),"POST","/api/themes",copy).statusCode()).isEqualTo(200);
+            final Path file=home.resolve("themes/studio/night/theme.css");
+            assertThat(Files.readString(file)).isEqualTo("body { color: teal; }");
+            assertThat(request(creator.baseUri(),"POST","/api/themes",copy).statusCode()).isEqualTo(400);
+            assertThat(Files.readString(file)).isEqualTo("body { color: teal; }");
+            Files.delete(file);
+            final Path outside=directory.resolve("outside.css");
+            Files.writeString(outside,"outside");
+            Files.createSymbolicLink(file,outside);
+            assertThat(request(creator.baseUri(),"POST","/api/themes",copy).statusCode()).isEqualTo(400);
+            assertThat(Files.readString(outside)).isEqualTo("outside");
+        }
+    }
+
+    @Test
     void themesInstallEmbeddedCatalogWithoutReplacingLocalFilesAndNormalizeLegacySettings() throws Exception {
         final Path home = directory.resolve("home");
         final Path themes = Files.createDirectories(home.resolve("themes"));
@@ -1722,7 +1804,9 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
             assertThat(retried.statusCode()).isEqualTo(200);
             assertThat(retried.body()).contains("\"installed\":0");
             assertThat(Files.readString(themes.resolve("foundry/theme.css"))).isEqualTo("/* local */");
-            assertThat(Files.readString(themes.resolve("foundry/theme.json"))).contains("Renderer CSS", "Renderer Canvas");
+            assertThat(Files.readString(themes.resolve("foundry/theme.json"))).contains("Renderer Canvas").doesNotContain("Renderer CSS");
+            assertThat(request(creator.baseUri(), "GET", "/api/themes/files/foundry/variants/canvas/style.css", "").body())
+                    .isEqualTo(":root { --canvas-resolution: 2; }\n");
             final String root="/dev/nanonative/railix/creator/assets/themes/foundry/";
             try(var descriptor=CreatorServer.class.getResourceAsStream(root+"theme.json")) {
                 assertThat(Files.readAllBytes(themes.resolve("foundry/theme.json"))).isEqualTo(descriptor.readAllBytes());
@@ -1925,6 +2009,7 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
             assertThat(payload.values().get("workspace")).isEqualTo(RailixValue.object(
                     java.util.Map.of(
                             "project_path", RailixValue.string(project.toString()),
+                            "source_limit_bytes", RailixValue.number(dev.nanonative.railix.core.value.RailixData.DEFAULT_MAX_SOURCE_BYTES),
                             "flow_count", RailixValue.number(0),
                             "step_count", RailixValue.number(1)
                     )
@@ -2957,7 +3042,7 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
-    void persistenceFailureStopsCandidateAndKeepsRunningApplication() throws Exception {
+    void persistenceFailureStopsCandidateAndRestartsPreviousApplication() throws Exception {
         final Path project = directory.resolve("project.json");
         try (CreatorServer creator = start(project)) {
             final RailixValue.ObjectValue before = application(creator.baseUri());
@@ -2972,8 +3057,13 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
             );
 
             assertThat(response.statusCode()).isEqualTo(500);
-            assertThat(response.body()).contains("\"message\":\"Project could not be persisted.\"");
-            assertThat(application(creator.baseUri())).isEqualTo(before);
+            assertThat(response.body()).contains("Project could not be persisted.", "\"recovery\":\"restarted\"");
+            final RailixValue.ObjectValue after = application(creator.baseUri());
+            assertThat(number(after, "pid")).isNotEqualTo(number(before, "pid"));
+            assertThat(awaitExit(number(before, "pid"))).isTrue();
+            assertThat(string(after, "state")).isEqualTo("running");
+            assertThat(string(after, "fingerprint")).isEqualTo(string(before, "fingerprint"));
+            assertThat(string(after, "build_path")).isEqualTo(string(before, "build_path"));
         }
     }
 
@@ -3166,8 +3256,7 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
             assertThat(response.body()).contains(
                     "definition.inputs",
                     "input.type",
-                    "valueAt(operation, locator)",
-                    "setAt(selectedOperation(), locator"
+                    "valueAt(operation, locator)"
             ).doesNotContain(
                     "railix.field-manipulation",
                     "primitive_pipeline",
@@ -3356,7 +3445,7 @@ abstract class CreatorServerE2eSupport {
         RailixValue.ObjectValue state;
         do {
             state = examples(baseUri);
-            if (number(state, "completed") == 1) {
+            if (number(state, "total") > 0 && number(state, "completed") == number(state, "total")) {
                 return request(baseUri, "GET", "/api/examples/" + id + "/view", "");
             }
             Thread.sleep(20);

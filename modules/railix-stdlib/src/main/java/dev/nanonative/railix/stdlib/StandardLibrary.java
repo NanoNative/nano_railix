@@ -21,6 +21,11 @@ public final class StandardLibrary {
     }
 
     public static StepCatalog catalog() {
+        return StepCatalog.of(StandardLibrary.class, definitions().toArray(StepDefinition[]::new));
+    }
+
+    /** Returns the built-in authoring contracts, also used by the isolated configuration validator. */
+    public static List<StepDefinition> definitions() {
         final List<StepDefinition> definitions = new ArrayList<>(List.of(
                 app(),
                 cli(),
@@ -32,7 +37,7 @@ public final class StandardLibrary {
                 switchStep()
         ));
         definitions.addAll(PrimitiveSteps.definitions());
-        return StepCatalog.of(definitions.toArray(StepDefinition[]::new));
+        return List.copyOf(definitions);
     }
 
     private static StepDefinition app() {
@@ -63,7 +68,7 @@ public final class StandardLibrary {
                 .result("exit_code", ValueShape.NUMBER, RailixValue.number(0))
                 .response("output", "result")
                 .response("status", "exit_code")
-                .run(StandardStepHandlers.Cli.class);
+                .implementation(StandardStepHandlers.Cli.class);
     }
 
     private static StepDefinition http() {
@@ -73,6 +78,10 @@ public final class StandardLibrary {
                 .maximumInstances(1)
                 .source("application.http")
                 .receive("request", ValueShape.OBJECT)
+                .input("host", Input.json(ValueShape.STRING).defaultValue(RailixValue.string("127.0.0.1")))
+                .input("port", Input.json(ValueShape.NUMBER).between(RailixValue.number(0), RailixValue.number(65535))
+                        .defaultValue(RailixValue.number(8080))
+                        .validation(Integer.class, port -> java.util.Optional.empty()))
                 .input("target", Input.path(WRITE)
                         .defaultPath("context", "payload", "request"))
                 .exampleTarget("target")
@@ -89,7 +98,7 @@ public final class StandardLibrary {
                 .response("body", "body")
                 .response("headers", "headers")
                 .response("status", "status")
-                .run(HttpStepHandlers.Trigger.class, "jdk.httpserver");
+                .implementation(HttpStepHandlers.Trigger.class, "jdk.httpserver");
     }
 
     private static StepDefinition httpClient() {
@@ -102,8 +111,10 @@ public final class StandardLibrary {
                         .defaultValue(RailixValue.string("GET")))
                 .input("headers", Input.json(ValueShape.OBJECT)
                         .defaultValue(RailixValue.object(java.util.Map.of())))
+                .input("connection", Input.options(Input.option("private"), Input.option("shared"))
+                        .defaultOption("private"))
                 .returns("response", ValueShape.OBJECT)
-                .run(HttpStepHandlers.Client.class, "java.net.http");
+                .implementation(HttpStepHandlers.Client.class, "java.net.http");
     }
 
     private static StepDefinition fieldManipulation() {
@@ -121,7 +132,7 @@ public final class StandardLibrary {
                                 .fromOwned("source")
                 ).defaultCandidate("current"))
                 .input("steps", Input.steps(StepDefinition.ValueSource.from("value")))
-                .run(StandardStepHandlers.FieldManipulation.class);
+                .implementation(StandardStepHandlers.FieldManipulation.class);
     }
 
     private static StepDefinition filter() {
@@ -130,7 +141,7 @@ public final class StandardLibrary {
                 .primaryOutcome("match")
                 .input("conditions", Input.candidates(fieldOrLiteral()).defaultCandidate("field"))
                 .outcome("otherwise")
-                .run(StandardStepHandlers.Filter.class);
+                .implementation(StandardStepHandlers.Filter.class);
     }
 
     private static StepDefinition choice() {
@@ -139,7 +150,7 @@ public final class StandardLibrary {
                 .primaryOutcome("match")
                 .input("conditions", Input.matcherGroups(fieldOrLiteral()))
                 .outcome("otherwise")
-                .run(StandardStepHandlers.Choice.class);
+                .implementation(StandardStepHandlers.Choice.class);
     }
 
     private static StepDefinition switchStep() {
@@ -149,7 +160,7 @@ public final class StandardLibrary {
                 .input("cases", Input.candidates(fieldOrLiteral(
                         Input.json(ValueShape.ANY).defaultValue(RailixValue.nullValue())
                 )).withAuthoredOutcomes())
-                .run(StandardStepHandlers.Switch.class);
+                .implementation(StandardStepHandlers.Switch.class);
     }
 
     private static StepDefinition.Option[] fieldOrLiteral() {

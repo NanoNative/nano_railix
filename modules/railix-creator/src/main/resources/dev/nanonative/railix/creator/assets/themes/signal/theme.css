@@ -1,0 +1,23 @@
+/* Editable materials. One geometry/camera path serves every character theme. */
+:root {
+  --world-buildings: 1;
+  --world-building-height: 112;
+  --character-cell: 4;
+  --character-ground: #1b302c;
+  --character-edge: #172c30;
+  --character-metal: #5c7872;
+  --character-cream: #d1dbb9;
+  --character-roof: #a4b9a4;
+  --character-dark: #193739;
+  --character-mint: #a2e4b9;
+  --character-teal: #529f9c;
+  --character-copper: #d2a773;
+  --character-warning: #f4af69;
+  --character-error: #dd7367;
+  --world-near: #344a40;
+  --world-far: #172c30;
+  --machine-light: #d1dbb9;
+  --machine-shade: #a4b9a4;
+  --belt-rim: #529f9c;
+  --belt-bed: #193739;
+}

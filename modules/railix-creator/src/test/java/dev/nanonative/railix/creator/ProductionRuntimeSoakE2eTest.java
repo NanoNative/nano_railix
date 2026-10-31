@@ -248,7 +248,7 @@ final class ProductionRuntimeSoakE2eTest {
         return StepDefinition.named("production.multi-write", "1")
                 .input("first", Input.path(WRITE).defaultPath("context", "payload", "first"))
                 .input("second", Input.path(WRITE).defaultPath("context", "payload", "second"))
-                .run(ProductionRuntimeMultiWriteStep.class);
+                .implementation(ProductionRuntimeMultiWriteStep.class);
     }
 
     private static String multiWriteChain(final int steps) {

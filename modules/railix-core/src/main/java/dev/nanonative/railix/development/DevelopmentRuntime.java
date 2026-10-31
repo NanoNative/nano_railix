@@ -5,7 +5,7 @@ import com.sun.net.httpserver.HttpServer;
 import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.project.RuntimeApplication;
 import dev.nanonative.railix.core.runtime.RunResult;
-import dev.nanonative.railix.core.step.StepHandler;
+import dev.nanonative.railix.core.project.WorkflowRuntime.StepCall;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixData;
@@ -28,6 +28,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Arrays;
@@ -42,8 +43,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLongArray;
@@ -267,48 +271,51 @@ public final class DevelopmentRuntime {
 
         /** Invokes one graph handler and records its resolved values and explicit result. */
         public static StepResult invoke(
+                final StepInput configuration,
                 final StepInput input,
-                final StepHandler handler
+                final StepCall handler
         ) throws InterruptedException {
             final Trace trace = CURRENT.get();
             if (trace == null || !trace.recording) {
-                return handler.run(input);
+                return handler.process(configuration, input);
             }
             final Pending call = trace.calls.peek();
             if (call == null || call.entered) {
                 throw new IllegalStateException("Trace has no pending graph Step invocation.");
             }
-            return trace.invoke(call, false, input, handler);
+            return trace.invoke(call, false, configuration, input, handler);
         }
 
         /** Invokes one nested handler under its stable parent-relative identity. */
         public static StepResult invoke(
                 final String invocation,
                 final String use,
+                final StepInput configuration,
                 final StepInput input,
-                final StepHandler handler
+                final StepCall handler
         ) throws InterruptedException {
             final Trace trace = CURRENT.get();
             if (trace == null || !trace.recording) {
-                return handler.run(input);
+                return handler.process(configuration, input);
             }
             final Pending call = trace.open(-1, invocation, use, null);
             return trace.recording
-                    ? trace.invoke(call, true, input, handler)
-                    : handler.run(input);
+                    ? trace.invoke(call, true, configuration, input, handler)
+                    : handler.process(configuration, input);
         }
 
         private StepResult invoke(
                 final Pending call,
                 final boolean nested,
+                final StepInput configuration,
                 final StepInput input,
-                final StepHandler handler
+                final StepCall handler
         ) throws InterruptedException {
             call.entered = true;
             call.inputs = input.values();
             call.options = input.options();
             try {
-                final StepResult result = handler.run(input);
+                final StepResult result = handler.process(configuration, input);
                 call.result = result;
                 if (nested) {
                     close(call.invocation, result == null ? "failed" : "succeeded",
@@ -321,6 +328,7 @@ public final class DevelopmentRuntime {
                 }
                 throw exception;
             } catch (final RuntimeException exception) {
+                call.exception = exception;
                 if (nested) {
                     close(call.invocation, "failed", "", null);
                 }
@@ -367,6 +375,21 @@ public final class DevelopmentRuntime {
             value.put("id", RailixValue.string(call.invocation));
             value.put("use", RailixValue.string(call.use));
             value.put("status", RailixValue.string(status));
+            if (call.exception != null) {
+                final List<RailixValue> causes = new ArrayList<>();
+                final Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+                for (Throwable failure = call.exception; failure != null && seen.add(failure) && causes.size() < 8;
+                     failure = failure.getCause()) {
+                    causes.add(RailixValue.object(Map.of(
+                            "type", RailixValue.string(failure.getClass().getName()),
+                            "frames", RailixValue.array(java.util.Arrays.stream(failure.getStackTrace()).limit(32)
+                                    .<RailixValue>map(frame -> RailixValue.string(frame.toString())).toList()))));
+                }
+                final Map<String, RailixValue> exception = new LinkedHashMap<>(
+                        ((RailixValue.ObjectValue) causes.getFirst()).values());
+                exception.put("causes", RailixValue.array(causes.subList(1, causes.size())));
+                value.put("exception", RailixValue.object(exception));
+            }
             if (!outcome.isEmpty()) {
                 value.put("outcome", RailixValue.string(outcome));
             }
@@ -565,6 +588,7 @@ public final class DevelopmentRuntime {
             private Map<String, RailixValue> inputs = Map.of();
             private Map<String, String> options = Map.of();
             private StepResult result;
+            private RuntimeException exception;
             private boolean entered;
 
             private Pending(
@@ -1510,7 +1534,7 @@ public final class DevelopmentRuntime {
      * Serves authenticated Creator development endpoints for one already compiled application.
      * The Creator writes bounded startup and activation frames to stdin, then keeps the pipe open for ownership.
      *
-     * @param application immutable generated application
+     * @param application compiled application with its own Step lifecycle
      * @return {@code 0} after normal owner closure, {@code 2} for an invalid control frame,
      * {@code 3} for startup or activation failure, {@code 4} for retained descendants, {@code 5} for shutdown
      * failure, or {@code 6} when an Example worker cannot be reclaimed cooperatively
@@ -1520,12 +1544,30 @@ public final class DevelopmentRuntime {
         if (application == null) {
             throw new IllegalArgumentException("Development application cannot be Java null.");
         }
+        boolean initialized = false;
+        boolean descendantsTerminated = false;
+        try {
+            initialized = application.start() instanceof RunResult.Succeeded;
+        } finally {
+            if (!initialized) {
+                descendantsTerminated = terminateDescendants();
+            }
+        }
+        if (!initialized) {
+            System.err.println("Cannot initialize application Steps.");
+            return descendantsTerminated ? 3 : 4;
+        }
         final Startup startup;
         try {
             startup = startup();
         } catch (final IOException exception) {
             System.err.println("Cannot read Creator startup frame: " + exception.getMessage());
-            if (!terminateDescendants()) {
+            try {
+                application.stop();
+            } finally {
+                descendantsTerminated = terminateDescendants();
+            }
+            if (!descendantsTerminated) {
                 System.err.println("Development application descendants did not terminate.");
                 return 4;
             }
@@ -1540,7 +1582,6 @@ public final class DevelopmentRuntime {
         final AtomicBoolean exampleFailure = new AtomicBoolean();
         final AtomicBoolean controlFailure = new AtomicBoolean();
         final AtomicBoolean activationFailure = new AtomicBoolean();
-        boolean descendantsTerminated = false;
         int status = 0;
         try {
             runtimeDirectory = ExampleSuite.prepareRuntime();
@@ -1565,16 +1606,22 @@ public final class DevelopmentRuntime {
                 Thread.ofVirtual().name("railix-development-owner").start(() -> {
                     boolean ownsApplication = false;
                     try (callback) {
-                        if (activate(startup, started)) {
-                            synchronized (lifecycle) {
-                                if (stop.getCount() == 0) {
-                                    throw new IllegalStateException(
-                                            "Development application stopped before activation acknowledgement."
-                                    );
+                        if (activate(startup)) {
+                            if (application.launch(List.of()) instanceof RunResult.Succeeded) {
+                                started.activate();
+                                synchronized (lifecycle) {
+                                    if (stop.getCount() == 0) {
+                                        throw new IllegalStateException(
+                                                "Development application stopped before activation acknowledgement."
+                                        );
+                                    }
+                                    activated(startup, callback);
                                 }
-                                activated(startup, callback);
+                                ownsApplication = true;
+                            } else {
+                                activationFailure.set(true);
+                                System.err.println("Cannot activate application sources.");
                             }
-                            ownsApplication = true;
                         }
                     } catch (final IOException exception) {
                         controlFailure.set(true);
@@ -1631,22 +1678,29 @@ public final class DevelopmentRuntime {
                 try {
                     removeShutdownHook(shutdownHook);
                 } finally {
-                    descendantsTerminated = terminateDescendants();
-                    if (descendantsTerminated && artifactLease != null) {
-                        try {
-                            artifactLease.close();
-                            if (runtimeStopped) {
-                                ExampleSuite.deleteRuntime(runtimeDirectory);
-                            }
-                        } catch (final IOException exception) {
-                            System.err.println("Cannot release development artifact lease: " + exception.getMessage());
-                            if (status == 0) {
-                                status = 5;
+                    try {
+                        if (runtime == null) {
+                            final RunResult stopped = status == 0 ? application.stop() : application.stop(Duration.ZERO);
+                            if (!(stopped instanceof RunResult.Succeeded) && status == 0) status = 5;
+                        }
+                    } finally {
+                        descendantsTerminated = terminateDescendants();
+                        if (descendantsTerminated && artifactLease != null) {
+                            try {
+                                artifactLease.close();
+                                if (runtimeStopped) {
+                                    ExampleSuite.deleteRuntime(runtimeDirectory);
+                                }
+                            } catch (final IOException exception) {
+                                System.err.println("Cannot release development artifact lease: " + exception.getMessage());
+                                if (status == 0) {
+                                    status = 5;
+                                }
                             }
                         }
-                    }
-                    if (interrupted) {
-                        Thread.currentThread().interrupt();
+                        if (interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
                     }
                 }
             }
@@ -1710,7 +1764,7 @@ public final class DevelopmentRuntime {
         }
     }
 
-    private static boolean activate(final Startup startup, final RuntimeServer runtime) throws IOException {
+    private static boolean activate(final Startup startup) throws IOException {
         final Optional<String> candidate = frame("activation", true);
         if (candidate.isEmpty()) {
             return false;
@@ -1724,7 +1778,6 @@ public final class DevelopmentRuntime {
         )) {
             throw new IOException("Creator activation frame is invalid.");
         }
-        runtime.activate();
         return true;
     }
 
@@ -2617,6 +2670,10 @@ public final class DevelopmentRuntime {
             RuntimeException failure = null;
             try {
                 if (open.compareAndSet(true, false)) {
+                    final long deadline = System.nanoTime() + RuntimeApplication.DEFAULT_DRAIN_BUDGET.toNanos();
+                    final FutureTask<RunResult> draining = new FutureTask<>(() -> application.stop(
+                            Duration.ofNanos(Math.max(0, deadline - System.nanoTime()))));
+                    Thread.ofVirtual().name("railix-development-drain").start(draining);
                     final CountDownLatch projection = stepProjection.get();
                     if (projection != null) {
                         projection.countDown();
@@ -2636,8 +2693,15 @@ public final class DevelopmentRuntime {
                         }
                     } finally {
                         try {
-                            Arrays.fill(authorization, (byte) 0);
+                            if (failure != null) draining.cancel(true);
+                            if (!(awaitDrain(draining, deadline) instanceof RunResult.Succeeded)) {
+                                throw new IllegalStateException("Application work did not drain successfully.");
+                            }
+                        } catch (final RuntimeException exception) {
+                            if (failure == null) failure = exception;
+                            else failure.addSuppressed(exception);
                         } finally {
+                            Arrays.fill(authorization, (byte) 0);
                             closed.countDown();
                         }
                     }
@@ -2655,6 +2719,27 @@ public final class DevelopmentRuntime {
             }
         }
 
+        private static RunResult awaitDrain(final FutureTask<RunResult> draining, final long deadline) {
+            boolean interrupted = Thread.interrupted();
+            try {
+                while (true) {
+                    try {
+                        return draining.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+                    } catch (final InterruptedException exception) {
+                        interrupted = true;
+                    } catch (final TimeoutException exception) {
+                        throw new IllegalStateException("Application drain deadline expired.", exception);
+                    } catch (final ExecutionException exception) {
+                        if (exception.getCause() instanceof Error fatal) throw fatal;
+                        throw new IllegalStateException("Application shutdown failed.", exception.getCause());
+                    }
+                }
+            } finally {
+                draining.cancel(true);
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+        }
+
         private static void release(
                 final HttpServer server,
                 final ExecutorService executor
@@ -2669,8 +2754,13 @@ public final class DevelopmentRuntime {
         ) {
             boolean interrupted = false;
             try {
+                if (executor != null && drainSeconds > 0) {
+                    // Drain actual handlers, not idle or disconnected HTTP exchanges.
+                    executor.shutdown();
+                    interrupted |= await(executor, drainSeconds, TimeUnit.SECONDS);
+                }
                 if (server != null) {
-                    server.stop(drainSeconds);
+                    server.stop(0);
                 }
             } finally {
                 if (executor != null) {

@@ -250,9 +250,16 @@ final class RailixPackageIT {
             final long pid = number(object(request(creator.uri(), "GET", "/api/application", "").body()), "pid");
             assertThat(pid).isPositive();
             final String project = Files.readString(directory.resolve("project.json"));
-            assertThat(request(creator.uri(), "GET", "/api/themes", "").body()).contains("Railix Foundry", "Renderer Canvas", "Renderer CSS");
+            assertThat(request(creator.uri(), "GET", "/api/themes", "").body()).contains("Railix Foundry", "Renderer Canvas",
+                    "Railix Signal (experiment)", "Railix Circuit (experiment)", "Renderer Characters", "Renderer Glyphs", "Renderer Pixels");
             assertThat(request(creator.uri(), "GET", "/world-canvas.js", "").body()).contains("class RailixCanvas");
+            assertThat(request(creator.uri(), "GET", "/world-character.js", "").body()).contains("class RailixCharacter");
+            assertThat(request(creator.uri(), "GET", "/api/themes/files/circuit/theme.css", "").body()).contains("--character-circuit: 1");
+            assertThat(request(creator.uri(), "GET", "/api/themes/files/signal/variants/glyphs.css", "").body()).contains("--character-background: 0");
             assertThat(request(creator.uri(), "GET", "/api/themes/files/foundry/variants/canvas/atlas.json", "").statusCode()).isEqualTo(200);
+            final var builtInSprite = request(creator.uri(), "GET", "/api/themes/files/foundry/variants/canvas/region.svg", "");
+            assertThat(builtInSprite.statusCode()).isEqualTo(200);
+            assertThat(builtInSprite.headers().firstValue("content-type")).contains("image/svg+xml");
             assertThat(request(creator.uri(), "GET", "/api/sounds", "").body()).contains("builtin:");
             final Path theme = Files.createDirectories(home.resolve(".railix/themes/user/atelier"));
             Files.createDirectories(theme.resolve("assets"));
@@ -513,7 +520,7 @@ final class RailixPackageIT {
     }
 
     @Test
-    void packagedExecutableRejectsAProjectWithoutCommandLineIngress() throws Exception {
+    void packagedExecutableExitsNormallyWithoutAnyActiveTrigger() throws Exception {
         Files.writeString(
                 directory.resolve("railix.project.json"),
                 """
@@ -524,11 +531,7 @@ final class RailixPackageIT {
                 StandardCharsets.UTF_8
         );
 
-        assertThat(runExecutable(Map.of(), "run")).isEqualTo(new ProcessResult(
-                2,
-                "RUN_SOURCE_UNKNOWN source "
-                        + "Project has no Trigger for source: application.arguments."
-        ));
+        assertThat(runExecutable(Map.of(), "run")).isEqualTo(new ProcessResult(0, ""));
     }
 
     @Test
@@ -626,8 +629,7 @@ final class RailixPackageIT {
         assertThat(runExecutable(Map.of())).isEqualTo(new ProcessResult(
                 2,
                 "Usage: railix creator [project-file] [port]\n"
-                        + "       railix run [arguments...]\n"
-                        + "       railix serve [port]"
+                        + "       railix run [arguments...]"
         ));
     }
 
@@ -968,16 +970,14 @@ final class RailixPackageIT {
         final String manifest = RailixJson.write(manifestValue);
         final Path classes = compileBundleClass(root, className, """
                 package thirdparty.sqlprobe;
-                import dev.nanonative.railix.core.step.StepHandler;
                 import dev.nanonative.railix.core.step.StepInput;
                 import dev.nanonative.railix.core.step.StepResult;
                 import dev.nanonative.railix.core.value.RailixValue;
                 import java.sql.JDBCType;
-                public final class SqlProbeStep implements StepHandler {
+                public final class SqlProbeStep {
                     public SqlProbeStep() {
                     }
-                    @Override
-                    public StepResult run(final StepInput input) {
+                    public static StepResult process(final StepInput configuration, final StepInput input) {
                         return StepResult.outcome(input.primaryOutcome())
                                 .write("target", RailixValue.number(
                                         JDBCType.VARCHAR.getVendorTypeNumber().longValue()

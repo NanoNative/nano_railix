@@ -237,8 +237,13 @@ final class ExampleSuite implements AutoCloseable {
     }
 
     Optional<RailixValue.ObjectValue> query(final RailixValue.ObjectValue query) throws ProjectionUnavailable {
-        DevelopmentRuntime.queryFields(query, Set.of("groups", "example"));
+        DevelopmentRuntime.queryFields(query, Set.of("groups", "example", "cases"));
+        final boolean includeCases = query.values().get("cases") instanceof RailixValue.BooleanValue flag && flag.value();
+        if (query.values().containsKey("cases") && !(query.values().get("cases") instanceof RailixValue.BooleanValue)) {
+            throw new IllegalArgumentException("cases must be a boolean.");
+        }
         final Map<String, int[]> requested = DevelopmentRuntime.queryRanges(query.values().get("groups"), nodeCount);
+        if (includeCases && requested.size() != 1) throw new IllegalArgumentException("Case selection requires one group.");
         final String id = query.values().containsKey("example")
                 ? DevelopmentRuntime.queryIdentifier(query.values().get("example")) : null;
         final ExampleCase example = id == null ? null : casesById.get(id);
@@ -248,6 +253,7 @@ final class ExampleSuite implements AutoCloseable {
         final long[] covered;
         final int[] selected;
         final long snapshotRevision;
+        final Map<String, int[]> reachedCases;
         synchronized (this) {
             if (closed.get()) {
                 throw new ProjectionUnavailable("closed");
@@ -255,6 +261,12 @@ final class ExampleSuite implements AutoCloseable {
             covered = coverage.toLongArray();
             selected = example == null ? null : example.reached;
             snapshotRevision = revision;
+            reachedCases = includeCases ? new LinkedHashMap<>() : Map.of();
+            if (includeCases) {
+                for (final ExampleCase candidate : cases) {
+                    if (candidate.reached != null) reachedCases.put(candidate.id, candidate.reached);
+                }
+            }
         }
         final Map<String, RailixValue> groups = new LinkedHashMap<>();
         requested.forEach((group, ranges) -> {
@@ -263,6 +275,9 @@ final class ExampleSuite implements AutoCloseable {
             if (selected != null) {
                 counts.put("selected_count", RailixValue.number(count(selected, ranges)));
             }
+            if (includeCases) counts.put("case_ids", RailixValue.array(reachedCases.entrySet().stream()
+                    .filter(candidate -> count(candidate.getValue(), ranges) > 0)
+                    .<RailixValue>map(candidate -> RailixValue.string(candidate.getKey())).toList()));
             groups.put(group, RailixValue.object(counts));
         });
         final Map<String, RailixValue> response = new LinkedHashMap<>();
@@ -462,7 +477,42 @@ final class ExampleSuite implements AutoCloseable {
         if (!example.message.isEmpty()) {
             value.put("message", RailixValue.string(example.message));
         }
+        if (!example.result.values().isEmpty()) {
+            value.put("result", example.result);
+        }
         return RailixValue.object(value);
+    }
+
+    /** Keeps only a bounded error header, never payloads, contexts or stack traces. */
+    static RailixValue.ObjectValue errorSummary(final RailixValue.ObjectValue event) {
+        final RailixValue.ObjectValue problem;
+        final String kind;
+        if (event.values().get("diagnostics") instanceof RailixValue.ArrayValue diagnostics
+                && !diagnostics.values().isEmpty()
+                && diagnostics.values().getFirst() instanceof RailixValue.ObjectValue diagnostic) {
+            problem = diagnostic;
+            kind = "diagnostics";
+        } else if (event.values().get("failure") instanceof RailixValue.ObjectValue failure) {
+            problem = failure;
+            kind = "failure";
+        } else if ("trace_error".equals(string(event, "type"))) {
+            problem = event;
+            kind = "diagnostics";
+        } else {
+            return RailixValue.object(Map.of());
+        }
+        final Map<String, RailixValue> fields = new LinkedHashMap<>();
+        for (final String key : List.of("code", "message", "path", "step")) {
+            if (problem.values().get(key) instanceof RailixValue.StringValue text) {
+                final int limit = "path".equals(key) ? 1024 : "message".equals(key) ? 512 : 128;
+                final int end = Math.min(limit, text.value().length());
+                fields.put(key, RailixValue.string(text.value().substring(0,
+                        end < text.value().length() && Character.isHighSurrogate(text.value().charAt(end - 1))
+                                ? end - 1 : end)));
+            }
+        }
+        return RailixValue.object(Map.of(kind, kind.equals("diagnostics")
+                ? RailixValue.array(List.of(RailixValue.object(fields))) : RailixValue.object(fields)));
     }
 
     Optional<InputStream> trace(
@@ -932,6 +982,7 @@ final class ExampleSuite implements AutoCloseable {
         example.terminalReserved = false;
         example.terminal = true;
         example.status = status;
+        example.result = errorSummary(event);
         message(example, failure);
         return true;
     }
@@ -967,6 +1018,8 @@ final class ExampleSuite implements AutoCloseable {
             example.terminalReserved = false;
             example.terminal = true;
             example.status = status;
+            if (RailixJson.parse(new String(terminal, StandardCharsets.UTF_8)) instanceof RailixJson.Parsed parsed
+                    && parsed.value() instanceof RailixValue.ObjectValue event) example.result = errorSummary(event);
         }
     }
 
@@ -1430,6 +1483,7 @@ final class ExampleSuite implements AutoCloseable {
         private int[] reached;
         private String status = "queued";
         private String message = "";
+        private RailixValue.ObjectValue result = RailixValue.object(Map.of());
         private int events;
         private long storageBytes;
         private long allocatedBytes;

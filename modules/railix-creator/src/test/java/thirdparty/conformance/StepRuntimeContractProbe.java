@@ -1,6 +1,5 @@
 package thirdparty.conformance;
 
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -10,7 +9,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Adversarial third-party Step implementation used by generated runtime contract tests. */
-public final class StepRuntimeContractProbe implements StepHandler {
+public final class StepRuntimeContractProbe {
     private static final AtomicReference<StepInput.Program> RETAINED = new AtomicReference<>();
 
     /** Creates one stateless probe. */
@@ -24,8 +23,7 @@ public final class StepRuntimeContractProbe implements StepHandler {
      * @return the selected result; the {@code graph-null} case deliberately violates this contract
      * @throws InterruptedException when the cancellation case is selected
      */
-    @Override
-    public StepResult run(final StepInput input) throws InterruptedException {
+    public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
         return switch (input.string("mode")) {
             case "primary" -> StepResult.outcome(input.primaryOutcome());
             case "graph-exception" -> exception(input);

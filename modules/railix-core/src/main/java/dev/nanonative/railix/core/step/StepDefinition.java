@@ -13,6 +13,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
+import java.math.BigDecimal;
 
 /**
  * One explicit authoring contract consumed by Creator and the compiler.
@@ -35,7 +37,7 @@ import java.util.Optional;
  *         .input("pipeline", Input.steps(
  *                 ValueSource.from("source")
  *                         .onMissing("missing")))
- *         .run(ChangeField.class);
+ *         .implementation(ChangeField.class);
  * }
  *
  * <p>A unary Step uses the same authored-input grammar for its own configuration:</p>
@@ -45,7 +47,7 @@ import java.util.Optional;
  *         .input("prefix", Input.json(ValueShape.STRING)
  *                 .defaultValue(RailixValue.string("railix:")))
  *         .returns("value", ValueShape.STRING)
- *         .run(Prefix.class);
+ *         .implementation(Prefix.class);
  * }
  */
 public final class StepDefinition {
@@ -192,13 +194,21 @@ public final class StepDefinition {
      * @param defaults zero or one project default
      * @param range zero or two inclusive NUMBER bounds
      * @param required whether the project must provide the value
+     * @param validations zero or one typed configuration validator
      */
     public record JsonInput(
             ValueShape shape,
             List<RailixValue> defaults,
             List<RailixValue> range,
-            boolean required
+            boolean required,
+            List<Validation> validations
     ) implements Input {
+        /** Creates a JSON declaration without custom validation. */
+        public JsonInput(final ValueShape shape, final List<RailixValue> defaults,
+                         final List<RailixValue> range, final boolean required) {
+            this(shape, defaults, range, required, List.of());
+        }
+
         /** Validates direct canonical construction; prefer {@link Input#json(ValueShape)}. */
         public JsonInput {
             if (shape == null) {
@@ -206,6 +216,11 @@ public final class StepDefinition {
             }
             defaults = StepDefinition.defaults(defaults, shape, "JSON input");
             range = StepDefinition.range(range, shape);
+            validations = List.copyOf(validations);
+            if (validations.size() > 1 || validations.stream().anyMatch(validation ->
+                    validation.type() != RailixValue.class && validation.shape() != shape)) {
+                throw new IllegalArgumentException("JSON validation type must match its shape and occur at most once.");
+            }
             if (!defaults.isEmpty() && !range.isEmpty() && !within(defaults.getFirst(), range)) {
                 throw new IllegalArgumentException("JSON input default must be within its range.");
             }
@@ -224,7 +239,7 @@ public final class StepDefinition {
             if (value == null) {
                 throw new IllegalArgumentException("JSON input default cannot be Java null.");
             }
-            return new JsonInput(shape, List.of(value), range, false);
+            return new JsonInput(shape, List.of(value), range, false, validations);
         }
 
         /**
@@ -233,7 +248,7 @@ public final class StepDefinition {
          * @return optional copy of this input
          */
         public JsonInput optional() {
-            return new JsonInput(shape, defaults, range, false);
+            return new JsonInput(shape, defaults, range, false, validations);
         }
 
         /**
@@ -247,7 +262,28 @@ public final class StepDefinition {
             if (minimum == null || maximum == null) {
                 throw new IllegalArgumentException("JSON input range cannot contain Java null.");
             }
-            return new JsonInput(shape, defaults, List.of(minimum, maximum), required);
+            return new JsonInput(shape, defaults, List.of(minimum, maximum), required, validations);
+        }
+
+        /**
+         * Returns a copy with one side-effect-free configuration validator, replacing any previous one.
+         * Supported types are Integer, Long, BigDecimal, String, Boolean, RailixValue and its array/object
+         * records. Integral conversions are exact. Validation applies to authored/defaulted values at
+         * compilation, not to request payloads; an absent optional input skips it.
+         *
+         * @param type Java value type matching the JSON shape
+         * @param function empty for acceptance, otherwise a nonblank user-facing error; never Java null
+         * @param <T> validator input type
+         * @return declaration retaining defaults, range and presence rules
+         * @throws IllegalArgumentException for a missing function or unsupported/mismatched type
+         */
+        public <T> JsonInput validation(final Class<T> type, final Function<? super T, Optional<String>> function) {
+            if (function == null) {
+                throw new IllegalArgumentException("Validation function is required.");
+            }
+            final Validation validation = new Validation(type, List.of(value -> function.apply(type.cast(
+                    Validation.convert(type, value)))));
+            return new JsonInput(shape, defaults, range, required, List.of(validation));
         }
 
         /**
@@ -267,6 +303,77 @@ public final class StepDefinition {
          */
         public boolean withinRange(final RailixValue value) {
             return range.isEmpty() || within(value, range);
+        }
+    }
+
+    /**
+     * Typed authoring-only validation. An empty function list is an installed metadata reference,
+     * resolved through the bundle's definitions entrypoint, never accepted as an executable check.
+     *
+     * @param type supported Java input type
+     * @param functions zero or one callback receiving an already type-checked value
+     */
+    public record Validation(Class<?> type, List<Function<RailixValue, Optional<String>>> functions) {
+        public Validation {
+            if (type == null || !List.of(Integer.class, Long.class, BigDecimal.class, String.class, Boolean.class,
+                    RailixValue.class, RailixValue.ArrayValue.class, RailixValue.ObjectValue.class).contains(type)) {
+                throw new IllegalArgumentException("Unsupported configuration validation type.");
+            }
+            functions = List.copyOf(functions);
+            if (functions.size() > 1) {
+                throw new IllegalArgumentException("Only one validation function is allowed.");
+            }
+        }
+
+        /** Returns the stable Java type name written to the contract, without loading arbitrary classes. */
+        public String typeName() {
+            return type.getSimpleName();
+        }
+
+        static Validation reference(final String name) {
+            final Class<?> type = switch (name) {
+                case "Integer" -> Integer.class;
+                case "Long" -> Long.class;
+                case "BigDecimal" -> BigDecimal.class;
+                case "String" -> String.class;
+                case "Boolean" -> Boolean.class;
+                case "RailixValue" -> RailixValue.class;
+                case "ArrayValue" -> RailixValue.ArrayValue.class;
+                case "ObjectValue" -> RailixValue.ObjectValue.class;
+                default -> throw new IllegalArgumentException("Unsupported configuration validation type: " + name);
+            };
+            return new Validation(type, List.of());
+        }
+
+        ValueShape shape() {
+            if (type == String.class) return ValueShape.STRING;
+            if (type == Boolean.class) return ValueShape.BOOLEAN;
+            if (type == RailixValue.ArrayValue.class) return ValueShape.ARRAY;
+            if (type == RailixValue.ObjectValue.class) return ValueShape.OBJECT;
+            return type == RailixValue.class ? ValueShape.ANY : ValueShape.NUMBER;
+        }
+
+        Optional<String> typeProblem(final RailixValue value) {
+            if (type == Integer.class || type == Long.class) {
+                final BigDecimal number = ((RailixValue.NumberValue) value).value();
+                final long minimum = type == Integer.class ? Integer.MIN_VALUE : Long.MIN_VALUE;
+                final long maximum = type == Integer.class ? Integer.MAX_VALUE : Long.MAX_VALUE;
+                if (number.stripTrailingZeros().scale() > 0
+                        || number.compareTo(BigDecimal.valueOf(minimum)) < 0
+                        || number.compareTo(BigDecimal.valueOf(maximum)) > 0) {
+                    return Optional.of("Value must be a whole number from " + minimum + " through " + maximum + ".");
+                }
+            }
+            return Optional.empty();
+        }
+
+        private static Object convert(final Class<?> type, final RailixValue value) {
+            if (type == Integer.class) return ((RailixValue.NumberValue) value).value().intValue();
+            if (type == Long.class) return ((RailixValue.NumberValue) value).value().longValue();
+            if (type == BigDecimal.class) return ((RailixValue.NumberValue) value).value();
+            if (type == String.class) return ((RailixValue.StringValue) value).value();
+            if (type == Boolean.class) return ((RailixValue.BooleanValue) value).value();
+            return value;
         }
     }
 
@@ -1370,15 +1477,19 @@ public final class StepDefinition {
         /**
          * Completes an executable Trigger or ordinary Step definition.
          *
-         * <p>The implementation must be a named class with an accessible no-argument constructor
-         * so the compiler can emit a concrete constructor call without reflection. Railix stores
-         * only the immutable class address; it never constructs or retains a handler here.</p>
+         * <p>The public named class supplies a public static {@code process(StepInput, StepInput)} method.
+         * The first argument is immutable compiled configuration; the second is invocation data.
+         * No constructor is required. The compiler checks the method signature without executing
+         * the class. Optional public static {@code pre} and {@code post} methods use the same
+         * signature and receive no invocation payload. They return the primary outcome without
+         * outputs or writes. Missing optional methods generate no hook call.</p>
          *
          * @param implementation stateless or thread-safe executable behavior owned by a named Java class
          * @return immutable executable Step definition
+         * @throws IllegalArgumentException when the class is null or has no stable source name
          */
-        public StepDefinition run(final Class<? extends StepHandler> implementation) {
-            return run(implementation, new String[0]);
+        public StepDefinition implementation(final Class<?> implementation) {
+            return implementation(implementation, new String[0]);
         }
 
         /**
@@ -1388,8 +1499,8 @@ public final class StepDefinition {
          * @param jdkModules Java SE/JDK modules required by the implementation
          * @return immutable executable Step definition
          */
-        public StepDefinition run(
-                final Class<? extends StepHandler> implementation,
+        public StepDefinition implementation(
+                final Class<?> implementation,
                 final String... jdkModules
         ) {
             if (implementation == null) {
@@ -1415,10 +1526,10 @@ public final class StepDefinition {
         }
 
         /** Binds an implementation address while decoding a verified bundle manifest. */
-        StepDefinition implementedBy(final String className, final String classEntry) {
+        StepDefinition implementedBy(final String className, final String classEntry, final List<String> modules) {
             return new StepDefinition(
                     this,
-                    new ImplementationAddress(className, classEntry, List.of())
+                    new ImplementationAddress(className, classEntry, modules)
             );
         }
     }

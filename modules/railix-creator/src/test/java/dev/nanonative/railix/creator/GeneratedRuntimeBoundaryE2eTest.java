@@ -175,7 +175,7 @@ final class GeneratedRuntimeBoundaryE2eTest {
                 .returns("value", returnShape, returnRefinement)
                 .input("invalid", StepDefinition.Input.json(ValueShape.BOOLEAN)
                         .defaultValue(RailixValue.bool(invalid)))
-                .run(RuntimeBoundaryProbeStep.class);
+                .implementation(RuntimeBoundaryProbeStep.class);
     }
 
     private static StepDefinition trigger(final String id, final String source, final boolean requiredResult) {
@@ -185,7 +185,7 @@ final class GeneratedRuntimeBoundaryE2eTest {
         if (requiredResult) {
             definition.requiredResult("result", ValueShape.STRING);
         }
-        return definition.run(RuntimeBoundaryProbeStep.class);
+        return definition.implementation(RuntimeBoundaryProbeStep.class);
     }
 
     private static String project() {

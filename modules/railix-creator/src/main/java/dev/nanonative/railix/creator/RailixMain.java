@@ -3,6 +3,7 @@ package dev.nanonative.railix.creator;
 import dev.nanonative.railix.core.project.CompileResult;
 import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.project.ProjectCompiler;
+import dev.nanonative.railix.core.project.RuntimeApplication;
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.stdlib.StandardLibrary;
 
@@ -13,16 +14,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /** Starts Railix Creator. Generated project applications are independent executable JARs. */
 public final class RailixMain {
     private static final int DEFAULT_PORT = 0;
-    private static final int DEFAULT_HTTP_PORT = 8080;
     private static final String CREATOR_USAGE = "Usage: railix creator [project-file] [port]";
-    private static final String SERVE_USAGE = "Usage: railix serve [port]";
     private static final String USAGE = CREATOR_USAGE + "\n"
-            + "       railix run [arguments...]\n"
-            + "       railix serve [port]";
+            + "       railix run [arguments...]";
 
     private RailixMain() {
     }
@@ -40,13 +39,12 @@ public final class RailixMain {
         }
         return switch (arguments[0]) {
             case "creator" -> creator(arguments);
-            case "run" -> runApplication(List.of(arguments).subList(1, arguments.length), false);
-            case "serve" -> serveApplication(arguments);
+            case "run" -> runApplication(List.of(arguments).subList(1, arguments.length));
             default -> reject("Unknown Railix command: " + arguments[0] + ".");
         };
     }
 
-    private static int runApplication(final List<String> arguments, final boolean http) {
+    private static int runApplication(final List<String> arguments) {
         try {
             final Path project = Path.of("railix.project.json");
             final String source = readApplicationProject(project);
@@ -64,13 +62,6 @@ public final class RailixMain {
                 return reject(diagnostic.code() + " " + diagnostic.path() + " " + diagnostic.message());
             }
             final CompileResult.Compiled compiled = (CompileResult.Compiled) result;
-            if (http && catalog.definitions().stream()
-                    .filter(definition -> definition.source()
-                            .map(value -> value.name().equals("application.http")).orElse(false))
-                    .flatMap(definition -> catalog.implementation(definition.id()).stream())
-                    .noneMatch(compiled.applicationDependencies()::contains)) {
-                return reject("RUN_SOURCE_UNKNOWN source Project has no Trigger for source: application.http.");
-            }
             final Path jar = ApplicationBuilder.buildProduction(absoluteProject, compiled).jar();
             final List<String> command = new ArrayList<>();
             command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
@@ -80,21 +71,6 @@ public final class RailixMain {
             return waitFor(new ProcessBuilder(command).inheritIO().start());
         } catch (final IOException exception) {
             return reject(exception.getMessage());
-        }
-    }
-
-    private static int serveApplication(final String[] arguments) {
-        if (arguments.length > 2) {
-            return reject(SERVE_USAGE);
-        }
-        try {
-            final int port = arguments.length > 1 ? Integer.parseInt(arguments[1]) : DEFAULT_HTTP_PORT;
-            if (port < 0 || port > 65535) {
-                return reject("HTTP port must be from 0 through 65535.");
-            }
-            return runApplication(List.of("--railix-http", "127.0.0.1", Integer.toString(port)), true);
-        } catch (final NumberFormatException exception) {
-            return reject("HTTP port must be a number.");
         }
     }
 
@@ -109,20 +85,15 @@ public final class RailixMain {
         }
     }
 
-    private static int waitFor(final Process process) throws IOException {
+    private static int waitFor(final Process process) {
         final Thread shutdown = Thread.ofPlatform()
                 .name("railix-run-shutdown")
-                .unstarted(process::destroyForcibly);
+                .unstarted(() -> stop(process));
         Runtime.getRuntime().addShutdownHook(shutdown);
         try {
             return process.waitFor();
         } catch (final InterruptedException exception) {
-            process.destroyForcibly();
-            try {
-                process.waitFor();
-            } catch (final InterruptedException cleanup) {
-                exception.addSuppressed(cleanup);
-            }
+            stop(process);
             Thread.currentThread().interrupt();
             return 130;
         } finally {
@@ -131,6 +102,29 @@ public final class RailixMain {
             } catch (final IllegalStateException ignored) {
                 // JVM shutdown owns the child from this point.
             }
+        }
+    }
+
+    private static void stop(final Process process) {
+        final long deadline = System.nanoTime() + RuntimeApplication.DEFAULT_DRAIN_BUDGET.toNanos();
+        boolean interrupted = Thread.interrupted();
+        try {
+            process.destroy();
+            while (process.isAlive()) {
+                final long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
+                    System.err.println("Application drain deadline expired; forcing termination.");
+                    process.destroyForcibly();
+                    return;
+                }
+                try {
+                    process.waitFor(remaining, TimeUnit.NANOSECONDS);
+                } catch (final InterruptedException exception) {
+                    interrupted = true;
+                }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
         }
     }
 

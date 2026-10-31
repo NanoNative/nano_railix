@@ -6,6 +6,9 @@ import dev.nanonative.railix.core.value.ValueShape;
 import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.development.ExampleSuiteTestAccess;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -44,6 +47,184 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupport {
     private static final int SNAPSHOT_REPLAY_STEPS = 40;
     private static final int SNAPSHOT_GATE_NODE = SNAPSHOT_REPLAY_STEPS + 3;
+
+    @Test
+    void longUnicodeFailureHeadersRemainBoundedAndSerializable() throws Exception {
+        final String prefix = "Step returned undeclared outcome: ";
+        final String outcome = "x".repeat(511 - prefix.length()) + "\uD83D\uDE80tail";
+        final Path project = directory.resolve("railix.project.json");
+        GeneratedApplicationFixture.installedCatalog(directory, List.of(
+                StepDefinition.named("test.outcome", "1").input("outcome", StepDefinition.Input.json(ValueShape.STRING))
+                        .implementation(DevelopmentRuntimeConformanceSteps.ConfiguredOutcome.class)),
+                DevelopmentRuntimeConformanceSteps.ConfiguredOutcome.class);
+        Files.writeString(project, """
+                {"format":1,"id":"unicode-error","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{"name":"unicode","payload":[]}]},
+                  {"id":"fault","use":"test.outcome","inputs":{"outcome":%s}}
+                ],"links":[{"from":"app.start","to":"command"},{"from":"command.next","to":"fault"},
+                  {"from":"fault.next","to":"end"}]}
+                """.formatted(RailixJson.write(RailixValue.string(outcome))), StandardCharsets.UTF_8);
+        try (final CreatorServer creator = start(project)) {
+            final var inventory = exampleCase(awaitExamples(creator, 1), "command:0");
+            final var result = (RailixValue.ObjectValue) inventory.values().get("result");
+            final var issue = (RailixValue.ObjectValue) ((RailixValue.ArrayValue) result.values().get("diagnostics"))
+                    .values().getFirst();
+            assertThat(string(issue, "message")).hasSize(511).startsWith(prefix);
+            assertThat(string(issue, "node")).isEqualTo("fault");
+            final var response = request(creator.baseUri(), "GET", "/api/examples/command:0/view", "");
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains("\uD83D\uDE80tail");
+        }
+    }
+
+    @Test
+    void failureInventoryLocatesTheStepWithoutReadingItsTraceOrRetainingContext() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        Files.writeString(project, CreatorEditorBrowserIT.attentionProject(), StandardCharsets.UTF_8);
+        try (final CreatorServer creator = start(project)) {
+            final var inventory = awaitExamples(creator, 2);
+            final var failed = exampleCase(inventory, "command:1");
+            final var result = (RailixValue.ObjectValue) failed.values().get("result");
+            final var issue = (RailixValue.ObjectValue) ((RailixValue.ArrayValue) result.values().get("diagnostics"))
+                    .values().getFirst();
+            assertThat(string(issue, "node")).isEqualTo("normalize");
+            assertThat(string(issue, "node_name")).isNotBlank();
+            assertThat(string(issue, "path")).isEqualTo("nodes[2].inputs.steps[0]");
+            assertThat(result.values()).containsOnlyKeys("diagnostics");
+            assertThat(issue.values()).doesNotContainKeys("context", "payload", "exception");
+            assertThat(exampleCase(inventory, "command:0").values()).doesNotContainKey("result");
+
+            Files.delete(runtimeDirectory(creator.baseUri()).resolve("1.ndjson"));
+            final var after = exampleCase(examples(creator.baseUri()), "command:1");
+            assertThat(after.values().get("result")).isEqualTo(result);
+            final var single = object(request(creator.baseUri(), "GET", "/api/examples/command:1", "").body());
+            assertThat(single.values().get("result")).isEqualTo(result);
+            assertThat(string(application(creator.baseUri()), "state")).isEqualTo("running");
+        }
+    }
+
+    @Test
+    void anImplementationFailureIsLocatedInBothInventoryAndRecordedView() throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        GeneratedApplicationFixture.installedCatalog(directory, List.of(
+                StepDefinition.named("test.fault", "1").implementation(DevelopmentRuntimeConformanceSteps.Fault.class)),
+                DevelopmentRuntimeConformanceSteps.Fault.class);
+        Files.writeString(project, """
+                {"format":1,"id":"failure-location","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{"name":"fault","payload":[]}]},
+                  {"id":"fault","use":"test.fault","inputs":{}}
+                ],"links":[{"from":"app.start","to":"command"},{"from":"command.next","to":"fault"},
+                  {"from":"fault.next","to":"end"}]}
+                """, StandardCharsets.UTF_8);
+        try (final CreatorServer creator = start(project)) {
+            final var inventory = exampleCase(awaitExamples(creator, 1), "command:0");
+            final var view = object(request(creator.baseUri(), "GET", "/api/examples/command:0/view", "").body());
+            for (final var summary : List.of(inventory, view)) {
+                final var result = (RailixValue.ObjectValue) summary.values().get("result");
+                final var issue = (RailixValue.ObjectValue) ((RailixValue.ArrayValue) result.values().get("diagnostics"))
+                        .values().getFirst();
+                assertThat(string(issue, "node")).isEqualTo("fault");
+                assertThat(string(issue, "code")).isEqualTo("STEP_IMPLEMENTATION_FAULT");
+            }
+            assertThat(RailixJson.write(inventory.values().get("result")))
+                    .doesNotContain("private conformance detail", "\"exception\":");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"normal", "pre-failure", "post-failure", "pre-fatal", "post-fatal"})
+    void compiledLifecycleOrdersHooksAndCleansPartialStartup(final String mode) throws Exception {
+        final Path workspace = directory.resolve("lifecycle-" + mode);
+        Files.createDirectories(workspace);
+        final Path log = workspace.resolve("lifecycle.txt");
+        final var lifecycle = StepDefinition.named("test.lifecycle", "1")
+                .input("log", StepDefinition.Input.json(ValueShape.STRING))
+                .input("name", StepDefinition.Input.json(ValueShape.STRING))
+                .input("mode", StepDefinition.Input.json(ValueShape.STRING).defaultValue(RailixValue.string("normal")))
+                .input("test", StepDefinition.Input.path(StepDefinition.PathAccess.READ)
+                        .defaultPath("context", "runtime", "test"))
+                .implementation(DevelopmentRuntimeConformanceSteps.Lifecycle.class);
+        final String source = """
+                {"format":1,"id":"lifecycle","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{"name":"empty","payload":[]}]},
+                  {"id":"first","use":"test.lifecycle","inputs":{"log":%s,"name":"first","mode":"%s"}},
+                  {"id":"last","use":"test.lifecycle","inputs":{"log":%s,"name":"last"}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"first"},
+                  {"from":"first.next","to":"last"},
+                  {"from":"last.next","to":"end"}
+                ]}
+                """.formatted(RailixJson.write(RailixValue.string(log.toString())), mode,
+                        RailixJson.write(RailixValue.string(log.toString())));
+        if (mode.startsWith("pre-")) {
+            assertThatThrownBy(() -> GeneratedApplicationFixture.start(workspace, source,
+                    List.of(lifecycle), DevelopmentRuntimeConformanceSteps.Lifecycle.class))
+                    .isInstanceOf(IOException.class);
+            assertThat(Files.readAllLines(log)).containsExactly("pre:last", "pre:first", "post:first", "post:last");
+            return;
+        }
+        try (final GeneratedApplicationFixture fixture = GeneratedApplicationFixture.start(workspace, source,
+                List.of(lifecycle), DevelopmentRuntimeConformanceSteps.Lifecycle.class)) {
+            awaitText(log, "pre:last\npre:first\nprocess:first\nprocess:last\n");
+            assertThat(fixture.run("command", "{}").status()).isEqualTo(200);
+            assertThat(fixture.run("command", "{}").status()).isEqualTo(200);
+        }
+        assertThat(Files.readAllLines(log)).containsExactly("pre:last", "pre:first",
+                "process:first", "process:last", "process:first", "process:last",
+                "process:first", "process:last", "post:first", "post:last");
+    }
+
+    @Test
+    void nestedStepHooksFollowTheirCompiledDependencies() throws Exception {
+        final Path workspace = directory.resolve("nested-lifecycle");
+        Files.createDirectories(workspace);
+        final Path log = workspace.resolve("lifecycle.txt");
+        final var transform = StepDefinition.named("test.lifecycle-transform", "1")
+                .receive("value", ValueShape.ANY).returns("value", ValueShape.ANY)
+                .input("log", StepDefinition.Input.json(ValueShape.STRING).defaultValue(RailixValue.string(log.toString())))
+                .input("name", StepDefinition.Input.json(ValueShape.STRING))
+                .input("mode", StepDefinition.Input.json(ValueShape.STRING).defaultValue(RailixValue.string("normal")))
+                .input("test", StepDefinition.Input.path(StepDefinition.PathAccess.READ)
+                        .defaultPath("context", "runtime", "test"))
+                .implementation(DevelopmentRuntimeConformanceSteps.Lifecycle.class);
+        final String source = """
+                {"format":1,"id":"nested-lifecycle","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[{"name":"empty","payload":[]}]},
+                  {"id":"transform","use":"railix.field-manipulation","inputs":{
+                    "steps":[
+                      {"use":"test.lifecycle-transform","inputs":{"name":"first"}},
+                      {"use":"test.lifecycle-transform","inputs":{"name":"last"}}
+                    ]
+                  }}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"transform"},
+                  {"from":"transform.next","to":"end"}
+                ]}
+                """;
+        try (final GeneratedApplicationFixture fixture = GeneratedApplicationFixture.start(workspace, source,
+                List.of(transform), DevelopmentRuntimeConformanceSteps.Lifecycle.class)) {
+            awaitText(log, "pre:last\npre:first\nprocess:first\nprocess:last\n");
+            assertThat(fixture.run("command", "{\"payload\":\"hello\"}").status()).isEqualTo(200);
+        }
+        assertThat(Files.readAllLines(log)).containsExactly("pre:last", "pre:first",
+                "process:first", "process:last", "process:first", "process:last", "post:first", "post:last");
+    }
+
+    private static void awaitText(final Path file, final String expected) throws Exception {
+        final long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (true) {
+            final String actual = Files.exists(file) ? Files.readString(file) : "";
+            if (actual.equals(expected)) return;
+            assertThat(System.nanoTime()).as("Expected %s in %s; found %s", expected, file, actual).isLessThan(deadline);
+            Thread.sleep(10);
+        }
+    }
 
     @Test
     void examplePayloadCanTargetAnExistingArraySlot() throws Exception {
@@ -100,11 +281,11 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
                         StepDefinition.named("test.process-trigger", "1")
                                 .kind(StepDefinition.Kind.TRIGGER)
                                 .source("test.process")
-                                .run(DevelopmentRuntimeConformanceSteps.Pass.class),
+                                .implementation(DevelopmentRuntimeConformanceSteps.Pass.class),
                         StepDefinition.named("test.process-id", "1")
                                 .input("target", StepDefinition.Input.path(StepDefinition.PathAccess.WRITE)
                                         .defaultPath("context", "result"))
-                                .run(DevelopmentRuntimeConformanceSteps.ProcessId.class)
+                                .implementation(DevelopmentRuntimeConformanceSteps.ProcessId.class)
                 ),
                 DevelopmentRuntimeConformanceSteps.Pass.class,
                 DevelopmentRuntimeConformanceSteps.ProcessId.class
@@ -152,11 +333,11 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
                                 .source("test.side-effect-source")
                                 .input("file", StepDefinition.Input.json(ValueShape.STRING)
                                         .defaultValue(RailixValue.string(ingressMarker.toString())))
-                                .run(DevelopmentRuntimeConformanceSteps.Append.class),
+                                .implementation(DevelopmentRuntimeConformanceSteps.Append.class),
                         StepDefinition.named("test.process-id", "1")
                                 .input("target", StepDefinition.Input.path(StepDefinition.PathAccess.WRITE)
                                         .defaultPath("context", "result"))
-                                .run(DevelopmentRuntimeConformanceSteps.ProcessId.class)
+                                .implementation(DevelopmentRuntimeConformanceSteps.ProcessId.class)
                 ),
                 DevelopmentRuntimeConformanceSteps.Append.class,
                 DevelopmentRuntimeConformanceSteps.ProcessId.class
@@ -186,8 +367,160 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
             );
 
             assertThat(view.statusCode()).isEqualTo(200);
-            assertThat(view.body()).contains("\"result\":" + applicationPid);
+            assertThat(view.body()).contains("\"payload\":{\"value\":\"ready\"}",
+                    "\"result\":" + applicationPid);
             assertThat(ingressMarker).doesNotExist();
+        }
+    }
+
+    @Test
+    void replacementExecutesOnlyAfterThePreviousApplicationHasExited() throws Exception {
+        final Path workspace = directory.resolve("sequential-replacement");
+        final Path project = workspace.resolve("railix.project.json");
+        final Path gate = workspace.resolve("gate");
+        Files.createDirectories(workspace);
+        GeneratedApplicationFixture.installedCatalog(workspace, List.of(
+                StepDefinition.named("test.gate", "1")
+                        .input("root", StepDefinition.Input.json(ValueShape.STRING)
+                                .defaultValue(RailixValue.string(gate.toString())))
+                        .input("case", StepDefinition.Input.json(ValueShape.STRING)
+                                .defaultValue(RailixValue.string("old")))
+                        .input("ignore_interrupt", StepDefinition.Input.json(ValueShape.BOOLEAN)
+                                .defaultValue(RailixValue.bool(true)))
+                        .implementation(ChunkGateStepHandler.class),
+                StepDefinition.named("test.process-status", "1")
+                        .input("pid", StepDefinition.Input.json(ValueShape.NUMBER))
+                        .input("target", StepDefinition.Input.path(StepDefinition.PathAccess.WRITE)
+                                .defaultPath("context", "previous_running"))
+                        .implementation(DevelopmentRuntimeConformanceSteps.ProcessStatus.class)
+        ), ChunkGateStepHandler.class, DevelopmentRuntimeConformanceSteps.ProcessStatus.class);
+        final String source = """
+                {"format":1,"id":"sequential-replacement","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"probe","payload":[]}
+                  ]},
+                  {"id":"work","use":"test.gate","inputs":{}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"work"},
+                  {"from":"work.next","to":"end"}
+                ]}
+                """;
+        Files.writeString(project, source, StandardCharsets.UTF_8);
+        try (CreatorServer creator = CreatorServer.start(0, project, workspace.resolve("railix-home"))) {
+            awaitStarted(gate, 1);
+            final long previous = CreatorServerE2eSupport.number(application(creator.baseUri()), "pid");
+            final String replacement = source.replace("\"use\":\"test.gate\",\"inputs\":{}",
+                    "\"use\":\"test.process-status\",\"inputs\":{\"pid\":" + previous + "}");
+
+            assertThat(request(creator.baseUri(), "POST", "/api/project", replacement).statusCode()).isEqualTo(200);
+            assertThat(CreatorServerE2eSupport.number(awaitExample(creator, "probe"), "succeeded")).isEqualTo(1);
+            assertThat(request(creator.baseUri(), "GET", "/api/examples/command:0/view", "").body())
+                    .contains("\"previous_running\":false");
+        } finally {
+            Files.writeString(gate.resolve("release"), "release");
+        }
+    }
+
+    @Test
+    void closingDuringReplacementCleansTheRetainedRuntimeWithoutRestarting() throws Exception {
+        final Path workspace = directory.resolve("close-during-replacement");
+        final Path project = workspace.resolve("railix.project.json");
+        final Path gate = workspace.resolve("gate");
+        Files.createDirectories(workspace);
+        GeneratedApplicationFixture.installedCatalog(workspace, List.of(chunkGateStep(true)), ChunkGateStepHandler.class);
+        Files.writeString(project, gatedExamples(gate), StandardCharsets.UTF_8);
+
+        try (CreatorServer creator = CreatorServer.start(0, project, workspace.resolve("railix-home"));
+             ExecutorService requests = Executors.newVirtualThreadPerTaskExecutor()) {
+            awaitStarted(gate, ExampleSuiteTestAccess.CHUNK_SIZE);
+            final Path previousRuntime = runtimeDirectory(creator.baseUri());
+            final Future<HttpResponse<String>> replacement = requests.submit(() -> request(
+                    creator.baseUri(), "POST", "/api/project", namedExample("replacement")));
+            final long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+            while ("running".equals(CreatorServerE2eSupport.string(application(creator.baseUri()), "state"))
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            assertThat(CreatorServerE2eSupport.string(application(creator.baseUri()), "state")).isEqualTo("stopped");
+            creator.close();
+            try {
+                assertThat(replacement.get(10, TimeUnit.SECONDS).statusCode()).isEqualTo(409);
+            } catch (final java.util.concurrent.ExecutionException interruptedRequest) {
+                assertThat(interruptedRequest.getCause()).isInstanceOf(IOException.class);
+            }
+            assertThat(previousRuntime).doesNotExist();
+        } finally {
+            release(gate);
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false,false", "true,false", "false,true"})
+    void failedReplacementReportsWhetherThePreviousArtifactWasRestarted(
+            final boolean losePrevious, final boolean blockPrevious) throws Exception {
+        final Path workspace = directory.resolve("replacement-recovery");
+        final Path project = workspace.resolve("railix.project.json");
+        Files.createDirectories(workspace);
+        GeneratedApplicationFixture.installedCatalog(workspace, List.of(
+                StepDefinition.named("test.artifact-loss", "1")
+                        .input("test", StepDefinition.Input.path(StepDefinition.PathAccess.READ)
+                                .defaultPath("context", "runtime", "test"))
+                        .input("workspace", StepDefinition.Input.json(ValueShape.STRING)
+                                .defaultValue(RailixValue.string(workspace.toString())))
+                        .input("lose_previous", StepDefinition.Input.json(ValueShape.BOOLEAN)
+                                .defaultValue(RailixValue.bool(losePrevious)))
+                        .input("block_previous", StepDefinition.Input.json(ValueShape.BOOLEAN)
+                                .defaultValue(RailixValue.bool(blockPrevious)))
+                        .implementation(DevelopmentRuntimeConformanceSteps.ArtifactLoss.class)
+        ), DevelopmentRuntimeConformanceSteps.ArtifactLoss.class);
+        final String source = """
+                {"format":1,"id":"replacement-recovery","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"fault","payload":[]}
+                  ]},
+                  {"id":"work","use":"test.artifact-loss","inputs":{}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"work"},
+                  {"from":"work.next","to":"end"}
+                ]}
+                """;
+        Files.writeString(project, source, StandardCharsets.UTF_8);
+        try (CreatorServer creator = CreatorServer.start(0, project, workspace.resolve("railix-home"))) {
+            awaitStarted(workspace, 1);
+            final RailixValue.ObjectValue before = application(creator.baseUri());
+
+            final HttpResponse<String> response = request(creator.baseUri(), "POST", "/api/project",
+                    CreatorProjects.empty("replacement"));
+
+            final boolean failedRecovery = losePrevious || blockPrevious;
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(503);
+            assertThat(response.body()).contains("\"recovery\":\"" + (failedRecovery ? "failed" : "restarted") + "\"");
+            assertThat(response.body()).contains(failedRecovery
+                    ? "The previous application could not be restarted; it is not running."
+                    : "The previous application was restarted.");
+            final RailixValue.ObjectValue after = application(creator.baseUri());
+            assertThat(CreatorServerE2eSupport.string(after, "state")).isEqualTo(failedRecovery ? "stopped" : "running");
+            assertThat(CreatorServerE2eSupport.string(after, "fingerprint"))
+                    .isEqualTo(CreatorServerE2eSupport.string(before, "fingerprint"));
+            assertThat(RailixJson.parse(Files.readString(project))).isEqualTo(RailixJson.parse(source));
+            if (!failedRecovery) {
+                assertThat(CreatorServerE2eSupport.number(after, "pid"))
+                        .isNotEqualTo(CreatorServerE2eSupport.number(before, "pid"));
+                assertThat(CreatorServerE2eSupport.number(awaitExample(creator, "fault"), "succeeded")).isEqualTo(1);
+            }
+            if (blockPrevious) {
+                final Path retained = Path.of(CreatorServerE2eSupport.string(before, "build_path"));
+                assertThat(retained).isRegularFile();
+                Files.setPosixFilePermissions(retained, PosixFilePermissions.fromString("rw-------"));
+            }
+            final HttpResponse<String> retry = request(creator.baseUri(), "POST", "/api/project",
+                    CreatorProjects.empty("replacement"));
+            assertThat(retry.statusCode()).as(retry.body()).isEqualTo(200);
+            assertThat(CreatorServerE2eSupport.string(application(creator.baseUri()), "state")).isEqualTo("running");
         }
     }
 
@@ -1012,8 +1345,9 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
         }
     }
 
-    @Test
-    void reusedApplicationPersistenceFailureKeepsItsRunningProcessAndAcceptedExamples() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void persistenceFailureRetainsAcceptedExamplesWithOrWithoutReplacement(final boolean changeExample) throws Exception {
         final Path project = directory.resolve("reused-persistence.json");
         Files.writeString(project, namedExample("accepted"), StandardCharsets.UTF_8);
 
@@ -1027,12 +1361,20 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
                     creator.baseUri(),
                     "POST",
                     "/api/project",
-                    namedExample("not-persisted")
+                    namedExample(changeExample ? "not-persisted" : "accepted")
             );
 
             assertThat(response.statusCode()).isEqualTo(500);
-            assertThat(response.body()).contains("\"message\":\"Project could not be persisted.\"");
-            assertThat(CreatorServerE2eSupport.number(application(creator.baseUri()), "pid")).isEqualTo(pid);
+            assertThat(response.body()).contains("Project could not be persisted.");
+            final long after = CreatorServerE2eSupport.number(application(creator.baseUri()), "pid");
+            if (changeExample) {
+                assertThat(after).isNotEqualTo(pid);
+                assertThat(response.body()).contains("\"recovery\":\"restarted\"");
+            } else {
+                assertThat(after).isEqualTo(pid);
+                assertThat(response.body()).doesNotContain("\"recovery\"");
+            }
+            awaitExample(creator, "accepted");
             assertThat(request(creator.baseUri(), "GET", "/api/examples/command:0/view", "").body())
                     .contains("\"accepted\"");
         }
@@ -1069,16 +1411,17 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
             );
 
             assertThat(response.statusCode()).isEqualTo(500);
-            assertThat(response.body()).contains("\"message\":\"Project could not be persisted.\"");
-            awaitOnlyRuntime(buildRoot, acceptedPid);
+            assertThat(response.body()).contains("Project could not be persisted.", "\"recovery\":\"restarted\"");
+            final long recoveredPid = CreatorServerE2eSupport.number(application(creator.baseUri()), "pid");
+            assertThat(recoveredPid).isNotEqualTo(acceptedPid);
+            awaitOnlyRuntime(buildRoot, recoveredPid);
             assertThat(marker).doesNotExist();
-            assertThat(CreatorServerE2eSupport.number(application(creator.baseUri()), "pid"))
-                    .isEqualTo(acceptedPid);
             try (var builds = Files.list(buildRoot)) {
                 assertThat(builds.filter(Files::isDirectory)
                         .filter(path -> path.getFileName().toString().startsWith("sha256-"))
                         .toList()).containsExactly(acceptedArtifact);
             }
+            awaitExample(creator, "accepted");
             assertThat(request(creator.baseUri(), "GET", "/api/examples/command:0/view", "").body())
                     .contains("\"accepted\"");
         }
@@ -1499,8 +1842,10 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
             assertThat(CreatorServerE2eSupport.string(example, "status")).isEqualTo("failed");
             assertThat(CreatorServerE2eSupport.string(example, "message"))
                     .isEqualTo("One development trace event exceeded 4194304 bytes.");
+            assertThat(RailixJson.write(example.values().get("result")))
+                    .contains("\"code\":\"TRACE_EVENT_TOO_LARGE\"").doesNotContain("\"context\"");
             assertThat(view.body()).contains("\"code\":\"TRACE_EVENT_TOO_LARGE\"");
-            assertThat(Files.readString(downstream, StandardCharsets.UTF_8)).isEqualTo("x");
+            awaitText(downstream, "xx");
         }
     }
 
@@ -2023,7 +2368,7 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
         GeneratedApplicationFixture.installedCatalog(
                 workspace,
                 List.of(StepDefinition.named("test.fatal", "1")
-                        .run(DevelopmentRuntimeConformanceSteps.Fatal.class)),
+                        .implementation(DevelopmentRuntimeConformanceSteps.Fatal.class)),
                 DevelopmentRuntimeConformanceSteps.Fatal.class
         );
         Files.writeString(project, fatalExample(), StandardCharsets.UTF_8);
@@ -2276,14 +2621,14 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
         return StepDefinition.named("test.oversized-trace", "1")
                 .input("target", StepDefinition.Input.path(StepDefinition.PathAccess.READ_WRITE)
                         .defaultPath("context", "payload", "large"))
-                .run(DevelopmentRuntimeConformanceSteps.OversizedTrace.class);
+                .implementation(DevelopmentRuntimeConformanceSteps.OversizedTrace.class);
     }
 
     private static StepDefinition markerStep(final Path file) {
         return StepDefinition.named("test.marker", "1")
                 .input("file", StepDefinition.Input.json(ValueShape.STRING)
                         .defaultValue(RailixValue.string(file.toString())))
-                .run(DevelopmentRuntimeConformanceSteps.Append.class);
+                .implementation(DevelopmentRuntimeConformanceSteps.Append.class);
     }
 
     private static StepDefinition chunkGateStep() {
@@ -2298,7 +2643,7 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
                         .defaultPath("context", "payload", "arguments", "case"))
                 .input("ignore_interrupt", StepDefinition.Input.json(ValueShape.BOOLEAN)
                         .defaultValue(RailixValue.bool(ignoreInterrupt)))
-                .run(ChunkGateStepHandler.class);
+                .implementation(ChunkGateStepHandler.class);
     }
 
     private static StepDefinition summaryGateStep(final Path root) {
@@ -2309,7 +2654,7 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
                         .defaultPath("context", "payload", "arguments"))
                 .input("ignore_interrupt", StepDefinition.Input.json(ValueShape.BOOLEAN)
                         .defaultValue(RailixValue.bool(false)))
-                .run(ChunkGateStepHandler.class);
+                .implementation(ChunkGateStepHandler.class);
     }
 
     private static StepDefinition trigger(final String id, final String source) {
@@ -2319,7 +2664,7 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
                 .input("target", StepDefinition.Input.path(StepDefinition.PathAccess.WRITE)
                         .defaultPath("context", "payload", "value"))
                 .exampleTarget("target")
-                .run(GenericContractSteps.Trigger.class);
+                .implementation(GenericContractSteps.Trigger.class);
     }
 
     private static StepDefinition arrayTrigger() {
@@ -2334,7 +2679,7 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
                                 RailixValue.number(1)
                         ))))
                 .exampleTarget("target")
-                .run(GenericContractSteps.Trigger.class);
+                .implementation(GenericContractSteps.Trigger.class);
     }
 
     private static StepDefinition nestedArrayTrigger() {
@@ -2350,14 +2695,14 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
                                 RailixValue.string("name")
                         ))))
                 .exampleTarget("target")
-                .run(GenericContractSteps.Trigger.class);
+                .implementation(GenericContractSteps.Trigger.class);
     }
 
     private static StepDefinition triggerWithoutExampleTarget() {
         return StepDefinition.named("test.trigger.no-example-target", "1")
                 .kind(StepDefinition.Kind.TRIGGER)
                 .source("test.source.no-example-target")
-                .run(GenericContractSteps.Trigger.class);
+                .implementation(GenericContractSteps.Trigger.class);
     }
 
     private static String arrayTargetExample(final String context) {

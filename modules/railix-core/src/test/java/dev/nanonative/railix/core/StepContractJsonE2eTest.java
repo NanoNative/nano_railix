@@ -2,11 +2,13 @@ package dev.nanonative.railix.core.step;
 
 import dev.nanonative.railix.core.step.StepDefinition.Input;
 import dev.nanonative.railix.core.value.RailixValue;
+import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.ValueShape;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -24,12 +26,45 @@ final class StepContractJsonE2eTest {
     private static final String IMPLEMENTATION_ENTRY = CodecHandler.class.getName().replace('.', '/') + ".class";
 
     @Test
+    void jdkRequirementsRoundTripWithoutChangingContractsThatDeclareNone() {
+        assertThat(contract().values()).doesNotContainKey("jdk_modules");
+        final var definition=StepDefinition.named("codec.modules","1")
+                .implementation(CodecHandler.class,"java.net.http","jdk.httpserver");
+        final var decoded=StepContractJson.read(StepContractJson.value(definition),IMPLEMENTATION,IMPLEMENTATION_ENTRY);
+        assertThat(decoded.implementationAddress().orElseThrow().jdkModules()).containsExactly("java.net.http","jdk.httpserver");
+        assertThat(StepContractJson.write(decoded)).isEqualTo(StepContractJson.write(definition));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"\"java.net.http\"","[1]","[\"bad;module\"]","[\"java.net.http\",\"java.net.http\"]"})
+    void malformedModuleMetadataIsRejected(final String json) {
+        final var value=((RailixJson.Parsed)RailixJson.parse(json)).value();
+        assertThatThrownBy(()->StepContractJson.read(with(contract(),"jdk_modules",value),IMPLEMENTATION,IMPLEMENTATION_ENTRY))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("module");
+    }
+
+    @Test
     void jsonInputRoundTripsItsShapeDefaultRangeAndRequirement() {
         assertRoundTrip(StepDefinition.named("codec.json", "1")
                 .input("number", Input.json(ValueShape.NUMBER)
                         .between(RailixValue.number(1), RailixValue.number(9))
                         .defaultValue(RailixValue.number(4)))
-                .run(CodecHandler.class));
+                .implementation(CodecHandler.class));
+    }
+
+    @Test
+    void typedValidationRoundTripsAsMetadataWithoutExecutingTheFunction() {
+        assertRoundTrip(StepDefinition.named("codec.validation", "1")
+                .input("port", Input.json(ValueShape.NUMBER).defaultValue(RailixValue.number(8080))
+                        .validation(Integer.class, value -> { throw new AssertionError("Metadata must not execute code."); }))
+                .implementation(CodecHandler.class));
+    }
+
+    @Test
+    void validationMetadataCannotLoadAnArbitraryJavaClass() {
+        final var invalid = withFirstInput(contract(), input -> with(input, "validation",
+                RailixValue.string("java.lang.Runtime")));
+        assertInvalid(invalid, "Unsupported configuration validation type: java.lang.Runtime");
     }
 
     @Test
@@ -37,7 +72,7 @@ final class StepContractJsonE2eTest {
         assertRoundTrip(StepDefinition.named("codec.path", "1")
                 .input("target", Input.path(StepDefinition.PathAccess.READ_WRITE)
                         .defaultPath("context", "payload", "value"))
-                .run(CodecHandler.class));
+                .implementation(CodecHandler.class));
     }
 
     @Test
@@ -50,7 +85,7 @@ final class StepContractJsonE2eTest {
                                 .input("value", Input.json(ValueShape.ANY))
                                 .fromOwned("value")
                 ).defaultOption("current"))
-                .run(CodecHandler.class));
+                .implementation(CodecHandler.class));
     }
 
     @Test
@@ -63,7 +98,7 @@ final class StepContractJsonE2eTest {
                                 .input("value", Input.json(ValueShape.STRING).defaultValue(RailixValue.string("fallback")))
                                 .fromOwned("value")
                 ).defaultCandidate("literal"))
-                .run(CodecHandler.class));
+                .implementation(CodecHandler.class));
     }
 
     @Test
@@ -74,7 +109,7 @@ final class StepContractJsonE2eTest {
                                 .input("value", Input.json(ValueShape.ANY))
                                 .fromOwned("value")
                 ).withAuthoredOutcomes())
-                .run(CodecHandler.class);
+                .implementation(CodecHandler.class);
 
         assertThat(StepContractJson.write(definition)).contains("\"authored_outcomes\":true");
         assertRoundTrip(definition);
@@ -91,7 +126,7 @@ final class StepContractJsonE2eTest {
                                         .defaultValue(RailixValue.bool(true)))
                                 .fromOwned("value")
                 ))
-                .run(CodecHandler.class));
+                .implementation(CodecHandler.class));
     }
 
     @Test
@@ -102,7 +137,7 @@ final class StepContractJsonE2eTest {
                         StepDefinition.ValueSource.from("value").onMissing("missing")
                 ).propagateOutcomes())
                 .outcome("failed")
-                .run(CodecHandler.class));
+                .implementation(CodecHandler.class));
     }
 
     @Test
@@ -135,7 +170,7 @@ final class StepContractJsonE2eTest {
                 )
                 .primaryOutcome("received")
                 .outcome("rejected")
-                .run(CodecHandler.class));
+                .implementation(CodecHandler.class));
     }
 
     @Test
@@ -294,7 +329,7 @@ final class StepContractJsonE2eTest {
     private static StepDefinition definition() {
         return StepDefinition.named("codec.base", "1")
                 .input("value", Input.json(ValueShape.STRING))
-                .run(CodecHandler.class);
+                .implementation(CodecHandler.class);
     }
 
     private static Stream<Arguments> unsafeImplementationAddresses() {
@@ -354,9 +389,8 @@ final class StepContractJsonE2eTest {
         return with(contract, "inputs", RailixValue.array(inputs));
     }
 
-    public static final class CodecHandler implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class CodecHandler {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome());
         }
     }

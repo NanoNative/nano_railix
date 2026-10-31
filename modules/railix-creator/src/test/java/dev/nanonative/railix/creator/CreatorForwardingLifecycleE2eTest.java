@@ -567,7 +567,7 @@ final class CreatorForwardingLifecycleE2eTest {
                         .defaultPath("context", "payload", "marker"))
                 .input("delay_millis", StepDefinition.Input.json(ValueShape.NUMBER)
                         .defaultValue(RailixValue.number(delayMillis)))
-                .run(SlowStepHandler.class);
+                .implementation(SlowStepHandler.class);
     }
 
     private static String slowProject(final String id, final Path marker, final long delayMillis) {
@@ -598,7 +598,7 @@ final class CreatorForwardingLifecycleE2eTest {
                         .defaultValue(RailixValue.string(mode)))
                 .input("marker", StepDefinition.Input.path(StepDefinition.PathAccess.READ)
                         .defaultPath("context", "payload", "marker"))
-                .run(ProcessTreeStepHandler.class);
+                .implementation(ProcessTreeStepHandler.class);
         final String project = """
                 {"format":1,"id":"%s","nodes":[
                   {"id":"app","use":"railix.app","inputs":{}},

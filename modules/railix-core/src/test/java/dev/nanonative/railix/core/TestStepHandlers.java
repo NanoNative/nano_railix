@@ -1,6 +1,5 @@
 package dev.nanonative.railix.core;
 
-import dev.nanonative.railix.core.step.StepHandler;
 import dev.nanonative.railix.core.step.StepInput;
 import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -8,34 +7,30 @@ import dev.nanonative.railix.core.value.RailixValue;
 import java.math.BigDecimal;
 import java.util.Locale;
 
-final class TestStepHandlers {
+public final class TestStepHandlers {
     private TestStepHandlers() {
     }
 
-    static final class PrimaryOutcome implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class PrimaryOutcome {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome());
         }
     }
 
-    static final class PrimaryIdentity implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class PrimaryIdentity {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("value", input.value("value"));
         }
     }
 
-    static final class OkIdentity implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class OkIdentity {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome("ok").output("value", input.value("value"));
         }
     }
 
-    static final class LowercaseValue implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class LowercaseValue {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome("ok").output(
                     "value",
                     RailixValue.string(input.string("value").toLowerCase(Locale.ROOT))
@@ -43,44 +38,38 @@ final class TestStepHandlers {
         }
     }
 
-    static final class SourceResultIdentity implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class SourceResultIdentity {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("result", input.value("source"));
         }
     }
 
-    static final class WriteArguments implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class WriteArguments {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).write("target", input.value("arguments"));
         }
     }
 
-    static final class RunOperationsWriteField implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) throws InterruptedException {
+    public static final class RunOperationsWriteField {
+        public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
             return input.run("operations").write("field");
         }
     }
 
-    static final class RunStepsWriteField implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) throws InterruptedException {
+    public static final class RunStepsWriteField {
+        public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
             return input.run("steps").write("field");
         }
     }
 
-    static final class RunStepsWriteWhenPresentField implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) throws InterruptedException {
+    public static final class RunStepsWriteWhenPresentField {
+        public static StepResult process(final StepInput configuration, final StepInput input) throws InterruptedException {
             return input.run("steps").writeWhenPresent("field");
         }
     }
 
-    static final class EqualsExpected implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class EqualsExpected {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output(
                     "value",
                     RailixValue.bool(input.value("value").equals(input.value("expected")))
@@ -88,9 +77,8 @@ final class TestStepHandlers {
         }
     }
 
-    static final class BooleanNot implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class BooleanNot {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output(
                     "value",
                     RailixValue.bool(!((RailixValue.BooleanValue) input.value("value")).value())
@@ -98,9 +86,8 @@ final class TestStepHandlers {
         }
     }
 
-    static final class TextLength implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class TextLength {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output(
                     "value",
                     RailixValue.number(((RailixValue.StringValue) input.value("value")).value().length())
@@ -108,16 +95,14 @@ final class TestStepHandlers {
         }
     }
 
-    static final class True implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class True {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("value", RailixValue.bool(true));
         }
     }
 
-    static final class GreaterThan implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class GreaterThan {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output(
                     "value",
                     RailixValue.bool(((RailixValue.NumberValue) input.value("value")).value().compareTo(
@@ -127,9 +112,8 @@ final class TestStepHandlers {
         }
     }
 
-    static final class LessThan implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class LessThan {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output(
                     "value",
                     RailixValue.bool(((RailixValue.NumberValue) input.value("value")).value().compareTo(
@@ -139,64 +123,62 @@ final class TestStepHandlers {
         }
     }
 
-    static final class InterruptAndTrue implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class InterruptAndTrue {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             Thread.currentThread().interrupt();
             return StepResult.outcome(input.primaryOutcome()).output("value", RailixValue.bool(true));
         }
     }
 
-    static final class AlwaysFault implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class AlwaysFault {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             throw new IllegalStateException("fault");
         }
     }
 
-    static final class CompilationMustNotExecute implements StepHandler {
+    public static final class CompilationMustNotExecute {
+        private static final boolean INITIALIZED = failInitialization();
+
+        private static boolean failInitialization() {
+            throw new AssertionError("Compiler initialized a Step class.");
+        }
+
         public CompilationMustNotExecute() {
             throw new AssertionError("Compiler constructed a Step handler.");
         }
 
-        @Override
-        public StepResult run(final StepInput input) {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             throw new AssertionError("Compiler invoked a Step handler.");
         }
     }
 
-    static final class InvalidString implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class InvalidString {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("value", RailixValue.string("wrong"));
         }
     }
 
-    static final class PrimaryConstantValue implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class PrimaryConstantValue {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).output("value", RailixValue.string("value"));
         }
     }
 
-    static final class WriteMatches implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class WriteMatches {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             return StepResult.outcome(input.primaryOutcome()).write("target", input.value("matches"));
         }
     }
 
-    static final class ReadChoice implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class ReadChoice {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             input.option("choice");
             return StepResult.outcome(input.primaryOutcome());
         }
     }
 
-    static final class ToNumber implements StepHandler {
-        @Override
-        public StepResult run(final StepInput input) {
+    public static final class ToNumber {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
             try {
                 return StepResult.outcome("ok").output(
                         "value",

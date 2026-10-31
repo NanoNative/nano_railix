@@ -2,7 +2,7 @@
 
 ## Human Review
 
-Status: **Existing baseline with accepted target boundaries**, updated on 2026-09-20.
+Status: **Existing baseline with accepted target boundaries**, updated on 2026-09-27.
 The platform boundaries below record the user's specification-workshop decisions,
 not an implementation or fresh test pass. The roadmap owns delivery status.
 
@@ -83,14 +83,18 @@ API is changed by this specification edit, and no performance gain has been meas
 The 2026-09-19 review identified the following implementation blockers beyond the current unary
 and branching baseline. These are unanswered questions, not newly selected architectures:
 
-- **State and resource lifecycle:** define who owns listeners, connection pools, storage handles
-  and transaction scopes while Step handlers remain stateless. Decide admission, cancellation,
-  deadlines and drain/release behavior across normal completion and rolling replacement.
-  The [host-aware Step extension direction](#planned-host-aware-step-integration) shares this
-  unresolved lifecycle boundary; it is not a separate built-in-only runtime subsystem.
-- **Control and side effects:** Merge/Split/Loop need ordering, context ownership, merge-conflict
-  and bounded-work rules; [Merge modes](#planned-merge-and-join) now have accepted direction but
-  incomplete semantics. I/O needs explicit outcomes for failures with unknown completion;
+- **State and resource lifecycle:** [PRE/PROCESS/POST](#planned-step-lifecycle) now has accepted
+  direction: static Step functions may use app-local resources with explicit occurrence
+  associations, explicit keyed sharing and isolation; named profiles are deferred.
+  Configuration stays compiled and separate from context. Ordering, graceful drain and
+  standalone/embedded escalation are agreed; generic ingress and optional resource registration
+  are implemented. Expanded HTTP settings and runtime sharing diagnostics remain separate work.
+  The drain deadline is configurable with an accepted 30-second default.
+  Host-aware Steps use this same contract, not a built-in-only runtime subsystem.
+- **Control and side effects:** [Convergence, branching and Join](#planned-merge-and-join) separate
+  per-arrival processing from explicit coordination. Branch execution, Join correlation and
+  [Limiter](#planned-limiters) completion/budget rules remain open before their respective slices.
+  I/O needs explicit outcomes for failures with unknown completion.
   retries must not silently duplicate a committed write or external action. Define the owner of
   retry/idempotency behavior rather than assuming every small Step can be safely repeated.
 - **Evolution and distribution:** specify supported project/Step contract versions, dependency
@@ -106,9 +110,10 @@ and branching baseline. These are unanswered questions, not newly selected archi
 These recommendations answer the user's request for lifecycle/retry suggestions; they are not
 approved defaults or permission to implement:
 
-- Let the application own shared listeners, pools and storage handles; give each invocation its
-  own context and explicit resource leases/transaction scope. Stateless handlers use resources
-  without creating a new pool or client for every tiny Step.
+- Let the application coordinate the lifecycle of Step-owned listeners, pools and storage handles;
+  keep invocation data separate from those resources. The accepted static-function direction
+  supersedes the earlier stateless-only recommendation without requiring one handler object per
+  placed Step. The optional resource API below implements this ownership direction.
 - Bound admission, queued work, payloads and fan-out. Carry an overall deadline through the Flow;
   cancellation stops further admission and releases owned resources, but does not promise to undo
   an external side effect. Drain admitted work during replacement before releasing resources.
@@ -190,8 +195,10 @@ cover an unvisited error route, explicit retention, incomplete evidence and inva
 
 ## One Workflow Context
 
-Every admitted item owns one isolated mutable JSON-compatible context. Projects may create any
-ordinary keys. These names are conventions rather than runtime containers:
+Every admitted item starts with its own isolated mutable JSON-compatible context. Planned
+explicit Joins may combine related contexts under SYS-024. Ordinary convergence and linked
+editing do not. Projects may create any ordinary keys. These names are conventions rather than
+runtime containers:
 
 ```text
 payload    business input
@@ -205,8 +212,14 @@ runtime    reserved read-only Railix values
 Paths include the root, for example `context.payload.customer.name`. The runtime request body is
 the context itself. The generated development application adds `context.runtime.test=true` when it
 executes a compiled Example, allowing project Steps to react explicitly. Creator only displays the
-result and does not interpret that flag. There is no event entity, event bus, event store, or
-retained execution object after the bounded trace completes.
+result and does not interpret that flag. The current synchronous baseline has no event entity,
+event bus, event store, or retained execution object after the bounded trace completes. Planned
+waiting and independent work require explicit bounded ownership under SYS-027, not an event bus.
+
+The planned lifecycle also supplies a context to PRE and POST, without an invocation payload.
+This does not authorize retaining a PROCESS context in long-lived storage, inserting a Java
+client/socket into the JSON-compatible value tree, or making request data global. The lifecycle
+contract below keeps compiled Step configuration separate from context and owns resource access.
 
 ## Minimal Step Kinds
 
@@ -237,6 +250,64 @@ third-party definitions:
 Compiler, runtime, and Creator consume this grammar from definitions. They do not branch on a
 standard-library Step ID or input name.
 
+### Configuration Validation
+
+Accepted on 2026-09-21: an optional fluent validation function on a JSON input, returning
+`Optional<String>`. Empty means valid; a present nonblank string explains the rejection. The API
+validates authored configuration, not invocation payloads or runtime resources.
+
+```java
+.input("port", Input.json(ValueShape.NUMBER)
+        .defaultValue(RailixValue.number(8080))
+        .validation(Integer.class, port ->
+                port >= 0 && port <= 65535
+                        ? Optional.empty()
+                        : Optional.of("Port must be between 0 and 65535.")))
+```
+
+- **SYS-019:** JSON input declarations MUST support an optional validation function receiving a
+  declared Java value type and returning an optional error message. Existing shape, presence and
+  range checks remain available without a custom function. `NUMBER` itself continues to represent
+  exact decimal values; an `Integer` validator MUST reject fractional or out-of-range values before
+  calling the function, without rounding or truncation.
+- **SYS-020:** Supplied and defaulted configuration values MUST satisfy the same validation.
+  An absent optional value without a default MUST NOT invoke the function. A validator returning
+  Java null or failing unexpectedly MUST produce a validation-failure diagnostic, not acceptance.
+- **SYS-021:** Creator MUST show the custom rejection at the owning input, and the compiler MUST
+  reject the same configuration with the same message. Built-in and installed third-party Steps
+  MUST use the same contract, including owned inputs and nested Steps.
+- **SYS-022:** Configuration validators MUST be deterministic, side-effect-free functions. Railix
+  MUST NOT invoke PRE, PROCESS or POST to validate configuration or revalidate fixed configuration
+  on each runtime invocation. Ordinary Steps without validators MUST NOT require a validator process.
+
+The accepted export is `StepContractJson.writeManifest(MySteps.class, MySteps.definitions())`,
+where `MySteps` declares `public static List<StepDefinition> definitions()`. The manifest names
+that class and its owned JAR entry; input metadata contains only the supported Java type, not a
+serialized callback. Signature inspection and catalog discovery do not initialize the provider.
+The worker calls it directly, without reflection, and requires its definitions to match the installed
+contracts. Definition construction must also be side-effect-free. Existing bundles without validators
+retain the list-only export.
+
+Supported callback types are `Integer`, `Long`, `BigDecimal`, `String`, `Boolean`, `RailixValue`,
+`RailixValue.ArrayValue` and `RailixValue.ObjectValue`. Integral conversion checks precision and range
+before invoking user code. Compilation checks defaults when used and skips absent optional inputs.
+`.between(...)` remains available and supplies Creator's numeric bounds.
+
+Registered providers use one short-lived JVM per provider per compilation, with a ten-second batch
+deadline, a 128 MiB heap cap and a 1 MiB response limit. Identical checks within the batch share their
+result; no cross-build callback cache can retain stale code or configuration. A failed, interrupted,
+malformed or timed-out response rejects the build. Workers, observed descendants and temporary files
+are cleaned up. This is crash/hang containment, not a filesystem or network sandbox; installed
+validator code must be trusted. Direct programmatic `StepCatalog.of(definitions)` remains an explicit
+in-process API for caller-owned functions; `StepCatalog.of(MySteps.class, definitions)` selects the
+isolated path, which the built-in catalog also uses. No worker starts when there are no resolved
+validated inputs. Generated applications contain neither the worker nor per-invocation validation.
+
+Acceptance coverage is in `ConfigurationValidationE2eTest`, `StepContractJsonE2eTest`,
+`ConfigurationValidationBundleE2eTest`, the HTTP invalid-port regression and Creator's field-validation
+browser scenario. These cover typed/default/absent values, owned and nested inputs, callback failures,
+provider mismatch, cleanup, generated-JAR execution and unchanged saved state after an invalid edit.
+
 ### Planned Host-Aware Step Integration
 
 Source: the user's 2026-09-20 clarification. Platform-dependent behavior belongs to a Step that
@@ -248,10 +319,10 @@ This is an accepted extension direction, not a selected API or implemented lifec
   standard-library Step IDs or compiler/Creator special cases for individual implementations.
 
 A Step may need platform/capability detection, initialization or ongoing checks that its required
-configuration remains effective. Their declaration, execution ownership, sharing across Step
-occurrences, startup/shutdown ordering, cancellation and bounded monitoring remain unspecified.
-Resolve these before implementing the first dependent Step, preserving stateless invocation
-handlers and explicit registration rather than runtime scanning. Ordinary Steps must not acquire
+configuration remains effective. PRE/PROCESS/POST scope and ordering are recorded below; resource
+access, cancellation and bounded monitoring still need agreement.
+Resolve these before implementing the first dependent Step, preserving thread-safe invocation
+behavior and explicit registration rather than runtime scanning. Ordinary Steps must not acquire
 mandatory timers or platform dependencies merely because another Step needs them.
 
 [Layer 4 integration](environments-and-security.md#planned-layer-4-step-integration) is one use
@@ -265,8 +336,8 @@ and platform support matrix must be defined first.
 
 ## Candidate Conditions
 
-`CANDIDATES` and every matcher inside `MATCHER_GROUPS` use one condition structure. An empty
-`when` array means presence-only acceptance. A conditional candidate stores shared preparation and
+`CANDIDATES` and every matcher inside `MATCHER_GROUPS` use one condition structure. An omitted
+`when` or `{"transforms":[],"all":[]}` means presence-only acceptance. A conditional candidate stores shared preparation and
 independent AND requirements:
 
 ```json
@@ -285,8 +356,8 @@ stops at the first false program. A candidate that supplies a value still suppli
 source, not the condition's prepared value. Missing sources skip all condition Steps. Failures,
 rejections, cancellation, and interruption propagate unchanged.
 
-Legacy flat `when` arrays remain an ingress form and are normalized deterministically to the same
-structure. Creator authors only the structured form when a condition exists. Step discovery and
+Flat `when` arrays are rejected, not silently migrated. Creator authors the same structured
+form consumed by the compiler. Step discovery and
 compatibility use ordinary receive, return, input, and outcome contracts; there is no matcher kind
 or Step-ID allowlist.
 
@@ -304,7 +375,8 @@ returns a non-primary outcome, standard Field Manipulation leaves the destinatio
 continues through `next`.
 
 Creator has no generic missing-value route or termination editor. Explicit control Steps own
-branching, fan-in, fan-out, and loops.
+branch selection, coordinated waiting and loops. Planned ordinary multi-input convergence needs
+no separate control Step. It follows SYS-008 below.
 
 ## Filter
 
@@ -316,9 +388,9 @@ finish BOOLEAN and pass. The first accepted candidate selects `match`; no accept
 
 Both outcomes always have explicit links in `railix.project.json`. Creator materializes both links
 when Filter is added, renders declared outcomes in deterministic depth-first order with an explicit
-stack, and inserts later Steps into the route selected in the Inspector. Missing, duplicate,
-unknown, or repeated links remain visible on their owning outcome and are never presented as End.
-Functional compilation rejects those malformed links before a project enters a Creator workspace;
+stack, and inserts later Steps into the route selected in the Inspector. Missing, duplicate source-port,
+or unknown links remain visible on their owning outcome and are never presented as End. Distinct
+outcomes may target the same Step and each arrival executes independently. Functional compilation rejects malformed links before a project enters a Creator workspace;
 insertion is also disabled for any malformed transient route. Runtime executes exactly one
 successor. Control Steps can be grouped and inserted inside groups without changing the flat graph.
 
@@ -353,52 +425,143 @@ or bounded Loop behavior; Switch owns authored outcomes through the generic cont
 
 ## Planned Merge And Join
 
-Status: **Accepted mode direction; not implementation-ready.** The user requests configurable
-non-waiting convergence and waiting for all inputs, with synchronous/asynchronous behavior.
-Logical/electrical analogies are an exploration request, not a chosen operator catalog or engine.
-Current compilation still requires one incoming link per non-App node and rejects cycles.
+Status: **Accepted direction. Implementation and remaining decisions are separate.** Source:
+the user's 2026-09-27 specification. This refines SYS-008: ordinary convergence no longer requires
+a Merger or a mode selection. Waiting belongs to an explicit Join, not to an extra incoming belt.
+The section heading is retained for existing links, not as a requirement for a Merge-Step family.
 
-- **SYS-008:** Flow convergence MUST support a configured mode that continues without waiting
-  for other inputs, and a configured mode that waits for its defined required inputs before
-  continuing. The required-input set, correlated execution scope and resulting context must be
-  agreed before implementation; a mode name alone is not sufficient execution semantics.
+An arrival is one visit to a Step. A job is an independently admitted invocation. Related branches
+may later belong to that job. Linked authoring occurrences are separate uses of editable contents,
+not those jobs or branches. A lane identifies a use/route for selection or coordination, not a
+thread. Its precise persisted identity is still open in the [Creator contract](creator.md#planned-group-copy-and-sharing).
 
-Recommendation: distinguish three responsibilities rather than encode all in a sync/async flag:
+- **SYS-008 (amended):** An ordinary Step MUST accept multiple incoming connections without a
+  mandatory Merger. Each arrival MUST execute independently, without implicit waiting, winner
+  selection, deduplication or combination of jobs/contexts. A Step MUST NOT belong exclusively to
+  one Trigger. Arrivals from different sources retain their own invocation and response contract.
+- **SYS-023:** Branch selection MUST distinguish one route, multiple matching routes and all
+  routes from the separate choice to execute selected work sequentially or independently.
+  Adding connections MUST NOT silently enable independent execution or waiting. A proposal in
+  Creator becomes functional behavior only through an explicit authored choice.
+- **SYS-024:** A Join MUST support related branches and independently received related messages,
+  wait for its defined required results and merge their contexts before continuation. For conflicting
+  values, the value from the latest contributing arrival at that Join MUST win, as selected by the
+  user on 2026-09-27. Participating input flows alone do not define which arrivals to combine when
+  several jobs overlap. Independent-message scope was requested. Its pairing rule is awaiting
+  clarification in FC-4, together with merge granularity and completion rules.
+- **SYS-025:** Join and Limiter behavior MUST be implementable by installed third-party Steps
+  through public Step contracts, without privileged built-in IDs in compiler, runtime or Creator.
+  Extend existing declarations, inputs and results before proposing an additional API. Any new
+  execution capability must have a current use and installed-bundle proof.
+- **SYS-026:** Unused coordination capabilities MUST NOT add capability-specific queues, polling,
+  timers or per-invocation tracking to ordinary synchronous flows. No speculative global listener
+  or interception system is introduced. Measure the ordinary path under SYS-006 rather than
+  promising zero overhead without evidence.
+- **SYS-027:** Waiting and independently running work MUST remain owned by application lifecycle
+  accounting until completion or confirmed cancellation. Timeout, failure and shutdown MUST NOT
+  leave retained contexts, orphan continuations or a successful completion reported too early.
 
-| Responsibility | Proposed behavior | Open boundary |
+Simple convergence preserves the arriving context. It does not create a context merge policy.
+Independent jobs remain isolated until an explicit Join combines their related contexts. Using
+the same building or Step does not do so. Context merging at Join is accepted. Whether related
+branches can observe live shared mutations before that point remains open below.
+Two arrivals mean two executions, including side effects. Convergence is not an exactly-once
+delivery mechanism. A delayed or unselected branch is not a Boolean false result.
+
+### Current Contract And Missing Capabilities
+
+Repository inspection on 2026-10-17 establishes the following baseline:
+
+| Boundary | Present implementation | Gap for this direction |
 | --- | --- | --- |
-| Non-waiting convergence | Continue the common downstream path for each arrival; do not wait for absent alternatives. | It is not a race winner that discards later arrivals, and does not automatically combine payloads. Confirm cross-Trigger ownership/response routing before lowering. |
-| Waiting join | Continue once the required branches for one correlated activation are complete. | Decide same-request versus independent-event correlation, branch/activation IDs, skipped inputs, duplicates and later iterations. |
-| Execution scheduling | Decide whether work runs inline or suspends/resumes under the application's bounded lifecycle. | Waiting does not imply blocking a thread; asynchronous execution does not imply a mesh or an unbounded executor. |
+| [ProjectCompiler](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/project/ProjectCompiler.java), [ApplicationPlan](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/project/ApplicationPlan.java) | Ordinary Steps accept multiple arrivals. Triggers still require one App connection. Every ordinary outcome has one destination, and the graph is acyclic. There is no exclusive Trigger owner on a Step plan. | Multiple selected outputs, waiting and cycles remain separate contracts. |
+| [StepDefinition](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/step/StepDefinition.java), [StepResult](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/step/StepResult.java) | Generic options, authored outcomes, validation and one returned outcome with outputs/writes. | No declared multi-route result, branch activation/correlation or deferred continuation result. No exact replacement Java API is selected here. |
+| [StepInput](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/step/StepInput.java) | PRE/POST and private/keyed-shared resources can own counters or queues. Nested programs are synchronous, valid only on the owning thread before PROCESS returns. | State storage alone does not expose downstream completion, a transferable continuation, or Join membership. A Step can already do local admission and return overload. It cannot thereby limit arbitrary downstream work. |
+| [WorkflowRuntime](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/project/WorkflowRuntime.java), [ApplicationGenerator](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/project/ApplicationGenerator.java) | One selected integer-routed continuation. Shared destinations have one generated route body and one placement lifecycle. Each invocation retains its own context and original source response. | Independent branches and suspended work need completion/cancellation ownership beyond the current calling thread. No existing context or nested program may simply be retained and resumed elsewhere. |
+| [CreatorEditor](../../modules/railix-creator/src/main/java/dev/nanonative/railix/creator/CreatorEditor.java), [browser editor](../../modules/railix-creator/src/main/resources/dev/nanonative/railix/creator/web/app.js) | The bounded neighborhood lists all reaching Example sources. Connection edits address one source port. Step deletion bypasses that Step for all arrivals, unless another connected output prevents deletion. | Compound placement of a reused group with several external entrances remains unimplemented. The current compiler rejects disconnected intermediate drafts. |
 
-Established workflow semantics separate [pass-through convergence](https://docs.camunda.io/docs/components/modeler/bpmn/exclusive-gateways/),
-[waiting for all branches](https://docs.camunda.io/docs/components/modeler/bpmn/parallel-gateways/) and
-[waiting for activated branches](https://docs.camunda.io/docs/components/modeler/bpmn/inclusive-gateways/).
-These are references, not dependencies or a BPMN-compatibility promise.
+Existing compiler rejection and generated Step-contract tests verify the remaining restrictions,
+including rejection of nested programs used after return or on another thread. They do not verify
+Join, fan-out or Limiter support. Standard-library and third-party Steps share this same gap.
+Cycles/Loop and distributed coordination are not silently added here. Independent-message joins
+are in the accepted target, but do not exist in the current execution path.
 
-AND/OR/XOR/NAND over Boolean values are not interchangeable with arrival rules. A delayed branch
-is not Boolean false. Negated or exclusive arrival conditions need an explicit completion boundary
-to establish that another input will not arrive. Recommendation: use reusable predicate logic
-for values and explicit join policies for control; circuit symbols can help Creator explain both,
-but must not hide timing, buffering or duplicate-execution behavior.
+### Decisions Before Flow-Control Implementation
 
-Decision timing:
+These questions block only their dependent slices, not ordinary non-waiting convergence:
 
-- **Resolve now for the next flow-control slice:** whether waiting joins initially correlate
-  only branches of one original request. Combining independent events needs an explicit key and
-  completion/window rule; a queue or future mesh must not decide this implicitly.
-- **Before implementing either mode:** define context ownership/output mapping, ordering, duplicate
-  arrivals and emitted execution count. Cover shared continuation across Triggers if in scope.
-- **Before waiting/suspension:** decide activated versus all-wired branches, deadlines, branch
-  failure/cancellation, buffer bounds, cleanup and retained-context proof. Waiting on all wired
-  inputs after an exclusive Choice otherwise risks waiting forever.
-- **Before later operators:** decide inclusive/first/N-of-M/negated policies and repeated visits
-  only when selected; no full gate family, physics simulation or distributed join is implied now.
+| ID / timing | Plain-language question | Decision still needed |
+| --- | --- | --- |
+| FC-1, before multi-route selection | Two shipping rules match. Run the first, both, or every route? What if none matches? | Selection order, empty selection/fallback, persisted configuration and migration. Link count is not a default. |
+| FC-2, before sequential multi-route execution | Price calculation runs before invoice creation. Does invoice creation see the new price, and does a failed first route prevent the second? | Branch boundaries, order, context visibility, failure propagation and response/completion rules. |
+| FC-3, before independent branches | Price and stock checks run at once. Both write `status`. Which changes can each see before reaching a Join? | Shared-context versus branch-result ownership and write visibility remain open. The accepted last-arrival-wins rule applies when Join combines contexts. It does not select live concurrent mutation rules. Repeated writes can also be deliberate and valid. |
+| FC-4, before Join | Flow A delivers orders 1 then 2. Flow B delivers 2 then 1. Pair by order identity or simply take the next arrival from each input? | Context merging and last-arrival-wins for conflicting values are accepted. Independent-message scope was requested, but the user expects identification through joined flows. Clarify keyed pairing, next-arrival pairing or only branches of one original job. Then define required/activated inputs, repeated pairings, duplicates/late results and completion. Merge details still include arrival ordering for concurrent deliveries, nested fields, arrays, absent versus null and reserved runtime data. |
+| FC-5, before waiting or independent execution | A stock check fails or never returns. Does the price check stop, and what happens to the waiting order? | Explicit failure/cancellation/timeout outcomes, sibling policy, finite waiting limits, cleanup and lifecycle accounting. Numeric budgets and any retry policy remain unselected. |
+| FC-6, before Join and whole-job limits interact | A one-place Limiter admits invoice A, which waits for payment B at a Join. B needs the same occupied place. What can complete? | Detect/report provable circular waits. Define admission topology, ownership after joining jobs, response delivery to original callers and transfer/release of every held permit. Never silently release A early, admit B beyond the limit, or treat Join arrival as job completion. |
 
-Acceptance for SYS-008 must exercise the selected mode through a real generated Flow and Creator:
-each non-waiting arrival, required arrivals in either order, a skipped/failed branch, duplicates,
-cancellation and two simultaneous requests that must not be combined accidentally. These are
-planned scenarios; exact output and failure expectations are still blocked on the decisions above.
+### Flow-Control Acceptance
+
+`ConvergingFlowE2eTest` covers ordinary convergence through generated production and development
+artifacts, independent contexts and shared placement resources. The branching, Join and Limiter
+checks below remain planned unless explicitly listed as implemented. Existing synchronous
+behavior must remain unchanged.
+
+| Requirements | Public-boundary check |
+| --- | --- |
+| SYS-008, SYS-013 | Two alternative routes, then two different Triggers, reach one ordinary Step without a Merger. Each arrival produces its own result/response, preserves its own data, and executes the Step once. The shared placement initializes once. A failed arrival does not corrupt another. |
+| SYS-008, CR-011/013 | Select each incoming route, inspect its Example, insert on one connection and remove one connection without changing the others. Save/reopen and run the generated artifact with presentation metadata absent. |
+| SYS-023 | Exercise one, multiple matching and all routes with zero/one/multiple matches. Adding a wire does not change scheduling. Sequential execution follows FC-2. Independent execution follows FC-3/5 after approval. |
+| SYS-024, SYS-027 | Interleave two jobs in opposite input orders and verify the pairing agreed in FC-4, not an assumed message key. For paired arrivals with different `status` values, reverse arrival order and verify that the later value wins. Check nested/missing values and duplicate/skipped/failed/late/cancelled arrivals under FC-4/5, bounded retention, original response ownership and no unintended continuation. |
+| SYS-025/026 | Install a third-party coordinating Step without compiler/Creator edits. Compare a plain flow with the capability absent for artifact contents, allocations and execution cost. Preserve the direct synchronous path. |
+
+## Planned Limiters
+
+Status: **Accepted direction. Whole-job concurrency scope selected, completion details open.**
+The user selected release at the end of the entire job on 2026-09-27, not after the next Step
+or a selected section. A Limiter is an
+ordinary functional Step, optionally drawn as a small connection component. It is not a database,
+Trigger, observation service or implicit property of a visual Group.
+
+- **SYS-028:** Limiters MUST be usable at suitable declared execution boundaries throughout a
+  Flow. Rate admission (starts per time interval) and concurrency (unfinished work occupying
+  places) MUST be distinct behaviors with explicit configuration. A concurrency place MUST stay
+  occupied from admission at the Limiter until the entire admitted job completes, including
+  still-owned branch work. Returning from the next Step does not release it. Any placement restriction
+  must follow the public capability contract, not a built-in Step ID or transport type.
+- **SYS-029:** Budget sharing MUST be explicit. Equal limit values, linked editing, a common
+  building or group membership MUST NOT alone combine independent budgets. Identity, membership
+  and compatibility of a shared budget must be agreed before persistence or implementation.
+- **SYS-030:** Admission MUST be fair between eligible waiting lanes, use bounded in-memory
+  waiting and expose an explicit overload outcome when waiting cannot be admitted. The fairness
+  policy, queue capacities and time limits remain to be selected. File/database persistence is
+  excluded from this first delivery.
+- **SYS-031:** Limiter and Join control MUST function with Creator disconnected and optional
+  observations/metrics disabled. Their execution state MUST NOT be inferred from sampled timing,
+  counters or animation. Optional displays report state. They do not own it.
+
+Returning from Limiter PROCESS is not proof that the work being limited has finished. Likewise,
+requesting cancellation is not proof that a database write or independent branch has stopped.
+Permit release must use the agreed completion boundary and avoid leaks or double release.
+waiting work and admitted work both need the lifecycle contract in SYS-027. Existing resource
+sharing can store a budget, but its compatibility key alone does not define lane membership or
+which downstream work occupies it. The Join/whole-job interaction in FC-6 is a required design
+case, not permission to change the accepted whole-job lifetime to avoid a deadlock.
+
+### Decisions Before Limiter Implementation
+
+| ID / timing | Plain-language question | Decision still needed |
+| --- | --- | --- |
+| LM-1, before concurrency limiting | Limiter -> database -> email: the user chose release only when the entire job ends. What if an email branch is still running or the caller disconnects? | Whole-job scope accepted. Define completion across response delivery, independent branches, failure/cancellation and repeated visits to the same budget. A cancellation request alone must not free a place while owned work still runs. Visual Groups do not delimit the job. |
+| LM-2, before shared budgets | Two lanes each say "3 at once". Is that three each or three together? | Explicit budget identity/membership, scope and compatibility. Identical settings alone remain separate. Lane identity follows the functional contract, not screen position. |
+| LM-3, before queued admission | Lane A has 100 orders and lane B has one. When does B get a turn, and what happens when the waiting room is full? | Fairness algorithm and lane ordering, per-lane/total bounds, payload-retention budget, timeout/cancellation outcomes and whether zero waiting is selectable. No numeric defaults are invented. |
+| LM-4, before rate limiting | Can ten orders start together and then wait, or must their starts be spaced out? | Rate/time units, burst behavior, clock semantics and configuration validation, separately from concurrent-work limits. |
+
+Acceptance: use a controlled clock and held work through a generated application. Verify rate
+and concurrency independently, private versus explicitly shared budgets, progress for a quiet
+lane under sustained load, full/expired waiting, cancellation/shutdown, and no leaked or double
+released places. Repeat with an installed third-party Limiter and without Creator/metrics.
+Verify no persistence files and bounded retained memory. Exact expected ordering/counts await
+LM-1 to LM-4. This is not an already usable Step or an approved scheduling implementation.
 
 ## Switch
 
@@ -431,36 +594,267 @@ an invented loop or broadcast.
 `railix run [arguments...]` supplies ordered strings once. Non-null `context.result` is printed
 and numeric `context.exit_code` controls process status. Defaults are JSON `null` and `0`, producing
 silent success when the flow writes neither. Interactive terminal sessions are not inferred.
+CLI completion does not request application-wide shutdown or terminate other active Triggers.
+The status applies when the standalone application exits; Trigger-owned lifetime is defined in LC-9.
+
+## Planned Step Lifecycle
+
+Source: the user's 2026-09-21 HTTP review and lifecycle clarification. Status: **In progress**.
+The compiler now emits static `process(StepInput configuration, StepInput context)` calls for
+built-in and third-party Steps and rejects missing or invalid PROCESS signatures before Java
+generation. Implementation classes must be public. Registered class bytes are inspected at build
+time without initializing the class. Java compiler failures at direct PROCESS/PRE/POST references
+identify the offending implementation instead of reporting an internal generation failure.
+The builder uses `.implementation(StepClass.class)`; `StepHandler` and `.run(StepClass.class)`
+are removed, with no legacy execution path. Existing bundles need rebuilding.
+Declared JDK module requirements travel in the canonical Step contract and its digest, so
+installed bundles retain the same compilation requirements as directly declared Steps. An absent
+module list means no declared requirements. This does not implement the planned jlink/native packaging.
+Previously exported bundles whose providers declare modules must be re-exported so their
+locked contracts agree with those definitions; no missing metadata is inferred at runtime.
+
+Configuration is cached per compiled occurrence and contains authored literals, field paths and
+selected options. Invocation inputs resolve those paths and expose executable nested programs;
+configuration itself cannot execute programs or select request-dependent candidates. Literal
+objects are reused between configuration and invocation. Optional PRE/POST methods now use the
+same static signature, are validated from class bytes and run in compiled dependency order.
+Nested sequential programs initialize downstream-first before their containing Step; independent
+programs use deterministic declaration order. Declared input-source dependencies, including
+option aliases, use the same downstream-first order. Candidate predicates prepare before shared
+transforms, which prepare before their source's nested programs. This only orders PRE/POST;
+PROCESS input resolution and short-circuit behavior do not change. Lifecycle contexts carry no invocation payload.
+Hooks return the primary outcome without payload writes or outputs; invalid results and ordinary
+hook failures are explicit startup/cleanup failures. Cleanup includes the occurrence whose PRE
+failed and continues after a POST failure. Fatal errors propagate after attempted cleanup.
+
+The embedded application boundary now closes admission and drains admitted source, Example and
+trace calls using one adjustable budget, defaulting to 30 seconds. On expiry it requests
+cancellation and reports incomplete shutdown without running POST while work remains. A later
+stop call can finish cleanup after that work exits, but cannot reset or extend the initial deadline.
+Third-party startup/protocol fixtures now use PRE rather than constructor/class-initializer side
+effects, and their regression suite passes. Development startup rejection and fatal PRE/POST
+failures reclaim owned child processes before exit, verified with generated application JARs.
+Generic live ingress now uses a Trigger lifecycle context's `source()` capability. PRE registers
+`onStart` and acquired-resource `onClose` actions; activation waits until every PRE succeeds.
+`source.run(values, response)` dispatches the declared native inputs and includes the response
+consumer in admission/drain accounting. Finite activity calls `complete(status)` without stopping
+other sources. Standalone launch waits on its existing main thread without polling or allocating
+an idle platform thread per Trigger. Nonzero source statuses are selected in deterministic
+lifecycle order only after all sources finish. Cleanup actions run after that occurrence's POST,
+in reverse registration order, including partial startup failure; one failure does not skip others.
+
+`RuntimeApplication.start()` initializes Steps for embedding; `launch(arguments)` also activates
+external sources once. They share the same lifecycle, configuration and resources, not separate
+Example and production applications. Creator activates sources with an empty business argument
+list before starting its Example suite. Native Trigger PROCESS remains separate from output
+injection by Examples. Compiler and Creator no longer select CLI or HTTP launch modes: CLI
+argument/output handling lives in its Step, and HTTP binding lives in its Step.
+
+Generated-JAR tests cover mixed CLI/third-party source lifetime, activation-failure cleanup and
+response draining. The `railix run` launcher forwards termination and allows the same default
+30-second grace period before forcing its child to exit. A development-artifact test verifies
+live ingress alongside Example injection. Ordinary Step inputs retain their previous storage;
+source capabilities are allocated only for Trigger lifecycle contexts. With the optional resource
+API, allocation remains at 3,432 bytes per short invocation and 671 bytes per Step in the 129-Step
+fixture. One million production calls fit a 64 MiB heap, retaining 147,496 additional bytes in the
+measured soak. These workload-specific checks do not establish a general scale or throughput promise.
+Development management and business ingress now drain concurrently inside the same 30-second
+budget; the Creator's process owner waits for that grace period rather than killing the child
+after a few seconds. A held-response regression covers Creator closure before resource cleanup.
+Optional resource registration and explicit sharing now use the same lifecycle. The HTTP Client
+uses this public API rather than creating a client per request. Expanded HTTP configuration and
+Creator sharing diagnostics remain separate work; this does not certify the entire HTTP migration.
+
+- **SYS-010:** Steps MUST be able to declare optional PRE/INIT and POST behavior alongside
+  PROCESS. All three phases MUST receive configuration and context through the same contract,
+  with configuration separate from context. PRE and POST MUST have no invocation payload.
+  PRE and INIT denote one phase, not two competing hooks.
+  Conventional `pre`, `process` and `post` methods MUST NOT require redundant method-name
+  registration. Missing optional PRE/POST methods MUST generate no call or no-op allocation.
+  Method resolution and signature validation belong at build time, not on each invocation.
+  An executable Step without PROCESS MUST be rejected at build time; absence MUST NOT become
+  implicit pass-through. This does not change the existing structural App definition.
+- **SYS-011:** A Step MUST be able to own and reuse Java resources across PROCESS invocations.
+  Railix-managed resources MUST have an explicit association within their running application.
+  Ordinary Java-owned instances, static singletons and registries remain valid; their owner,
+  not Railix, is responsible for sharing, concurrency and cleanup. Compatible
+  occurrences MAY share a managed resource under a Step-defined policy; configuration and request data
+  MUST remain isolated. PROCESS code MUST be callable as static generated function composition
+  without requiring a handler object per occurrence. Concurrent resource access MUST be safe;
+  completed request data MUST NOT be retained. Pure value operations MUST NOT acquire unused
+  resource storage or hooks.
+  An existing client or pool object MAY itself be the resource state; Step authors MUST NOT need
+  an additional State class merely to wrap it. Lifecycle bookkeeping MUST NOT recreate reusable
+  resources or allocate an otherwise unnecessary resource wrapper for each PROCESS invocation.
+- **SYS-012:** Compiler, runtime and Creator MUST consume registered lifecycle/ingress declarations
+  identically for built-in and third-party Steps. No HTTP class, source name or Step ID may select
+  a privileged implementation path. Removing the current HTTP generator exception is **P1**.
+- **SYS-013:** PRE MUST run once per included occurrence at application startup, downstream before
+  upstream. POST MUST run in the reverse lifecycle order during shutdown. Shared downstream Steps
+  MUST initialize only once, not once for every path or Trigger that reaches them. Independent
+  branches MUST have deterministic ordering; visual Groups MUST NOT affect that order.
+- **SYS-014:** Shutdown MUST stop new admissions from all Triggers, allow admitted work to finish,
+  and only then release resources that work may still use. POST ordering alone MUST NOT be treated
+  as proof that in-flight work has drained. Deadline expiry and incomplete cleanup MUST be explicit.
+- **SYS-015:** User-authored Step configuration MUST remain immutable compiled data for that
+  occurrence, separate from invocation context. PRE, PROCESS and POST MUST see the same settings.
+  Context mappings may select request values but MUST NOT mutate the compiled configuration.
+- **SYS-016:** Managed resource registration MUST be optional and MUST NOT require a second
+  resource declaration in StepDefinition. The simple API MUST create a private per-placement
+  resource. Explicit sharing MUST use a Step-supplied immutable compatibility key containing all
+  relevant effective settings and session/isolation identity. The Step owns that key and its
+  ordinary configuration controls; Railix MUST NOT infer compatibility by inspecting factories,
+  visual groups or resource display names. Sharing requires the same application, Step definition,
+  resource name, declared Java type and equal key. Resolution belongs to PRE, not request-time
+  comparison. A shared resource MUST remain usable until every owner's POST completes.
+- **SYS-017 (deferred):** Named resource profiles MUST own their shared configuration in functional project
+  data, independently of optional Creator metadata. Selecting a profile MUST reference that
+  configuration rather than keep a second editable copy in each Step. Compiled applications MUST
+  use the resolved settings without requiring Creator or its profile editor at runtime.
+- **SYS-018:** Each Trigger MUST own the lifetime of its source activity. Normal completion of one
+  Trigger MUST NOT stop another active Trigger or terminate its admitted work. A standalone
+  application with only completed finite sources and no remaining work MUST shut down and run
+  lifecycle cleanup, without an artificial permanent keepalive. Compiler and runtime MUST NOT
+  select application lifetime by built-in Trigger type or a CLI-versus-server launch mode.
+
+Static functions do not eliminate the HTTP client, connection pool or listener objects themselves.
+Libraries may own internal objects and state without registering each object with Railix. The Step
+owns integration and cleanup through the library's public API; Railix does not inspect its internals.
+Only the resources actually needed by the compiled application survive. Resource storage is not
+serializable business data. Steps remain independent of their upstream Trigger and downstream
+Steps; the application coordinates ordering. SYS-005 still owns result-based failures. No
+reflection, runtime graph interpretation or mandatory Java Stream pipeline is required: direct
+generated calls may preserve the functional composition without per-request stream allocation.
+
+### Accepted Lifecycle Decisions
+
+- **LC-1, phase and scope:** PRE once at application startup, PROCESS per arrival, POST on
+  shutdown, with configuration and resource associations scoped per placed occurrence. The user's
+  sharing clarification permits compatible occurrences to refer to the same resource; it does
+  not require a separate client or pool for each placement. Static Step functions are the target,
+  not newly allocated Step instances. The compiler derives lifecycle dependencies from executable
+  connections, including shared paths; optional hooks do not execute business PROCESS code.
+- **LC-2, configuration:** compiled Step settings are not context fields. The earlier proposal
+  to move startup settings into a protected context region is superseded. Literal settings are
+  currently plain; HTTPS does not wait for the future secret manager. Certificate paths/passwords
+  and trust policy belong to Step configuration; method/URL/headers/body may come from mapped
+  context values. A compiled field path stays fixed even when the value it selects changes.
+- **LC-3, resource ownership and DX:** the latest clarification replaces mandatory resource
+  declarations and automatic sharing with optional `context.resource(...)` registration in PRE.
+  Normal Java objects/singletons remain possible. The simple registration is private; an explicit
+  key opts into sharing. Ordinary Step options may choose the overload, without a special Creator
+  resource model. The Step owns creation, compatibility and cleanup; Railix coordinates registered
+  ownership and lifetime without inspecting library internals. No `.state(...)` declaration or
+  wrapper class is required. Visual Groups remain presentation-only. Named profiles are deferred
+  under SYS-017 and are not required for the current API.
+- **LC-4, drain deadline:** the user accepted an adjustable 30-second default. This is the
+  application-wide drain budget, not a fresh 30 seconds per Step. Expiry requests cancellation
+  and reports incomplete shutdown if work does not stop. After cancellation fails, a standalone
+  generated application must terminate unsuccessfully rather than remain alive indefinitely.
+  An embedded runtime must report failure without terminating its host process. A Java interruption
+  alone is not proof of completed cleanup; termination cannot guarantee graceful resource release.
+- **LC-5, required PROCESS:** the user confirmed that a missing PROCESS implementation is a
+  build error. Conventional method names need no explicit registration; PRE/POST remain optional.
+- **LC-6, migration:** the user approved replacing the Step author API and migrating built-ins
+  through the same contract as third-party Steps. No permanent handler-object compatibility path
+  is retained. Project documents are not silently rewritten; schema changes need explicit migration.
+- **LC-7, Examples and live ingress:** the user confirmed that Examples supply Trigger output,
+  not external input to its PROCESS method. Example execution starts at the compiled continuation
+  after the Trigger and neither opens nor closes listeners. Starting the local development app
+  must still start its configured external Triggers independently of Example execution. Examples
+  and real incoming requests may use the same running app, with separate invocation contexts;
+  downstream Steps and resources execute normally in both cases. Per-Step output fakes remain
+  separately planned in [EX-010](examples-and-validation.md#behavior).
+- **LC-8, local replacement:** the user accepted a short interruption during Creator rebuilds.
+  Compile first while the current app keeps running. After a successful build, stop admission,
+  drain and stop the old app before starting the replacement. Retain its artifact until the
+  replacement succeeds. Persist the candidate before activation so an unsaved candidate cannot run
+  Examples. Publish its accepted in-memory project and artifact identity only after activation succeeds.
+  If activation fails, restore the previous file unless another writer changed it, in which case preserve
+  that edit and report the conflict. A failed file restoration is explicit. Restart the last working artifact and
+  report both the replacement failure and recovery outcome. This applies to every Trigger and
+  Step-owned exclusive resource, not just network ports. Recovery does not undo side effects
+  and can itself fail if resources are no longer available. A failed recovery must not block
+  a later valid build in the same Creator session. No forwarding proxy is implied.
+- **LC-9, Trigger-owned lifetime:** the user clarified that there is no CLI-versus-persistent
+  application policy to select. CLI processes its arguments once and contributes no ongoing
+  keepalive. An HTTP listener keeps serving until stopped; a future scheduler's lifetime follows
+  its finite or repeating activity, not its name. Finishing CLI must neither stop a listener nor
+  force process exit while another Trigger remains active. Once all finite activity and admitted
+  work have completed, a standalone application shuts down normally, including POST cleanup.
+  Trigger implementations must account for JVM liveness: daemon threads, including virtual
+  threads, do not by themselves prevent process exit. This does not require a dedicated platform
+  thread for every Trigger. Embedded applications do not own their host process; Creator's
+  development management lifetime is separate from business Trigger lifetime. Creator control
+  arguments must never become CLI payload. Scheduler implementation is not added to this slice.
+
+For `HTTP -> transform -> persistence`, PRE prepares persistence before HTTP accepts work.
+During shutdown HTTP stops admitting work, admitted requests finish using the still-open
+persistence resource, then that resource closes. With multiple Triggers, the admission/drain
+barrier covers all of them, including different paths to a shared Step. Startup failure must
+clean up acquired resources without declaring the application ready; cleanup failure must not
+skip remaining cleanup. Forced termination cannot guarantee POST or graceful completion.
+
+### Resource API
+
+```java
+// PRE: private resource for this placement, reused across invocations.
+context.resource("client", HttpClient.class,
+        HttpClient::newHttpClient, HttpClient::close);
+
+// PROCESS or POST: retrieve the registered instance.
+final HttpClient client = context.resource("client", HttpClient.class);
+
+// Alternative PRE: opt into sharing using immutable effective settings.
+context.resource("client", HttpClient.class, settings,
+        () -> createClient(settings), HttpClient::close);
+```
+
+The private and shared registrations are alternatives, not consecutive registrations of one name.
+Each name may be registered once per placement, only in PRE. Retrieval uses the exact declared
+type. Missing resources, duplicate names, invalid/null registration arguments, null factory
+results and late registration are programmer-contract failures translated at the Step boundary.
+Factories execute only for a new private resource or a new shared key. Shared registrations must
+describe equivalent creation/cleanup behavior; the first registration supplies both functions.
+The key must have stable equality/hashCode and must never be request data or a mutable cookie jar.
+
+Resources are Java capabilities, not JSON values. Plain Steps keep ordinary StepInput objects;
+registered Steps receive resource access in their existing invocation context, not a second
+per-request resource wrapper. Nested Steps, Examples and live calls use the same prepared scopes.
+Registered cleanup runs after POST in reverse acquisition order; reference counts track owners,
+not requests. A closer is attempted exactly once even when it fails, and failure does not skip
+other cleanup. The Step must not manually close a registered resource. Partial PRE failure rolls
+back acquired resources. A failed drain retains resources while admitted work still uses them.
+Closing new admission alone is not proof that all in-flight work has finished.
+
+### Lifecycle Acceptance
+
+| Requirements | Public-boundary scenario | Evidence / gap |
+| --- | --- | --- |
+| SYS-010/011, LC-5 | Build conventional static Steps without explicit hook names, including a pure PROCESS-only Step and a client Step without a custom State class. Verify direct calls, omitted absent hooks, and build-time rejection of absent PROCESS or invalid signatures. | Static hook/signature tests and ResourceLifecycleE2eTest exercise the optional API through an installed third-party bundle and produced JAR. |
+| SYS-010/011/015 | Build an application with differently configured occurrences of one resourceful Step; run concurrent requests and stop it. Check reuse and isolation without handler objects. | ResourceLifecycleE2eTest runs 128 concurrent flows through seven resource-owning placements, including a nested Step. Five resources are created and closed once each. |
+| SYS-011/014/016 | Share compatible resources while isolating private occurrences and incompatible keys; fail PRE or POST and repeat shutdown. | ResourceLifecycleE2eTest covers private/shared/key/definition isolation, rollback, invalid registration, ordinary/fatal failures and continued cleanup. Separate-JVM applications cannot share this app-local registry; simultaneous embedded application instances are not a current generated entrypoint. |
+| SYS-016 | Select private/shared through ordinary inputs and prove compatibility is resolved once in PRE. | Generic resource tests use ordinary option inputs without resource declaration metadata. The HTTP connection test proves ten requests use two private connections or one shared connection, with cookie storage disabled. Visual Groups do not participate in generated resource identity. |
+| SYS-017 | Use a shared profile from several Steps and build without Creator; verify canonical configuration resolution. | Deferred; profile persistence and edit/delete rules must be agreed before that later slice. |
+| SYS-013/014 | Two Triggers share a downstream resource; hold one request in flight while stopping the app. Verify one downstream PRE, all admission closed, request completion before resource POST, and reverse cleanup ordering. | ConvergingFlowE2eTest proves a shared placement lifecycle across concurrent sources. Drain and transport-response ownership are covered separately by ProductionRuntimeConcurrencyE2eTest and GenericTriggerLifecycleE2eTest; the combined shared-resource drain scenario remains unverified. |
+| SYS-014, LC-4 | Configure a short controlled drain budget and hang work across several Steps. Verify one application-wide deadline, cancellation at expiry and no successful-shutdown report while work remains. | ProductionRuntimeConcurrencyE2eTest covers drain, rejected admission, ignored cancellation and repeated cleanup. GenericTriggerLifecycleE2eTest holds a real transport response during standalone JAR termination, railix run termination and Creator closure. Development management and business drain share one deadline instead of sequential grace periods. |
+| SYS-010/013/014 | Fail partial initialization, interrupt in-flight work, then attempt repeated shutdown. Verify cleanup continues after a hook failure without admitting work to an unready Step or reporting false completion. | Generated-app checks cover PRE rollback, POST failure, graph and nested-program order. ResourceLifecycleE2eTest also checks registered-resource cleanup after ordinary/fatal failures and repeated shutdown. |
+| SYS-012 | Install a third-party Trigger/resource Step; build and run it without changing compiler or Creator. Inspect generated calls, module closure and absence of stdlib-only branches. | GenericTriggerLifecycleE2eTest installs a real socket-source bundle and executes production/development artifacts. ResourceLifecycleE2eTest proves optional resource ownership. GeneratedApplicationVariantsE2eTest rejects built-in launcher behavior. |
+| SYS-018, LC-9 | Run a CLI-only artifact and verify one invocation followed by POST and process exit. Combine CLI with a third-party persistent Trigger and verify CLI completion leaves that source serving. Complete a finite asynchronous source and verify its work finishes before normal cleanup and exit. | GeneratedApplicationE2eTest covers CLI process status/output and HTTP launch. GenericTriggerLifecycleE2eTest proves a virtual-thread source outlives CLI and its explicit completion permits process exit with the CLI status preserved. |
+| LC-7 | Start the development app with a live Trigger, run an Example at its output and send a real request. Verify independent contexts, no Example call to Trigger PROCESS, no listener restart per Example and normal downstream execution. | GenericTriggerLifecycleE2eTest verifies an active listener, Example execution without Trigger PROCESS, subsequent real-input execution and source cleanup. |
+| LC-8 | Rebuild through Creator, verify the previous process exits before the replacement executes, fail candidate startup and observe successful or failed recovery. | Process ordering and recovery implemented; generated-app regressions cover these outcomes. Generic admission/drain hooks now apply to live sources; the Creator respects the shared grace period before process escalation. |
+| SYS-011, SYS-006 | Compare a pure-value application and repeated HTTP requests; measure artifact size, initialization, allocations, connections and throughput. | ProductionRuntimeSoakE2eTest passes with the resource API: one million calls inside 64 MiB and unchanged measured pure-flow allocation. GeneratedApplicationE2eTest verifies socket reuse for private/shared clients. Comparative HTTP throughput and a general scale budget remain unclaimed. |
 
 ## HTTP Trigger And Client
 
-The initial HTTP slice supplies singleton `railix.trigger.http` for source `application.http`
-and ordinary `railix.http.client`. [ADR 0023](../adr/0023-http-ingress-and-step-owned-jdk-modules.md)
-records its scope. `railix serve [port]` builds the current project and launches its HTTP server
-on loopback; the generated HTTP application's entrypoint is `--railix-http [host] [port]`.
-Projects without HTTP ingress are rejected by `serve`; CLI-only generated applications retain
-ordinary CLI argument handling and omit the HTTP handler.
-
-An HTTP request provides `method`, `path`, raw `query`, multi-value `headers` and `body` to the
-Trigger's target. `application/json` request bodies are parsed (case-insensitive, ignoring media-type
-parameters), non-JSON UTF-8 bodies become strings, and empty
-bodies become JSON null. Invalid JSON/UTF-8 and requests exceeding 1 MiB are rejected before Flow
-execution. Trigger response slots map ordinary context values to `body`, `headers` and `status`;
-non-null response bodies are JSON-encoded. The HTTP Client accepts authored URL, method and
-headers plus a body binding, and returns a response object with status, headers and parsed JSON
-or text body. Header values must be strings or arrays containing only strings; invalid values
-produce HTTP `500` for server responses and status `0` without sending a client request.
-Client responses also have a 1 MiB limit; transport failures return status `0`.
-
-This is a built-in HTTP launch path, not the generic third-party Trigger/resource lifecycle
-planned in SYS-009. TLS, authentication policy, streaming, multipart bodies, configurable limits
-and production admission budgets remain unsupported. Interruption releases the server listener
-and cancels its owned request tasks. The public verification boundary is the built application
-in [GeneratedApplicationE2eTest](../../modules/railix-creator/src/test/java/dev/nanonative/railix/creator/GeneratedApplicationE2eTest.java).
-
-Step-owned JDK module declarations currently reach `javac` through platform catalog metadata.
-They are not automatic per-Step detection or Creator capability icons under CR-004/CR-005;
-third-party manifest metadata and final minimal-runtime closure remain separate planned work.
+The owning Step specifications are [HTTP Trigger](http-trigger.md) and
+[HTTP Client](http-client.md). They distinguish the working minimal baseline from the accepted
+2026-09-21 target, unresolved decisions and required public-boundary checks.
+[ADR 0023](../adr/0023-http-ingress-and-step-owned-jdk-modules.md) records the earlier implementation
+and its superseded built-in-only launch direction. HTTP is the first consumer of SYS-010 to
+SYS-012, not a separate lifecycle API. HTTPS belongs in the next HTTP delivery; binary bodies,
+multipart and streaming remain deferred. Real Example I/O remains permitted under the
+[Example contract](examples-and-validation.md#real-io-and-output-fakes).
 
 ## Planned Environment Builds
 
@@ -477,11 +871,16 @@ debugging remain roadmap work. Current examples never sample production traffic.
 
 ## Compilation And Lifecycle
 
-Compilation is pure structural work. It parses, validates, applies Step defaults, builds the flat
-executable, and returns deterministic diagnostics. It never invokes a Trigger or Step handler.
+Compilation parses the project, checks its structure, applies Step defaults and runs declared
+configuration validators before building the flat executable. It returns deterministic diagnostics
+and never invokes Trigger or Step PRE, PROCESS or POST. The isolated callback boundary is defined
+by [SYS-019 to SYS-022](#configuration-validation).
 
-Functional edits trigger a rolling replacement only after a valid application starts. Invalid
-edits keep the previous application running. Presentation-only group edits persist without
+Functional edits compile before stopping the previous application. Invalid source or a failed
+build keeps it running. A successful build then replaces the child process with a short interruption;
+failed startup attempts to restart the retained previous artifact and reports recovery separately.
+Creator closes admission and drains active work within one shared deadline before escalating
+child-process cleanup under LC-8. Presentation-only group edits persist without
 restarting the application. Planned copy/shared-content edits change functional Steps and links
 and therefore follow the functional rebuild path, not the presentation-only path.
 Creator shows the project path, exact child launch path/classpath,
@@ -500,16 +899,17 @@ not certified; removing a fixed limit does not eliminate memory or bytecode budg
 ### Current Generated Flow Shape
 
 [ApplicationGenerator](../../modules/railix-core/src/main/java/dev/nanonative/railix/core/project/ApplicationGenerator.java)
-emits one `Flow_<trigger>` class, partitioned route/plan helpers and reusable handler instances.
+emits one `Flow_<trigger>` class, partitioned route/plan helpers and static method references.
 The production executor loops over a numeric current-Step position, dispatches a compiled
 `switch` to `execution.call(plan, handlerCall, received, inputResolver)`, then selects the next
-position from the declared outcome. `handlerCall` is a statically bound `HANDLER_n::run`.
+position from the declared outcome. `handlerCall` binds directly to `StepClass::process` and receives
+the cached configuration separately from the invocation input. No Step object is constructed.
 Routing and input resolvers are generated Java, not runtime interpretation of the project JSON.
 
 The artifact still uses `WorkflowRuntime.Execution`, Step plans, `StepInput`/`StepResult` and
 canonical context values. It is not yet a fully flattened chain of minimal specialized methods,
-and one Flow is not one Java Stream, OS thread or independently scheduled lane. Handler reuse
-does not remove these call, value or allocation costs. Groups and their visual identity are absent.
+and one Flow is not one Java Stream, OS thread or independently scheduled lane. Static calls
+do not remove these call, value or allocation costs. Groups and their visual identity are absent.
 
 The [variant tests](../../modules/railix-core/src/test/java/dev/nanonative/railix/core/GeneratedApplicationVariantsE2eTest.java)
 check compiled inputs, primitive routing codes and production omission of development machinery;
@@ -546,18 +946,18 @@ The definition uses only the generic recursive input grammar available to third 
                 .fromOwned("source")
 ).defaultCandidate("current"))
 .input("steps", Input.steps(StepDefinition.ValueSource.from("value")))
-.run(ChangeField.class);
+.implementation(ChangeField.class);
 ```
 
 Its implementation uses only the declared input names:
 
 ```java
-public final class ChangeField implements StepHandler {
-    public ChangeField() {
+public final class ChangeField {
+    private ChangeField() {
     }
 
-    @Override
-    public StepResult run(final StepInput input) throws InterruptedException {
+    public static StepResult process(final StepInput configuration, final StepInput input)
+            throws InterruptedException {
         return input.run("steps").writeWhenPresent("field");
     }
 }

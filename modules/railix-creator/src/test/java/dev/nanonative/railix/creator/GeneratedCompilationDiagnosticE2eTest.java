@@ -4,10 +4,14 @@ import dev.nanonative.railix.core.step.StepContractJson;
 import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import thirdparty.conformance.InaccessibleConstructorStepHandler;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import thirdparty.conformance.InvalidProcessStep;
+import thirdparty.conformance.CheckedProcessStep;
+import thirdparty.conformance.RuntimeBoundaryProbeStep;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -32,18 +36,45 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @Timeout(90)
 final class GeneratedCompilationDiagnosticE2eTest {
-    private static final String STEP_ID = "diagnostic.inaccessible-constructor";
-    private static final String IMPLEMENTATION = InaccessibleConstructorStepHandler.class.getCanonicalName();
-    private static final String IMPLEMENTATION_ENTRY =
-            InaccessibleConstructorStepHandler.class.getName().replace('.', '/') + ".class";
+    private static final String STEP_ID = "diagnostic.invalid-process";
+    @Test
+    void creatorNamesTheInstalledStepWhoseJdkModuleIsUnavailable(final @TempDir Path workspace) throws Exception {
+        final Path project=workspace.resolve("railix.project.json"),home=workspace.resolve("railix-home");
+        installBundle(project,home,RuntimeBoundaryProbeStep.class,"jdk.missing");
+        try(CreatorServer creator=CreatorServer.start(0,project,home)) {
+            final var before=application(creator.baseUri());
+            final var response=request(creator.baseUri(),invalidProject());
+            assertThat(response.statusCode()).isEqualTo(422);
+            assertThat(response.body()).contains("STEP_IMPLEMENTATION_INVALID",RuntimeBoundaryProbeStep.class.getCanonicalName(),"jdk.missing")
+                    .doesNotContain("GENERATED_APPLICATION_COMPILATION_FAILED");
+            assertThat(number(application(creator.baseUri()),"pid")).isEqualTo(number(before,"pid"));
+        }
+    }
 
     @Test
-    void creatorRejectsAnUnconstructableLockedImplementationWithAStableDiagnostic(
+    void creatorRejectsAnInaccessibleInstalledClassAtItsStep(final @TempDir Path workspace) throws Exception {
+        final Path project=workspace.resolve("railix.project.json"),home=workspace.resolve("railix-home");
+        installBundle(project,home,CheckedProcessStep.inaccessibleImplementation());
+        try(CreatorServer creator=CreatorServer.start(0,project,home)) {
+            final var before=application(creator.baseUri());
+            final var response=request(creator.baseUri(),invalidProject());
+            assertThat(response.statusCode()).isEqualTo(422);
+            assertThat(response.body()).contains("PROJECT_STEP_PROCESS_INVALID","public implementation class","nodes[2].use");
+            assertThat(number(application(creator.baseUri()),"pid")).isEqualTo(number(before,"pid"));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(classes={InvalidProcessStep.class,CheckedProcessStep.class,CheckedProcessStep.Pre.class,CheckedProcessStep.Post.class,
+            thirdparty.suffix.dev.nanonative.railix.stdlib.StandardStepHandlers.Cli.class})
+    void creatorRejectsAnInvalidLockedProcessWithAStableDiagnostic(
+            final Class<?> implementation,
             @TempDir final Path workspace
     ) throws Exception {
         final Path project = workspace.resolve("railix.project.json");
         final Path railixHome = workspace.resolve("railix-home");
-        installBundle(project, railixHome);
+        installBundle(project, railixHome, implementation);
+        final boolean staticProcess=implementation!=InvalidProcessStep.class;
 
         try (CreatorServer creator = CreatorServer.start(0, project, railixHome)) {
             final String deployedProject = Files.readString(project, StandardCharsets.UTF_8);
@@ -56,12 +87,13 @@ final class GeneratedCompilationDiagnosticE2eTest {
             assertThat(text(body, "status")).isEqualTo("rejected");
             final RailixValue.ArrayValue diagnostics = (RailixValue.ArrayValue) body.values().get("diagnostics");
             assertThat(diagnostics.values()).containsExactly(RailixValue.object(Map.of(
-                    "code", RailixValue.string("STEP_IMPLEMENTATION_INVALID"),
-                    "message", RailixValue.string(
-                            "Generated application cannot construct or invoke Step implementation: "
-                                    + IMPLEMENTATION + "."
+                    "code", RailixValue.string(staticProcess?"STEP_IMPLEMENTATION_INVALID":"PROJECT_STEP_PROCESS_INVALID"),
+                    "message", RailixValue.string(staticProcess
+                            ? "Generated application cannot invoke Step implementation: " + implementation.getCanonicalName() + "."
+                            : implementation.getCanonicalName() + " must declare public static StepResult process(StepInput, StepInput)."
+                                    + " Rebuild older Step bundles against the current Step API."
                     ),
-                    "path", RailixValue.string("")
+                    "path", RailixValue.string(staticProcess?"":"nodes[2].use")
             )));
             final RailixValue.ObjectValue current = (RailixValue.ObjectValue) body.values().get("application");
             assertThat(number(current, "pid")).isEqualTo(number(deployedApplication, "pid"));
@@ -71,21 +103,24 @@ final class GeneratedCompilationDiagnosticE2eTest {
         }
     }
 
-    private static void installBundle(final Path project, final Path railixHome) throws Exception {
+    private static void installBundle(final Path project, final Path railixHome, final Class<?> implementationClass,
+                                      final String... modules) throws Exception {
+        final String implementationName=implementationClass.getCanonicalName();
+        final String implementationEntry=implementationClass.getName().replace('.', '/') + ".class";
         final StepDefinition definition = StepDefinition.named(STEP_ID, "1")
-                .run(InaccessibleConstructorStepHandler.class);
+                .implementation(implementationClass,modules);
         final Path bundle = project.resolveSibling("invalid-step-bundle.jar");
-        try (InputStream implementation = InaccessibleConstructorStepHandler.class
-                .getResourceAsStream("/" + IMPLEMENTATION_ENTRY)) {
-            if (implementation == null) {
-                throw new IOException("Invalid Step implementation fixture is unavailable.");
+        try (OutputStream output = Files.newOutputStream(bundle);
+             JarOutputStream jar = new JarOutputStream(output)) {
+            for (final Class<?> type : List.of(implementationClass,implementationClass.getNestHost()).stream().distinct().toList()) {
+                final String entry=type.getName().replace('.', '/') + ".class";
+                try (InputStream implementation = type.getResourceAsStream("/" + entry)) {
+                    if (implementation == null) throw new IOException("Invalid Step implementation fixture is unavailable.");
+                    write(jar, entry, implementation.readAllBytes());
+                }
             }
-            try (OutputStream output = Files.newOutputStream(bundle);
-                 JarOutputStream jar = new JarOutputStream(output)) {
-                write(jar, IMPLEMENTATION_ENTRY, implementation.readAllBytes());
-                write(jar, "META-INF/railix/steps.json",
-                        StepContractJson.writeManifest(List.of(definition)).getBytes(StandardCharsets.UTF_8));
-            }
+            write(jar, "META-INF/railix/steps.json",
+                    StepContractJson.writeManifest(List.of(definition)).getBytes(StandardCharsets.UTF_8));
         }
         final String artifactDigest = digest(Files.readAllBytes(bundle));
         final Path store = railixHome.resolve("artifacts");
@@ -107,8 +142,8 @@ final class GeneratedCompilationDiagnosticE2eTest {
                         "steps", RailixValue.array(List.of(RailixValue.object(Map.of(
                                 "contract", RailixValue.string("sha256:" + contractDigest),
                                 "id", RailixValue.string(STEP_ID),
-                                "implementation", RailixValue.string(IMPLEMENTATION),
-                                "implementation_entry", RailixValue.string(IMPLEMENTATION_ENTRY),
+                                "implementation", RailixValue.string(implementationName),
+                                "implementation_entry", RailixValue.string(implementationEntry),
                                 "version", RailixValue.string("1")
                         ))))
                 ))))

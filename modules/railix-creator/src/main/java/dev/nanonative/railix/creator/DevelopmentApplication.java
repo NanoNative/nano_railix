@@ -1,6 +1,7 @@
 package dev.nanonative.railix.creator;
 
 import dev.nanonative.railix.core.project.CompileResult;
+import dev.nanonative.railix.core.project.RuntimeApplication;
 import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -40,7 +41,7 @@ final class DevelopmentApplication implements AutoCloseable {
     private static final int ACCEPT_POLL_MILLIS = 250;
     private static final int FRAME_READ_MILLIS = 1_000;
     private static final int RESPONSE_LIMIT = RailixData.DEFAULT_MAX_SOURCE_BYTES;
-    private static final int OBSERVATION_RESPONSE_LIMIT = RESPONSE_LIMIT * 16;
+    static final int OBSERVATION_RESPONSE_LIMIT = RESPONSE_LIMIT * 16;
     private static final Duration READY_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(12);
@@ -90,7 +91,14 @@ final class DevelopmentApplication implements AutoCloseable {
             final Path projectFile,
             final CompileResult.Compiled compiled
     ) throws IOException {
-        final ApplicationBuilder.DevelopmentBuild publication = ApplicationBuilder.build(projectFile, compiled);
+        return start(generation, ApplicationBuilder.build(projectFile, compiled));
+    }
+
+    /** Starts an already-built artifact and transfers its publication lease to the child. */
+    static DevelopmentApplication start(
+            final long generation,
+            final ApplicationBuilder.DevelopmentBuild publication
+    ) throws IOException {
         final ApplicationBuilder.Artifact artifact = publication.artifact();
         final String token = UUID.randomUUID().toString();
         Process process = null;
@@ -113,6 +121,7 @@ final class DevelopmentApplication implements AutoCloseable {
             final Ready ready = awaitReady(readiness, token, owned, output);
             activationCallback = ready.callback();
             publication.close();
+            ApplicationBuilder.cleanRuntime(artifact);
             ApplicationBuilder.prune(artifact);
             final URI baseUri = URI.create("http://127.0.0.1:" + ready.port());
             client = HttpClient.newBuilder().connectTimeout(REQUEST_TIMEOUT).build();
@@ -335,6 +344,7 @@ final class DevelopmentApplication implements AutoCloseable {
                 }
                 return;
             }
+            final long drainDeadline = System.nanoTime() + RuntimeApplication.DEFAULT_DRAIN_BUDGET.toNanos();
             closed.set(true);
             capture(process, ownedProcesses);
             try {
@@ -360,6 +370,10 @@ final class DevelopmentApplication implements AutoCloseable {
             }
             if (!drainAttempted) {
                 interrupted |= drainRequests();
+                if (process.isAlive()) {
+                    interrupted |= waitForExit(Map.of(process.pid(), process.toHandle()),
+                            Duration.ofNanos(Math.max(0, drainDeadline - System.nanoTime())));
+                }
                 drainAttempted = true;
             }
             final boolean processTerminated = terminate(process, ownedProcesses);
@@ -384,16 +398,17 @@ final class DevelopmentApplication implements AutoCloseable {
                         "Development application output reader did not terminate."
                 ));
             }
+            boolean runtimeCleaned = false;
             if (processTerminated) {
                 try {
-                    ApplicationBuilder.cleanRuntime(artifact);
+                    runtimeCleaned = ApplicationBuilder.cleanRuntime(artifact);
                 } catch (final IOException exception) {
                     failure = merge(failure, new IllegalStateException(
                             "Generated application runtime files could not be deleted.", exception
                     ));
                 }
             }
-            if (failure == null) {
+            if (failure == null && runtimeCleaned) {
                 cleanupComplete = true;
             }
         }

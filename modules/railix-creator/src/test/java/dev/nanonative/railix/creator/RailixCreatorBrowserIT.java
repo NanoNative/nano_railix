@@ -4,7 +4,9 @@ import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.options.BoundingBox;
 import com.microsoft.playwright.Page;
+import com.microsoft.playwright.Route;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.Tracing;
@@ -47,6 +49,7 @@ import java.util.stream.Stream;
 import thirdparty.conformance.MatcherConformanceSteps;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport {
 
@@ -93,6 +96,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void buildStatusShowsTruthfulWorkspaceFacts() {
         page.locator(".build-indicator").click();
+        page.locator("#application-details details > summary").click();
 
         assertThat(page.locator("#project-path").isVisible()).isTrue();
         assertThat(page.locator("#application-status").textContent()).contains(
@@ -106,11 +110,13 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     @Test
     void buildStatusShowsTheRunningBuildPathAndPid() {
         page.locator(".build-indicator").click();
+        page.locator("#application-details details > summary").click();
+        page.locator("#runtime-summary > summary").click();
 
         assertThat(page.locator("#build-path").isVisible()).isTrue();
-        assertThat(page.locator("#application-pid").isVisible()).isTrue();
+        page.locator("#status-pid:visible").waitFor();
         assertThat(page.locator("#build-path").textContent()).isNotBlank();
-        assertThat(page.locator("#application-pid").textContent()).matches("[1-9][0-9]*");
+        assertThat(page.locator("#status-pid").textContent()).matches("PID [1-9][0-9]*");
     }
 
     @Test
@@ -207,13 +213,22 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
     @Test
     void selectedStepMetricsIdentifySampledTimingAndOmitUnsupportedInflightCounts() {
-        addTrigger();
+        openProject(filterProject().replace("\"expected\":\"allow\"", "\"expected\":\"never\""));
+        selectWorldNode("matched");
         openInspectorSection("Runtime metrics");
         page.locator(".runtime-metrics").waitFor();
 
         assertThat(page.locator(".runtime-metrics").textContent())
-                .contains("Step sampled average", "Step duration maximum", "No sample")
-                .doesNotContain("Step in-flight runs");
+                .contains("Step metrics", "Sampled average", "Duration maximum", "No sample")
+                .doesNotContain("In-flight runs");
+
+        selectWorldNode("command");
+        openInspectorSection("Runtime metrics");
+        page.locator(".runtime-metrics").waitFor();
+
+        assertThat(page.locator(".runtime-metrics").textContent())
+                .contains("Step sampled average", "Step duration maximum")
+                .doesNotContain("No sample", "Step in-flight runs");
     }
 
     @Test
@@ -362,27 +377,26 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     void enterSelectsTheApplicationNode() {
         addTrigger();
         waitForText("#build-state", "Built");
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
 
         page.locator(".app-node").press("Enter");
-        waitForText(".inspector-heading h2", "Application");
-
-        assertThat(page.locator(".inspector-heading h2").textContent()).isEqualTo("Application");
+        waitForText("#inspector-identity small", "Application");
+        assertThat(page.locator("#inspector-identity h2").textContent()).isNotBlank();
     }
 
     @Test
     void spaceSelectsATriggerNode() {
         addTrigger();
-        final String flowName = page.locator(".inspector-heading h2").textContent();
+        final String flowName = page.locator("#inspector-identity h2").textContent();
         selectWorldNode("app");
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
 
         page.locator(".trigger-node").press("Space");
-        waitForText(".inspector-heading h2", flowName);
+        waitForText("#inspector-identity h2", flowName);
 
-        assertThat(page.locator(".inspector-heading h2").textContent()).isEqualTo(flowName);
+        assertThat(page.locator("#inspector-identity h2").textContent()).isEqualTo(flowName);
     }
 
     @Test
@@ -391,7 +405,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         waitForText("#build-state", "Built");
         delayNextProjectWrite();
         selectWorldNode("app");
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
         page.locator("#project-id").fill("focused-node-rebuild");
         page.locator("#project-id").press("Tab");
@@ -465,24 +479,25 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         selectWorldNode("step-3000");
         final List<String> transfers = new ArrayList<>();
         page.onRequest(request -> {
-            if (request.url().endsWith("/api/project") || request.url().endsWith("/api/creator")) {
+            if (request.url().endsWith("/api/editor")) {
                 transfers.add(request.method());
             }
         });
 
-        final var response = page.waitForResponse(candidate -> candidate.url().endsWith("/api/project")
-                && candidate.request().method().equals("PATCH"),
+        final var response = page.waitForResponse(candidate -> candidate.url().endsWith("/api/editor")
+                && candidate.request().method().equals("POST"),
                 new Page.WaitForResponseOptions().setTimeout(120_000),
                 () -> page.locator("#node-metrics").uncheck());
         waitForText("#build-state", "Built");
 
         final var edit = CreatorServerE2eSupport.object(response.request().postData());
-        final var changes = (RailixValue.ObjectValue) edit.values().get("changes");
+        final var command = (RailixValue.ObjectValue) edit.values().get("command");
+        final var changes = (RailixValue.ObjectValue) command.values().get("project");
         assertThat(changes.values()).containsOnlyKeys("nodes");
         assertThat(((RailixValue.ObjectValue) changes.values().get("nodes")).values())
                 .containsOnlyKeys("step-3000");
         assertThat(CreatorServerE2eSupport.object(response.text()).values()).doesNotContainKeys("project", "creator");
-        assertThat(transfers).containsExactly("PATCH");
+        assertThat(transfers).containsExactly("POST");
         page.reload();
         waitForText("#build-state", "Built");
         selectWorldNode("step-3000");
@@ -555,7 +570,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
-    void metadataFailureDoesNotForgetAnAcceptedFunctionalSave() {
+    void metadataRejectionKeepsTheFunctionalDraftUntilRetry() {
         openInspectorTab("inspect");
         page.evaluate("""
                 () => {
@@ -564,7 +579,9 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                   dirty();
                 }
                 """);
-        page.waitForFunction("() => !state.writeActive && state.build === 'Not saved'");
+        page.waitForFunction("() => state.revision > 0 && !state.pendingProject && !state.writeActive");
+        assertThat((String) page.evaluate("() => state.build + '|' + state.diagnostics.map(item => item.code).join(',')"))
+                .as("A rejected combined edit stays unbuilt").startsWith("Not built|");
 
         page.evaluate("""
                 () => {
@@ -573,7 +590,8 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                   creatorDirty();
                 }
                 """);
-        waitForText("#build-state", "Built");
+        waitForText("#build-state", "Not built");
+        page.waitForFunction("() => state.savedCreator.steps.app?.name === 'Recovered metadata' && !state.writeActive");
         page.locator("#project-id").fill("next-project");
         page.locator("#project-id").press("Tab");
         waitForText("#build-state", "Built");
@@ -613,7 +631,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                   let delayed = false;
                   window.fetch = async (input, options = {}) => {
                     const response = await original(input, options);
-                    if (!delayed && input === '/api/project' && options.method === 'PATCH') {
+                    if (!delayed && input === '/api/editor' && options.method === 'POST') {
                       delayed = true;
                       window.__acceptedProjectWrite = true;
                       await new Promise(resolve => { window.__releaseAcceptedWrite = resolve; });
@@ -644,7 +662,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
-    void rejectedMetadataDoesNotHideAnAcceptedTriggerFromTheCanvas() {
+    void conflictingMetadataKeepsTheTriggerDraftWithoutAcceptingIt() {
         page.evaluate("""
                 async () => {
                   const response = await fetch('/api/creator', {
@@ -657,26 +675,26 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
                 """);
 
         addTrigger();
-        page.waitForFunction("() => !state.writeActive && state.build === 'Not saved'");
+        page.waitForFunction("() => !state.writeActive && state.build === 'Not built'");
 
-        page.locator(".trigger-node").waitFor();
         selectWorldNode("app");
         assertThat(page.locator("#inspector").textContent()).contains("changed in another editor");
+        assertThat(page.evaluate("() => state.project.nodes.length")).isEqualTo(2);
         assertThat(page.evaluate("async () => (await (await fetch('/api/project')).json()).project.nodes.length"))
-                .isEqualTo(2);
+                .isEqualTo(1);
     }
 
     @Test
     void enterSelectsTheFieldManipulationNode() {
         createResultJourney();
         selectTrigger();
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
 
         page.locator(".step-node").press("Enter");
-        waitForText(".inspector-heading h2", "Field Manipulation");
+        waitForText("#inspector-identity h2", "Field Manipulation");
 
-        assertThat(page.locator(".inspector-heading h2").textContent())
+        assertThat(page.locator("#inspector-identity h2").textContent())
                 .isEqualTo("Field Manipulation");
     }
 
@@ -684,7 +702,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
     void selectedNodeIsVisuallyExclusive() {
         addTrigger();
         waitForText("#build-state", "Built");
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
 
         assertThat(page.locator(".trigger-node").getAttribute("class")).contains("selected");
@@ -692,7 +710,7 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
         assertThat(page.locator(".app-node").getAttribute("class")).doesNotContain("selected");
 
         selectWorldNode("app");
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
 
         assertThat(page.locator(".app-node").getAttribute("class")).contains("selected");
@@ -703,6 +721,184 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 }
 
 final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
+    @ParameterizedTest
+    @ValueSource(ints={320,390})
+    void choiceSourceIsVisibleWithoutScrollingPastEmptyActionRows(final int width) {
+        page.setViewportSize(width,844);
+        openProject(branchProject("choice-mobile", "choice", "railix.choice", """
+                [[{"option":"literal","inputs":{"value":true},"when":{"transforms":[],
+                  "all":[[{"use":"value.equals","inputs":{"expected":true}}]]}}]]
+                """));
+        selectWorldNode("choice");
+        openInspectorTab("appearance");
+        openInspectorTab("inspect");
+        final var content=page.locator("#inspector-content").boundingBox();
+        final var source=page.locator(".matcher-row .candidate-source").boundingBox();
+        assertThat(source.y).isLessThan(content.y+100);
+        assertThat(source.y+source.height).isLessThanOrEqualTo(content.y+content.height);
+        final Locator remove=page.locator(".matcher-group-heading [data-remove-matcher-group]");
+        assertThat(remove.boundingBox().width).isGreaterThanOrEqualTo(44);
+        assertThat(remove.boundingBox().height).isGreaterThanOrEqualTo(44);
+        assertThat(remove.evaluate("e=>e.contains(document.elementFromPoint(e.getBoundingClientRect().x+e.offsetWidth/2,e.getBoundingClientRect().y+e.offsetHeight/2))")).isEqualTo(true);
+        assertThat(page.evaluate("() => document.documentElement.scrollWidth<=innerWidth")).isEqualTo(true);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints={320,390})
+    void choiceMultipleConditionsAndAlternativesKeepAlignedWorkingActions(final int width) {
+        page.setViewportSize(width,844);
+        openProject(branchProject("choice-multiple", "choice", "railix.choice", """
+                [[{"option":"literal","inputs":{"value":true},"when":{"transforms":[],"all":[]}},
+                  {"option":"literal","inputs":{"value":false},"when":{"transforms":[],"all":[]}}],
+                 [{"option":"literal","inputs":{"value":true},"when":{"transforms":[],"all":[]}}]]
+                """));
+        selectWorldNode("choice");
+        final Locator first=page.locator("[data-matcher-group='0'] [data-candidate-index='0'] > .candidate-heading > .row-actions");
+        final Locator second=page.locator("[data-matcher-group='0'] [data-candidate-index='1'] > .candidate-heading > .row-actions");
+        final var left=first.boundingBox();final var right=second.boundingBox();
+        assertThat(left.x+left.width).isCloseTo(right.x+right.width,within(1.0));
+        first.locator("[data-direction='1']").click();
+        PlaywrightAssertions.assertThat(page.locator("[data-matcher-group='0'] [data-candidate-index='0'] .candidate-source [data-input-json]")).hasValue("false");
+        page.locator("[data-matcher-group='0'] > .matcher-group-heading [data-direction='1']").click();
+        PlaywrightAssertions.assertThat(page.locator("[data-matcher-group='0'] > .candidate-list > .matcher-row")).hasCount(1);
+        PlaywrightAssertions.assertThat(page.locator("[data-matcher-group='1'] > .candidate-list > .matcher-row")).hasCount(2);
+        page.locator("[data-matcher-group='1'] > .matcher-group-heading [data-remove-matcher-group]").click();
+        PlaywrightAssertions.assertThat(page.locator(".matcher-group")).hasCount(1);
+        assertThat(page.evaluate("() => document.documentElement.scrollWidth<=innerWidth")).isEqualTo(true);
+        assertThat(pageErrors).isEmpty();
+    }
+
+    @ParameterizedTest
+    @Tag("browser-diagnostics")
+    @CsvSource({"1280,false","390,false","320,false","1280,true","390,true","320,true"})
+    void choiceComparisonAndExpectedValueStayAlignedAtSupportedWidths(final int width,final boolean jsonOperand) {
+        page.setViewportSize(width,900);
+        if(jsonOperand) {
+            openProject(branchProject("choice-json", "choice", "railix.choice", """
+                    [[{"option":"literal","inputs":{"value":true},"when":{"transforms":[],
+                      "all":[[{"use":"value.equals","inputs":{"expected":true}}]]}}]]
+                    """));
+            selectWorldNode("choice");
+        } else addSizeBounds(2);
+        final Locator comparison=page.locator("[data-condition-predicate='0'] [data-replace-comparison]");
+        comparison.scrollIntoViewIfNeeded();
+        final var bounds = (List<?>) comparison.evaluate("""
+                select => {
+                  const left=select.getBoundingClientRect();
+                  const right=select.closest('[data-condition-predicate]').querySelector('[data-input-json]').getBoundingClientRect();
+                  return [left.bottom,right.bottom,right.height];
+                }
+                """);
+        assertThat(((Number) bounds.get(0)).doubleValue()).isCloseTo(((Number) bounds.get(1)).doubleValue(),within(1.0));
+        assertThat(((Number) bounds.get(2)).doubleValue()).isGreaterThanOrEqualTo(width<650?44:36);
+        assertThat(page.evaluate("() => document.documentElement.scrollWidth<=innerWidth")).isEqualTo(true);
+        assertThat(page.locator(".matcher-add").first().getAttribute("open")).isNull();
+        assertThat(pageErrors).isEmpty();
+    }
+
+
+    @Test
+    @Tag("responsive")
+    void middleOfFlowEditsExposeDownstreamFailuresAndCanBeRepaired() throws IOException {
+        openProject("""
+                {"format":1,"id":"editing-journey","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"greeting","payload":[],"context":{"payload":{"text":"HELLO"}}}]},
+                  {"id":"lowercase","use":"text.lowercase","inputs":{},
+                    "receives":{"value":["context","payload","text"]},
+                    "returns":{"value":["context","result"]}}
+                ],"links":[{"from":"app.start","to":"command"},
+                  {"from":"command.next","to":"lowercase"},{"from":"lowercase.ok","to":"end"}]}
+                """);
+        assertThat(runResult()).isEqualTo(RailixValue.string("hello"));
+
+        selectTrigger();
+        addManipulationAfterSelected();
+        chooseCustomPath("payload", "prepared");
+        page.locator("#value-0-option").selectOption("literal");
+        page.locator("#value-0-literal-value").fill("\"RAILIX\"");
+        page.locator("#value-0-literal-value").press("Tab");
+        waitForText("#build-state", "Built");
+        final String producer = stepIds().stream().filter(id -> !id.equals("lowercase")).findFirst().orElseThrow();
+        selectWorldNode("lowercase");
+        openInspectorTab("inspect");
+        choosePath("source", "payload", "prepared");
+        waitForText("#build-state", "Built");
+        assertThat(runResult()).isEqualTo(RailixValue.string("railix"));
+
+        selectWorldNode(producer);
+        openInspectorTab("inspect");
+        page.locator("#value-0-literal-value").fill("42");
+        page.locator("#value-0-literal-value").press("Tab");
+        waitForText("#build-state", "Built");
+        selectTrigger();
+        openInspectorTab("inspect");
+        PlaywrightAssertions.assertThat(page.locator(".run-result"))
+                .containsText("RUN_STEP_RECEIVE_INCOMPATIBLE");
+        selectWorldNode("lowercase");
+        PlaywrightAssertions.assertThat(page.locator(".world-label.selected"))
+                .hasAttribute("data-error", "true");
+        openInspectorTab("overview");
+        PlaywrightAssertions.assertThat(page.locator(".evidence-failure")).containsText("requires string");
+        PlaywrightAssertions.assertThat(page.locator("#selection-evidence")).containsText("greeting");
+        assertThat(page.locator(".evidence-failure").evaluate("element => element.scrollWidth <= element.clientWidth"))
+                .isEqualTo(true);
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("downstream-error-" + page.viewportSize().width + ".png")));
+        openInspectorTab("inspect");
+        PlaywrightAssertions.assertThat(page.locator("#inspector-content .issue-message")).containsText("requires string");
+        PlaywrightAssertions.assertThat(page.locator("#preview-error")).isEmpty();
+
+        selectTrigger();
+        openInspectorTab("examples");
+        chooseExampleIndex(-1);
+        selectWorldNode("lowercase");
+        openInspectorTab("overview");
+        PlaywrightAssertions.assertThat(page.locator(".evidence-failure")).hasCount(0);
+        selectTrigger();
+        openInspectorTab("examples");
+        chooseExampleIndex(0);
+        selectWorldNode("lowercase");
+        openInspectorTab("overview");
+        PlaywrightAssertions.assertThat(page.locator(".evidence-failure")).containsText("requires string");
+
+        selectWorldNode(producer);
+        openInspectorTab("inspect");
+        PlaywrightAssertions.assertThat(page.locator("#preview-error")).isEmpty();
+        page.locator("#value-0-literal-value").fill("\"FIXED\"");
+        page.locator("#value-0-literal-value").press("Tab");
+        waitForText("#build-state", "Built");
+        assertThat(runResult()).isEqualTo(RailixValue.string("fixed"));
+        selectWorldNode("lowercase");
+        PlaywrightAssertions.assertThat(page.locator(".world-label.selected"))
+                .hasAttribute("data-error", "false");
+        openInspectorTab("overview");
+        PlaywrightAssertions.assertThat(page.locator(".evidence-failure")).hasCount(0);
+        openInspectorTab("inspect");
+        PlaywrightAssertions.assertThat(page.locator("#preview-error")).isEmpty();
+
+        selectWorldNode(producer);
+        clickOverview("#delete-step");
+        waitForText("#build-state", "Built");
+        selectTrigger();
+        openInspectorTab("inspect");
+        PlaywrightAssertions.assertThat(page.locator(".run-result")).containsText("RUN_STEP_RECEIVE_REQUIRED");
+        selectWorldNode("lowercase");
+        openInspectorTab("inspect");
+        PlaywrightAssertions.assertThat(page.locator("#inspector-content .issue-message")).containsText("Missing field: context.payload.prepared.");
+        PlaywrightAssertions.assertThat(page.locator("#preview-error")).isEmpty();
+        choosePath("source", "payload", "text");
+        waitForText("#build-state", "Built");
+        assertThat(runResult()).isEqualTo(RailixValue.string("hello"));
+
+        page.reload();
+        waitForText("#build-state", "Built");
+        assertThat(stepIds()).containsExactly("lowercase");
+        assertThat(runResult()).isEqualTo(RailixValue.string("hello"));
+        assertThat(pageErrors).isEmpty();
+    }
     @Test
     void addingAFilterPersistsEveryDeclaredOutcomeConnection() {
         addFilterAfterTrigger();
@@ -749,12 +945,12 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void branchLayoutIsStableAcrossReload() {
         addFilterAfterTrigger();
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         final String before = positions();
 
         page.reload();
         waitForText("#build-state", "Built");
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
 
         assertThat(positions()).isEqualTo(before);
     }
@@ -762,12 +958,12 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void nestedFilterLayoutIsStableAcrossReload() {
         addNestedFilterToMatchRoute();
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         final String before = positions();
 
         page.reload();
         waitForText("#build-state", "Built");
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
 
         assertThat(branchOutcomes()).hasSize(4);
         assertThat(positions()).isEqualTo(before);
@@ -776,6 +972,8 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void nestedFiltersKeepEveryDeclaredOutcomeInTheScene() {
         addNestedFilterToMatchRoute();
+        page.locator("#scope-overview").click();
+        awaitScene();
 
         assertThat(branchOutcomes()).containsExactlyInAnyOrder("match", "match", "otherwise", "otherwise");
     }
@@ -802,6 +1000,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
                     && node.y + node.height <= region.y + region.height)
                 """, region);
 
+        page.locator("#world-labels > *").first().waitFor();
         assertThat(page.locator("#world-labels > *").count()).isGreaterThan(0);
         assertThat(page.locator("#world-labels > *").count()).isLessThanOrEqualTo(256);
         assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
@@ -843,12 +1042,23 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    void cssWorldRemainsEditableWithoutCanvasSupport() {
-        page.addInitScript("HTMLCanvasElement.prototype.getContext = () => { throw new Error('Canvas unavailable'); }");
+    void unavailableCanvasIsReportedWithoutDisablingSettings() {
+        page.addInitScript("""
+                const context=HTMLCanvasElement.prototype.getContext;
+                window.availableCanvasContext=context;
+                HTMLCanvasElement.prototype.getContext=function(...args){
+                  return this.className==='world-raster' ? null : context.apply(this,args);
+                };
+                """);
         page.reload();
+        PlaywrightAssertions.assertThat(page.locator("#world-error")).containsText("Canvas2D is unavailable");
+        page.locator("#open-settings").click();
+        PlaywrightAssertions.assertThat(page.locator("#theme-select")).isVisible();
+        assertThat(page.locator("#graph").getAttribute("data-renderer")).isEqualTo("loading");
+        page.evaluate("() => {HTMLCanvasElement.prototype.getContext=window.availableCanvasContext;}");
+        page.locator("#theme-select").selectOption("classic/theme.css");
+        page.waitForFunction("() => document.querySelector('#graph').dataset.renderer==='canvas' && document.querySelector('#world-error').hidden");
         awaitScene();
-        selectWorldNode("app");
-        assertThat(page.locator("#project-id").isVisible()).isTrue();
         assertThat(pageErrors).isEmpty();
     }
 
@@ -883,7 +1093,10 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
         clickOverview("#delete-step");
         waitForText("#build-state", "Built");
 
-        page.locator("[data-node-id='app'][aria-pressed='true']").waitFor();
+        page.locator("[data-node-id='app']").waitFor();
+        page.locator("[data-node-id='app']").click();
+        openInspectorTab("overview");
+        assertThat(page.locator("#add-trigger").isVisible()).isTrue();
         assertThat(stepIds()).isEmpty();
     }
 
@@ -902,7 +1115,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
         awaitScene();
 
         assertThat(page.locator("[data-node-id='filter']").isVisible()).isTrue();
-        assertThat(page.locator(".end-node").count()).isEqualTo(2);
+        assertThat(page.evaluate("() => state.world._surface.terminals.length")).isEqualTo(2);
         assertThat(page.evaluate("""
                 () => state.world.scene.nodes.filter(node => node.id === 'filter' || node.kind === 'end')
                   .every(node => node.width * Number(document.querySelector('#graph').dataset.sceneScale) >= 60)
@@ -914,7 +1127,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     void branchRenderingHandlesSixThousandLinearStepsWithoutCallStackGrowth() {
         openProject(deepBranchProject(6_000));
 
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
         assertThat(page.locator("#world-labels > *").count()).isLessThanOrEqualTo(256);
         assertThat(page.locator(".step-node").count()).isLessThan(6_001);
@@ -964,7 +1177,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
         page.locator("[data-add-step='railix.field-manipulation']").click();
         waitForText("#build-state", "Built");
 
-        clickOverview("#delete-step");
+        deleteAcceptedStep();
         waitForText("#build-state", "Built");
 
         assertThat(page.evaluate("""
@@ -1018,9 +1231,10 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
         addSwitchAfterTrigger();
         page.locator("[data-add-candidate='field']").click();
         waitForText("#build-state", "Built");
+        page.locator(".candidate-add:not([open]) > summary").click();
         page.locator("[data-add-candidate='literal']").click();
         waitForText("#build-state", "Built");
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
 
         assertThat(page.evaluate("""
@@ -1046,6 +1260,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
         addSwitchAfterTrigger();
         page.locator("[data-add-candidate='field']").click();
         waitForText("#build-state", "Built");
+        page.locator(".candidate-add:not([open]) > summary").click();
         page.locator("[data-add-candidate='literal']").click();
         waitForText("#build-state", "Built");
         final String before = String.valueOf(page.evaluate("""
@@ -1178,7 +1393,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
         waitForText("#build-state", "Built");
         prepareSizeChoiceMatcher(2);
 
-        final Locator search = page.locator("[data-matcher-group='0'] [data-predicate-query]");
+        final Locator search = visibleControl("[data-matcher-group='0'] [data-predicate-query]");
         search.fill("authored routes");
 
         assertThat(page.locator("[data-add-predicate='test.authored-boolean']").count()).isZero();
@@ -1201,7 +1416,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
                 .receive("value", ValueShape.ANY)
                 .returns("value", ValueShape.BOOLEAN)
                 .input("cases", alternatives)
-                .run(MatcherConformanceSteps.AuthoredTrue.class);
+                .implementation(MatcherConformanceSteps.AuthoredTrue.class);
         creator.close();
         GeneratedApplicationFixture.installedCatalog(directory, List.of(definition), MatcherConformanceSteps.AuthoredTrue.class);
         creator = CreatorServer.start(0, directory.resolve("project.json"), directory.resolve("railix-home"));
@@ -1227,7 +1442,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     void choiceAddsACompleteOrGroupAndPersistsItAcrossReload() {
         addChoiceAfterTrigger();
 
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
         page.reload();
         waitForText("#build-state", "Built");
@@ -1249,10 +1464,10 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void choiceAddsAnAndMatcherToAnExistingGroup() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
 
-        page.locator("[data-matcher-group='0'] [data-add-candidate='field']").click();
+        visibleControl("[data-matcher-group='0'] [data-add-candidate='field']").click();
         waitForText("#build-state", "Built");
 
         assertThat(page.evaluate("""
@@ -1266,9 +1481,9 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void choiceReordersAndMatchersInsideTheirGroup() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
-        page.locator("[data-matcher-group='0'] [data-add-candidate='literal']").click();
+        visibleControl("[data-matcher-group='0'] [data-add-candidate='literal']").click();
         final Locator literal = page.locator("[data-matcher-group='0'] [data-input-json]");
         literal.fill("\"constant\"");
         literal.press("Tab");
@@ -1289,9 +1504,9 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void reorderingChoiceMatchersClearsPositionBoundStepSearch() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
-        page.locator("[data-matcher-group='0'] [data-add-candidate='field']").click();
+        visibleControl("[data-matcher-group='0'] [data-add-candidate='field']").click();
         waitForText("#build-state", "Built");
         fillStepSearch("[data-matcher-group='0'] [data-candidate-index='0'] [data-step-query]", "equals");
 
@@ -1307,9 +1522,9 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void choiceRemovesOneAndMatcherWithoutRemovingItsGroup() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
-        page.locator("[data-matcher-group='0'] [data-add-candidate='field']").click();
+        visibleControl("[data-matcher-group='0'] [data-add-candidate='field']").click();
         waitForText("#build-state", "Built");
 
         page.locator("[data-matcher-group='0'] [data-remove-candidate='1']").click();
@@ -1327,15 +1542,15 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void replacingARemovedChoiceMatcherDoesNotRestoreItsStepSearch() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
-        page.locator("[data-matcher-group='0'] [data-add-candidate='field']").click();
+        visibleControl("[data-matcher-group='0'] [data-add-candidate='field']").click();
         waitForText("#build-state", "Built");
         fillStepSearch("[data-matcher-group='0'] [data-candidate-index='1'] [data-step-query]", "equals");
 
         page.locator("[data-matcher-group='0'] [data-remove-candidate='1']").click();
         waitForText("#build-state", "Built");
-        page.locator("[data-matcher-group='0'] [data-add-candidate='field']").click();
+        visibleControl("[data-matcher-group='0'] [data-add-candidate='field']").click();
         waitForText("#build-state", "Built");
 
         assertThat(page.locator("[data-matcher-group='0'] [data-candidate-index='1'] [data-step-query]")
@@ -1345,9 +1560,9 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void choiceReordersWholeOrGroupsWithoutChangingTheirMatchers() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
-        page.locator("[data-add-matcher-group='literal']").click();
+        visibleControl("[data-add-matcher-group='literal']").click();
         final Locator literal = page.locator("[data-matcher-group='1'] [data-input-json]");
         literal.fill("\"constant\"");
         literal.press("Tab");
@@ -1368,9 +1583,9 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void reorderingChoiceGroupsClearsPositionBoundStepSearch() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
         fillStepSearch("[data-matcher-group='0'] [data-step-query]", "equals");
 
@@ -1384,9 +1599,9 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void choiceRemovesOneWholeOrGroup() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
 
         page.locator("[data-remove-matcher-group='0']").click();
@@ -1403,15 +1618,15 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void replacingARemovedChoiceGroupDoesNotRestoreItsStepSearch() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
         fillStepSearch("[data-matcher-group='1'] [data-step-query]", "equals");
 
         page.locator("[data-remove-matcher-group='1']").click();
         waitForText("#build-state", "Built");
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
 
         assertThat(page.locator("[data-matcher-group='1'] [data-step-query]").inputValue()).isEmpty();
@@ -1420,7 +1635,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void choiceDoesNotAllowAnEmptyAndGroup() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
 
         assertThat(page.locator("[data-matcher-group='0'] [data-remove-candidate='0']").isDisabled())
@@ -1430,10 +1645,10 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void choiceMatcherOffersCompatibleOrdinaryBooleanSteps() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
 
-        final Locator search = page.locator("[data-matcher-group='0'] [data-predicate-query]");
+        final Locator search = visibleControl("[data-matcher-group='0'] [data-predicate-query]");
         search.fill("equals");
 
         assertThat(page.locator("[data-matcher-group='0'] [data-add-predicate='value.equals']").count())
@@ -1443,7 +1658,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void choiceProgramDistinguishesMatchersFromTransformsByContract() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
 
         assertThat(page.locator("[data-matcher-group='0'] .condition-predicates"
@@ -1457,13 +1672,13 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void choiceProgramMakesItsStepSearchPurposeExplicit() {
         addChoiceAfterTrigger();
-        page.locator("[data-add-matcher-group='field']").click();
+        visibleControl("[data-add-matcher-group='field']").click();
         waitForText("#build-state", "Built");
 
         assertThat(page.locator("[data-matcher-group='0'] .condition-transforms").textContent())
                 .contains("Prepare comparison value", "Add transform");
         assertThat(page.locator("[data-matcher-group='0'] .condition-predicates").textContent())
-                .contains("Without a comparison, any present value is accepted.", "Add comparison (AND)");
+                .contains("Value exists", "Add comparison (AND)");
         assertThat(page.locator("[data-matcher-group='0'] [data-predicate-query]")
                 .getAttribute("placeholder")).isEqualTo("Search matchers");
     }
@@ -1472,7 +1687,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     void greaterOrEqualAliasIsDiscoverableAfterANumericTransform() {
         prepareSizeChoiceMatcher();
 
-        final Locator search = page.locator("[data-matcher-group='0'] [data-predicate-query]");
+        final Locator search = visibleControl("[data-matcher-group='0'] [data-predicate-query]");
         search.fill("gte");
 
         assertThat(page.locator("[data-matcher-group='0']"
@@ -1483,7 +1698,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void newGreaterOrEqualMatcherHasAnImmediatelyBuildableDefault() {
         prepareSizeChoiceMatcher();
-        final Locator search = page.locator("[data-matcher-group='0'] [data-predicate-query]");
+        final Locator search = visibleControl("[data-matcher-group='0'] [data-predicate-query]");
         search.fill("gte");
         page.locator("[data-matcher-group='0'] [data-add-predicate='number.greater-or-equal']").click();
         waitForText("#build-state", "Built");
@@ -1498,7 +1713,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void numericMatcherRemainsAvailableAfterAnotherNumericMatcher() {
         prepareSizeChoiceMatcher();
-        final Locator search = page.locator("[data-matcher-group='0'] [data-predicate-query]");
+        final Locator search = visibleControl("[data-matcher-group='0'] [data-predicate-query]");
         search.fill("gt");
         page.locator("[data-matcher-group='0'] [data-add-predicate='number.greater-than']").click();
         waitForText("#build-state", "Built");
@@ -1511,6 +1726,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
+    @Tag("browser-diagnostics")
     void numericMatchersArePersistedAsIndependentAndLanes() {
         addSizeBounds(1);
 
@@ -1562,11 +1778,12 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void notEqualsAliasAddsABuildableDefaultThatReloadsPreviewsAndExecutes() {
         openProject(choiceProject());
+        chooseVisibleExample("command:0");
         selectWorldNode("choice");
         page.locator("[data-matcher-group='0'] [data-remove-predicate='0']").click();
         waitForText("#build-state", "Built");
 
-        final Locator search = page.locator("[data-matcher-group='0'] [data-predicate-query]");
+        final Locator search = visibleControl("[data-matcher-group='0'] [data-predicate-query]");
         search.fill("neq");
         page.locator("[data-matcher-group='0'] [data-add-predicate='value.not-equals']").click();
         waitForText("#build-state", "Built");
@@ -1582,6 +1799,8 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
         page.reload();
         waitForText("#build-state", "Built");
         selectWorldNode("choice");
+        chooseVisibleExample("command:0");
+        visibleControl("[data-matcher-group='0'] [data-predicate-query]");
         page.locator("[data-matcher-group='0'] [data-preview-slot='0']").waitFor();
 
         assertThat(page.locator("[data-matcher-group='0'] [data-input-json]").inputValue())
@@ -1648,13 +1867,13 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"hq", "canvas"})
+    @ValueSource(strings = {"canvas"})
     void choiceBranchesExposeDistinctVisibleOutcomeLabels(final String variant) throws Exception {
         openProject(choiceProject());
         page.locator("#open-settings").click();
         page.locator("#theme-variant").selectOption(variant);
         page.waitForFunction("variant => state.settings.theme_variant === variant && !state.themeError"
-                + " && document.querySelector('#graph').dataset.renderer === (variant === 'canvas' ? 'canvas' : 'css')", variant);
+                + " && document.querySelector('#graph').dataset.renderer === variant", variant);
         page.keyboard().press("Escape");
         page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
                 .resolve("choice-label-" + variant + ".png")));
@@ -1704,6 +1923,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void nestedBranchRailsAreContinuousOrthogonalPaths() {
         addNestedFilterToMatchRoute();
+        page.locator("#scope-overview").click();
         awaitScene();
 
         assertThat(page.evaluate("""
@@ -1761,6 +1981,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void choicePreviewShowsTheBooleanResolvedByTheBuiltApplication() {
         openProject(choiceProject());
+        chooseVisibleExample("command:0");
 
         selectWorldNode("choice");
         page.locator("[data-preview-input-value='conditions']").waitFor();
@@ -1772,8 +1993,10 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void choicePreviewShowsTheBuiltMatcherPredicateStage() {
         openProject(choiceProject());
+        chooseVisibleExample("command:0");
 
         selectWorldNode("choice");
+        visibleControl("[data-matcher-group='0'] [data-predicate-query]");
         page.locator("[data-matcher-group='0'] [data-preview-slot='0']").waitFor();
 
         assertThat(page.locator("[data-matcher-group='0'] [data-preview-slot='0']").textContent())
@@ -1820,7 +2043,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     void deletingABranchLeafRestoresOnlyThatOutcomeToEnd() {
         addStepToOtherwiseBranch();
 
-        clickOverview("#delete-step");
+        deleteAcceptedStep();
         waitForText("#build-state", "Built");
 
         assertThat(page.evaluate("""
@@ -1836,7 +2059,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     void deletingAnEmptyFilterReconnectsItsIncomingRoute() {
         addFilterAfterTrigger();
 
-        clickOverview("#delete-step");
+        deleteAcceptedStep();
         waitForText("#build-state", "Built");
 
         assertThat(page.evaluate("""
@@ -1864,7 +2087,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
                 """));
         selectWorldNode(filter);
 
-        clickOverview("#delete-step");
+        deleteAcceptedStep();
         waitForText("#build-state", "Built");
 
         assertThat(page.evaluate("""
@@ -1881,7 +2104,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void missingOutcomeLinkIsShownAsMissingInsteadOfEnd() {
         addFilterAfterTrigger();
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
 
         page.evaluate("""
@@ -1895,7 +2118,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
         waitForText("#build-state", "Not built");
 
         openInspectorTab("overview");
-        assertThat(page.locator(".machine[data-selected=true]").getAttribute("data-error")).isEqualTo("true");
+        assertThat(page.locator(".world-label.selected").getAttribute("data-error")).isEqualTo("true");
         assertThat(page.locator(".next-routes > div:has([data-add-outcome='otherwise'])").textContent())
                 .contains("Missing link").doesNotContain("Trigger result");
         assertThat(page.locator("[data-add-outcome='otherwise']").isDisabled()).isTrue();
@@ -1904,7 +2127,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void duplicateOutcomeLinksAreShownAsMultipleInsteadOfChoosingOne() {
         addFilterAfterTrigger();
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
 
         page.evaluate("""
@@ -1917,7 +2140,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
         waitForText("#build-state", "Not built");
 
         openInspectorTab("overview");
-        assertThat(page.locator(".machine[data-selected=true]").getAttribute("data-error")).isEqualTo("true");
+        assertThat(page.locator(".world-label.selected").getAttribute("data-error")).isEqualTo("true");
         assertThat(page.locator(".next-routes > div:has([data-add-outcome='otherwise'])").textContent())
                 .contains("Multiple links").doesNotContain("Trigger result");
     }
@@ -1942,7 +2165,7 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @Test
     void unknownOutcomeTargetIsShownAsUnknownInsteadOfDisappearing() {
         addFilterAfterTrigger();
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
 
         page.evaluate("""
@@ -1955,20 +2178,20 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
         waitForText("#build-state", "Not built");
 
         openInspectorTab("overview");
-        assertThat(page.locator(".machine[data-selected=true]").getAttribute("data-error")).isEqualTo("true");
+        assertThat(page.locator(".world-label.selected").getAttribute("data-error")).isEqualTo("true");
         assertThat(page.locator(".next-routes > div:has([data-add-outcome='otherwise'])").textContent())
                 .contains("Unknown Step").doesNotContain("Trigger result");
         assertThat(page.locator("[data-add-outcome='otherwise']").isDisabled()).isTrue();
     }
 
     @Test
-    void repeatedOutcomeTargetIsShownAsRepeatedInsteadOfRenderedTwice() {
+    void distinctOutcomesMayTargetTheSameStep() {
         addFilterAfterTrigger();
         clickOverview("[data-add-outcome='match']");
         page.locator("#step-search").fill("field");
         page.locator("[data-add-step='railix.field-manipulation']").click();
         waitForText("#build-state", "Built");
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
 
         final String filter = String.valueOf(page.evaluate("""
@@ -1980,16 +2203,15 @@ final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
                   return filter.id;
                 }
                 """));
-        waitForText("#build-state", "Not built");
+        waitForText("#build-state", "Built");
 
         selectWorldNode(filter);
         openInspectorTab("overview");
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
-        assertThat(page.locator(".machine[data-error=true]").count()).isPositive();
         assertThat(page.locator(".next-routes > div:has([data-add-outcome='otherwise'])").textContent())
-                .contains("Repeated Step").doesNotContain("Field Manipulation");
-        assertThat(page.locator("[data-add-outcome='otherwise']").isDisabled()).isTrue();
+                .contains("Field Manipulation");
+        assertThat(page.locator("[data-add-outcome='otherwise']").isEnabled()).isTrue();
     }
 
     @Test
@@ -2017,7 +2239,8 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         page.locator("#step-search").fill("cli");
 
         assertThat(page.locator("[data-add-step]").count()).isEqualTo(1);
-        assertThat(page.locator("[data-add-step]").textContent()).contains("CLI", "railix.trigger.cli");
+        assertThat(page.locator("[data-add-step]").textContent()).contains("CLI");
+        assertThat(page.locator("[data-add-step]").getAttribute("title")).isEqualTo("railix.trigger.cli");
     }
 
     @Test
@@ -2031,9 +2254,10 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         final String id = trigger.getAttribute("data-node-id");
         assertThat(trigger.getAttribute("aria-pressed")).isEqualTo("true");
         assertThat(trigger.getAttribute("aria-label")).isNotBlank();
-        final Locator end = page.locator("[data-kind='end'][data-world-id='end:" + id + ".next']");
-        end.waitFor();
-        assertThat(end.getAttribute("aria-label")).isEqualTo("End");
+        page.waitForFunction("""
+                id => state.world.scene.nodes.some(node=>node.kind==='end' && node.id==='end:'+id+'.next')
+                  && state.world._surface.terminals.length===1
+                """, id);
         assertThat(page.evaluate("""
                 async id => {
                   const project = (await (await fetch('/api/project')).json()).project;
@@ -2069,10 +2293,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         addTrigger();
 
         assertThat(page.locator("[data-inspector-mode]").allTextContents())
-                .containsExactly("Overview", "Configure", "Results", "Appearance", "Groups", "Examples");
-        assertThat(((String) page.locator(".inspector-tabs").evaluate(
-                "tabs => getComputedStyle(tabs).gridTemplateColumns"
-        )).split(" ")).hasSize(3);
+                .containsExactly("Configure", "Data", "Appearance", "Grouping");
         assertThat(page.locator("#target-path").count()).isEqualTo(1);
         assertThat(page.locator("#example-payload, #presentation-name").count()).isZero();
 
@@ -2099,6 +2320,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         chooseCustomPathFor("target", "command");
         waitForText("#build-state", "Built");
         assertThat(page.locator("#target-path").textContent()).contains("context", "command");
+        page.locator("#target-path").click();
         assertThat(page.locator("[data-reset-path]").isEnabled()).isTrue();
 
         page.locator("[data-reset-path]").click();
@@ -2106,7 +2328,9 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
 
         assertThat(page.locator("#target-path").textContent())
                 .contains("context", "payload", "arguments");
-        assertThat(page.locator("[data-reset-path]").isEnabled()).isFalse();
+        page.locator("#target-path").click();
+        assertThat(page.locator("[data-reset-path]").count()).isZero();
+        page.locator("#cancel-path").click();
     }
 
     @Test
@@ -2133,9 +2357,10 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
 
         assertThat(page.locator("[data-input-name='target'] .path-button").textContent())
                 .contains("context", "payload", "first");
-        assertThat(page.locator("[data-input-name='target'] [data-reset-path]").isEnabled()).isTrue();
+        page.locator("[data-input-name='target'] .path-button").click();
+        assertThat(page.locator("[data-reset-path]").isEnabled()).isTrue();
 
-        page.locator("[data-input-name='target'] [data-reset-path]").click();
+        page.locator("[data-reset-path]").click();
         waitForText("#build-state", "Built");
 
         assertThat(page.locator("[data-input-name='target'] .path-button").textContent())
@@ -2189,7 +2414,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
-    void examplesTabRemainsSelectedWhileRollingBuildCompletes() {
+    void exampleEditorRemainsOpenWhileRollingBuildCompletes() {
         addTrigger();
         openInspectorTab("examples");
 
@@ -2197,8 +2422,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         examplePayload().press("Tab");
         waitForText("#build-state", "Built");
 
-        assertThat(page.locator("[data-inspector-mode='examples']").getAttribute("class"))
-                .contains("active");
+        assertThat(page.locator("#example-name").isVisible()).isTrue();
         assertThat(page.locator("#example-payload").inputValue()).contains("railix");
     }
 
@@ -2248,10 +2472,10 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         page.locator(".run-result").waitFor();
 
         waitForCoverage("matched", "selected");
-        assertThat(page.locator("[data-node-id='command']").getAttribute("data-coverage")).isEqualTo("selected");
-        assertThat(page.locator("[data-node-id='filter']").getAttribute("data-coverage")).isEqualTo("selected");
-        assertThat(page.locator("[data-node-id='matched']").getAttribute("data-coverage")).isEqualTo("selected");
-        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("data-coverage")).isEqualTo("covered");
+        assertThat(renderedCoverage("command")).isEqualTo("selected");
+        assertThat(renderedCoverage("filter")).isEqualTo("selected");
+        assertThat(renderedCoverage("matched")).isEqualTo("selected");
+        assertThat(renderedCoverage("otherwise")).isEqualTo("covered");
     }
 
     @Test
@@ -2259,14 +2483,14 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         openProject(filterProject());
         selectTrigger();
         openInspectorTab("examples");
-        page.locator("[data-select-example='1']").click();
+        chooseExampleIndex(1);
         page.locator("#delete-example").click();
         waitForText("#build-state", "Built");
         openInspectorTab("inspect");
         page.locator(".run-result").waitFor();
 
         waitForCoverage("otherwise", "uncovered");
-        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("data-coverage")).isEqualTo("uncovered");
+        assertThat(renderedCoverage("otherwise")).isEqualTo("uncovered");
     }
 
     @Test
@@ -2274,7 +2498,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         openProject(filterProject());
         selectTrigger();
         openInspectorTab("examples");
-        page.locator("[data-select-example='1']").click();
+        chooseExampleIndex(1);
         page.locator("#delete-example").click();
         waitForText("#build-state", "Built");
         openInspectorTab("inspect");
@@ -2291,8 +2515,8 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         waitForCoverage("matched", "selected");
         waitForCoverage("otherwise", "uncovered");
 
-        assertThat(page.locator("[data-node-id='matched']").getAttribute("data-coverage")).isEqualTo("selected");
-        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("data-coverage")).isEqualTo("uncovered");
+        assertThat(renderedCoverage("matched")).isEqualTo("selected");
+        assertThat(renderedCoverage("otherwise")).isEqualTo("uncovered");
     }
 
     @Test
@@ -2304,11 +2528,11 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
 
         selectWorldNode("app");
         page.locator(".build-indicator").click();
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
         waitForCoverage("matched", "selected");
-        assertThat(page.locator("[data-node-id='matched']").getAttribute("data-coverage")).isEqualTo("selected");
-        assertThat(page.locator("[data-node-id='otherwise']").getAttribute("data-coverage")).isEqualTo("covered");
+        assertThat(renderedCoverage("matched")).isEqualTo("selected");
+        assertThat(renderedCoverage("otherwise")).isEqualTo("covered");
     }
 
     @Test
@@ -2321,13 +2545,13 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
 
         selectTrigger();
         openInspectorTab("examples");
-        page.locator("[data-select-example='0']").click();
+        chooseExampleIndex(0);
         waitForCoverage("matched", "selected");
-        page.locator("[data-select-example='1']").click();
+        chooseExampleIndex(1);
         waitForCoverage("otherwise", "selected");
 
-        assertThat(page.locator("[data-node-id='matched']").getAttribute("data-coverage")).isEqualTo("covered");
-        assertThat(page.locator("[data-select-example='1']").getAttribute("class")).contains("active");
+        assertThat(renderedCoverage("matched")).isEqualTo("covered");
+        assertThat(page.locator("#visible-example").inputValue()).endsWith(":1");
         assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(project);
         assertThat(creatorMetadata()).isEqualTo(metadata);
         assertThat(applicationPid()).isEqualTo(pid);
@@ -2358,7 +2582,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         openProject(filterProject());
         selectTrigger();
         openInspectorTab("examples");
-        page.locator("[data-select-example='1']").click();
+        chooseExampleIndex(1);
         page.locator("#delete-example").click();
         waitForText("#build-state", "Built");
         waitForText("#status-coverage", "75% coverage");
@@ -2368,11 +2592,13 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         page.locator("[data-select-node='otherwise']").click();
 
         page.waitForFunction("() => document.querySelector('[data-node-id=otherwise]')?.getAttribute('aria-pressed') === 'true'");
-        assertThat(page.locator(".inspector-heading h2").textContent()).isEqualTo("Field Manipulation");
+        assertThat(page.locator("#inspector-identity h2").textContent()).isEqualTo("Field Manipulation");
     }
 
     @Test
     void stoppedApplicationClearsStatusTelemetryWithoutRemovingTheDiagram() {
+        page.locator(".build-indicator").click();
+        page.locator("#runtime-summary > summary").click();
         page.locator("#status-memory").waitFor();
         final long pid = Long.parseLong(applicationPid());
 
@@ -2513,41 +2739,21 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
     void browserBacksOffAndRetriesTransientApplicationExampleInventoryFailure() {
         addTrigger();
         waitForText("#build-state", "Built");
-        page.evaluate("""
-                () => {
-                  const request = window.fetch.bind(window);
-                  window.__railixInventoryAttempts = 0;
-                  window.__railixInventoryAttemptTimes = [];
-                  window.fetch = (input, options = {}) => {
-                    const url = typeof input === 'string' ? input : input.url;
-                    if (url === '/api/examples') {
-                      window.__railixInventoryAttempts++;
-                      window.__railixInventoryAttemptTimes.push(performance.now());
-                      if (window.__railixInventoryAttempts === 1) {
-                        return Promise.resolve(new Response(
-                          '{"status":"unavailable"}',
-                          {status: 503, headers: {'Content-Type': 'application/json'}}
-                        ));
-                      }
-                    }
-                    return request(input, options);
-                  };
-                }
-                """);
-
-        openInspectorTab("examples");
-        examplePayload().fill("[\"retry\"]");
-        examplePayload().press("Tab");
-        waitForText("#build-state", "Built");
-        page.waitForFunction("() => window.__railixInventoryAttempts >= 2");
+        final List<Long> attempts=new ArrayList<>();
+        page.route("**/api/examples",route->{
+            attempts.add(System.nanoTime());
+            if(attempts.size()==1) route.fulfill(new Route.FulfillOptions().setStatus(503)
+                    .setContentType("application/json").setBody("{\"status\":\"unavailable\"}"));
+            else route.resume();
+        });
+        page.reload();
+        page.waitForCondition(()->attempts.size()>=2);
+        assertThat(java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(attempts.get(1)-attempts.get(0)))
+                .as("Passive inventory retry for the same running application").isGreaterThanOrEqualTo(400);
+        page.unroute("**/api/examples");
         selectTrigger();
         page.locator(".run-result").waitFor();
-
-        assertThat(((Number) page.evaluate("window.__railixInventoryAttempts")).intValue())
-                .isGreaterThanOrEqualTo(2);
-        assertThat(((Number) page.evaluate(
-                "window.__railixInventoryAttemptTimes[1] - window.__railixInventoryAttemptTimes[0]"
-        )).doubleValue()).isGreaterThanOrEqualTo(400);
+        assertThat(pageErrors).isEmpty();
     }
 
     @Test
@@ -2555,36 +2761,20 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         addTrigger();
         waitForText("#build-state", "Built");
         selectTrigger();
-        page.locator(".run-result").waitFor();
-        page.evaluate("""
-                () => {
-                  const request = window.fetch.bind(window);
-                  state.application.examples = {...state.application.examples, state: 'running'};
-                  window.__railixApplicationAttempts = 0;
-                  window.__railixApplicationAttemptTimes = [];
-                  window.fetch = (input, options = {}) => {
-                    const url = typeof input === 'string' ? input : input.url;
-                    if (url === '/api/application') {
-                      window.__railixApplicationAttempts++;
-                      window.__railixApplicationAttemptTimes.push(performance.now());
-                      if (window.__railixApplicationAttempts === 1) {
-                        return Promise.resolve(new Response(
-                          '{"status":"unavailable"}',
-                          {status: 503, headers: {'Content-Type': 'application/json'}}
-                        ));
-                      }
-                    }
-                    return request(input, options);
-                  };
-                  scheduleApplicationPoll(0);
-                }
-                """);
-
-        page.waitForFunction("() => window.__railixApplicationAttempts >= 2");
-
-        assertThat(((Number) page.evaluate(
-                "window.__railixApplicationAttemptTimes[1] - window.__railixApplicationAttemptTimes[0]"
-        )).doubleValue()).isGreaterThanOrEqualTo(400);
+        PlaywrightAssertions.assertThat(page.locator(".run-result")).containsText("\"status\": \"succeeded\"");
+        final var attempts = new ArrayList<Long>();
+        page.route("**/api/application", route -> {
+            attempts.add(System.nanoTime());
+            if (attempts.size() == 1) route.abort(); else route.resume();
+        });
+        try {
+            page.waitForCondition(() -> attempts.size() >= 2);
+            assertThat(java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(attempts.get(1) - attempts.getFirst()))
+                    .isGreaterThanOrEqualTo(400);
+            assertThat(pageErrors).isEmpty();
+        } finally {
+            page.unroute("**/api/application");
+        }
     }
 
     @Test
@@ -2797,6 +2987,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
     }
 
     @Test
+    @Tag("browser-diagnostics")
     void selectedGraphStepSourcePickerDoesNotOfferItsOwnReturnedPath() {
         prepareTextPayloadTrigger();
         clickOverview("#add-next-step");
@@ -2806,6 +2997,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         openInspectorTab("inspect");
         chooseCustomPathFor("target", "payload", "lower");
         waitForText("#build-state", "Built");
+        page.locator("#visible-example").selectOption(new com.microsoft.playwright.options.SelectOption().setIndex(1));
         page.locator("#preview-source").waitFor();
 
         page.locator("[data-input-name='source'] .path-button").click();
@@ -2883,8 +3075,8 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         clickOverview("#add-next-step");
         page.locator("#step-search").fill("lowercase");
 
+        waitForText("#step-options", "No Step matches.");
         assertThat(page.locator("[data-add-step='text.lowercase']").count()).isZero();
-        assertThat(page.locator("#step-options").textContent()).contains("No installed Step matches.");
     }
 
     @Test
@@ -2988,6 +3180,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         assertThat(reloadedProject).contains("\"id\":\"" + id + "\"");
         assertThat(page.locator("#build-state").textContent())
                 .as(loadedState).isEqualTo("Running");
+        awaitScene();
         assertThat(page.locator(".trigger-node").count()).as(loadedState).isEqualTo(1);
         assertThat(page.locator(".trigger-node").getAttribute("data-node-id"))
                 .as(loadedState).isEqualTo(id);
@@ -2998,7 +3191,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         addTrigger();
         waitForText("#build-state", "Built");
         selectWorldNode("app");
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
 
         clickOverview("#add-trigger");
@@ -3015,7 +3208,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
 
         exampleContext().fill("{\"runtime\":{}}");
         exampleContext().press("Tab");
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
 
         assertThat(page.locator("#build-state").textContent()).isEqualTo("Running");
@@ -3041,7 +3234,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         choosePath("value-0-source", "payload");
         waitForText("#build-state", "Built");
 
-        assertThat(page.locator(".step-node").textContent()).contains("Field Manipulation");
+        assertThat(page.locator("#inspector-identity h2").textContent()).contains("Field Manipulation");
         assertThat(page.locator("#value-0-source-path").textContent()).contains("context", "payload");
         assertThat(page.locator("#field-path").textContent()).contains("context", "result");
     }
@@ -3057,7 +3250,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         waitForText("#build-state", "Built");
         awaitScene();
 
-        assertThat(page.locator(".step-node").textContent()).contains("Field Manipulation");
+        assertThat(page.locator("#inspector-identity h2").textContent()).contains("Field Manipulation");
         assertThat(page.locator("#field-path").textContent()).contains("context", "auth");
         assertThat(page.locator("#value-0-option").inputValue()).isEqualTo("literal");
         selectTrigger();
@@ -3090,7 +3283,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
         exampleContext().press("Tab");
         addManipulationAfterSelected();
         choosePath("field", "payload", "value");
-        page.locator("#value-0-when-new-predicate-search").fill("to number");
+        fillStepSearch("#value-0-when-new-predicate-search", "to number");
 
         assertThat(page.locator("[data-candidate-index='0'] [data-add-predicate='text.to-number']").count())
                 .isZero();
@@ -3143,6 +3336,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
     void invalidLaterCandidateJsonRemainsVisibleForCorrection() {
         addTrigger();
         addManipulationAfterSelected();
+        page.locator(".candidate-add:not([open]) > summary").click();
         page.locator("#value-candidate-search").fill("literal");
         page.locator("[data-add-candidate='literal']").click();
         waitForText("#build-state", "Built");
@@ -3176,6 +3370,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
     void removingACandidateDiscardsItsInvalidDraft() {
         addTrigger();
         addManipulationAfterSelected();
+        page.locator(".candidate-add:not([open]) > summary").click();
         page.locator("#value-candidate-search").fill("literal");
         page.locator("[data-add-candidate='literal']").click();
         waitForText("#build-state", "Built");
@@ -3184,6 +3379,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
 
         page.locator("[data-remove-candidate='1']").click();
         waitForText("#build-state", "Built");
+        page.locator(".candidate-add:not([open]) > summary").click();
         page.locator("#value-candidate-search").fill("literal");
         page.locator("[data-add-candidate='literal']").click();
         waitForText("#build-state", "Built");
@@ -3225,7 +3421,7 @@ final class RailixCreatorAuthoringBrowserIT extends RailixCreatorBrowserSupport 
 
         assertThat(page.locator("#value-0-literal-value").inputValue()).isEqualTo("[");
         assertThat(page.locator("#inspector").textContent()).contains("Value must be valid JSON.");
-        assertThat(page.locator("#preview-values output").count()).isZero();
+        assertThat(page.locator("#preview-values output:not([data-field-error])").count()).isZero();
     }
 
     @Test
@@ -3384,7 +3580,10 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
         assertThat(page.locator("#inspector").textContent()).contains("Steps0", "Regions0");
 
         clickAndWaitForCreatorSave(() -> page.locator("#delete-group").click());
-        assertThat(page.locator(".manager-heading").textContent()).contains("Group Manager");
+        selectWorldNode("app");
+        openInspectorTab("groups");
+        assertThat(page.locator("#group-library > summary").textContent()).contains("0");
+        assertThat(page.locator("[data-manage-group]").count()).isZero();
     }
 
     @Test
@@ -3393,6 +3592,7 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
         final String selected = stepIds().get(1);
         openInspectorTab("appearance");
         page.locator("[data-inspector-mode=groups]").click();
+        page.locator("#group-library > summary").click();
 
         clickAndWaitForCreatorSave(() -> page.locator("#new-group").click());
 
@@ -3414,10 +3614,10 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
         page.locator("[data-region-group]").waitFor();
 
         page.locator("[data-region-group='" + group + "']").click();
-        openInspectorTab("overview");
+        page.locator("#world-location [data-inspect-region]").click();
         page.locator("[data-inspector-mode=groups]").click();
 
-        assertThat(page.locator(".manager-heading").textContent()).contains("Group Manager");
+        assertThat(page.locator(".manager-heading .eyebrow").textContent()).isEqualTo("Group");
         assertThat(page.locator("[data-manage-group='" + group + "']").getAttribute("class"))
                 .contains("active");
     }
@@ -3450,7 +3650,7 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
     }
 
     @Test
-    void insertingBetweenGroupedStepsDoesNotInheritOrSynchronizeTheGroup() {
+    void insertingBetweenGroupedStepsInheritsTheGroup() {
         openProject(fourStepProject());
         final String group = createGroup("one", "two");
         selectWorldNode("one");
@@ -3471,10 +3671,10 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
                     workspace.project.links.find(link => link.from === inserted + '.next').to
                   ].join('|');
                 }
-                """)).isEqualTo(group + "|" + group + "||two");
-        page.evaluate("() => state.world.fit()");
+                """)).isEqualTo(group + "|" + group + "|" + group + "|two");
+        page.evaluate("() => void state.world.fit()");
         awaitScene();
-        assertThat(page.locator("[data-region-group]").count()).isEqualTo(2);
+        assertThat(page.locator("[data-region-group]").count()).isEqualTo(1);
     }
 
     @Test
@@ -3534,8 +3734,9 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
         page.locator("[data-region-group]").first().waitFor();
 
         assertThat(page.locator("[data-region-group]").count()).isEqualTo(2);
-        assertThat(page.locator("[data-region-group] .world-detail").allTextContents())
-                .containsExactly("1 Step", "1 Step");
+        assertThat((List<String>) page.locator("[data-region-group]").evaluateAll(
+                "elements => elements.map(element => element.getAttribute('aria-label'))"))
+                .hasSize(2).allMatch(label -> label.contains("1 Step"));
         assertThat(page.evaluate("""
                 () => state.world.scene.nodes.filter(node => node.group).map(node => node.color)
                 """)).isEqualTo(List.of("#A10F22", "#A10F22"));
@@ -3614,11 +3815,11 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
         selected.waitFor();
         selected.click();
         openInspectorTab("overview");
-        waitForText("#selection-overview h2", "Field Manipulation");
+        waitForText("#inspector-identity h2", "Field Manipulation");
         awaitScene();
 
         assertThat(selected.getAttribute("aria-pressed")).isEqualTo("true");
-        assertThat(page.locator("#selection-overview h2").textContent()).isEqualTo("Field Manipulation");
+        assertThat(page.locator("#inspector-identity h2").textContent()).isEqualTo("Field Manipulation");
         assertThat(page.locator("#world-labels > *").count()).isLessThanOrEqualTo(256);
     }
 
@@ -3628,7 +3829,7 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
         page.evaluate("() => void state.world.focus('step-48')");
         page.locator("#world-labels [data-node-id='step-48']").waitFor();
 
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         page.waitForFunction("""
                 () => state.world.scene.nodes.some(node => node.kind === 'region' && !node.expanded && node.count > 1)
                   && !state.world.scene.nodes.some(node => node.id === 'step-48')
@@ -3806,7 +4007,7 @@ final class RailixCreatorCompositionBrowserIT extends RailixCreatorBrowserSuppor
         page.locator("[data-path-part='value']").click();
         delayNextTrace();
         page.locator("#apply-path").click();
-        page.locator("#steps-search").fill("greater");
+        fillStepSearch("#steps-search", "greater");
         waitForText("#build-state", "Built");
         page.waitForFunction("() => typeof window.__releaseTrace === 'function'");
 
@@ -3840,7 +4041,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         selectTrigger();
         addManipulationAfterSelected();
         choosePath("field", "payload", "text");
-        page.locator("#steps-search").fill("lower");
+        fillStepSearch("#steps-search", "lower");
 
         waitForText("#build-state", "Built");
         final Locator option = page.locator("#steps-options [data-add-nested='text.lowercase']");
@@ -4127,7 +4328,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         exampleContext().fill("{\"payload\":{\"value\":" + deep + "}}");
         exampleContext().press("Tab");
         waitForText("#build-state", "Not built");
-        page.locator("[data-select-example='0']").click();
+        chooseExampleIndex(0);
         openInspectorTab("inspect");
         page.locator(".run-result").waitFor();
         addManipulationAfterSelected();
@@ -4138,7 +4339,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         page.locator("[data-path-part='payload']").click();
         page.locator("[data-path-part='value']").click();
         page.locator("#apply-path").click();
-        page.locator("#steps-search").fill("wrap list");
+        fillStepSearch("#steps-search", "wrap list");
 
         assertThat(page.locator("#steps-options [data-add-nested='value.wrap-list']").count())
                 .isEqualTo(1);
@@ -4203,7 +4404,8 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     void falliblePrimitiveInvalidPreviewLeavesTheTargetUnchangedAndContinues() {
         createFallibleNumberJourney("not-a-number");
 
-        page.locator(".step-node").first().click();
+        selectWorldNode("result");
+        chooseVisibleExample("command:0");
         page.locator("[data-preview-stage='0']").waitFor();
 
         assertThat(page.locator("[data-preview-stage='0']").textContent()).isEqualTo("invalid");
@@ -4304,7 +4506,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         page.locator("#steps-options [data-add-nested='list.percentile']").click();
         page.locator("#steps-0-percentile-value").fill("50.5");
         page.locator("#steps-0-percentile-value").press("Tab");
-        page.locator("#steps-search").fill("floor");
+        fillStepSearch("#steps-search", "floor");
         page.locator("#steps-options [data-add-nested='number.floor']").click();
 
         page.locator("[data-move-nested='0'][data-direction='1']").click();
@@ -4366,7 +4568,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
         selectTrigger();
         addManipulationAfterSelected();
         choosePath("field", "payload", "text");
-        page.locator("#steps-search").fill("floor");
+        fillStepSearch("#steps-search", "floor");
 
         waitForText("#build-state", "Built");
         page.locator("#preview-source").waitFor();
@@ -4385,7 +4587,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     void primitiveSearchUsesThePreviousPrimitiveOutputShape() {
         preparePrimitiveSearch("{\"payload\":{\"value\":0}}", "utc");
         page.locator("#steps-options [data-add-nested='date.is-utc-millis']").click();
-        page.locator("#steps-search").fill("not");
+        fillStepSearch("#steps-search", "not");
 
         assertThat(page.locator("#steps-options [data-add-nested='boolean.not']").count()).isEqualTo(1);
     }
@@ -4394,7 +4596,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     void primitiveSearchHidesAnOperationMadeIncompatibleByThePreviousPrimitive() {
         preparePrimitiveSearch("{\"payload\":{\"value\":0}}", "utc");
         page.locator("#steps-options [data-add-nested='date.is-utc-millis']").click();
-        page.locator("#steps-search").fill("floor");
+        fillStepSearch("#steps-search", "floor");
 
         assertThat(page.locator("#steps-options [data-add-nested='number.floor']").count()).isZero();
     }
@@ -4403,7 +4605,7 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
     void compatiblePrimitiveChainExecutesInTheBuiltApplication() {
         preparePrimitiveSearch("{\"payload\":{\"value\":0}}", "utc");
         page.locator("#steps-options [data-add-nested='date.is-utc-millis']").click();
-        page.locator("#steps-search").fill("not");
+        fillStepSearch("#steps-search", "not");
         page.locator("#steps-options [data-add-nested='boolean.not']").click();
         waitForText("#build-state", "Built");
         selectTrigger();
@@ -4415,6 +4617,31 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
 }
 
 final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupport {
+    @Test
+    @Tag("responsive")
+    @Tag("browser-diagnostics")
+    void aKnownExampleResultRemainsVisibleWhenStepValuesCannotBeRead() {
+        openProject(fourStepProject());
+        final var summaries = new ArrayList<String>();
+        page.onRequest(request -> {
+            if (request.url().endsWith("/api/examples/command%3A0/view")) summaries.add(request.url());
+        });
+        page.route("**/api/examples/steps/**", Route::abort);
+        try {
+            selectWorldNode("command");
+            page.getByRole(com.microsoft.playwright.options.AriaRole.BUTTON,
+                    new Page.GetByRoleOptions().setName("Retry Example values").setExact(true)).waitFor();
+            PlaywrightAssertions.assertThat(page.locator(".run-result"))
+                    .containsText("\"one\": 1");
+            PlaywrightAssertions.assertThat(page.locator(".run-result"))
+                    .containsText("\"two\": 2");
+            assertThat(summaries).hasSize(1);
+            assertThat(pageErrors).isEmpty();
+        } finally {
+            page.unroute("**/api/examples/steps/**");
+        }
+    }
+
     @Test
     void selectedFieldOperationAutomaticallyPreviewsItsActualSourceValue() {
         createLowercaseJourney();
@@ -4435,7 +4662,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     @Test
     void selectedFieldOperationPreviewShowsTheFirstAvailableCandidate() {
         prepareMissingResultCandidate();
-        page.locator("#steps-search").fill("lower");
+        fillStepSearch("#steps-search", "lower");
         page.locator("#steps-options [data-add-nested='text.lowercase']").click();
         waitForText("#build-state", "Built");
         page.locator("#preview-source").waitFor();
@@ -4455,7 +4682,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     @Test
     void rollingBuildRefreshesTheSelectedFieldOperationPreview() {
         prepareMissingResultCandidate();
-        page.locator("#steps-search").fill("lower");
+        fillStepSearch("#steps-search", "lower");
         page.locator("#steps-options [data-add-nested='text.lowercase']").click();
         waitForText("#build-state", "Built");
         page.locator("#preview-source").waitFor();
@@ -4552,16 +4779,17 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     @Test
     void laterOperationOffersPrimitiveForPreviousPrimitiveOutputShape() {
         prepareOperationAfterListSize();
-        page.locator("#steps-search").fill("floor");
+        fillStepSearch("#steps-search", "floor");
 
         assertThat(page.locator("#steps-options [data-add-nested='number.floor']").count()).isEqualTo(1);
     }
 
     @Test
     @Timeout(120)
+    @Tag("browser-diagnostics")
     void laterOperationExecutesAgainstPreviousPrimitiveOutput() {
         prepareOperationAfterListSize();
-        page.locator("#steps-search").fill("floor");
+        fillStepSearch("#steps-search", "floor");
         page.locator("#steps-options [data-add-nested='number.floor']").click();
         waitForText("#build-state", "Built");
         selectTrigger();
@@ -4616,6 +4844,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         waitForText("#build-state", "Built");
         waitForText("#preview-source", "\"Hello RAILIX\"");
         page.mouse().move(0, 0);
+        fillStepSearch("#steps-search", "");
         page.locator("#steps-options [data-add-nested='text.lowercase']").waitFor();
 
         assertThat(page.locator("#steps-options [data-add-nested='text.lowercase']").count()).isEqualTo(1);
@@ -4625,7 +4854,8 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     @Test
     void deletingSingleResultStepRebuildsWithTheSilentTriggerDefault() {
         createResultJourney();
-        page.locator(".step-node").click();
+        assertThat(page.locator("#inspector").getAttribute("data-selection"))
+                .isEqualTo((String) page.evaluate("() => state.selection.id"));
 
         clickOverview("#delete-step");
         waitForText("#build-state", "Built");
@@ -4638,7 +4868,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     @Test
     void laterStringCandidateOffersCompatiblePrimitiveWhenCurrentFieldIsMissing() {
         prepareMissingResultCandidate();
-        page.locator("#steps-search").fill("lower");
+        fillStepSearch("#steps-search", "lower");
 
         assertThat(page.locator("#steps-options [data-add-nested='text.lowercase']").count()).isEqualTo(1);
     }
@@ -4646,7 +4876,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     @Test
     void laterCandidateExecutesThroughTheRunningApplicationWhenCurrentFieldIsMissing() {
         prepareMissingResultCandidate();
-        page.locator("#steps-search").fill("lower");
+        fillStepSearch("#steps-search", "lower");
         page.locator("#steps-options [data-add-nested='text.lowercase']").click();
         waitForText("#build-state", "Built");
         addManipulationAfterSelected();
@@ -4664,7 +4894,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     @Test
     void removingTheLastAvailableCandidateFollowsTheExplicitMissingOutcomeAndTriggerDefault() {
         prepareMissingResultCandidate();
-        page.locator("#steps-search").fill("lower");
+        fillStepSearch("#steps-search", "lower");
         page.locator("#steps-options [data-add-nested='text.lowercase']").click();
         waitForText("#build-state", "Built");
 
@@ -4715,7 +4945,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         assertThat(exampleContext().inputValue()).isBlank();
         page.locator("#add-example").click();
 
-        assertThat(page.locator("[data-select-example]:not([data-select-example='-1'])").count()).isEqualTo(4);
+        assertThat(page.locator("#visible-example option[data-status]").count()).isEqualTo(4);
         assertThat(page.locator("#example-name").inputValue()).isEqualTo("example-4");
 
         page.locator("#example-name").fill("empty-input");
@@ -4724,10 +4954,10 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         exampleContext().press("Tab");
         waitForText("#build-state", "Built");
 
-        page.locator("[data-select-example='0']").click();
+        chooseExampleIndex(0);
         assertThat(page.locator("#example-name").inputValue()).isEqualTo("no-arguments");
 
-        page.locator("[data-select-example='3']").click();
+        chooseExampleIndex(3);
         assertThat(page.locator("#example-name").inputValue()).isEqualTo("empty-input");
         assertThat(exampleContext().inputValue()).contains("\"payload\": {}");
     }
@@ -4737,11 +4967,11 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         addTrigger();
         openInspectorTab("examples");
 
-        assertThat(page.locator("[data-select-example]:not([data-select-example='-1'])").allTextContents())
+        assertThat(page.locator("#visible-example option[data-status]").allTextContents().stream().map(text -> text.substring(2)).toList())
                 .containsExactly("no-arguments", "one-argument", "multiple-arguments");
-        page.locator("[data-select-example='1']").click();
+        chooseExampleIndex(1);
         assertThat(examplePayload().inputValue()).isEqualTo("[\n  \"railix\"\n]");
-        page.locator("[data-select-example='2']").click();
+        chooseExampleIndex(2);
         assertThat(examplePayload().inputValue()).isEqualTo("[\n  \"hello\",\n  \"railix\"\n]");
     }
 
@@ -4799,6 +5029,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         waitForText("#build-state", "Built");
         addManipulationAfterSelected();
         choosePath("field", "payload", "value");
+        fillStepSearch("#steps-search", "");
         page.locator("#steps-options [data-add-nested='text.lowercase']").waitFor();
 
         assertThat(page.locator("#steps-options [data-add-nested='text.lowercase']").count())
@@ -4811,6 +5042,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         assertThat(page.locator("#build-state").textContent()).isEqualTo("Building");
         page.locator("#close-inspector").click();
         page.locator(".step-node").click();
+        visibleControl("#steps-search");
 
         assertThat(page.locator("#steps-options [data-add-nested='text.lowercase']").count())
                 .isZero();
@@ -4818,6 +5050,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
                 .isZero();
 
         waitForText("#build-state", "Built");
+        visibleControl("#steps-search");
         page.locator("#steps-options [data-add-nested='number.floor']").waitFor();
         assertThat(page.locator("#steps-options [data-add-nested='text.lowercase']").count())
                 .isZero();
@@ -4854,7 +5087,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         assertThat(page.locator("#steps-options").textContent())
                 .contains("Lowercase", "Uppercase", "Trim");
 
-        page.locator("#steps-search").fill("uppercase");
+        fillStepSearch("#steps-search", "uppercase");
 
         assertThat(page.locator("#steps-options [data-add-nested]").count()).isEqualTo(1);
         assertThat(page.locator("#steps-options").textContent()).contains("Uppercase");
@@ -4897,7 +5130,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         waitForText("#build-state", "Built");
         page.locator("#preview-source").waitFor();
 
-        assertThat(page.locator("[data-input-result='value']").textContent()).isEqualTo("{\"arguments\":[]}");
+        assertThat(page.locator("[data-input-result='value'] output").textContent()).isEqualTo("{\"arguments\":[]}");
     }
 
     @Test
@@ -5132,9 +5365,12 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         addManipulationAfterSelected();
         choosePath("field", "payload", "value");
         addLiteralCandidate("\"RAILIX\"");
-        page.locator("#steps-search").fill("lower");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.locator("#preview-source"))
+                .hasText("null");
+        fillStepSearch("#steps-search", "lower");
 
-        assertThat(page.locator("#steps-options [data-add-nested='text.lowercase']").count()).isZero();
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(
+                page.locator("#steps-options [data-add-nested='text.lowercase']")).hasCount(0);
     }
 
     @Test
@@ -5189,7 +5425,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         choosePath("field", "payload", "text");
         waitForText("#build-state", "Built");
         page.locator("#preview-source").waitFor();
-        page.locator("#steps-search").fill("lower");
+        fillStepSearch("#steps-search", "lower");
         page.locator("#steps-options [data-add-nested='text.lowercase']").click();
         waitForText("#build-state", "Built");
         selectTrigger();
@@ -5227,9 +5463,9 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
         examplePayload().press("Tab");
         page.waitForFunction("previousPid => String(state.application.pid) !== previousPid"
                 + " && state.application.examples?.state === 'completed' && state.traceController === null", previousPid);
-        page.locator("[data-select-example='-1']").click();
+        chooseExampleIndex(-1);
         delayNextTrace();
-        page.locator("[data-select-example='0']").click();
+        chooseExampleIndex(0);
         page.waitForFunction("() => typeof window.__releaseTrace === 'function'");
         openInspectorTab("inspect");
         clickOverview("#add-next-step");
@@ -5309,7 +5545,7 @@ final class RailixCreatorDataWorkbenchBrowserIT extends RailixCreatorBrowserSupp
     @Test
     void graphLayoutIsDeterministicAcrossReload() {
         createResultJourney();
-        page.evaluate("() => state.world.fit()");
+        page.evaluate("() => void state.world.fit()");
         final String before = positions();
 
         page.reload();
@@ -5429,6 +5665,11 @@ abstract class RailixCreatorBrowserSupport {
                       jsonDraft: state.jsonDraft, operation: selectedOperation(),
                       builtOperation: state.builtProject?.nodes.find(node => node.id === state.selection.id),
                       previewCases: state.previewCases, traceKey: state.traceKey,
+                      traceSummaryKey: state.traceSummaryKey, tracePending: Boolean(state.traceController),
+                      selectedExample: selectedExampleId(), exampleTrigger: state.exampleTrigger,
+                      exampleIndex: state.exampleIndex, runResultLength: state.runResult.length,
+                      traceContext: state.traceContext, traceStep: state.traceStep,
+                      traceCases: state.traceCases, traceReadError: state.traceReadError,
                       compatibility, computedOptions, compatibilityError,
                       diagnostics: state.diagnostics, stepQueries: state.stepQueries,
                       focused: document.activeElement?.id, optionsHovered: options?.matches(':hover'),
@@ -5642,9 +5883,9 @@ abstract class RailixCreatorBrowserSupport {
         pageErrors.clear();
         diagnosticTracing = test.getTags().contains("browser-diagnostics");
         Files.createDirectories(directory.resolve("railix-home/icons"));
-        // CSS-specific DOM assertions use an explicit renderer. Fresh-settings tests cover the Canvas default.
+        // Keep the same embedded renderer across fixtures. Fresh-settings tests cover its default selection.
         Files.writeString(directory.resolve("railix-home/creator.settings.json"), """
-                {"theme":"","theme_variant":"hq","reduced_motion":false,"effects":true,
+                {"theme":"","theme_variant":"canvas","reduced_motion":false,"effects":true,
                  "effects_volume":0.35,"music_volume":0.25,"music_enabled":true,"music":"","sounds":{}}
                 """);
         Files.writeString(directory.resolve("railix-home/icons/bolt.svg"), "<svg/>");
@@ -5682,6 +5923,8 @@ abstract class RailixCreatorBrowserSupport {
         page.onPageError(error -> pageErrors.add(error));
         page.navigate(creator.baseUri().toString());
         waitForText("#build-state", "Built");
+        awaitScene();
+        page.locator("#world-map").waitFor();
     }
 
     @AfterEach
@@ -5730,6 +5973,8 @@ abstract class RailixCreatorBrowserSupport {
                   {"from":"lowercase.next","to":"result"},{"from":"result.next","to":"end"}]}
                 """);
         selectWorldNode("lowercase");
+        page.waitForFunction("() => document.querySelector('#visible-example option[value=\"command:0\"]') && !document.querySelector('#visible-example').disabled");
+        page.locator("#visible-example").selectOption("command:0");
     }
 
     void createPrimitiveResult(
@@ -5764,7 +6009,7 @@ abstract class RailixCreatorBrowserSupport {
     RailixValue runResult(final int index) {
         selectTrigger();
         openInspectorTab("examples");
-        page.locator("[data-select-example='" + index + "']").click();
+        chooseExampleIndex(index);
         openInspectorTab("inspect");
         page.locator(".run-result").waitFor();
         final RailixValue.ObjectValue response = (RailixValue.ObjectValue) (
@@ -5819,11 +6064,13 @@ abstract class RailixCreatorBrowserSupport {
                 ]}
                 """.formatted(example));
         selectWorldNode("result");
+        page.waitForFunction("() => document.querySelector('#visible-example option[value=\"command:0\"]') && !document.querySelector('#visible-example').disabled");
+        page.locator("#visible-example").selectOption("command:0");
         page.waitForFunction("() => Boolean(document.querySelector('#preview-source'))");
         final Locator summary = page.locator(".example-value:has(#preview-source) > summary");
         if (summary.count() > 0) summary.click();
         page.locator("#preview-source").waitFor();
-        page.locator("#steps-search").fill(search);
+        fillStepSearch("#steps-search", search);
     }
 
     void prepareLiteralRefinementSearch(final String value, final String search) {
@@ -5835,7 +6082,7 @@ abstract class RailixCreatorBrowserSupport {
         page.locator("#value-0-literal-value").fill(value);
         assertThat(page.locator("#value-0-literal-value").inputValue()).isEqualTo(value);
         page.locator("#value-0-literal-value").press("Tab");
-        page.locator("#steps-search").fill(search);
+        fillStepSearch("#steps-search", search);
     }
 
     void awaitRejectedLiteral(final String value, final String search) {
@@ -5849,7 +6096,7 @@ abstract class RailixCreatorBrowserSupport {
         assertThat(page.locator("#value-0-literal-value").evaluate("""
                 (field, expected) => JSON.stringify(parseExact(field.value)) === JSON.stringify(parseExact(expected))
                 """, value)).as("Rejected literal remains intact in the editor draft").isEqualTo(true);
-        page.locator("#steps-search").fill(search);
+        fillStepSearch("#steps-search", search);
     }
 
     static String canonicalJsonBytes(final int bytes) {
@@ -5870,7 +6117,7 @@ abstract class RailixCreatorBrowserSupport {
         choosePath("value-0-source", "payload", "value");
         waitForText("#build-state", "Built");
         page.locator("#preview-source").waitFor();
-        page.locator("#steps-search").fill("size");
+        fillStepSearch("#steps-search", "size");
         page.locator("#steps-options [data-add-nested='list.size']").click();
         waitForText("#build-state", "Built");
         addManipulationAfterSelected();
@@ -5885,7 +6132,7 @@ abstract class RailixCreatorBrowserSupport {
         preparePrimitiveSearch("{\"payload\":{\"value\":0}}", "utc");
         page.locator("#steps-options [data-add-nested='date.is-utc-millis']").click();
         for (int index = 0; index < notCount; index++) {
-            page.locator("#steps-search").fill("not");
+            fillStepSearch("#steps-search", "not");
             page.locator("#steps-options [data-add-nested='boolean.not']").click();
         }
         waitForText("#build-state", "Built");
@@ -5897,7 +6144,7 @@ abstract class RailixCreatorBrowserSupport {
         exampleContext().press("Tab");
         addManipulationAfterSelected();
         choosePath("field", "payload", "value");
-        page.locator("#value-0-when-new-predicate-search").fill("equals");
+        fillStepSearch("#value-0-when-new-predicate-search", "equals");
         page.locator("[data-candidate-index='0'] [data-add-predicate='value.equals']").click();
         page.locator("#value-0-when-all-0-0-expected-value").fill("\"\"");
         page.locator("#value-0-when-all-0-0-expected-value").press("Tab");
@@ -5908,6 +6155,7 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void addLiteralCandidate(final String value) {
+        page.locator(".candidate-add:not([open]) > summary").click();
         page.locator("#value-candidate-search").fill("literal");
         page.locator("[data-add-candidate='literal']").click();
         final int index = page.locator(".candidate[data-candidate-index]").count() - 1;
@@ -5992,6 +6240,7 @@ abstract class RailixCreatorBrowserSupport {
         selectWorldNode(steps[0]);
         openInspectorTab("appearance");
         page.locator("[data-inspector-mode=groups]").click();
+        page.locator("#group-library > summary").click();
         clickAndWaitForCreatorSave(() -> page.locator("#new-group").click());
         final String group = String.valueOf(page.evaluate("""
                 async () => (await (await fetch('/api/project')).json()).creator.groups.at(-1).id
@@ -6007,8 +6256,16 @@ abstract class RailixCreatorBrowserSupport {
             page.locator("#choose-group").click();
             clickAndWaitForCreatorSave(() -> page.locator("[data-assign-group='" + group + "']").click());
         }
-        page.locator("[data-inspector-mode=groups]").click();
-        page.evaluate("() => state.world.fit()");
+        while (page.locator("#leave-group").isVisible()) {
+            page.locator("#leave-group").click();
+            awaitScene();
+        }
+        selectWorldNode("app");
+        openInspectorTab("groups");
+        final Locator library = page.locator("#group-library");
+        if (library.getAttribute("open") == null) library.locator(":scope > summary").click();
+        page.locator("[data-manage-group='" + group + "']").click();
+        page.locator("#scope-overview").click();
         awaitScene();
         return group;
     }
@@ -6016,20 +6273,44 @@ abstract class RailixCreatorBrowserSupport {
     void clickAndWaitForCreatorSave(final Runnable click) {
         final String revision = page.locator("#graph").getAttribute("data-scene-revision");
         final var response = page.waitForResponse(candidate ->
-                candidate.url().endsWith("/api/creator")
-                        && "PATCH".equals(candidate.request().method()), click);
+                candidate.url().endsWith("/api/editor")
+                        && "POST".equals(candidate.request().method()), click);
         assertThat(response.status()).isEqualTo(200);
         page.waitForFunction("revision => document.querySelector('#graph').dataset.sceneRevision !== revision", revision);
         awaitScene();
     }
 
     void selectWorldNode(final String id) {
+        page.waitForFunction("() => typeof state !== 'undefined' && Boolean(state.world)");
         if (page.locator("#inspector").isVisible()) page.locator("#close-inspector").click();
         page.evaluate("id => void state.world.focus(id)", id);
         awaitScene();
         selectWorldNode(page.locator("[data-select-node='" + id + "']"));
         assertThat(page.locator("#inspector").isVisible()).isTrue();
         page.locator("[data-inspector-mode='inspect']").click();
+    }
+
+    BoundingBox stationBounds(final String id) {
+        final List<?> values = (List<?>) page.evaluate("""
+                id => {
+                  const world=window.__renderer || state.world,node=world.scene.nodes.find(node=>node.id===id);
+                  if(!node)throw Error('Station is not in the current viewport: '+id);
+                  const box=world._screenBounds(node),stage=document.querySelector('#graph').getBoundingClientRect();
+                  return [stage.x+box.x,stage.y+box.y,box.width,box.height];
+                }
+                """, id);
+        final BoundingBox box = new BoundingBox();
+        box.x = ((Number) values.get(0)).doubleValue();
+        box.y = ((Number) values.get(1)).doubleValue();
+        box.width = ((Number) values.get(2)).doubleValue();
+        box.height = ((Number) values.get(3)).doubleValue();
+        return box;
+    }
+
+    void assertWorldAnimation() {
+        page.waitForFunction("() => document.querySelector('.world-raster')?.dataset.animated==='true'");
+        final Object before = page.locator(".world-raster").evaluate("canvas=>canvas.toDataURL()");
+        page.waitForFunction("before=>document.querySelector('.world-raster').toDataURL()!==before", before);
     }
 
     private void selectWorldNode(final Locator target) {
@@ -6084,8 +6365,12 @@ abstract class RailixCreatorBrowserSupport {
 
     void waitForCoverage(final String id, final String coverage) {
         page.waitForFunction("""
-                expected => document.querySelector(`[data-node-id='${expected.id}']`)?.dataset.coverage === expected.coverage
+                expected => state.world._surface?.stations.some(station => station.node.id===expected.id && station.look.coverage===expected.coverage)
                 """, Map.of("id", id, "coverage", coverage));
+    }
+
+    String renderedCoverage(final String id) {
+        return (String) page.evaluate("id => state.world._surface.stations.find(station=>station.node.id===id)?.look.coverage || ''", id);
     }
 
     String creatorMetadata() {
@@ -6254,7 +6539,7 @@ abstract class RailixCreatorBrowserSupport {
                                         .defaultValue(RailixValue.nullValue()))
                                 .fromOwned("value")
                 ).withAuthoredOutcomes())
-                .run(MatcherConformanceSteps.AuthoredTrue.class);
+                .implementation(MatcherConformanceSteps.AuthoredTrue.class);
     }
 
     void addTrigger() {
@@ -6306,8 +6591,7 @@ abstract class RailixCreatorBrowserSupport {
                 }]]
         """.formatted(numberList(size))));
         selectWorldNode("choice");
-        page.locator(".condition-transforms summary").first().click();
-        final Locator search = page.locator("[data-matcher-group='0'] .condition-transforms [data-step-query]");
+        final Locator search = visibleControl("[data-matcher-group='0'] .condition-transforms [data-step-query]");
         search.fill("size");
         page.locator("[data-matcher-group='0'] .condition-transforms [data-add-nested='list.size']").click();
         waitForText("#build-state", "Not built");
@@ -6315,7 +6599,7 @@ abstract class RailixCreatorBrowserSupport {
 
     void addSizeBounds(final int size) {
         prepareSizeChoiceMatcher(size);
-        final Locator search = page.locator("[data-matcher-group='0'] [data-predicate-query]");
+        final Locator search = visibleControl("[data-matcher-group='0'] [data-predicate-query]");
         search.fill("gt");
         page.locator("[data-matcher-group='0'] [data-add-predicate='number.greater-than']").click();
         page.locator("[data-condition-predicate='0'] [data-input-json]").fill("1");
@@ -6350,14 +6634,14 @@ abstract class RailixCreatorBrowserSupport {
 
 
     void openProject(final String source) {
-        final Number status = (Number) page.evaluate("""
+        final String response = (String) page.evaluate("""
                 source => fetch('/api/project', {
                   method: 'POST',
                   headers: mutationHeaders(),
                   body: source
-                }).then(response => response.status)
+                }).then(async response => response.status + ' ' + await response.text())
                 """, source);
-        assertThat(status.intValue()).isEqualTo(200);
+        assertThat(response).startsWith("200 ");
         page.reload();
         page.waitForFunction("""
                 () => document.querySelector('#build-state')?.textContent !== 'Loading'
@@ -6365,6 +6649,8 @@ abstract class RailixCreatorBrowserSupport {
         assertThat(page.locator("#build-state").textContent())
                 .as("Creator state; browser errors: %s; inspector: %s", pageErrors, page.locator("#inspector").textContent())
                 .isEqualTo("Running");
+        awaitScene();
+        page.locator("#world-map").waitFor();
     }
 
     static void copyTree(final Path source, final Path target) throws IOException {
@@ -6394,7 +6680,7 @@ abstract class RailixCreatorBrowserSupport {
                   };
                   window.fetch = (input, options = {}) => {
                     const url = typeof input === 'string' ? input : input.url;
-                    if (!delayed && url.endsWith('/api/project') && options.method === 'PATCH') {
+                    if (!delayed && url.endsWith('/api/editor') && options.method === 'POST') {
                       delayed = true;
                       window.__railixProjectWriteStarted = true;
                       return new Promise((resolve, reject) => {
@@ -6415,10 +6701,10 @@ abstract class RailixCreatorBrowserSupport {
                   window.__railixProjectWriteStarted = false;
                   window.fetch = (input, options = {}) => {
                     const url = typeof input === 'string' ? input : input.url;
-                    if (!url.endsWith('/api/project') || options.method !== 'PATCH') {
+                    if (!url.endsWith('/api/editor') || options.method !== 'POST') {
                       return request(input, options);
                     }
-                    window.__railixProjectWrites.push(JSON.parse(options.body).changes.id);
+                    window.__railixProjectWrites.push(JSON.parse(options.body).command.project.id);
                     if (window.__railixProjectWrites.length > 1) {
                       return request(input, options);
                     }
@@ -6488,7 +6774,7 @@ abstract class RailixCreatorBrowserSupport {
 
     void selectTrigger() {
         if (page.locator("#inspector").isVisible()) page.locator("#close-inspector").click();
-        page.evaluate("() => state.world.fit()");
+        page.locator("#zoom-fit").click();
         awaitScene();
         final String id = String.valueOf(page.evaluate(
                 "() => state.world.scene.nodes.find(node => node.kind === 'trigger').id"));
@@ -6543,8 +6829,22 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void openInspectorTab(final String mode) {
+        if (mode.equals("examples")) {
+            page.locator("#edit-example").click();
+            page.locator("#add-example").waitFor();
+            return;
+        }
         if (!page.locator("#inspector").isVisible()) page.locator("#graph").press("e");
         page.locator("[data-inspector-mode='" + mode + "']").click();
+    }
+
+    void chooseExampleIndex(final int index) {
+        if (index < 0) {
+            page.locator("#visible-example").selectOption("");
+        } else {
+            final String trigger = page.locator("#edit-example").getAttribute("data-edit-trigger");
+            chooseVisibleExample(trigger + ":" + index);
+        }
     }
 
     void clickOverview(final String selector) {
@@ -6552,17 +6852,50 @@ abstract class RailixCreatorBrowserSupport {
         page.locator(selector).click();
     }
 
+    void deleteAcceptedStep() {
+        openInspectorTab("overview");
+        final var response = page.waitForResponse(candidate -> candidate.url().endsWith("/api/editor")
+                && candidate.request().method().equals("POST"), () -> page.locator("#delete-step").click());
+        assertThat(response.status()).isEqualTo(200);
+        page.waitForFunction("() => !state.actionPending");
+    }
+
     void clearWorldSelection() {
         if (page.locator("#inspector").isVisible()) page.locator("#graph").press("Escape");
         page.locator("#graph").press("Escape");
     }
 
-    void fillStepSearch(final String selector, final String text) {
+    Locator visibleControl(final String selector) {
         final Locator field = page.locator(selector);
         for (final Locator details : field.locator("xpath=ancestor::details").all()) {
             if (details.getAttribute("open") == null) details.locator(":scope > summary").click();
         }
-        field.fill(text);
+        return field;
+    }
+
+    void fillStepSearch(final String selector, final String text) {
+        visibleControl(selector).fill(text);
+    }
+
+    void chooseVisibleExample(final String id) {
+        page.waitForFunction("""
+                id => {
+                  const select = document.querySelector('#visible-example');
+                  return select && !select.disabled && [...select.options].some(option => option.value === id && !option.disabled);
+                }
+                """, id);
+        page.locator("#visible-example").selectOption(id);
+    }
+
+    Object cameraCenter() {
+        return page.evaluate("""
+                () => {
+                  const view = new URLSearchParams(state.world.query);
+                  return [Number(view.get('x')) + Number(view.get('width')) / 2,
+                    Number(view.get('y')) + Number(view.get('height')) / 2, Number(view.get('scale'))]
+                    .map(value => Number(value.toFixed(6)));
+                }
+                """);
     }
 
     void openInspectorSection(final String summary) {
@@ -6632,9 +6965,9 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void replaceExamplePayloads(final String... payloads) {
-        assertThat(page.locator("[data-select-example]:not([data-select-example='-1'])").count()).isEqualTo(payloads.length);
+        assertThat(page.locator("#visible-example option[data-status]").count()).isEqualTo(payloads.length);
         for (int index = 0; index < payloads.length; index++) {
-            page.locator("[data-select-example='" + index + "']").click();
+            chooseExampleIndex(index);
             examplePayload().fill(payloads[index]);
             examplePayload().press("Tab");
         }
@@ -6660,7 +6993,11 @@ abstract class RailixCreatorBrowserSupport {
     }
 
     void awaitScene() {
-        page.waitForFunction("() => state.world && document.querySelector('#graph').dataset.cameraMoving !== 'true'");
+        awaitScene(true);
+    }
+
+    void awaitScene(final boolean populated) {
+        page.waitForFunction("() => typeof state !== 'undefined' && state.world && document.querySelector('#graph').dataset.cameraMoving !== 'true'");
         page.evaluate("""
                 async () => {
                   await state.world.refresh();
@@ -6668,11 +7005,11 @@ abstract class RailixCreatorBrowserSupport {
                 }
                 """);
         page.waitForFunction("""
-                () => state.world?.scene?.nodes.length > 0
+                populated => Boolean(state.world?.scene)
                   && document.querySelector('#graph').dataset.cameraMoving !== 'true'
                   && document.querySelector('#graph').dataset.sceneRevision === String(state.world.scene.revision)
-                  && document.querySelectorAll('#world-labels > *').length > 0
-                """);
+                  && (!populated || state.world.scene.nodes.length > 0 && document.querySelectorAll('#world-labels > *').length > 0)
+                """, populated);
         // A focus refresh can start a camera flight; fetch its final viewport before measuring it.
         page.evaluate("""
                 async () => {

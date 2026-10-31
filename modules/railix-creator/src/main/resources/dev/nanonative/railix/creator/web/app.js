@@ -1,5 +1,6 @@
 "use strict";
 
+const failedRunStates = new Set(['failed','rejected','cancelled','timed-out']);
 const creatorToken = new URLSearchParams(window.location.hash.slice(1)).get("token") || "";
 const browserFetch = window.fetch.bind(window);
 window.fetch = (input, options = {}) => {
@@ -19,25 +20,28 @@ const state = {
   savedCreator: null,
   projectVersion: 0,
   editor: { nodes: {}, full: [], groups: {}, used: {} },
+  history: {undo:false, redo:false},
+  selectedSteps: new Set(),
+  actionPending: false,
   editorRequest: 0,
   editorController: null,
   removedFlows: [],
-  pendingPrune: false,
   writePromise: Promise.resolve(),
   creatorVersion: 0,
   creator: { format: 2, groups: [], steps: {} },
   catalog: [],
   definitions: new Map(),
   iconUrls: new Map(),
+  icons: null,
+  iconController: null,
+  iconError: '',
   themes: [],
   settings: {},
   settingsRevision: null,
   settingsVersion: 0,
+  savedSettingsVersion: 0,
   settingsTimer: 0,
   settingsWriting: false,
-  hoverTrigger: null,
-  hoverTimer: 0,
-  hoverController: null,
   themesDirectory: "",
   themeError: "",
   themeController: null,
@@ -46,7 +50,6 @@ const state = {
   workspace: {},
   selection: { type: "app", id: "app" },
   regionSelection: null,
-  groupPointer: null,
   diagnostics: [],
   localDiagnostics: [],
   build: "Loading",
@@ -60,16 +63,21 @@ const state = {
   candidateQueries: {},
   exampleIndex: 0,
   exampleTrigger: "",
+  exampleScope: null,
   exampleDraft: null,
   exampleIds: new Map(),
   exampleInventoryKey: "",
+  exampleFailures: [],
+  attentionOffset: 0,
+  attentionRequest: null,
+  attentionError: "",
   exampleCoverageKey: "",
   revision: 0,
   saveTimer: 0,
   writeActive: false,
   pendingWrite: null,
   saveFailure: null,
-  rebuildRequired: false,
+  projectImport: {reader:null, preview:null, request:null, reload:false},
   runResult: "",
   preview: null,
   previewCases: [],
@@ -79,12 +87,18 @@ const state = {
   traceContext: "",
   traceSummary: null,
   traceSummaryKey: "",
+  traceReadError: null,
   traceStep: null,
   traceKey: "",
   traceController: null,
+  regionTrace: null,
+  traceChanges: null,
+  evidenceView: null,
+  coverageBytes: new Uint8Array(),
   optionsPending: false,
   applicationPollTimer: 0,
   applicationRefreshing: false,
+  applicationController: null,
   metrics: null,
   metricCatalog: null,
   metricsNode: "",
@@ -135,13 +149,19 @@ function mutationHeaders() {
 
 async function boot() {
   try {
+    document.querySelector('#workbench-actions').append(document.querySelector('.topbar'));
     if (!exactJsonSupported()) {
       throw new Error("Browser does not support exact JSON numbers.");
     }
     const [projectResponse, catalogResponse] = await Promise.all([
       fetch("/api/editor"),
       fetch("/api/catalog")
-    ]);
+    ]).catch(() => {
+      throw new Error("Check that the Creator is running, then retry.", {cause:"connection"});
+    });
+    if (projectResponse.status === 401 || catalogResponse.status === 401) {
+      throw new Error("This link cannot access this session. Use the current link shown by the running Creator.", {cause:"session"});
+    }
     if (!projectResponse.ok || !catalogResponse.ok) {
       throw new Error("Creator could not open the project.");
     }
@@ -151,6 +171,7 @@ async function boot() {
     ]);
     state.project = project.project;
     state.editor = project.editor;
+    state.history = project.history;
     state.builtProject = clone(project.project);
     state.creator = project.creator || { format: 2, groups: [], steps: {} };
     state.savedCreator = clone(state.creator);
@@ -165,36 +186,28 @@ async function boot() {
     state.audio = new RailixAudio(document.querySelector('#audio-panel'), changeSettings);
     state.world = new RailixWorld(document.querySelector("#graph"), {
       selectNode: selectWorldNode,
+      editingBusy: () => state.actionPending,
+      outputPorts: item => state.editor.full.includes(item.id) ? displayOutcomes(node(item.id)).map(outcome =>
+        ({id:item.id+'.'+outcome,name:outcomeLabel(node(item.id),outcome)})) : [],
+      connect: (from,to) => { void editorAction({kind:'connect',from,to}).then(result => { if (!result) state.world.connection(null); }); },
+      insert: openBeltPicker,
       deselect: clearSelection,
-      selectGroup: (group, region, event) => {
-        state.groupPointer = event?.detail === 1 ? {id:region, x:event.clientX, y:event.clientY} : null;
-        state.editorRequest++;
-        state.editorController?.abort();
-        state.world.cancelFocus();
-        state.regionSelection = state.world.scene.nodes.find(item => item.id === region);
-        state.audio.cue(worldAppearance(state.regionSelection), true);
-        state.inspectorMode = "inspect";
-        state.picker = null;
-        resetMetrics(true);
-        render();
-        showInspector(true);
-        state.world.repaint();
-      },
+      selectGroup: selectWorldGroup,
       appearance: worldAppearance,
       selectedId: () => state.regionSelection?.id || state.selection.id,
+      selectedStation: () => !state.regionSelection && ['step','trigger'].includes(state.selection.type) ? selectedOperation() : null,
       linkAppearance: worldLinkAppearance,
-      seed: () => numberText(state.creator.created_at ?? state.project.id),
       powered: () => state.application.state === "running",
       motionActive: worldMotionActive,
       reducedMotion: () => state.settings.reduced_motion === true,
-      hoverTrigger,
-      onGroup: group => {
-        showInspector(false);
-        const navigation = document.querySelector('#group-navigation');
-        navigation.hidden = !group;
-        navigation.querySelector('span').textContent = group ? `${group.name} (${count(group.count, 'Step')})` : '';
+      parentName: () => state.project?.id || 'System',
+      onGroup: (group, metadataOnly = false) => {
+        if (!metadataOnly) clearSelection();
+        renderWorldNavigation();
+        if (exampleScopeId() && state.exampleScope?.key !== exampleScopeKey(exampleScopeId())) scheduleApplicationPoll(0);
       },
       onActivity: level => state.audio.near(level),
+      onTiming: renderTimeScale,
       linkLabel: link => {
         const operation = state.worldNodes.get(link.from);
         const label = outcomeLabel(operation, link.outcome);
@@ -203,14 +216,22 @@ async function boot() {
         return connection?.invalid ? `${label}: ${connection.label}` : label;
       },
       onScene: scene => {
+        if (scene.target?.kind === 'region' && scene.target.group
+          && state.inspectorMode === 'groups' && scene.target.group === state.managedGroup) {
+          state.regionSelection = scene.nodes.find(node => node.id === scene.target.id) || scene.target;
+          renderDock();
+        }
         updateWorldMarks(scene);
         releaseUnusedIconUrls();
         const message = document.querySelector("#world-error");
-        message.hidden = !scene.limited;
-        message.dataset.severity = "warning";
-        message.textContent = scene.limited ? "Zoom in for finer detail." : "";
+        if (!document.querySelector('#graph').dataset.sceneError) {
+          message.hidden = !scene.limited;
+          message.dataset.severity = "warning";
+          message.textContent = scene.limited ? "Zoom in for finer detail." : "";
+        }
         renderWorldStatus();
         scheduleWorldObservations(180);
+        if (exampleScopeId() && state.exampleScope?.key !== exampleScopeKey(exampleScopeId())) scheduleApplicationPoll(0);
       },
       onError: message => {
         const error = document.querySelector("#world-error");
@@ -226,10 +247,11 @@ async function boot() {
   } catch (error) {
     state.build = "Unavailable";
     renderBuildStatus();
-    const message = document.querySelector("#world-error");
-    message.dataset.severity = "error";
-    message.textContent = error instanceof Error ? error.message : "Creator could not open the project.";
-    message.hidden = false;
+    document.querySelector('#creator-startup-title').textContent = error.cause === 'session'
+      ? 'Open the current Creator link' : error.cause === 'connection' ? 'Creator is not reachable' : 'Could not open the project';
+    document.querySelector('#creator-startup-detail').textContent = error instanceof Error ? error.message : 'Please try again.';
+    document.querySelector('#creator-retry').hidden = error.cause === 'session';
+    document.querySelector('#creator-startup').hidden = false;
   }
 }
 
@@ -239,6 +261,8 @@ function render() {
   }
   document.title = `${state.project.id} - Railix Creator`;
   renderBuildStatus();
+  renderWorldNavigation();
+  renderExampleContext();
   const flows = triggerNodes();
   document.querySelector("#flow-count").textContent = count(
     workspaceCount("flow_count", flows.length),
@@ -259,16 +283,36 @@ function render() {
   state.optionsPending = false;
   const openDetails = inspectorElement.dataset.selection === state.selection.id
     ? [...inspectorElement.querySelectorAll("details[open][id]")].map(detail => detail.id) : [];
-  document.querySelector("#inspector-content").innerHTML = inspector();
+  const content = document.querySelector('#inspector-content');
+  const context = `${state.regionSelection?.id || state.selection.id}:${state.inspectorMode}`;
+  const active = content.dataset.context === context && content.contains(document.activeElement)
+    && document.activeElement.matches('input:not([type=checkbox]):not([type=radio]):not([type=file]), textarea')
+    ? document.activeElement : null;
+  const draft = active?.id ? {id:active.id, value:active.value, start:active.selectionStart,
+    end:active.selectionEnd, direction:active.selectionDirection, scroll:active.scrollTop} : null;
+  state.iconController?.abort();
+  content.innerHTML = inspector();
+  if (content.dataset.context !== context) content.scrollTop = 0;
+  content.dataset.context = context;
   const navigation = document.querySelector("#inspector-content .inspector-tabs");
-  document.querySelector("#inspector-nav").replaceChildren(...(navigation ? [navigation] : []));
+  const tabs = document.querySelector('#inspector-nav');
+  if (navigation && tabs.firstElementChild?.outerHTML === navigation.outerHTML) navigation.remove();
+  else tabs.replaceChildren(...(navigation ? [navigation] : []));
   inspectorElement.dataset.selection = state.regionSelection?.id || state.selection.id;
   renderPreview();
   openDetails.forEach(id => {
     const detail = document.getElementById(id);
     if (detail) detail.open = true;
   });
+  const editing = draft && document.getElementById(draft.id);
+  if (editing && content.contains(editing) && !editing.disabled) {
+    editing.value = draft.value;
+    editing.focus({preventScroll:true});
+    if (draft.start !== null) editing.setSelectionRange(draft.start, draft.end, draft.direction);
+    editing.scrollTop = draft.scroll;
+  }
   document.querySelector("#overlay").innerHTML = picker() + groupPicker();
+  document.querySelector('#group-dialog')?.showModal();
   state.world?.preview(null);
   releaseUnusedIconUrls();
   applyExampleCoverage();
@@ -285,11 +329,16 @@ function render() {
 function updateWorldMarks(scene) {
   state.worldChanges = changedIds();
   state.worldIssues = new Map();
-  for (const issue of allDiagnostics()) {
+  const issues = allDiagnostics();
+  for (const example of state.exampleFailures) if (example.id !== selectedExampleId()) {
+    issues.push(...(example.result?.diagnostics || []).filter(issue=>issue.node).map(issue=>({...issue,exampleName:example.name,exampleId:example.id})));
+  }
+  for (const issue of issues) {
     const owner = diagnosticOwner(issue);
     const issues = state.worldIssues.get(owner) || [];
     issues.push(issue);
     state.worldIssues.set(owner, issues);
+    if (Array.isArray(issue.regions)) state.worldMarkedRegions.set(owner, issue.regions);
   }
   const marked = new Set([...state.worldChanges, ...state.worldIssues.keys()]);
   for (const id of state.worldMarkedRegions.keys()) if (!marked.has(id)) state.worldMarkedRegions.delete(id);
@@ -301,7 +350,6 @@ function updateWorldMarks(scene) {
 }
 
 function renderDock() {
-  renderTriggerChooser();
   const operation = selectedOperation();
   const region = state.regionSelection;
   const dock = document.querySelector("#selection-overview");
@@ -313,100 +361,224 @@ function renderDock() {
   const definition = region ? {} : definitionFor(operation);
   const app = !region && state.selection.type === "app";
   const trigger = definition.kind === "trigger";
-  const presentation = region ? {} : stepPresentation(operation.id);
+  const presentation = region ? state.creator.groups.find(group=>group.id===region.group) || {} : stepPresentation(operation.id);
   const name = region ? state.worldGroups.get(region.group)?.name || region.name
     : app ? state.project.id : presentation.name || stepName(definition);
   const actions = region ? '' : app
     ? `<button id="add-trigger" type="button" ${availableTriggers().length ? "" : "disabled"}><i class="hud-symbol" data-symbol="plus" aria-hidden="true"></i>Add Trigger</button>`
     : nextStepControls(operation);
   const navigation = `<button type="button" id="dock-focus" title="Focus (F)" aria-label="Focus"><i class="hud-symbol" data-symbol="locate" aria-hidden="true"></i></button>
-    ${region ? '<button type="button" id="enter-region" title="Enter group (Enter)" aria-label="Enter group"><i class="hud-symbol" data-symbol="enter" aria-hidden="true"></i></button>' : ''}
-    ${!document.querySelector('#group-navigation').hidden ? '<button type="button" data-leave-group title="Leave group" aria-label="Leave group"><i class="hud-symbol" data-symbol="back" aria-hidden="true"></i></button>' : ''}`;
+    ${region && region.id !== state.world?.navigation.at(-1)?.id ? '<button type="button" id="enter-region" title="Enter group (Enter)" aria-label="Enter group"><i class="hud-symbol" data-symbol="enter" aria-hidden="true"></i></button>' : ''}
+    ${state.world?.navigation.length ? '<button type="button" data-leave-group title="Leave group" aria-label="Leave group"><i class="hud-symbol" data-symbol="back" aria-hidden="true"></i></button>' : ''}`;
   renderDockMarkup(document.querySelector('#inspector-navigation'), navigation);
-  const deletion = state.inspectorMode === 'groups' || app ? '' : region
+  const deletion = state.groupDraft && state.inspectorMode === 'overview' || state.inspectorMode === 'groups' || app ? '' : region
     ? region.group ? `data-delete-region="${html(region.group)}"` : ''
     : `id="delete-step" ${trigger || removableStep(operation) ? '' : 'disabled'}`;
   const footer = document.querySelector('#inspector-footer');
-  renderDockMarkup(footer, deletion ? `<button type="button" ${deletion} class="danger" title="Delete ${html(name)}" aria-label="Delete ${html(name)}"><i class="hud-symbol" data-symbol="trash" aria-hidden="true"></i></button>` : '');
+  renderDockMarkup(footer, deletion ? `<button type="button" ${deletion} class="danger" title="Delete ${html(name)}" aria-label="Delete ${html(name)}"><i class="hud-symbol" data-symbol="trash" aria-hidden="true"></i><span>Delete</span></button>` : '');
   footer.hidden = !deletion;
   const type = region ? 'Group' : app ? 'Application' : trigger ? 'Trigger'
     : definition.outcomes?.length > 1 ? stepName(definition) : 'Step';
-  const source = `<header class="dock-heading"><div><small>${html(type)}</small>
-      <h2>${html(name)}</h2>${region ? `<span>${html(count(region.count, 'Step'))}${region.group ? '' : ' · Automatic'}</span>` : ''}</div>
-      <div class="selection-portrait" role="img" aria-label="${html(name)} building"><div></div></div></header>
+  const identity = document.querySelector('#inspector-identity');
+  renderDockMarkup(identity, `<div class="selection-portrait" aria-hidden="true"><div></div></div><div><small>${html(type)}${region ? ` / ${html(count(region.count,'Step'))}` : ''}</small><h2 title="${html(region?.id || operation.id)}">${html(name)}</h2></div>`);
+  const portrait=identity.querySelector('.selection-portrait > div');
+  if(presentation.icon) {
+    const image=document.createElement('img');image.src=iconUrl(presentation.icon);image.alt='';image.className='portrait-icon';
+    if(portrait.querySelector('img')?.src!==image.src)portrait.replaceChildren(image);
+  } else state.world?.portrait(region || {id:operation.id,use:operation.use,kind:definition.kind}, portrait);
+  const linkedUses = state.editor.reuse?.count > 1 ? `<label class="linked-uses">Linked use <select data-linked-use aria-label="Linked uses">${state.editor.reuse.uses.map(use =>
+    `<option value="${html(use.node)}" ${(region ? use.group === region.group : use.node === state.selection.id) ? 'selected' : ''}>${html(use.label || use.name)}</option>`).join('')}</select></label>` : '';
+  const source = state.groupDraft
+    ? `<form id="group-draft" class="group-draft"><label>Name<input name="name" value="Group" required maxlength="128"></label>
+      <output>${html(count(state.groupDraft.nodes.length, 'Step'))}</output>${state.selectedSteps.size === 2 ? '<button type="button" data-group-range>Include path</button>' : ''}<button type="submit">Create group</button><button type="button" data-cancel-group>Cancel</button></form>`
+    : `${linkedUses}
     <div id="dock-observation"><div class="dock-issues"></div><div class="dock-values"></div><div class="dock-counters"></div></div>
-    ${actions ? `<nav class="dock-actions" aria-label="Selection actions">${actions}</nav>` : ''}`;
+    ${actions ? `<nav class="dock-actions" aria-label="Selection actions">${actions}</nav>` : ''}
+    ${!app && !trigger ? `<nav class="dock-actions" aria-label="Reuse and grouping">
+      ${!region ? `<button type="button" data-group-selection><i class="hud-symbol" data-symbol="group" aria-hidden="true"></i>Create group${state.selectedSteps.size ? ` (${state.selectedSteps.size})` : ''}</button>` : ''}
+      ${state.editor.reuse?.count > 1 ? `<button type="button" data-detach-use>Detach${state.editor.reuse.group ? ' group' : ''} (${state.editor.reuse.count})</button>` : ''}</nav>` : ''}
+    ${(state.editor.sources?.length || 0) > 1 && !region && !selectedExampleId() ? `<label class="observation-source">Example source <select data-observation-source aria-label="Example source">${state.editor.sources.map(source =>
+      `<option value="${html(source.id)}" ${source.id === triggerFor(operation.id)?.id ? 'selected' : ''}>${html(source.name)}</option>`).join('')}</select></label>` : ''}
+    `;
   // Polling updates observations only; it must not replace a focused control.
   if (dock) {
     renderDockMarkup(dock, source);
-    state.world?.portrait(region || {id:operation.id,use:operation.use,kind:definition.kind}, dock.querySelector('.selection-portrait > div'));
   }
   renderDockObservation();
 }
 
-function renderTriggerChooser() {
-  const selected = selectedOperation();
-  const trigger = state.hoverTrigger || (!state.regionSelection && definitionFor(selected)?.kind === 'trigger' ? selected : null);
-  const chooser = document.querySelector('#trigger-example');
-  const examples = trigger?.examples || [];
-  renderDockMarkup(chooser, trigger ? `<label class="dock-example">Example
-    <select id="dock-example" data-trigger="${html(trigger.id)}" aria-label="Selected Example"><option value="-1" ${state.exampleIndex < 0 ? 'selected' : ''}>None</option>${examples.map((example,index) =>
-      `<option value="${index}" ${index === state.exampleIndex ? 'selected' : ''}>${html(example.name)}</option>`).join('')}</select>
-    <button type="button" data-edit-trigger="${html(trigger.id)}">Edit</button></label>` : '');
-  state.world?.anchor(trigger && !state.picker ? trigger.id : '', chooser);
+function exampleStatus(example) {
+  const status = state.build !== 'Built' || state.pendingProject ? 'updating' : example.status || 'updating';
+  return {status, mark:status === 'succeeded' ? '\u2713' : failedRunStates.has(status) ? '\u00d7' : '\u25cc',
+    label:status === 'succeeded' ? 'Passed' : ['failed','rejected'].includes(status) ? 'Failed' : inputLabel(status)};
 }
 
-function hoverTrigger(id) {
-  clearTimeout(state.hoverTimer);
-  state.hoverController?.abort();
-  state.hoverTimer = setTimeout(async () => {
-    if (!id) {
-      const chooser = document.querySelector('#trigger-example');
-      // Native select popups leave the hover tree without relinquishing keyboard focus.
-      if (chooser.contains(document.activeElement) || chooser.matches(':hover')) return;
-      state.hoverTrigger = null;
-      renderTriggerChooser();
-      return;
-    }
-    if (state.hoverTrigger?.id === id) return;
-    const controller = state.hoverController = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    try {
-      const existing = state.editor.full.includes(id) ? node(id) : null;
-      const response = existing ? null : await fetch(`/api/editor?${new URLSearchParams({node:id})}`, {signal:controller.signal});
-      if (response && !response.ok) return;
-      const trigger = existing || parseExact(await response.text()).project.nodes.find(item => item.id === id);
-      if (!controller.signal.aborted) { state.hoverTrigger = trigger; renderTriggerChooser(); }
-    } catch (error) {
-      if (error.name !== 'AbortError') document.querySelector('#world-error').textContent = 'Trigger examples could not be read.';
-    } finally { clearTimeout(timeout); }
-  }, id ? 120 : 450);
+function renderExampleContext() {
+  const host = document.querySelector('#example-session');
+  const id = selectedExampleId(), example = selectedTraceCase();
+  renderTimeScale();
+  const scope = exampleScopeId();
+  const scoped = scope ? state.exampleScope : null;
+  const author = !state.regionSelection && state.selection.type === 'trigger' && Array.isArray(selectedOperation()?.examples) ? selectedOperation() : null;
+  const ready = Boolean(author) || !scope || scoped?.id === scope && scoped.key === exampleScopeKey(scope) && !scoped.error;
+  const recorded = [...state.exampleIds.values()].flatMap(choices => [...choices.values()]);
+  const inventory = author ? (author.examples || []).map((example,index)=>({...example,
+    ...recorded.find(candidate=>candidate.trigger===author.id && Number(candidate.index)===index),
+    name:example.name,id:author.id+':'+index,trigger:author.id,index})) : recorded;
+  const current = inventory.find(candidate => candidate.id === id);
+  const cases = inventory
+    .filter(candidate => author || !scope || ready && scoped.ids.has(candidate.id));
+  const trigger = node(state.exampleTrigger) || (state.selection.type === 'trigger' ? selectedOperation() : null);
+  host.hidden = !state.exampleIds.size && !trigger;
+  if (host.hidden) return;
+  const readError = example && state.traceReadError?.key === exampleSummaryKey(example) ? state.traceReadError.message : '';
+  const failure = selectedExampleDiagnostics().find(diagnostic => diagnostic.node);
+  renderDockMarkup(host, `<span class="example-context-label">Example</span>
+    <select id="visible-example" aria-label="Visible Example" ${!ready || !cases.length ? 'disabled' : ''}>
+      <button type="button"><selectedcontent></selectedcontent></button>
+      ${current && !cases.some(candidate => candidate.id === id) ? `<option value="${html(id)}" selected disabled>${html(current.name)}</option>` : ''}
+      <option value="" ${!id ? 'selected' : ''}>${!ready ? scoped?.error ? 'Examples unavailable' : 'Loading Examples' : !cases.length ? 'No Examples here' : 'Choose Example'}</option>
+      ${cases.map(candidate => { const progress=exampleStatus(candidate); return `<option value="${html(candidate.id)}" data-trigger="${html(candidate.trigger)}" data-index="${html(candidate.index)}" data-status="${progress.status}" aria-label="${html(progress.label+': '+candidate.name)}" ${candidate.id === id ? 'selected' : ''}><span class="example-mark" data-status="${progress.status}" aria-hidden="true">${progress.mark}</span> <span>${html(candidate.name)}${cases.some(other => other.id !== candidate.id && other.name === candidate.name) ? ` (${html(node(candidate.trigger)?.name || candidate.trigger)})` : ''}</span></option>`; }).join('')}</select>
+    ${trigger ? `<button id="edit-example" type="button" data-edit-trigger="${html(trigger.id)}" aria-label="Edit Examples" title="Edit Example inputs"><i class="hud-symbol" data-symbol="edit" aria-hidden="true"></i></button>` : ''}
+    <div class="example-context-state" role="status">${readError ? observationFeedback({kind:'unavailable',status:readError},'','read') : ''}</div>
+    ${scoped?.id === scope && scoped.error ? '<button type="button" data-retry-example-scope aria-label="Retry Example list">Retry</button>' : ''}
+    ${readError ? '<button type="button" data-retry-example aria-label="Retry Example values" title="Retry Example values">Retry</button>' : ''}
+    ${failure ? `<button type="button" data-evidence-step="${html(failure.node)}" class="example-failure" aria-label="Show failing Step" title="${html(failure.message)}"><strong aria-hidden="true">!</strong></button>` : ''}
+    ${id ? `<button type="button" data-locate-trigger="${html(state.exampleTrigger)}" aria-label="Locate Example trigger" title="Locate Example trigger"><i class="hud-symbol" data-symbol="locate" aria-hidden="true"></i></button>
+    <button type="button" data-clear-example aria-label="Clear Example" title="Clear Example"><i class="hud-symbol" data-symbol="close" aria-hidden="true"></i></button>` : ''}`);
+  const output = host.querySelector('.example-context-state');
+  output.title = readError;
+  output.dataset.status = example?.status || '';
+}
+
+function renderTimeScale() {
+  const host=document.querySelector('#example-time-scale'), values=state.world?.timeScale || [];
+  host.hidden=!values.length || document.querySelector('#graph').dataset.renderer!=='canvas';
+  if(host.hidden)return;
+  renderDockMarkup(host,`<span>Visible avg</span><span class="time-scale" data-single="${values.length===1}"><i aria-hidden="true"></i><span>${values.map(value=>
+    `<span>${html(formatNanos(value).replace(/\.0+(?= )/,''))}</span>`).join('')}</span></span><span class="time-missing"><i aria-hidden="true"></i>No data</span>`);
+  host.setAttribute('aria-label',`Visible sampled Step times: ${values.map(formatNanos).join(' to ')}. Groups use their slowest measured Step.`);
+}
+
+function exampleScopeId() {
+  const scene = state.world?.scene;
+  const selected = state.regionSelection?.id || state.selection.id;
+  if (selected && selected !== 'app' && scene?.nodes.some(item => item.id === selected && !item.expanded)) return selected;
+  return state.world?.navigation.at(-1)?.id || '';
+}
+
+function exampleScopeKey(id) {
+  return JSON.stringify([id, state.world?.scene?.revision, state.application.pid, state.exampleInventoryKey]);
+}
+
+async function refreshExampleScope(application, signal, examples) {
+  const id = exampleScopeId(), key = exampleScopeKey(id);
+  if (!id || examples.state !== 'completed' || state.exampleScope?.key === key) return;
+  let response;
+  try {
+    response = await fetch(`/api/scene/observations?${new URLSearchParams({revision:state.world.scene.revision,cases:id})}`, {signal});
+  } catch (error) {
+    if (signal.aborted) throw error;
+  }
+  if (!response?.ok) {
+    if (key === exampleScopeKey(exampleScopeId())) { state.exampleScope={id,key,error:true}; renderExampleContext(); }
+    return;
+  }
+  const result = parseExact(await response.text());
+  if (!currentApplication(application) || key !== exampleScopeKey(exampleScopeId()) || Number(result.application_pid) !== Number(application.pid)) return;
+  state.exampleScope = {id,key,ids:new Set(result.case_ids)};
+  renderExampleContext();
 }
 
 function renderDockMarkup(element, source) {
   if (element.railixMarkup !== source) {
     const focused = element.contains(document.activeElement) ? document.activeElement.id : "";
+    const feedbackOpen=[...element.querySelectorAll('.observation-feedback[open]')].map(detail=>detail.id);
+    const select=element.id==='example-session' && element.querySelector('#visible-example');
+    if(select) {
+      // Detaching the select closes its native popup during progress updates.
+      const template=document.createElement('template');template.innerHTML=source;
+      const next=template.content.querySelector('#visible-example');
+      const options=new Map([...select.options].map(option=>[option.value,option]));
+      const retained=new Set(), ordered=[];
+      for(const option of next.options) {
+        let current=options.get(option.value);
+        if(!current){current=option.cloneNode(true);select.append(current);}
+        else {
+          if(current.innerHTML!==option.innerHTML)current.innerHTML=option.innerHTML;
+          for(const attribute of [...current.attributes])if(!option.hasAttribute(attribute.name))current.removeAttribute(attribute.name);
+          for(const attribute of option.attributes)if(current.getAttribute(attribute.name)!==attribute.value)current.setAttribute(attribute.name,attribute.value);
+        }
+        retained.add(current);ordered.push(current);
+      }
+      for(const option of [...select.options])if(!retained.has(option))option.remove();
+      ordered.forEach((option,index)=>{if(select.options[index]!==option)select.insertBefore(option,select.options[index] || null);});
+      select.disabled=next.disabled;select.value=next.value;
+      for(const child of [...element.childNodes])if(child!==select)child.remove();
+      let after=false;
+      for(const child of [...template.content.childNodes]) {
+        if(child===next){after=true;continue;}
+        if(after)element.append(child);else element.insertBefore(child,select);
+      }
+      element.railixMarkup=source;
+      for(const id of feedbackOpen){const detail=document.getElementById(id);if(detail && element.contains(detail))detail.open=true;}
+      if(focused && focused!=='visible-example')document.getElementById(focused)?.focus({preventScroll:true});
+      return;
+    }
+    const evidence=element.querySelector('#selection-evidence');
+    const open=[...(evidence?.querySelectorAll('details[open][id]') || [])].map(detail=>detail.id);
     element.innerHTML = source;
     element.railixMarkup = source;
+    if(evidence && evidence.dataset.evidenceKey===element.querySelector('#selection-evidence')?.dataset.evidenceKey)
+      for(const id of open){const detail=document.getElementById(id);if(detail)detail.open=true;}
+    for(const id of feedbackOpen){const detail=document.getElementById(id);if(detail && element.contains(detail))detail.open=true;}
     if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
   }
 }
 
 function renderDockObservation() {
+  refreshInspectorTabs();
+  if (state.groupDraft) return;
   const slot = document.querySelector("#dock-observation");
   const operation = selectedOperation();
   const region = state.regionSelection;
   if (!slot || !region && (!operation || state.editor.nodes[operation.id] && !state.editor.full.includes(operation.id))) return;
   const item = currentWorldObservations()?.nodes.get(region?.id || operation.id);
   const measured = item?.metrics;
+  const aggregate = ['app','trigger'].includes(state.selection.type);
   const counters = !region && measured && Object.hasOwn(measured, "executions") ? `<span>${formatInteger(measured.executions)} runs</span>
     ${worldMotionActive() && Number.isFinite(item.rate) ? `<span>${formatRate(item.rate)}/s</span>` : ""}
     ${metricNumber(measured.duration_samples) ? `<span>${averageNanos(measured)} avg</span>` : ""}
-    ${metricNumber(measured.errors) ? `<span class="dock-error">${formatInteger(measured.errors)} errors</span>` : ""}` : "";
-  const issues = state.worldIssues.get(region?.id || operation.id) || [];
+    ${metricNumber(measured.errors) ? `<span ${aggregate?'':'class="dock-error"'}>${formatInteger(measured.errors)} ${aggregate?'failed runs':'errors'}</span>` : ""}` : "";
   const example = selectedTraceCase();
+  const issues = (state.worldIssues.get(region?.id || operation.id) || []).filter(issue =>
+    region || issue.exampleName !== example?.name || !failedRunStates.has(state.traceStep?.status));
   let values = "";
-  if (example && !region && state.selection.type !== "app") {
+  if (example && region) {
+    const trace = state.regionTrace;
+    const current = trace?.region === region.id && trace.example === example.id;
+    const stopped=current && trace.changes && !Object.hasOwn(trace.changes,'after');
+    const feedback = state.build !== 'Built' || state.pendingProject ? {kind:'pending',status:'Updating Example'}
+      : current ? trace : {kind:'pending',status:'Loading Example'};
+    values = selectionEvidence(example, current ? trace.changes : null, feedback,
+      current && trace.passages?.length ? `<nav class="evidence-boundary" aria-label="Observed section passage">
+        <button type="button" data-evidence-step="${html(trace.passages[trace.index].entry.id)}" title="Section input">In: ${html(trace.passages[trace.index].entry.name)}</button>
+        <span aria-hidden="true">&gt;</span><button type="button" data-evidence-step="${html(trace.passages[trace.index].exit.id)}" title="${stopped ? 'Stopped Step' : 'Section output'}">${stopped ? 'Stopped' : 'Out'}: ${html(trace.passages[trace.index].exit.name)}</button>
+        </nav>` : '');
+  } else if (example && !region && state.selection.type !== "app" && definitionFor(operation)?.kind !== 'trigger') {
+    const observed = observedExampleContext(operation);
+    const failed = failedRunStates.has(state.traceStep?.status);
+    const outcome=state.traceStep?.id===operation.id ? state.traceStep.outcome : '';
+    const route=!observed.status && !failed && outcome && displayOutcomes(operation).length>1
+      ? `<nav class="observed-route" aria-label="Observed route" data-observed-outcome="${html(outcome)}"><strong>${html(outcomeLabel(operation,outcome))}</strong>${stepDestination(outcomeConnection(operation,outcome))}</nav>` : '';
+    values = selectionEvidence(example, observed.status ? null : failed ? {before:observed.root.context} : state.traceChanges,
+      observed.status ? observed : {kind:failed ? 'failed' : 'succeeded',status:failed ? 'Stopped here' : 'Observed changes'}, failed
+        ? `<div class="evidence-failure">${nodeIssues(operation.id).length ? issueList(operation.id,false)
+          : `<p>${html(state.traceStep.message || inputLabel(state.traceStep.status))}</p>`}</div>${
+          state.traceStep.exception ? `<details id="step-exception"><summary id="step-exception-summary">Exception details</summary><pre>${html(
+            [state.traceStep.exception,...(state.traceStep.exception.causes || [])]
+              .map(cause => [cause.type,...(cause.frames || [])].join('\n')).join('\nCaused by: '))}</pre></details>` : ''}` : route);
+  } else if (example && !region && state.selection.type !== "app") {
     const definition = definitionFor(operation);
     values = `${definition.kind === "trigger" ? "" : `<button type="button" id="dock-case" class="dock-case"
       data-locate-trigger="${html(triggerFor(operation.id).id)}" title="Choose an Example at its Trigger">${html(example.name)}</button>`}` + [false, true].filter(after =>
@@ -425,12 +597,18 @@ function renderDockObservation() {
       const label = ports.length || definition.kind === "trigger" ? after ? "Out" : "In" : after ? "After" : "Before";
       return `<div class="dock-value" data-dock-value="${after ? "output" : "input"}" title="${html(displayPath(path))}">
         <small>${label}</small>${observed.status
-          ? `<span class="value-status">${html(observed.status)}</span>`
+          ? observationFeedback(observed,'',after ? 'output' : 'input')
           : `<output>${html(summary)}</output>`}</div>`;
     }).join("");
   }
+  const failures=selectionFailures().filter(candidate=>candidate.id!==selectedExampleId());
   for (const [part, source] of [["issues", issues.length
-    ? `<button type="button" class="dock-error" data-open-panel="inspect">${html(issues[0].message)}</button>` : ""],
+    ? `<button type="button" class="dock-error" ${issues[0].exampleId ? `data-example-issue="${html(issues[0].exampleId)}"` : region && issues[0].node ? `data-evidence-step="${html(issues[0].node)}"` : 'data-open-panel="inspect"'}>${
+      issues[0].exampleName && issues[0].exampleName!==example?.name ? `Example: ${html(issues[0].exampleName)}. ` : ""}${
+      region && issues[0].node_name ? html(issues[0].node_name)+': ' : ''}${html(diagnosticMessage(issues[0]))}</button>`
+      : failures.length ? `<div class="failed-examples"><small>Failed Examples</small>${failures.slice(0,5).map(failure=>
+        `<button type="button" data-example-issue="${html(failure.id)}"><span class="example-mark" data-status="failed" aria-hidden="true">\u00d7</span>${html(failure.name)}<i class="hud-symbol" data-symbol="enter" aria-hidden="true"></i></button>`).join('')}
+        ${failures.length>5?'<button type="button" data-open-issues>Show all problems</button>':''}</div>` : ""],
     ["values", values], ["counters", counters]]) {
     const element = slot.querySelector(`.dock-${part}`);
     renderDockMarkup(element, source);
@@ -438,8 +616,115 @@ function renderDockObservation() {
   }
 }
 
+function contextChanges(before, after) {
+  const changed = new Map(), branches = new Set(), pending = [{path: [], before, after}];
+  while (pending.length) {
+    const item = pending.pop(), a = item.before, b = item.after;
+    if (a === b) continue;
+    const container = value => plainObject(value) || Array.isArray(value);
+    if ((container(a) || a === undefined) && (container(b) || b === undefined)
+      && (a === undefined || b === undefined || Array.isArray(a) === Array.isArray(b))
+      && Object.keys(a || {}).length + Object.keys(b || {}).length) {
+      const keys = [...new Set([...Object.keys(a || {}), ...Object.keys(b || {})])];
+      for (let i = keys.length - 1; i >= 0; i--) {
+        const key = Array.isArray(b ?? a) ? Number(keys[i]) : keys[i];
+        pending.push({path:[...item.path, key], before:valueAt(a,[key]), after:valueAt(b,[key])});
+      }
+      continue;
+    }
+    if (JSON.stringify(a) === JSON.stringify(b)) continue;
+    changed.set(JSON.stringify(item.path), a === undefined ? 'Added' : b === undefined ? 'Removed' : 'Changed');
+    for (let length = 0; length < item.path.length; length++) branches.add(JSON.stringify(item.path.slice(0, length)));
+  }
+  return {before, after, changed, branches, count:changed.size};
+}
+
+function contextValue(value, path, budget, side = 'after') {
+  if (value === undefined) return '';
+  if ((plainObject(value) || Array.isArray(value)) && Object.keys(value).length) {
+    const token = JSON.stringify(path), open = state.evidenceView.open.get('before:' + token);
+    return `<details class="context-old" data-context-branch="${html(token)}" data-context-snapshot ${open ? 'open' : ''}>
+      <summary id="context-before-${encodeURIComponent(token)}">Before ${Array.isArray(value) ? '[...]' : '{...}'}</summary><div class="context-children">${open ? contextRows(state.evidenceView.delta,path,budget,true) : ''}</div></details>`;
+  }
+  const source = previewValue(value);
+  if (source.length <= 160) return `<output>${html(source)}</output>`;
+  const token = JSON.stringify(path), open = state.evidenceView.open.get(`value:${side}:` + token);
+  return `<details class="example-value" data-context-value="${html(token)}" data-context-side="${side}" ${open ? 'open' : ''}>
+    <summary id="context-value-${side}-${encodeURIComponent(token)}">${html(source.slice(0,77))}...</summary>${open ? `<output>${html(source)}</output>` : ''}</details>`;
+}
+
+function contextRows(delta, path = [],
+  budget = {left:200 + [...state.evidenceView.limits.values()].reduce((sum,limit)=>sum+limit,0)}, snapshot = false, replacement = '') {
+  const original = snapshot ? undefined : valueAt(delta.before, path);
+  const b = valueAt(snapshot ? delta.before : delta.after, path);
+  const keysOf = value => plainObject(value) || Array.isArray(value) ? Object.keys(value) : [];
+  const inherited = snapshot ? '' : delta.changed.get(JSON.stringify(path)) || replacement;
+  const a = inherited && b !== undefined ? undefined : original;
+  const all = snapshot || state.evidenceView.all || inherited;
+  const keys = [...new Set([...keysOf(a), ...keysOf(b)])].map(key => Array.isArray(b ?? a) ? Number(key) : key)
+    .filter(key => all || delta.changed.has(JSON.stringify([...path,key])) || delta.branches.has(JSON.stringify([...path,key])));
+  const rows = [];
+  const branchKey = (snapshot ? 'before:' : '') + JSON.stringify(path);
+  const limit = Math.max(80, state.evidenceView.limits.get(branchKey) || 0);
+  let index = 0;
+  while (index < keys.length && index < limit && budget.left > 0) {
+    budget.left--;
+    const key = keys[index++], locator = [...path,key], token = JSON.stringify(locator);
+    const before = valueAt(a,[key]), after = valueAt(b,[key]), value = after === undefined ? before : after;
+    const kind = snapshot ? '' : delta.changed.get(token) || (inherited
+      ? before === undefined ? 'Added' : after === undefined ? 'Removed' : 'Changed' : '');
+    const changed = Boolean(kind || !snapshot && delta.branches.has(token));
+    const label = typeof key === 'number' ? String(key) : JSON.stringify(key);
+    const attributes = `data-context-change="${html(displayPath(locator))}" data-change="${kind.toLowerCase() || (changed ? 'changed' : 'unchanged')}"
+      aria-label="${snapshot ? 'Before' : kind || (changed ? 'Changed' : 'Unchanged')} ${html(displayPath(locator))}"`;
+    const container = keysOf(before).length + keysOf(after).length > 0 && (plainObject(value) || Array.isArray(value));
+    if (container) {
+      const open = state.evidenceView.open.get((snapshot ? 'before:' : '') + token) ?? (changed && !snapshot);
+      const brace = Array.isArray(value) ? ['[',']'] : ['{','}'];
+      const old = before !== undefined && (after !== undefined && Array.isArray(before) !== Array.isArray(after)
+        || !plainObject(before) && !Array.isArray(before));
+      rows.push(`<details class="context-branch" data-context-branch="${html(token)}" ${snapshot ? 'data-context-snapshot' : ''}
+        data-context-default-open="${changed && !snapshot}"
+        ${attributes} ${open ? 'open' : ''}><summary id="context-${snapshot ? 'before-branch-' : 'branch-'}${encodeURIComponent(token)}"><code>${html(label)}: ${brace[0]}</code></summary>${old ? `<del>${contextValue(before,locator,budget,'before')}</del>` : ''}
+        <div class="context-children">${open ? contextRows(delta,locator,budget,snapshot,kind) : ''}</div><span class="context-close">${brace[1]}</span></details>`);
+    } else {
+      rows.push(`<div class="context-leaf" ${attributes}><code>${html(label)}:</code><span class="context-values">
+        ${kind && before !== undefined ? `<del>${contextValue(before,locator,budget,'before')}</del>` : ''}
+        ${after !== undefined ? kind ? `<ins>${contextValue(after,locator,budget)}</ins>` : contextValue(after,locator,budget,snapshot ? 'before' : 'after') : ''}</span></div>`);
+    }
+  }
+  if (index < keys.length) rows.push(`<button type="button" class="context-more" data-context-more="${html(JSON.stringify(path))}"
+    id="context-more-${encodeURIComponent(branchKey)}" data-context-offset="${index}" ${snapshot ? 'data-context-snapshot' : ''}>Show more fields (${keys.length-index})</button>`);
+  return rows.join('');
+}
+
+function observationFeedback(observation, count = '', scope = 'selection') {
+  const mark = {pending:'\u25cc',unreached:'\u25cb',unavailable:'!',failed:'\u00d7',succeeded:'\u2713'}[observation.kind];
+  const id='observation-'+encodeURIComponent(JSON.stringify([scope,state.application.pid,selectedExampleId(),state.regionSelection?.id || state.selection.id,observation.kind]));
+  return mark ? `<details id="${id}" class="observation-feedback" data-state="${observation.kind}"><summary id="${id}-summary" title="${html(observation.status)}"><span role="img" data-state="${observation.kind}"
+    aria-label="${html(observation.status)}"><span aria-hidden="true">${mark}</span>${count !== '' ? `<small aria-hidden="true">${html(count)}</small>` : ''}</span></summary><span class="feedback-description">${html(observation.status)}</span></details>` : '';
+}
+
+function selectionEvidence(example, delta, feedback, navigation = '') {
+  const key = JSON.stringify([state.application.pid, example.id, state.regionSelection?.id || state.selection.id]);
+  if (state.evidenceView?.key !== key) state.evidenceView = {key, all:false, open:new Map(), limits:new Map()};
+  state.evidenceView.delta = delta;
+  const snapshot=delta && !Object.hasOwn(delta,'after');
+  const all = state.evidenceView.all, label = snapshot ? all ? 'Hide input context' : 'Show input context'
+    : all ? 'Show changed fields only' : 'Show all fields';
+  const tree=delta && (snapshot ? all : delta.count || all)
+    ? `<div class="context-tree" aria-label="${snapshot ? 'Recorded input context' : 'Context JSON'}"><span>{</span><div class="context-children">${contextRows(delta,[],undefined,snapshot)}</div><span>}</span></div>` : '';
+  const badge = delta && !snapshot && !feedback.progress
+    ? {...feedback,status:delta.count ? `${count(delta.count, 'field')} changed` : 'No fields changed'} : feedback;
+  return `<section id="selection-evidence" data-evidence-key="${html(key)}" aria-label="${snapshot ? 'Example input' : 'Example changes'}"><header><strong>${html(example.name)}</strong>
+    ${observationFeedback(badge,feedback.progress || (delta?.count || ''))}${delta ? `<button type="button" id="evidence-fields" data-evidence-fields aria-label="${label}" title="${label}" aria-pressed="${all}">
+      <i class="hud-symbol" data-symbol="eye" aria-hidden="true"></i></button>` : ''}</header>
+    ${navigation}${tree}</section>`;
+}
+
 function focusGroup(groupId) {
-  void state.world?.focus("group:" + groupId);
+  if (window.matchMedia('(max-width: 650px)').matches) showInspector(false);
+  state.world?.focus("group:" + groupId);
 }
 
 function focusRegion(regionId) {
@@ -450,19 +735,262 @@ function renderBuildStatus() {
   document.querySelector("#build-state").textContent = state.build === "Built"
     ? inputLabel(state.application.state || "running") : state.build;
   document.body.dataset.build = state.build.toLowerCase().replace(" ", "-");
+  for (const kind of ['undo','redo']) document.querySelector(`#editor-${kind}`).disabled = state.actionPending || state.writeActive || Boolean(state.saveFailure?.reload) || !state.history?.[kind];
+  for (const selector of ['#inspector','#overlay','.world-ports']) {
+    const element=document.querySelector(selector);
+    if(element) element.inert=state.actionPending && !(selector==='#inspector' && state.projectImport.reload
+      && !document.querySelector('#project-import-panel').hidden);
+  }
+  document.querySelector('#project-menu').disabled=!state.project || state.actionPending && !state.projectImport.reload;
+  document.querySelector('#open-settings').disabled=state.actionPending;
+  const selecting = Boolean(state.editorController && !state.editorController.signal.aborted
+    && state.editorController.node && state.editorController.node !== (state.regionSelection ? 'app' : state.selection.id));
+  document.querySelector('#inspector').setAttribute('aria-busy',String(selecting));
+  for (const selector of ['#inspector-content','#inspector-nav','#inspector-navigation','#inspector-connections','#inspector-footer']) {
+    document.querySelector(selector).inert = selecting;
+  }
+  renderAttention();
 }
 
-async function selectWorldNode(id) {
+function renderWorldNavigation() {
+  const locations = state.world?.navigation || [];
+  const host = document.querySelector('#group-navigation');
+  host.hidden = false;
+  document.querySelector('#leave-group').hidden = !locations.length;
+  const path = [{name:state.project?.id || 'Application'}, ...locations];
+  renderDockMarkup(document.querySelector('#world-location'), `<ol aria-label="Location">${path.map((item,index) => {
+    const parent = path[index-1]?.name;
+    const name = parent && item.name.startsWith(parent+': ') ? item.name.slice(parent.length+2) : item.name;
+    return `<li>${index < locations.length ? `<button type="button" data-world-level="${index}" title="${html(item.name)}" aria-label="Back to ${html(item.name)}">${html(name)}</button>`
+      : index ? `<button type="button" data-inspect-region="${html(item.id)}" aria-current="location" title="Inspect ${html(item.name)}" aria-label="Inspect ${html(name)}">${html(name)} <small>(${count(item.count,'Step')})</small></button>`
+        : `<span aria-current="location" title="${html(item.name)}">${html(name)}</span>`}</li>`;
+  }).join('')}</ol>`);
+}
+
+function attentionItems() {
+  const diagnostics = allDiagnostics().filter(issue => !Object.hasOwn(issue,'exampleName')).map(issue => ({
+    key:JSON.stringify([diagnosticOwner(issue),issue.code,issue.path,issue.severity,issue.message]),
+    node:diagnosticOwner(issue), path:issue.path, title:issue.node_name || node(diagnosticOwner(issue))?.id || 'Project',
+    detail:issue.message, source:issue.severity === 'warning' ? 'Warning' : 'Build'
+  }));
+  const issues = [...new Map(diagnostics.map(issue => [issue.key,issue])).values()];
+  if (state.build !== 'Built' || state.pendingProject || !state.exampleInventoryKey) return issues;
+  return [...issues, ...state.exampleFailures.map(example => {
+    const problem=example.result?.diagnostics?.[0];
+    return {example:example.id,node:problem?.node,path:problem?.path,
+      title:example.name,step:problem?.node_name,
+      detail:problem ? diagnosticMessage(problem) : example.message || inputLabel(example.status),
+      source:state.exampleFailures.some(other=>other.id!==example.id&&other.name===example.name)
+        ? `Example / ${node(example.trigger)?.name || example.trigger}` : 'Example'};
+  })];
+}
+
+function renderAttention() {
+  const items = attentionItems(), badge = document.querySelector('#issue-count');
+  badge.hidden = !items.length;
+  const label = count(items.length,'issue');
+  if (badge.textContent !== String(items.length)) badge.textContent = String(items.length);
+  badge.title = label;
+  badge.setAttribute('aria-label',`Show ${label}`);
+  const control = document.querySelector('.build-indicator');
+  const name = `Application build and runtime details: ${document.querySelector('#build-state').textContent}`;
+  if (control.getAttribute('aria-label') !== name) control.setAttribute('aria-label',name);
+  const host = document.querySelector('#attention-list');
+  if (!host || !document.querySelector('#application-status').matches(':popover-open')) return;
+  const ready = state.build === 'Built' && !state.pendingProject
+    && state.application.examples?.state === 'completed' && Boolean(state.exampleInventoryKey);
+  const offset = state.attentionOffset = Math.min(state.attentionOffset, Math.max(0,Math.floor((items.length-1)/20)*20));
+  const content = `${state.attentionError ? `<p role="alert" class="attention-error">${html(state.attentionError)}</p>` : ''}
+    ${items.length ? `<ol>${items.slice(offset,offset+20).map(item => `<li data-severity="${item.source==='Warning'?'warning':'error'}"><button type="button"
+      id="attention-${item.example ? 'example-' : 'diagnostic-'}${html(encodeURIComponent(item.example || item.key))}"
+      ${item.example ? `data-example-issue="${html(item.example)}" aria-label="Inspect Example: ${html(item.title)}" aria-describedby="attention-source-${html(encodeURIComponent(item.example))} attention-detail-${html(encodeURIComponent(item.example))}"`
+        : `data-evidence-step="${html(item.node || 'app')}" data-diagnostic-path="${html(item.path || '')}"`}
+      ${state.attentionRequest ? 'disabled' : ''} title="${html(item.detail)}">
+      <small ${item.example?`id="attention-source-${html(encodeURIComponent(item.example))}"`:''}>${html(item.source)}</small><strong><span class="problem-cross" aria-hidden="true">${item.source==='Warning'?'!':'\u00d7'}</span>${html(item.title)}</strong><span class="problem-detail" ${item.example?`id="attention-detail-${html(encodeURIComponent(item.example))}"`:''}>${item.step?`<b>${html(item.step)}</b>`:''}<span>${html(item.detail)}</span></span>
+      </button></li>`).join('')}</ol>` : `<p>${ready ? 'No build problems or failing Examples' : state.application.examples?.state === 'completed' ? 'Example results unavailable' : 'Checking Examples'}</p>`}
+    ${state.attentionRequest ? '<p role="status">Opening Step...</p>' : ''}
+    ${items.length > 20 ? `<nav aria-label="Issue pages"><button id="attention-previous" type="button" data-attention-page="${Math.max(0,offset-20)}" ${offset ? '' : 'disabled'}>Previous</button>
+      <span>${offset+1}-${Math.min(items.length,offset+20)} of ${items.length}</span>
+      <button id="attention-next" type="button" data-attention-page="${offset+20}" ${offset+20 < items.length ? '' : 'disabled'}>Next</button></nav>` : ''}`;
+  renderDockMarkup(host,content);
+}
+
+function selectionFailures() {
+  if (state.build !== 'Built' || state.pendingProject || state.application.examples?.state !== 'completed') return [];
+  const operation=selectedOperation(), scope=exampleScopeId();
+  const scoped=state.exampleScope?.key === exampleScopeKey(scope) ? state.exampleScope.ids : null;
+  return state.exampleFailures.filter(example => !state.regionSelection && definitionFor(operation)?.kind === 'trigger'
+    ? example.trigger === operation.id : scoped?.has(example.id));
+}
+
+function inspectorTabs(modes) {
+  const issues=nodeIssues(state.selection.id), failures=selectionFailures();
+  const otherIssues=(state.worldIssues.get(state.selection.id)||[]).filter(issue=>issue.exampleId&&issue.exampleId!==selectedExampleId());
+  const symbols={inspect:'configure',overview:'data',appearance:'appearance',groups:'groups'};
+  return `<nav class="inspector-tabs" aria-label="Inspector mode" style="--tab-count:${modes.length}">${modes.map(([mode,label])=>{
+    const count=mode==='inspect' ? issues.length+otherIssues.length : mode==='overview' ? failures.length : 0;
+    return `<button type="button" data-inspector-mode="${mode}" aria-label="${label}" title="${label}${count ? `: ${count} issue${count===1?'':'s'}` : ''}"
+      data-has-error="${count>0}" class="${state.inspectorMode===mode?'active':''}"><i class="hud-symbol" data-symbol="${symbols[mode]}" aria-hidden="true"></i><span>${label}</span>${count?`<small class="tab-issue" aria-hidden="true">${count}</small>`:''}</button>`;
+  }).join('')}</nav>`;
+}
+
+function refreshInspectorTabs() {
+  const counts={inspect:nodeIssues(state.selection.id).length+(state.worldIssues.get(state.selection.id)||[])
+    .filter(issue=>issue.exampleId&&issue.exampleId!==selectedExampleId()).length,overview:selectionFailures().length};
+  for(const button of document.querySelectorAll('#inspector-nav [data-inspector-mode]')) {
+    const count=counts[button.dataset.inspectorMode] || 0;
+    button.dataset.hasError=String(count>0);
+    let badge=button.querySelector('.tab-issue');
+    if(count && !badge){badge=document.createElement('small');badge.className='tab-issue';badge.setAttribute('aria-hidden','true');button.append(badge);}
+    if(badge){badge.hidden=!count;if(badge.textContent!==String(count))badge.textContent=String(count);}
+    button.title=button.getAttribute('aria-label')+(count?`: ${count} issue${count===1?'':'s'}`:'');
+  }
+}
+
+function cancelAttention() {
+  const request = state.attentionRequest;
+  state.attentionRequest = null;
+  if (request?.editor && request.editor === state.editorController) {
+    state.editorRequest++;
+    request.editor.abort();
+  }
+}
+
+async function openExampleIssue(id) {
+  cancelAttention();
+  const example = state.exampleFailures.find(example => example.id === id);
+  if (!example || state.build !== 'Built' || state.pendingProject) return false;
+  state.attentionError = '';
+  const pid = state.application.pid;
+  void selectExample(Number(example.index), {id:example.trigger}, {deferObservation:true});
+  const request = state.attentionRequest = {example:id};
+  renderAttention();
+  try {
+    const failure = example.result?.diagnostics?.find(issue=>issue.node);
+    const destination=failure?.node || example.trigger;
+    const selected = await selectWorldNode(destination, undefined, request);
+    if (state.attentionRequest !== request || state.application.pid !== pid || selectedExampleId() !== id) return false;
+    if (selected) {
+      document.querySelector('#application-status').hidePopover();
+      document.querySelector('#inspector-content').scrollTop = 0;
+      state.world.focus(destination,.5);
+      if (!failure || !focusDiagnosticPath(failure.path)) document.querySelector('#close-inspector').focus({preventScroll:true});
+    }
+    return selected;
+  } catch (error) {
+    if (state.attentionRequest === request) state.attentionError = error.message;
+    return false;
+  } finally {
+    if (state.attentionRequest === request) {
+      state.attentionRequest = null;
+      if(state.attentionError){
+        document.querySelector('#application-status').showPopover();
+      }
+      renderAttention();
+      if (state.attentionError) document.querySelector(`#attention-list [data-example-issue="${CSS.escape(id)}"]`)?.focus({preventScroll:true});
+    }
+  }
+}
+
+async function flushEdits() {
+  clearTimeout(state.saveTimer);
+  state.saveTimer=0;
+  if (Object.keys(documentChanges(state.builtProject, state.project)).length
+      || Object.keys(documentChanges(state.savedCreator, state.creator)).length || state.removedFlows.length) {
+    const functional = state.pendingProject || Object.keys(documentChanges(state.builtProject, state.project)).length > 0;
+    state.pendingProject = false;
+    enqueueWrite({revision:state.revision, projectChanged:functional,
+      projectSource:JSON.stringify(state.project), creatorSource:JSON.stringify(state.creator)});
+  }
+  await state.writePromise;
+  return state.build === 'Built';
+}
+
+async function editorAction(command, preview = false) {
+  cancelAttention();
+  if (state.actionPending) return null;
+  state.actionPending = true;
+  renderBuildStatus();
+  let requestSent=false;
+  try {
+    if(!await flushEdits()) return null;
+    requestSent=true;
+    const response = await fetch('/api/editor', {method:'POST', headers:mutationHeaders(),
+      body:JSON.stringify({revision:state.projectVersion, creator_revision:state.creatorVersion, command, preview})});
+    const payload = parseExact(await response.text());
+    if (!response.ok) {
+      state.localDiagnostics = payload.diagnostics || [{code:'CREATOR_EDIT_REJECTED', message:payload.message || 'The change was not applied.', node:command.node || state.selection.id}];
+      render(); return null;
+    }
+    if (preview) return payload;
+    state.projectVersion = payload.revision;
+    state.creatorVersion = payload.creator_revision;
+    state.history = payload.history;
+    state.workspace = payload.workspace;
+    replaceApplication(payload.application);
+    state.localDiagnostics = [];
+    if (command.kind === 'delete' && state.jsonDraft?.node === command.node) state.jsonDraft=null;
+    state.diagnostics = payload.diagnostics || [];
+    state.picker = null;
+    state.selectedSteps.clear();
+    state.world?.connection(null);
+    // The server may have changed distant linked uses. Discard the bounded read view before reloading it.
+    state.project = clone(state.builtProject);
+    state.creator = clone(state.savedCreator);
+    const id = payload.selection || (state.regionSelection ? 'app' : state.selection.id) || 'app';
+    let loaded = await loadEditor(id);
+    if (loaded === 'unavailable' && id !== 'app') {
+      loaded = await loadEditor('app');
+      if (loaded === 'loaded') state.localDiagnostics = [];
+    }
+    if (loaded !== 'loaded') return payload;
+    if (payload.selection && node(payload.selection)) state.selection = {type:definitionFor(node(payload.selection)).kind, id:payload.selection};
+    else if (!node(state.selection.id)) state.selection = {type:'app',id:'app'};
+    state.regionSelection = null;
+    state.sceneDirty = true;
+    render();
+    await state.world?.refresh();
+    return payload;
+  } catch (error) {
+    if(requestSent && !preview) {
+      state.saveFailure={message:'Editor action not confirmed.',retryable:true,reload:true};
+      state.build='Not built';
+    } else state.localDiagnostics = [{code:'CREATOR_EDIT_UNAVAILABLE', message:'The editor action could not be completed.', node:state.selection.id}];
+    render(); return null;
+  } finally { state.actionPending = false; renderBuildStatus(); }
+}
+
+async function selectWorldNode(id, event, request) {
+  if (state.actionPending) return false;
+  closeProjectImport(false);
+  if (!request || state.attentionRequest !== request) cancelAttention();
+  if (event?.shiftKey) {
+    state.groupDraft = null;
+    const item = state.world?.scene?.nodes.find(node => node.id === id);
+    if (item?.kind !== 'step') return false;
+    if (!state.selectedSteps.size && state.selection.type === 'step') state.selectedSteps.add(state.selection.id);
+    state.selectedSteps.has(id) ? state.selectedSteps.delete(id) : state.selectedSteps.add(id);
+    closeSettings(false);renderDock(); showInspector(true); state.world.repaint();
+    return true;
+  }
+  state.selectedSteps.clear();
+  if (state.groupDraft) {
+    state.groupDraft = null;
+    renderDock();
+    state.world?.repaint();
+  }
   const item = state.world?.scene?.nodes.find(node => node.id === id);
   if (item) state.audio?.cue(worldAppearance(item));
   state.regionSelection = null;
   state.picker = null;
   state.revealNode = "";
   state.world?.cancelFocus();
-  const loaded = await loadEditor(id);
+  const loaded = await loadEditor(id, state.managedGroup, state.groupQuery, 0, request);
+  if (request && state.attentionRequest !== request) return false;
   if (loaded !== "loaded" && !(loaded === "conflict" && state.editor.full.includes(id))) return false;
   const operation = node(id);
   if (!operation) return false;
+  closeSettings(false);
   if (definitionOf(operation.use)?.kind === "step") {
     selectStep(id);
     showInspector(true);
@@ -486,23 +1014,52 @@ async function selectWorldNode(id) {
   return true;
 }
 
-async function loadEditor(id, group = state.managedGroup, query = state.groupQuery, offset = 0) {
+function selectWorldGroup(group, region) {
+  if(state.actionPending)return;
+  closeProjectImport(false);
+  closeSettings(false);
+  cancelAttention();
+  state.groupDraft = null;
+  state.editorRequest++;
+  state.editorController?.abort();
+  state.editor = {...state.editor, reuse:null};
+  if (state.world.navigation.at(-1)?.id !== region) state.world.cancelFocus();
+  state.regionSelection = state.world.scene.nodes.find(item => item.id === region);
+  state.audio.cue(worldAppearance(state.regionSelection), true);
+  state.inspectorMode = "inspect";
+  state.picker = null;
+  resetMetrics(true);
+  render();
+  showInspector(true);
+  state.world.repaint();
+  if (group) void loadEditor('app', group).then(() => { renderDock(); state.world.repaint(); void requestSelectedTrace(); });
+  else void requestSelectedTrace();
+}
+
+async function loadEditor(id, group = state.managedGroup, query = state.groupQuery, offset = 0, owner) {
+  if (owner && state.attentionRequest !== owner) return 'superseded';
   const request = ++state.editorRequest;
   state.editorController?.abort();
   const controller = new AbortController();
+  controller.node = id;
   state.editorController = controller;
+  renderBuildStatus();
+  if (owner) owner.editor = controller;
   try {
     await state.writePromise;
     if (request !== state.editorRequest) return "superseded";
+    if (state.saveFailure?.reload) return 'conflict';
     const writer = state.writePromise;
     const version = state.projectVersion;
     const creatorVersion = state.creatorVersion;
-    const response = await fetch(`/api/editor?${new URLSearchParams({ ...(id ? {node: id} : {}), group, q: query, offset })}`, { signal: controller.signal });
+    const trigger = state.exampleTrigger;
+    const response = await fetch(`/api/editor?${new URLSearchParams({ ...(id ? {node: id} : {}), group, q: query, offset,
+      ...(trigger ? {trigger} : {}) })}`, { signal: controller.signal });
     const payload = parseExact(await response.text());
     if (request !== state.editorRequest) return "superseded";
     if (writer !== state.writePromise || state.writeActive
-        || version !== state.projectVersion || creatorVersion !== state.creatorVersion) {
-      return loadEditor(id, group, query, offset);
+        || version !== state.projectVersion || creatorVersion !== state.creatorVersion || trigger !== state.exampleTrigger) {
+      return loadEditor(id, group, query, offset, owner);
     }
     if (!response.ok) {
       state.localDiagnostics = [{ code: "CREATOR_EDITOR_UNAVAILABLE", message: payload.message || "Step could not be loaded.", node: id }];
@@ -557,6 +1114,7 @@ async function loadEditor(id, group = state.managedGroup, query = state.groupQue
     state.project = apply(state.builtProject, projectChanges);
     state.creator = apply(state.savedCreator, creatorChanges);
     state.editor = payload.editor;
+    state.history = payload.history;
     state.projectVersion = payload.revision;
     state.creatorVersion = payload.creator_revision;
     state.workspace = payload.workspace;
@@ -573,13 +1131,14 @@ async function loadEditor(id, group = state.managedGroup, query = state.groupQue
     return error.name === "AbortError" || request !== state.editorRequest ? "superseded" : "unavailable";
   } finally {
     if (state.editorController === controller) state.editorController = null;
+    renderBuildStatus();
   }
 }
 
 function worldAppearance(item) {
   const operation = state.worldNodes.get(item.id);
   const group = item.kind === "region" ? state.worldGroups.get(item.group) : null;
-  const presentation = group || state.creator.steps[item.id] || {};
+  const presentation = group || stepPresentation(item.id);
   const definition = definitionOf(item.use);
   const issues = state.worldIssues.get(item.id) || [];
   const observation = currentWorldObservations()?.nodes.get(item.id);
@@ -594,23 +1153,39 @@ function worldAppearance(item) {
     ? observation.metrics : null;
   const timing = item.kind === "region" ? groupMean(item.id) : null;
   const sampled = item.kind === "region" ? timing?.sampled > 0 : live && metricNumber(live.duration_samples) > 0;
-  const mean = sampled ? timing ? timing.sum : metricNumber(live.duration_nanos_total) / metricNumber(live.duration_samples) : 0;
-  const activity = observation && Number(observation.count) > 0
+  const mean = sampled ? timing ? timing.maximum : metricNumber(live.duration_nanos_total) / metricNumber(live.duration_samples) : 0;
+  const activity = item.kind === 'app' ? state.application.state === 'running' ? 'active' : 'idle'
+    : observation && Number(observation.count) > 0
     && Number(observation.disabled_count) === Number(observation.count) ? "disabled"
     : live ? metricNumber(live.executions) > 0 ? "active" : "idle" : "";
   const detail = activity === "disabled" ? "Metrics off"
     : live ? `${formatInteger(live.executions)} executions${observation.rate === undefined ? "" : ` · ${formatRate(observation.rate)}/s`}${sampled ? ` · ${formatNanos(mean)} sampled` : ""}`
     : observation && Object.hasOwn(observation, "covered_count") && item.kind === "region"
       ? `${observation.covered_count}/${observation.count} reached${Number(observation.selected_count) ? ` · ${observation.selected_count} selected` : ""}` : "";
+  const evidence = coverage === 'selected' ? 'Reached by selected Example'
+    : coverage === 'covered' ? 'Reached by other Examples'
+    : coverage === 'uncovered' ? 'Not reached by any Example' : '';
   return {
     selected: (state.regionSelection?.id || state.selection.id) === item.id || Boolean(group
-      && state.inspectorMode === "groups" && state.managedGroup === group.id),
+      && state.inspectorMode === "groups" && state.managedGroup === group.id) || state.selectedSteps.has(item.id),
+    related: Boolean(state.world?.related(item)),
+    editing: state.groupDraft?.nodes.includes(item.id) || false,
     changed: state.worldChanges.has(item.id),
-    error: issues.some(issue => issue.severity !== "warning") || Boolean(live && metricNumber(live.errors) > 0),
+    error: issues.some(issue => issue.severity !== "warning") || !selectedExampleId() && !['app','trigger','region'].includes(item.kind)
+      && Boolean(live && metricNumber(live.errors) > 0),
     warning: issues.some(issue => issue.severity === "warning") || item.kind === "app" && Boolean(state.themeError),
     never: item.kind !== "app" && item.kind !== "end" && Boolean(live && metricNumber(live.executions) === 0)
       && Number(observation?.disabled_count || 0) === 0,
     coverage,
+    evidence,
+    evidenceLabel: item.kind === 'region' && observation && Object.hasOwn(observation, 'covered_count')
+      ? `${selectedExampleId() ? observation.selected_count || 0 : observation.covered_count}/${observation.count} ${selectedExampleId() ? 'reached' : 'covered'}` : '',
+    roof: item.roof?.map(member => ({...member,
+      error:state.worldIssues.get(member.id)?.some(issue => issue.severity !== 'warning'),
+      coverage:state.build !== 'Built' || state.pendingProject ? ''
+        : state.traceSummary?.nodes?.has(member.node) && selectedTraceCase() ? 'selected'
+          : state.coverageBytes[member.node >> 3] & (1 << (member.node & 7)) ? 'covered'
+            : state.application.examples?.state === 'completed' ? 'uncovered' : ''})),
     activity,
     rate: worldMotionActive() ? arrival?.rate || observation?.rate || 0 : 0,
     duration: sampled ? formatNanos(mean) : "",
@@ -622,11 +1197,15 @@ function worldAppearance(item) {
     boundary: presentation.boundary || item.boundary || (coverage === "uncovered" ? "dashed" : "solid"),
     iconUrl: iconUrl(presentation.icon || state.world?.scene?.icons?.[item.icon_ref]),
     showIcon: Boolean(presentation.icon),
-    symbol: item.kind === "step" ? definition?.outcomes.length > 1 ? "branch"
+    symbol: item.kind === "step" ? (definition?.outcomes?.length > 1
+      || definition?.inputs?.some(input => input.authored_outcomes)
+      || operation && outcomes(operation).length > 1) ? "branch"
       : definition?.returns[0]?.shape || "step" : item.kind,
     label: presentation.name || (item.kind === "app" && operation && stepName(definitionFor(operation))) || item.name,
-    description: activity === "disabled" ? detail : live ? `${detail}. ${formatInteger(live.errors)} errors; ${formatInteger(live.cancelled)} cancellations. ${
-      item.kind === "region" ? `Sum of means from ${timing?.sampled || 0}/${observation.count} sampled Steps; not passage latency. ` : ""}${sampled ? "Sampled execution time, not utilization." : "No duration inferred."}` : detail,
+    description: activity === "disabled" ? detail : live ? `${detail}. ${formatInteger(live.errors)} ${['app','trigger'].includes(item.kind) ? 'failed runs' : item.kind === 'region' ? 'Step errors' : 'errors'}; ${formatInteger(live.cancelled)} cancellations. ${
+      item.kind === "region" ? timing ? `Slowest mean from ${timing.sampled}/${observation.count} sampled Steps; not passage latency. `
+        : "Group timing summary unavailable. " : sampled
+        ? `${formatInteger(live.duration_samples)} duration samples, including initial executions. ` : ""}${sampled ? "Sampled execution time, not utilization or the selected Example's duration." : "No duration inferred."}` : detail,
     detail: issues.length ? issues[0].message
       : item.kind === "trigger" ? `${count(operation?.examples?.length ?? item.example_count ?? 0, "example")}${
         activity === "disabled" ? " · Metrics off" : live ? ` · ${formatInteger(live.executions)} runs` : ""}`
@@ -650,7 +1229,19 @@ function groupMeanKey() {
 
 function groupMean(id) {
   const value = state.groupMeanKey === groupMeanKey() && currentWorldObservations() ? state.groupMeans.get(id) : null;
-  return value?.offset === -1 ? value : null;
+  return value?.published || null;
+}
+
+function sampledStepTime(id) {
+  const observation = currentWorldObservations()?.nodes.get(id);
+  if (!observation) return null;
+  if (state.world.scene.nodes.find(node => node.id === id)?.kind === 'region') {
+    const group = groupMean(id);
+    return group?.sampled > 0 ? group.maximum : null;
+  }
+  const metrics = observation.metrics, samples = metricNumber(metrics?.duration_samples);
+  const mean = samples > 0 ? metricNumber(metrics.duration_nanos_total) / samples : null;
+  return Number.isFinite(mean) && mean >= 0 ? mean : null;
 }
 
 async function refreshGroupMeans() {
@@ -663,7 +1254,7 @@ async function refreshGroupMeans() {
   }
   const visible = new Set(state.world.scene.nodes.filter(node => node.kind === "region" && !node.expanded).map(node => node.id));
   for (const id of state.groupMeans.keys()) if (!visible.has(id)) state.groupMeans.delete(id);
-  for (const id of visible) if (!state.groupMeans.has(id)) state.groupMeans.set(id, {offset: 0, sum: 0, sampled: 0, at: 0});
+  for (const id of visible) if (!state.groupMeans.has(id)) state.groupMeans.set(id, {offset: 0, sum: 0, maximum: 0, sampled: 0, at: 0});
   const now = performance.now();
   const candidate = [...state.groupMeans].filter(([, value]) => now >= value.at)
     .sort((a, b) => a[1].at - b[1].at)[0];
@@ -672,7 +1263,7 @@ async function refreshGroupMeans() {
     return;
   }
   const [id, value] = candidate;
-  if (value.offset === -1) Object.assign(value, {offset: 0, sum: 0, sampled: 0});
+  if (value.offset === -1) Object.assign(value, {offset: 0, sum: 0, maximum: 0, sampled: 0});
   const controller = new AbortController();
   state.groupMeanController = controller;
   const timeout = setTimeout(() => controller.abort(), 6_000);
@@ -686,14 +1277,18 @@ async function refreshGroupMeans() {
         || !state.world.scene.nodes.some(node => node.id === id && !node.expanded)) return;
     for (const metrics of Object.values(page.groups)) {
       const samples = metricNumber(metrics.duration_samples);
-      if (samples > 0) { value.sum += metricNumber(metrics.duration_nanos_total) / samples; value.sampled++; }
+      if (samples > 0) {
+        const mean = metricNumber(metrics.duration_nanos_total) / samples;
+        value.sum += mean;value.maximum = Math.max(value.maximum,mean);value.sampled++;
+      }
     }
     value.offset = Number(page.next);
+    if (value.offset === -1) value.published = {sum:value.sum,maximum:value.maximum,sampled:value.sampled};
     value.at = performance.now() + (value.offset === -1 ? 10_000 : 100);
     state.world.repaint();
     renderDockObservation();
   } catch (_error) {
-    Object.assign(value, {offset: 0, sum: 0, sampled: 0, at: performance.now() + 5_000});
+    Object.assign(value, {offset: 0, sum: 0, maximum: 0, sampled: 0, published:null, at: performance.now() + 5_000});
   } finally {
     clearTimeout(timeout);
     state.groupMeanController = null;
@@ -713,6 +1308,10 @@ function worldLinkAppearance(link) {
   const rate = worldMotionActive() && Number.isFinite(observation?.rate) ? observation.rate : 0;
   return {
     selected,
+    durationNanos: sampledStepTime(link.from),
+    editing: Boolean(state.picker?.arrival?.from===link.from && (state.picker.arrival.outcome===link.outcome
+      || link.outcomes?.includes(state.picker.arrival.outcome)))
+      || Boolean(state.groupDraft && (state.groupDraft.nodes.includes(link.from) || state.groupDraft.nodes.includes(link.to))),
     coverage: selected ? "reached" : observation?.selection || "unknown",
     rate
   };
@@ -829,7 +1428,8 @@ function renderWorldStatus() {
   const covered = Number(examples?.covered_steps || 0);
   const coverage = document.querySelector("#status-coverage");
   coverage.hidden = !measurable || total === 0;
-  coverage.textContent = `${Math.round(covered / Math.max(1, total) * 100)}% coverage`;
+  coverage.dataset.percent = `${Math.round(covered / Math.max(1, total) * 100)}%`;
+  coverage.textContent = `${coverage.dataset.percent} coverage`;
   coverage.title = `${covered} of ${total} executable Steps reached by completed Examples`;
   renderDock();
 }
@@ -854,6 +1454,24 @@ function refreshPathPicker() {
   }
   const existing = new Map([...currentChoices.querySelectorAll(".path-choice")]
     .map(choice => [choice.dataset.pathDraftJson, choice]));
+  if (!observationMayReplace(current)) {
+    if (!desired.querySelector('#apply-path').disabled) current.querySelector('#apply-path').disabled = false;
+    if (!current.querySelector(':active')) {
+      const additions = [...desiredChoices.querySelectorAll('.path-choice')]
+        .filter(choice => !existing.has(choice.dataset.pathDraftJson));
+      if (additions.length) {
+        const builder=current.querySelector('.path-builder');
+        builder.style.height ||= builder.getBoundingClientRect().height+'px';
+        if (!existing.size) {
+          currentChoices.querySelectorAll('.path-hint, .path-choices-label').forEach(element => element.remove());
+          const label = desiredChoices.querySelector('.path-choices-label');
+          if (label) currentChoices.prepend(label);
+        }
+        currentChoices.append(...additions);
+      }
+    }
+    return true;
+  }
   const retained = new Set();
   desiredChoices.querySelectorAll(".path-choice").forEach(choice => {
     const key = choice.dataset.pathDraftJson;
@@ -967,9 +1585,8 @@ function inspector() {
   if (state.regionSelection) {
     const region = state.regionSelection, group = state.creator.groups.find(group => group.id === region.group);
     if (!['appearance','groups'].includes(state.inspectorMode)) state.inspectorMode = "overview";
-    const modes = [["overview", "Overview"], ...(group ? [["appearance", "Appearance"]] : []), ['groups','Groups']];
-    const tabs = `<nav class="inspector-tabs" aria-label="Inspector mode" style="--tab-count:${modes.length}">${modes.map(([id, label]) =>
-      `<button type="button" data-inspector-mode="${id}" class="${state.inspectorMode === id ? "active" : ""}">${label}</button>`).join("")}</nav>`;
+    const modes = [["overview", "Data"], ...(group ? [["appearance", "Appearance"]] : []), ['groups','Grouping']];
+    const tabs = inspectorTabs(modes);
     return tabs + changeStatus() + (state.inspectorMode === 'groups' ? manageGroupsInspector() : state.inspectorMode === "appearance" && group
       ? presentationEditor(group, {name: region.name}, "group:" + group.id)
       : `<section id="selection-overview"></section><section class="inspector-section">${issueList(region.id)}</section>`
@@ -977,28 +1594,18 @@ function inspector() {
           ...(groupMean(region.id)?.sampled ? [['Sum of Step averages',formatNanos(groupMean(region.id).sum)]] : [])]));
   }
   const modes = [
-    ["overview", "Overview"],
     ["inspect", "Configure"],
-    ...(["trigger", "step"].includes(state.selection.type) ? [["results", "Results"]] : []),
+    ["overview", "Data"],
     ["appearance", "Appearance"],
-    ["groups", "Groups"],
-    ...(state.selection.type === "trigger" ? [["examples", "Examples"]] : [])
+    ["groups", "Grouping"]
   ];
-  if (!modes.some(([mode]) => mode === state.inspectorMode)) {
+  if (!(state.inspectorMode === 'examples' && state.selection.type === 'trigger') && !modes.some(([mode]) => mode === state.inspectorMode)) {
     state.inspectorMode = "inspect";
   }
-  const tabs = `<nav class="inspector-tabs" aria-label="Inspector mode"
-                     style="--tab-count:${Math.min(3, modes.length)}">${modes.map(([mode, label]) => `
-    <button type="button" data-inspector-mode="${mode}" aria-pressed="${state.inspectorMode === mode}" class="${
-      state.inspectorMode === mode ? "active" : ""
-    }">${label}</button>`).join("")}</nav>`;
+  const tabs = inspectorTabs(modes);
   const panel = tabs + changeStatus();
   if (state.inspectorMode === "overview") return panel + '<section id="selection-overview"></section>';
   if (state.inspectorMode === 'groups') return panel + manageGroupsInspector();
-  if (state.inspectorMode === "results") {
-    const operation = selectedOperation();
-    return panel + (operation ? exampleResultsInspector(operation) : appInspector(issueList("app")));
-  }
   if (state.inspectorMode === "examples") {
     return panel + examplesInspector(node(state.selection.id));
   }
@@ -1021,38 +1628,27 @@ function inspector() {
 }
 
 function changeStatus() {
-  if (!["Building", "Not built", "Not saved"].includes(state.build)) return "";
+  if (!["Building", "Not built"].includes(state.build)) return "";
   const building = state.build === "Building";
   const required = allDiagnostics().some(issue => issue.code === "PROJECT_INPUT_REQUIRED");
-  const title = building ? "Applying changes…" : required ? "Complete required inputs"
-    : state.build === "Not saved" ? "Appearance changes not saved" : "Changes not applied";
-  const message = building ? "The running application updates when the build is ready."
-    : state.saveFailure?.message || "Review the highlighted fields. Your draft is kept in the editor.";
-  const running = state.application.state === "running";
-  const application = !building && state.build !== "Not saved" && running
-    ? "The last successful application is still running."
-    : !building && !running ? "The application is not running." : "";
+  const title = building ? "Applying changes" : required ? "Complete required inputs" : "Changes not applied";
+  const message = !building && state.saveFailure?.message;
   return `<section id="change-status" class="change-status" role="status" data-state="${building ? "pending" : "failed"}">
-    <strong>${title}</strong><p>${html(message)}</p>${!building && state.rebuildRequired
-      ? '<p>The project is saved, but this version is not running.</p>' : ""}${application ? `<p>${application}</p>` : ""}
-    ${!building && (state.rebuildRequired || state.saveFailure?.retryable) && !state.jsonDraft && !state.exampleDraft
-      ? '<button type="button" id="retry-save">Retry changes</button>' : ""}
+    <strong>${title}</strong>${message ? `<p>${html(message)}</p>` : ''}
+    ${!building && state.saveFailure?.retryable && (state.saveFailure.reload || !state.jsonDraft && !state.exampleDraft)
+      ? `<button type="button" id="retry-save">${state.saveFailure.reload ? 'Reload project' : 'Retry changes'}</button>` : ""}
   </section>`;
 }
 
 function appearanceInspector() {
   const operation = selectedOperation();
   const definition = definitionFor(operation);
-  if (definition?.kind === "app") return `${inspectorHeader("Application", state.project.id, "")}
+  if (definition?.kind === "app") return `
     <section class="inspector-section">
       ${state.creator.created_at !== undefined ? `<p>Created ${html(new Date(Number(numberText(state.creator.created_at))).toLocaleString())}</p>` : ""}
     </section>${presentationEditor(stepPresentation(operation.id), {name: stepName(definition)}, "step:" + operation.id)}`;
   return operation && definition
-    ? `${inspectorHeader(
-        definition.kind === "trigger" ? "Trigger" : "Step",
-        stepPresentation(operation.id).name || stepName(definition),
-        operation.id
-      )}${presentationEditor(
+    ? `${presentationEditor(
         stepPresentation(operation.id),
         { name: stepName(definition) },
         "step:" + operation.id
@@ -1093,15 +1689,20 @@ function reflectTheme() {
 async function refreshSettings() {
   if (state.settingsWriting || state.settingsTimer) return;
   const version = state.settingsVersion;
+  const revision = state.settingsRevision;
   try {
     const response = await fetch('/api/settings', {cache:'no-store', signal:AbortSignal.timeout(5000)});
     const payload = await response.json();
     if (!response.ok) throw Error(payload.message || 'Settings could not be read.');
-    if (version !== state.settingsVersion) return;
-    state.settings = payload.values;
+    if (revision !== state.settingsRevision || version !== state.settingsVersion && revision !== null) return;
+    const edited = revision === null && state.settingsVersion !== state.savedSettingsVersion;
+    state.settings = edited ? {...payload.values, ...state.settings,
+      sounds:{...payload.values.sounds, ...state.settings.sounds}} : payload.values;
     state.settingsRevision = payload.revision;
+    if (!edited) state.savedSettingsVersion = version;
     applySettings();
     document.querySelector('#settings-status').textContent = payload.diagnostics.map(item => item.message).join(' ');
+    if (edited && !state.settingsTimer) void saveSettings();
     await refreshThemes();
   } catch (error) { document.querySelector('#settings-status').textContent = error.message; }
 }
@@ -1120,6 +1721,35 @@ function reflectSettings() {
   }
   for (const button of document.querySelectorAll('[data-audio-preference]')) {
     button.setAttribute('aria-pressed', String(state.settings[button.dataset.audioPreference] !== false));
+  }
+}
+
+function openSettings() {
+  if (state.actionPending) return;
+  closeProjectImport(false);
+  const panel=document.querySelector('#audio-panel'), inspector=document.querySelector('#inspector');
+  if(!panel.hidden){closeSettings();return;}
+  panel.dataset.returnInspector=String(!inspector.hidden);
+  panel.hidden=false;
+  inspector.setAttribute('aria-label','Settings');
+  document.querySelector('#open-settings').setAttribute('aria-expanded','true');
+  state.iconController?.abort();
+  showInspector(true);
+  selectSettingsTab('appearance');
+  document.querySelector('#settings-appearance-tab').focus({preventScroll:true});
+  void refreshSettings();
+  void state.audio?.catalog();
+}
+
+function closeSettings(restore=true) {
+  const panel=document.querySelector('#audio-panel');
+  if(panel.hidden)return;
+  panel.hidden=true;
+  document.querySelector('#inspector').setAttribute('aria-label','Inspector');
+  document.querySelector('#open-settings').setAttribute('aria-expanded','false');
+  if(restore){
+    showInspector(panel.dataset.returnInspector==='true');
+    document.querySelector('#open-settings').focus({preventScroll:true});
   }
 }
 
@@ -1166,6 +1796,7 @@ async function saveSettings() {
     const result = await response.json();
     if (!response.ok) throw Error(result.message || 'Settings could not be saved.');
     state.settingsRevision = result.revision;
+    state.savedSettingsVersion = version;
     document.querySelector('#settings-status').textContent = '';
   } catch (error) {
     document.querySelector('#settings-status').textContent = error.message + ' Reopen Settings to reload saved preferences.';
@@ -1219,8 +1850,9 @@ async function applyTheme() {
     const theme = selectedTheme();
     if (!theme) throw Error(`Theme ${selected} is unavailable. Railix styling is shown.`);
     const variantId = state.settings.theme_variant || theme.defaultVariant || '';
-    const variant = theme.variants?.find(item => item.id === variantId);
-    if (variantId && !variant) throw Error(`Variant ${variantId} is unavailable. Railix styling is shown.`);
+    const variant = theme.variants?.find(item => item.id === variantId)
+      || theme.variants?.find(item => item.id === theme.defaultVariant);
+    const missingVariant = variantId && variant?.id !== variantId;
     // Stage real stylesheets without applying them, so relative assets keep their native URL base.
     for (const url of [theme.url, ...(variant ? [variant.url] : [])]) {
       await new Promise((resolve, reject) => {
@@ -1246,13 +1878,19 @@ async function applyTheme() {
     });
     pending.length = 0;
     reflectTheme();
-    themeStatus("");
+    themeStatus(missingVariant ? `Renderer ${variantId} is unavailable. Using ${variant?.name || 'Canvas'}.` : '');
     state.world?.repaint();
     window.dispatchEvent(new Event("resize"));
   } catch (error) {
     if (error.name === "AbortError") return;
-    previous.forEach(link => link.remove());
-    await state.world?.renderer();
+    if (!previous.length) {
+      try { await state.world?.renderer(); }
+      catch (fallback) {
+        if (fallback.name === 'AbortError') return;
+        themeStatus(`${error.message} ${fallback.message}`);
+        return;
+      }
+    }
     themeStatus(error.message);
     window.dispatchEvent(new Event("resize"));
   } finally { pending.forEach(link => link.remove()); }
@@ -1270,28 +1908,27 @@ function manageGroupsInspector() {
   const available = state.creator.groups.filter(group => groupName(group).toLowerCase().includes(query));
   const inventory = groupInventory();
   const selected = state.creator.groups.find(group => group.id === state.managedGroup)
-    || state.creator.groups[0] || null;
+    || null;
   if (selected) {
     state.managedGroup = selected.id;
   }
   const members = selected ? inventory.get(selected.id) || 0 : 0;
   const regions = Number(state.editor.groups[selected?.id]?.regions || 0);
   return `
-    <header class="manager-heading">
-      ${inspectorHeader("Creator", "Group Manager", "Presentation only")}
-    </header>
-    <section class="inspector-section">
-      <div class="section-heading"><strong>Groups</strong><span>${state.editor.group_count}</span></div>
+    ${!state.regionSelection && selectedOperation() && definitionFor(selectedOperation())?.kind === 'step' ? groupAssignment(selectedOperation()) : ''}
+    ${selected ? `<header class="manager-heading">${inspectorHeader("Group", groupName(selected), "")}</header>` : ''}
+    <details class="inspector-section" id="group-library" ${selected || state.selection.type !== 'app' && !state.regionSelection ? "" : "open"}>
+      <summary>Browse groups (${state.editor.group_count})</summary>
       <input id="group-search" type="search" value="${html(state.groupQuery)}"
-             placeholder="Search groups" autocomplete="off">
+             placeholder="Search groups" aria-label="Search groups" autocomplete="off">
       <div id="group-results">${groupListMarkup(
         available,
         selected?.id || "",
         inventory
       )}</div>
       <button class="button primary wide" type="button" id="new-group">New Group</button>
-    </section>
-    ${selected ? `
+    </details>
+    ${selected ? `<div data-managed-group-details ${query && !available.some(group => group.id === selected.id) ? 'hidden' : ''}>
       ${presentationEditor(selected, { name: "Group", color: "#147982" }, "group:" + selected.id)}
       <section class="inspector-section">
         <label for="group-boundary">Boundary</label>
@@ -1310,7 +1947,7 @@ function manageGroupsInspector() {
       <footer class="inspector-actions">
         <button class="button" type="button" id="focus-group" ${regions ? "" : "disabled"}>Show</button>
         <button class="button danger" type="button" id="delete-group" title="Delete ${html(groupName(selected))}" aria-label="Delete ${html(groupName(selected))}"><i class="hud-symbol" data-symbol="trash" aria-hidden="true"></i></button>
-      </footer>` : ""}`;
+      </footer></div>` : ""}`;
 }
 
 function groupListMarkup(groups, selected, inventory = groupInventory()) {
@@ -1318,7 +1955,7 @@ function groupListMarkup(groups, selected, inventory = groupInventory()) {
     <button type="button" data-manage-group="${html(group.id)}"
             class="${selected === group.id ? "active" : ""}"
             style="--group-color:${html(group.color || "#147982")}">
-      <strong>${html(groupName(group))}</strong>
+      <strong>${html(groupName(group))}<small>${html((state.editor.groups[group.id]?.routes || []).join(' / '))}</small></strong>
       <span>${count(inventory.get(group.id) || 0, "Step")}</span>
     </button>`).join("") || '<p class="empty-options">No matching groups.</p>'}</div>${groupPages()}`;
 }
@@ -1344,6 +1981,11 @@ function presentationEditor(presentation = {}, defaults = {}, target) {
       <label for="presentation-name">Name</label>
       <input id="presentation-name" data-presentation="name" data-presentation-target="${target}"
              maxlength="128" value="${html(presentation.name || "")}" placeholder="${html(defaults.name || "Automatic")}">
+      <details id="presentation-symbols" class="symbol-chooser" data-presentation-target="${html(target)}"><summary>${presentation.icon?`<img src="${html(iconUrl(presentation.icon))}" alt="">`:''}Symbol</summary>
+        <input id="symbol-search" type="search" aria-label="Search symbols" placeholder="Search symbols" autocomplete="off">
+        <div id="symbol-options" class="symbol-options"></div>
+        <button type="button" data-reset-presentation="icon" data-presentation-target="${html(target)}" ${presentation.icon?'':'disabled'}>Use default symbol</button>
+      </details>
       <label for="presentation-color">Color</label>
       <div class="color-editor">
         <input id="presentation-color-picker" type="color" value="${html(color.toLowerCase())}"
@@ -1369,6 +2011,34 @@ function presentationEditor(presentation = {}, defaults = {}, target) {
     </section>`;
 }
 
+async function loadIcons() {
+  state.iconController?.abort();
+  const controller=state.iconController=new AbortController();
+  state.iconError='';renderIconOptions();
+  const timeout=setTimeout(()=>controller.abort(),5000);
+  try {
+    const response=await fetch('/api/icons',{cache:'no-store',signal:controller.signal});
+    if(!response.ok)throw Error('Symbols unavailable.');
+    const catalog=await response.json();
+    if(state.iconController!==controller)return;
+    state.icons=catalog.icons;state.iconError='';
+  } catch(error) {
+    if(state.iconController===controller)state.iconError=error.name==='AbortError'?'Symbol loading cancelled.':error.message;
+  } finally {
+    clearTimeout(timeout);
+    if(state.iconController===controller){state.iconController=null;renderIconOptions();}
+  }
+}
+
+function renderIconOptions() {
+  const host=document.querySelector('#symbol-options');if(!host)return;
+  const query=(document.querySelector('#symbol-search')?.value || '').trim().toLowerCase();
+  host.innerHTML=(state.icons || []).filter(icon=>(icon.name+' '+icon.id).toLowerCase().includes(query)).map(icon=>
+    `<button type="button" data-select-icon="${html(icon.id)}"><img src="${html(iconUrl(icon))}" alt=""><span>${html(icon.name)}</span></button>`).join('')
+    || (state.iconError ? `<p role="status">${html(state.iconError)}</p><button type="button" data-retry-icons>Retry</button>`
+      : `<p role="status">${state.iconController?'Loading symbols':'No matching symbols'}</p>`);
+}
+
 function inspectorHeader(kicker, title, subtitle) {
   return `
     <header class="inspector-heading">
@@ -1378,26 +2048,111 @@ function inspectorHeader(kicker, title, subtitle) {
     </header>`;
 }
 
-function issueList(owner) {
-  const diagnostics = allDiagnostics().filter(diagnostic => diagnosticOwner(diagnostic) === owner);
-  if (!diagnostics.length) {
-    return "";
+function diagnosticMessage(diagnostic) {
+  const original=diagnostic.message || 'Project is not buildable.';
+  const message=diagnostic.node_name && original.startsWith(diagnostic.node_name+': ')
+    ? original.slice(diagnostic.node_name.length+2) : original;
+  const operation=state.catalog.find(definition=>message.startsWith(`Nested Step ${definition.id} `));
+  return operation ? stepName(operation)+message.slice(('Nested Step '+operation.id).length) : message;
+}
+
+function diagnosticHint(diagnostic, operation) {
+  const locator=[...(diagnostic.path || '').replace(/^nodes\[\d+]/,'').matchAll(/\.([^.[\]]+)|\[(\d+)]/g)]
+    .map(part=>part[1] ?? Number(part[2]));
+  const nested=valueAt(operation,locator), definition=nested?.use && definitionOf(nested.use);
+  const expected=definition?.receives?.length===1 ? definition.receives[0].shape
+    : locator[0]==='receives' ? definitionFor(operation)?.receives.find(port=>port.name===locator[1])?.shape : null;
+  const input=definitionFor(operation)?.inputs.find(field=>field.type==='steps' && field.value_source
+    && diagnostic.path===inputDiagnosticPath(operation.id,['inputs',field.name,0]))?.value_source.input;
+  const values=previewInputs(operation);
+  const actual=input && values.has(input) ? previewValue(values.get(input)) : '';
+  const mismatch=expected && expected!=='any' && input && values.has(input) && valueShape(values.get(input))!==expected;
+  return {expected, input:mismatch ? input : undefined, text:diagnostic.code==='RUN_STEP_RECEIVE_REQUIRED' ? 'Missing field'
+    : mismatch ? `${actual ? actual+' (expected ' : 'Expected '}${inputLabel(expected)}${actual?')':''}`
+      : diagnosticMessage(diagnostic)};
+}
+
+function focusDiagnosticPath(path) {
+  const fields=[...document.querySelectorAll('#inspector-content [data-setting-path]')];
+  const field=fields.find(field=>field.dataset.settingPath===path)
+    || fields.filter(field=>path?.startsWith(field.dataset.settingPath+'.') || path?.startsWith(field.dataset.settingPath+'['))
+      .sort((a,b)=>b.dataset.settingPath.length-a.dataset.settingPath.length)[0];
+  if(!field)return false;
+  for(let parent=field.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
+  field.scrollIntoView({block:'center'});field.focus({preventScroll:true});return true;
+}
+
+function renderFieldDiagnostics(operation) {
+  const retained=new Set();
+  document.querySelectorAll('[data-value-error]').forEach(value=>value.removeAttribute('data-value-error'));
+  for(const issue of nodeIssues(operation.id)) {
+    const fields=[...document.querySelectorAll('#inspector-content [data-setting-path]')];
+    const field=fields.find(field=>field.dataset.settingPath===issue.path);
+    if(!field)continue;
+    retained.add(field);field.dataset.hasError='true';
+    const hint=diagnosticHint(issue,operation);
+    let message=field.querySelector(':scope > [data-field-error]');
+    if(!message){message=document.createElement('output');message.dataset.fieldError='';message.className='field-error';field.append(message);}
+    if(message.textContent!==hint.text)message.textContent=hint.text;
+    const input=field.querySelector('input,textarea,select,.path-button');
+    if(input)input.setAttribute('aria-invalid','true');
+    field.querySelectorAll('[data-path-value], [data-preview-stage]').forEach(value=>value.dataset.valueError='true');
+    if(hint.input){
+      document.querySelector(`[data-preview-input-value="${CSS.escape(hint.input)}"]`)?.setAttribute('data-value-error','true');
+      document.querySelectorAll(`[data-input-name="${CSS.escape(hint.input)}"] [data-path-value]`).forEach(value=>value.dataset.valueError='true');
+    }
   }
+  for(const field of document.querySelectorAll('#inspector-content [data-setting-path][data-has-error]'))if(!retained.has(field)){
+    delete field.dataset.hasError;field.querySelector(':scope > [data-field-error]')?.remove();
+    field.querySelector('[aria-invalid]')?.removeAttribute('aria-invalid');
+  }
+  for(const slot of document.querySelectorAll('#inspector-content > [data-issues-owner]')) {
+    for(const article of slot.querySelectorAll('article')) {
+      const path=article.querySelector('[data-show-setting]')?.dataset.showSetting;
+      article.hidden=Boolean(path && [...retained].some(field=>field.dataset.settingPath===path));
+    }
+    slot.hidden=![...slot.children].some(child=>!child.hidden);
+  }
+}
+
+function issueList(owner, includeExample = true) {
+  const diagnostics = [...new Map(allDiagnostics().filter(diagnostic => diagnosticOwner(diagnostic) === owner)
+    .map(diagnostic=>[JSON.stringify([diagnostic.code,diagnostic.path,diagnostic.exampleName,diagnostic.message]),diagnostic])).values()];
+  const otherExamples=includeExample ? [...new Map((state.worldIssues.get(owner)||[])
+    .filter(issue=>issue.exampleId&&issue.exampleId!==selectedExampleId()).map(issue=>[issue.exampleId,issue])).values()] : [];
+  const visible=diagnostics.length||otherExamples.length;
   return `
-    <section class="issues" aria-label="Errors and warnings">
-      ${diagnostics.map(diagnostic => `
-        <article data-severity="${html(diagnostic.severity || "error")}">
-          <strong>${html(diagnostic.code || "CREATOR_ERROR")}</strong>
-          <p>${html(diagnostic.message || "Project is not buildable.")}</p>
-          ${diagnostic.path ? `<code>${html(diagnostic.path)}</code>` : ""}
-        </article>`).join("")}
+    <section data-issues-owner="${html(owner)}" class="${visible ? "issues" : ""}"
+             aria-label="Errors and warnings" ${visible ? "" : "hidden"}>
+      ${otherExamples.slice(0,5).map(issue=>`<button type="button" class="persistent-issue" data-example-issue="${html(issue.exampleId)}">
+        <strong><span aria-hidden="true">\u00d7</span> ${html(issue.exampleName)}</strong><span>${html(diagnosticMessage(issue))}</span></button>`).join('')}
+      ${otherExamples.length>5?'<button type="button" data-open-issues>Show all problems</button>':''}
+      ${diagnostics.map(diagnostic => {
+        const original=diagnostic.message || 'Project is not buildable.';
+        const detailId='issue-'+encodeURIComponent(JSON.stringify([owner,diagnostic.code,diagnostic.path,diagnostic.exampleName,original]));
+        const selected=node(owner);
+        const setting=selected && (definitionFor(selected)?.inputs || []).some(input=>{
+          const path=inputDiagnosticPath(owner,['inputs',input.name]);
+          return diagnostic.path===path || diagnostic.path?.startsWith(path+'.') || diagnostic.path?.startsWith(path+'[');
+        });
+        return `
+        <article class="${setting?'field-issue':''}" data-severity="${html(diagnostic.severity || "error")}">
+          ${includeExample && diagnostic.exampleName ? `<small class="issue-context">${html(diagnostic.exampleName)}</small>` : ""}
+          <p class="issue-message">${html(setting ? diagnosticHint(diagnostic,selected).text : diagnosticMessage(diagnostic))}</p>
+          ${setting ? `<button type="button" class="issue-setting" data-show-setting="${html(diagnostic.path)}">Show setting</button>` : ''}
+          <details id="${html(detailId)}"><summary id="${html(detailId)}-summary">Technical details</summary><code>${html(diagnostic.code || "CREATOR_ERROR")}</code>
+            <p>${html(original)}</p>
+            ${diagnostic.path ? `<p><code>${html(diagnostic.path)}</code></p>` : ""}</details>
+        </article>`;
+      }).join("")}
     </section>`;
 }
 
 function allDiagnostics() {
   const diagnostics = [
     ...state.localDiagnostics,
-    ...state.diagnostics
+    ...state.diagnostics,
+    ...selectedExampleDiagnostics().filter(issue=>issue.node)
   ];
   const draft = state.jsonDraft;
   if (draft && node(draft.node)) {
@@ -1410,6 +2165,27 @@ function allDiagnostics() {
     });
   }
   return diagnostics;
+}
+
+function selectedExampleDiagnostics() {
+  const example = state.application.example;
+  const result = state.traceSummaryKey === exampleSummaryKey(example || {}) ? state.traceSummary?.result : example?.result;
+  return state.build === "Built" && !state.pendingProject && example
+      && example.id === selectedExampleId()
+    ? (result?.diagnostics || []).map(diagnostic => {
+      const receive = /\.receives\.([^.]+)$/.exec(diagnostic.path || '');
+      const path = receive && node(diagnosticOwner(diagnostic))?.receives?.[receive[1]];
+      return {...diagnostic, exampleName:example.name,
+        message:path ? diagnostic.code === 'RUN_STEP_RECEIVE_REQUIRED' ? `Missing field: ${displayPath(path)}.`
+          : `${diagnostic.message} (${displayPath(path)})`
+          : diagnostic.node_name ? `${diagnostic.node_name}: ${diagnostic.message}` : diagnostic.message};
+    })
+    : [];
+}
+
+function exampleSummaryKey(example) {
+  return [state.application.fingerprint || "", state.application.pid || 0,
+    example.id, example.status, example.events, state.world?.scene?.revision || ''].join(":");
 }
 
 function diagnosticOwner(diagnostic) {
@@ -1441,7 +2217,6 @@ function nodeIssues(id) {
 
 function appInspector(issues) {
   return `
-    ${inspectorHeader("Application Step", "Application", "Project settings")}
     ${issues}
     <section class="inspector-section">
       <label for="project-id">Project name</label>
@@ -1454,11 +2229,11 @@ function buildDetails() {
   const builtAt = Number(state.application.built_at || 0);
   return `<header><strong>Application and build</strong>
       <button type="button" popovertarget="application-status" popovertargetaction="hide" aria-label="Close build details">Close</button></header>
+    <details><summary>Build details</summary>
     <section id="workspace-details" class="facts">
       <dl>
         <div><dt>Project path</dt><dd id="project-path">${html(state.workspace.project_path || "")}</dd></div>
         <div><dt>Build path</dt><dd id="build-path">${html(state.application.build_path || "")}</dd></div>
-        <div><dt>PID</dt><dd id="application-pid">${html(state.application.pid || "")}</dd></div>
         <div><dt>Build state</dt><dd id="application-build-state">${html(state.build)}</dd></div>
         <div><dt>Run state</dt><dd id="application-run-state">${html(
           inputLabel(state.application.state || "unavailable")
@@ -1477,134 +2252,189 @@ function buildDetails() {
           builtAt ? html(new Date(builtAt).toLocaleString()) : "Not built"
         }</dd></div>
       </dl>
-    </section>
-    <section id="project-import">
-      <header><strong>Project JSON</strong></header>
-      <label for="project-import-file">File</label>
-      <input id="project-import-file" type="file" accept="application/json,.json">
-      <label for="project-import-source">Source</label>
-      <textarea id="project-import-source" rows="9" spellcheck="false"></textarea>
-      <nav aria-label="Project import">
-        <button id="project-import-submit" type="button">Import</button>
-        <button id="project-import-clear" type="button">Clear</button>
-      </nav>
-      <p id="project-import-status" role="status"></p>
-    </section>`;
+    </section></details>
+    `;
 }
 
-function projectImportStatus(message, severity = "") {
-  const status = document.querySelector("#project-import-status");
-  if (!status) return;
-  status.textContent = message;
-  if (severity) status.dataset.severity = severity;
-  else delete status.dataset.severity;
+function openProjectImport() {
+  if (state.actionPending && !state.projectImport.reload) return;
+  document.querySelector('#project-actions').hidePopover();
+  closeSettings(false);
+  const panel=document.querySelector('#project-import-panel'), inspector=document.querySelector('#inspector');
+  panel.dataset.returnInspector=String(!inspector.hidden);
+  panel.hidden=false;
+  inspector.setAttribute('aria-label','Import project');
+  showInspector(true);
+  renderProjectImport();
+  renderBuildStatus();
+  document.querySelector(state.projectImport.reload ? '#project-import-reload' : '#project-import-file').focus({preventScroll:true});
 }
 
-function projectImportControls(disabled) {
-  for (const id of ["project-import-file", "project-import-source", "project-import-submit", "project-import-clear"]) {
-    const control = document.getElementById(id);
-    if (control) control.disabled = disabled;
+function closeProjectImport(restore=true) {
+  const panel=document.querySelector('#project-import-panel');
+  if(panel.hidden)return;
+  panel.hidden=true;
+  document.querySelector('#inspector').setAttribute('aria-label','Inspector');
+  if(restore){
+    showInspector(panel.dataset.returnInspector==='true');
+    document.querySelector('#project-menu').focus({preventScroll:true});
   }
+  renderBuildStatus();
+}
+
+function renderProjectImport() {
+  const draft=state.projectImport, preview=document.querySelector('#project-import-preview');
+  const busy=state.actionPending && !draft.reload;
+  const source=document.querySelector('#project-import-source');
+  document.querySelector('#project-import-panel').setAttribute('aria-busy',String(busy || Boolean(draft.reader)));
+  const file=document.querySelector('#project-import-file');
+  file.disabled=busy || draft.reload;
+  source.disabled=busy || draft.reload;
+  document.querySelector('#project-import-submit').disabled=busy || draft.reload || Boolean(draft.reader) || !draft.preview;
+  document.querySelector('#project-import-clear').disabled=busy || draft.reload || !source.value && !draft.reader && !file.value;
+  document.querySelector('#project-import-preview-source').disabled=busy || draft.reload || !source.value;
+  document.querySelector('#project-import-reload').hidden=!draft.reload;
+  preview.hidden=!draft.preview;
+  if(draft.preview)renderDockMarkup(preview,`<strong>${html(draft.preview.id)}</strong><div><span>${count(draft.preview.flows,'flow')}</span><span>${count(draft.preview.steps,'Step')}</span></div>`);
+  renderDockMarkup(document.querySelector('#project-import-target'),`<small>Replaces ${html(state.project.id)}</small><code>${html(state.workspace.project_path)}</code><small>Cannot undo.</small>`);
+}
+
+function projectImportStatus(message, severity = '', diagnostics = []) {
+  const status=document.querySelector('#project-import-status');
+  status.textContent=message;
+  if(severity)status.dataset.severity=severity;else delete status.dataset.severity;
+  for(const id of ['project-import-source','project-import-file']) {
+    const input=document.getElementById(id);
+    if(severity==='error')input.setAttribute('aria-invalid','true');else input.removeAttribute('aria-invalid');
+  }
+  const details=document.querySelector('#project-import-diagnostics');
+  details.hidden=!diagnostics.length;
+  details.querySelector('pre').textContent=diagnostics.map(issue=>[issue.code,issue.path].filter(Boolean).join('\n')).join('\n\n');
 }
 
 function clearProjectImport() {
-  const file = document.querySelector("#project-import-file");
-  const source = document.querySelector("#project-import-source");
-  if (file) file.value = "";
-  if (source) source.value = "";
-  projectImportStatus("");
+  const reader=state.projectImport.reader;
+  state.projectImport.reader=null;
+  reader?.abort();
+  state.projectImport.preview=null;
+  document.querySelector('#project-import-file').value='';
+  document.querySelector('#project-import-source').value='';
+  document.querySelector('#project-import-paste').open=false;
+  projectImportStatus('');
+  renderProjectImport();
 }
 
-async function readProjectImportFile(input) {
-  const file = input.files?.[0];
-  if (!file) return;
-  const source = document.querySelector("#project-import-source");
-  if (!source) return;
-  try {
-    source.value = await file.text();
-    projectImportStatus(file.name);
-  } catch (_error) {
-    projectImportStatus("Project JSON file could not be read.", "error");
+function updateProjectImportPreview() {
+  const source=document.querySelector('#project-import-source').value;
+  state.projectImport.preview=null;
+  projectImportStatus('');
+  if(source.trim()) {
+    if(source.length > Number(state.workspace.source_limit_bytes)
+        || new TextEncoder().encode(source).length > Number(state.workspace.source_limit_bytes)) {
+      projectImportStatus(`Project exceeds ${formatBytes(state.workspace.source_limit_bytes)}.`, 'error');
+    } else {
+      let project;
+      try{project=parseExact(source);}catch{projectImportStatus('Invalid JSON.', 'error');}
+      if(project!==undefined) {
+        if(!plainObject(project) || typeof project.id!=='string' || !project.id.trim()
+            || !Array.isArray(project.nodes) || !Array.isArray(project.links)) {
+          projectImportStatus('Expected a project with a name, Steps and connections.', 'error');
+        } else state.projectImport.preview={id:project.id,steps:project.nodes.length,
+          flows:project.nodes.filter(operation=>definitionOf(operation?.use)?.kind==='trigger').length};
+      }
+    }
   }
+  renderProjectImport();
 }
 
-async function flushPendingWritesForProjectImport() {
-  if (state.saveTimer) {
-    clearTimeout(state.saveTimer);
-    state.saveTimer = 0;
-    const revision = state.revision;
-    const functional = state.pendingProject;
-    state.pendingProject = false;
-    enqueueWrite({
-      revision,
-      projectChanged: functional,
-      projectSource: JSON.stringify(state.project),
-      creatorSource: JSON.stringify(state.creator)
-    });
+function readProjectImportFile(input) {
+  const file=input.files?.[0];
+  if(!file || state.actionPending)return;
+  const previous=state.projectImport.reader;
+  state.projectImport.reader=null;
+  previous?.abort();
+  document.querySelector('#project-import-source').value='';
+  state.projectImport.preview=null;
+  projectImportStatus('');
+  if(file.size > Number(state.workspace.source_limit_bytes)) {
+    projectImportStatus(`Project exceeds ${formatBytes(state.workspace.source_limit_bytes)}.`, 'error');
+    renderProjectImport();return;
   }
-  if (state.writeActive) {
-    await state.writePromise;
-  }
+  const reader=state.projectImport.reader=new FileReader();
+  reader.onload=()=>{
+    if(state.projectImport.reader!==reader)return;
+    state.projectImport.reader=null;
+    try {
+      document.querySelector('#project-import-source').value=new TextDecoder('utf-8',{fatal:true}).decode(reader.result);
+    } catch {
+      projectImportStatus('File must contain UTF-8 JSON.', 'error');renderProjectImport();return;
+    }
+    updateProjectImportPreview();
+  };
+  reader.onerror=()=>{
+    if(state.projectImport.reader!==reader)return;
+    state.projectImport.reader=null;
+    projectImportStatus('Could not read this file.', 'error');renderProjectImport();
+  };
+  renderProjectImport();
+  reader.readAsArrayBuffer(file);
 }
 
-async function importProjectJson() {
-  const source = document.querySelector("#project-import-source")?.value || "";
-  if (!source.trim()) {
-    projectImportStatus("Choose or paste project JSON.", "error");
-    return;
-  }
+async function importProjectJson(reload=false) {
+  const draft=state.projectImport;
+  if(state.actionPending && !draft.reload || draft.request || draft.reader || draft.reload && !reload
+      || !reload && !draft.preview)return;
+  const source=document.querySelector('#project-import-source').value;
+  const controller=draft.request=new AbortController();
+  state.actionPending=true;
+  let previousBuild=state.build;
+  let committed=reload;
   try {
-    parseExact(source);
-  } catch (_error) {
-    projectImportStatus("Project JSON is invalid.", "error");
-    return;
-  }
-  let previousBuild = state.build;
-  try {
-    projectImportControls(true);
-    projectImportStatus("Importing.");
-    await flushPendingWritesForProjectImport();
-    previousBuild = state.build;
-    state.build = "Building";
-    state.pendingProject = true;
-    renderBuildStatus();
-    const response = await fetch("/api/project", {
-      method: "POST",
-      headers: mutationHeaders(),
-      body: source
-    });
-    const payload = parseExact(await response.text());
-    if (!response.ok) {
-      const diagnostic = payload.diagnostics?.[0];
-      state.build = previousBuild;
-      state.pendingProject = false;
+    projectImportStatus('');
+    draft.reload=false;
+    renderProjectImport();renderBuildStatus();
+    if(!reload) {
+      await flushEdits();
+      previousBuild=state.build;
+      state.build='Building';state.pendingProject=true;
       renderBuildStatus();
-      projectImportStatus(diagnostic?.message || payload.message || "Project could not be imported.", "error");
+      // Once the request leaves the editor, only a response can establish whether replacement committed.
+      committed=true;
+      const response=await fetch('/api/project',{method:'POST',headers:mutationHeaders(),body:source,signal:controller.signal});
+      if(!response.ok) {
+        const payload=parseExact(await response.text());
+        committed=false;
+        state.build=previousBuild;state.pendingProject=false;
+        if(payload.application)replaceApplication(payload.application);
+        projectImportStatus(payload.diagnostics?.[0]?.message || payload.message || 'Project was not replaced.', 'error',payload.diagnostics || []);
+        return;
+      }
+      clearProjectImport();
+      await response.body?.cancel().catch(()=>{});
+    }
+    const response=await fetch('/api/editor',{cache:'no-store',signal:controller.signal});
+    const payload=parseExact(await response.text());
+    if(!response.ok) {
+      draft.reload=true;
+      projectImportStatus('Refresh the project to continue.', 'error');
       return;
     }
-    const editorResponse = await fetch("/api/editor", { cache: "no-store" });
-    const editorPayload = parseExact(await editorResponse.text());
-    if (!editorResponse.ok) {
-      state.build = previousBuild;
-      state.pendingProject = false;
-      renderBuildStatus();
-      projectImportStatus(editorPayload.message || "Project was imported; reload to refresh the editor.", "error");
-      return;
-    }
-    applyImportedProject(editorPayload);
+    applyImportedProject(payload);
+    closeProjectImport(false);
+    showInspector(false);
     render();
-    document.querySelector("#application-status").innerHTML = buildDetails();
-    projectImportStatus("Imported and built.");
-    scheduleApplicationPoll(0);
-    scheduleMetricsPoll(0);
-    void state.world?.focus("app", .5);
-  } catch (_error) {
-    state.build = previousBuild;
-    state.pendingProject = false;
-    renderBuildStatus();
-    projectImportStatus("Project could not be imported.", "error");
+    scheduleApplicationPoll(0);scheduleMetricsPoll(0);
+    void state.world?.focus('app',.5);
+  } catch(error) {
+    if(error.name==='AbortError')return;
+    draft.reload=committed;
+    state.build=committed ? 'Loading' : previousBuild;
+    state.pendingProject=false;
+    projectImportStatus(committed ? 'Replacement not confirmed. Refresh the project.' : 'Project was not replaced.', 'error');
   } finally {
-    projectImportControls(false);
+    if(draft.request===controller)draft.request=null;
+    state.actionPending=draft.reload;
+    renderProjectImport();renderBuildStatus();
   }
 }
 
@@ -1619,17 +2449,16 @@ function applyImportedProject(payload) {
   state.savedCreator = clone(state.creator);
   state.projectVersion = payload.revision;
   state.creatorVersion = payload.creator_revision;
+  state.history = payload.history;
   state.workspace = payload.workspace;
   state.diagnostics = payload.diagnostics || [];
   state.localDiagnostics = [];
   replaceApplication(payload.application);
   state.build = "Built";
-  state.rebuildRequired = false;
   state.saveFailure = null;
   state.pendingProject = false;
   state.pendingWrite = null;
   state.removedFlows = [];
-  state.pendingPrune = false;
   state.selection = { type: "app", id: "app" };
   state.regionSelection = null;
   state.groupPointer = null;
@@ -1659,7 +2488,6 @@ function applyImportedProject(payload) {
 function triggerInspector(trigger, issues) {
   const definition = definitionOf(trigger.use);
   return `
-    ${inspectorHeader("Trigger", stepPresentation(trigger.id).name || stepName(definition), "")}
     ${issues}
     ${inputFields(trigger, definition.inputs.map(input => input.name === definition.example_target
       ? { ...input, label: "Store incoming data at" } : input), ["inputs"])}
@@ -1685,17 +2513,10 @@ function examplesInspector(trigger) {
   }
   const example = selectedExample(trigger);
   return `
-    ${inspectorHeader("Trigger", stepPresentation(trigger.id).name || stepName(definitionFor(trigger)), "")}
     ${issueList(trigger.id)}
     <section class="inspector-section">
       <div class="section-heading"><strong>Examples</strong><span>${count(trigger.examples.length, "case")}</span></div>
-      <div class="example-tabs">
-        <button type="button" data-select-example="-1" class="${example ? "" : "active"}">None</button>
-        ${trigger.examples.map((candidate, index) => `
-          <button type="button" class="${candidate === example ? "active" : ""}"
-                  data-select-example="${index}">${html(candidate.name)}</button>`).join("")}
-        <button type="button" id="add-example">Add</button>
-      </div>
+      <button type="button" id="add-example"><i class="hud-symbol" data-symbol="plus" aria-hidden="true"></i>Add Example</button>
       ${example ? `<label for="example-name">Name</label>
       <input id="example-name" value="${html(example.name)}" autocomplete="off">
       <label for="example-payload">Payload</label>
@@ -1719,12 +2540,18 @@ function examplesInspector(trigger) {
 
 function stepInspector(operation, issues) {
   const definition = definitionOf(operation.use);
+  const source = definition.inputs.find(input => input.type === 'candidates');
+  const process = definition.inputs.find(input => input.type === 'steps');
+  const destination = definition.inputs.find(input => input.type === 'path' && input.access !== 'read');
+  const pipeline = definition.inputs.length === 3 && source && process && destination;
   return `
-    ${inspectorHeader("Step", stepPresentation(operation.id).name || stepName(definition), "")}
     ${issues}
+    <div id="preview-observation" role="status"></div>
     <div id="preview-values">
       ${portMappings(operation, definition, "receives")}
-      ${inputFields(operation, definition.inputs, ["inputs"])}
+      ${pipeline ? [[source,'Source'],[process,'Process'],[destination,'Destination']].map(([input,label]) =>
+        `<section class="pipeline-stage"><h3>${label}</h3>${inputFields(operation,[input],["inputs"],definition.inputs)}</section>`).join('')
+        : inputFields(operation, definition.inputs, ["inputs"])}
       ${portMappings(operation, definition, "returns")}
     </div>
     ${configurationNextSteps(operation)}
@@ -1749,60 +2576,6 @@ function stepDetails(operation, definition) {
   </details>`;
 }
 
-function exampleResultsInspector(operation) {
-  const trigger = triggerFor(operation.id);
-  const definition = definitionFor(operation);
-  if (!trigger) return `${inspectorHeader("Example results", stepName(definition), "")}
-    <p class="value-status">No Trigger is connected to this Step.</p>`;
-  return `${inspectorHeader("Example results", stepPresentation(operation.id).name || stepName(definition), "")}
-    <p class="inspector-help">Inspect what happened in an Example execution.</p>
-    <label for="results-example">Example</label>
-    <select id="results-example" data-trigger="${html(trigger.id)}">
-      <option value="-1" ${state.exampleIndex < 0 ? "selected" : ""}>None</option>
-      ${trigger.examples.map((example, index) => `<option value="${index}" ${index === state.exampleIndex ? "selected" : ""}>${html(example.name)}</option>`).join("")}
-    </select>
-    <button type="button" data-edit-trigger="${html(trigger.id)}">Edit Examples</button>
-    <div id="example-results-values" aria-live="polite">${exampleResultsValues(operation)}</div>`;
-}
-
-function exampleResultsValues(operation) {
-  if (state.exampleIndex < 0) return '<p class="value-status">Choose an Example to inspect its results.</p>';
-  const before = observedExampleContext(operation);
-  if (before.status) {
-    const status = before.status === "Not reached" ? "This Example did not reach this Step." : before.status;
-    let content = `<p class="value-status">${html(status)}</p>`;
-    if (state.preview?.step === operation.id && state.preview.message) {
-      content += `<p class="value-status">${html(state.preview.message)}</p>`;
-    }
-    return content;
-  }
-  const trigger = definitionFor(operation).kind === "trigger";
-  if (!trigger && state.traceContext !== "input") {
-    return '<p class="value-status">Loading this Step’s Example results.</p>';
-  }
-  let content = "";
-  if (trigger) {
-    content += exampleContextSection("Starting context", before);
-    content += `<div id="run-result-panel">${runResultPanel()}</div>`;
-  } else {
-    const outcome = state.traceStep?.id === operation.id ? state.traceStep.outcome : undefined;
-    if (outcome) {
-      content += `<p class="example-route">Route taken: <strong>${html(outcomeLabel(operation, outcome))}</strong></p>`;
-    }
-    content += exampleContextSection("Before this Step", before);
-    content += exampleContextSection("After this Step", observedExampleContext(operation, true));
-  }
-  if (state.preview?.message) content += `<p class="issues">${html(state.preview.message)}</p>`;
-  return content;
-}
-
-function exampleContextSection(label, observation) {
-  const value = observation.status
-    ? `<p class="value-status">${html(observation.status)}</p>`
-    : `<pre>${html(JSON.stringify(observation.root.context, null, 2))}</pre>`;
-  return `<section class="inspector-section example-context">
-    <div class="section-heading"><strong>${html(label)}</strong></div>${value}</section>`;
-}
 
 function portMappings(operation, definition, direction) {
   const ports = definition[direction];
@@ -1863,7 +2636,6 @@ function outcomeConnection(operation, outcome) {
   const destination = destinations.length === 1 ? destinations[0] : undefined;
   const target = node(destination);
   const issue = destinations.length > 1 ? "Multiple links"
-    : target && state.project.links.filter(link => link.to === target.id).length !== 1 ? "Repeated Step"
     : !target && destination !== "end" ? destination ? "Unknown Step" : "Missing link" : "";
   return { invalid: Boolean(issue), target: !issue && target?.id, label: issue || (target
     ? stepPresentation(target.id).name || stepName(definitionFor(target)) : "End") };
@@ -1873,12 +2645,14 @@ function removableStep(operation) {
   return outcomes(operation).slice(1).every(outcome => outcomeTarget(operation, outcome) === "end");
 }
 
-function inputFields(operation, inputs, base) {
+function inputFields(operation, inputs, base, scopeInputs = inputs) {
   if (!inputs.length) {
     return "";
   }
   return inputs.map(input => {
-    const editor = inputEditor(operation, input, [...base, input.name], inputs, base);
+    const locator=[...base,input.name];
+    const editor = inputEditor(operation, input, locator, scopeInputs, base)
+      .replace(/<(section|div|details)\b/,`<$1 data-setting-path="${html(inputDiagnosticPath(operation.id,locator))}" tabindex="-1"`);
     return base.length === 1 && input.type !== "path" && input.type !== "steps"
       ? `<div class="observed-input">${editor}<div class="input-result"
           data-input-result="${html(input.name)}" aria-live="polite"></div></div>` : editor;
@@ -1886,7 +2660,7 @@ function inputFields(operation, inputs, base) {
 }
 
 function inputEditor(operation, input, locator, scopeInputs, scopeBase) {
-  const value = valueAt(operation, locator);
+  const value = hasAt(operation, locator) ? valueAt(operation, locator) : defaultInput(input);
   if (input.type === "path") {
     return pathInput(operation, input, locator, value);
   }
@@ -1911,7 +2685,6 @@ function pathInput(operation, input, locator, value) {
   const present = hasAt(operation, locator);
   const fallback = defaultInput(input);
   const hasFallback = fallback !== undefined;
-  const resettable = hasFallback && input.resettable !== false;
   const selected = present ? value : fallback;
   if (!input.required && !present && !hasFallback) {
     return `
@@ -1929,19 +2702,11 @@ function pathInput(operation, input, locator, value) {
              data-toggle-input="${locatorToken(locator)}" data-input-meta="${metaToken(input)}">
       <span>Override ${html(inputLabel(input.name).toLowerCase())}</span>
     </label>` : "";
-  const reset = resettable ? `
-    <button class="path-reset" type="button" data-reset-path="${locatorToken(locator)}"
-            data-input-meta="${metaToken(input)}" ${
-              !present || samePath(selected, fallback) ? "disabled" : ""
-            }>Reset</button>` : "";
   return `
     <section class="inspector-section" data-input-name="${html(input.name)}">
-      <div class="section-heading"><strong>${html(input.label || inputLabel(input.name))}</strong>
-        <div class="path-heading-actions">${input.label ? ""
-          : `<span>${html(input.access.replace("_", " "))} path</span>`}${reset}</div>
-      </div>${optional}
+      <div class="section-heading"><strong>${html(input.label || inputLabel(input.name))}</strong></div>${optional}
       <button class="path-button" type="button" id="${html(id)}-path"
-              data-open-path="${locatorToken(locator)}" data-input-meta="${metaToken(input)}">
+              data-open-path="${locatorToken(locator)}" data-input-meta="${metaToken(input)}" title="${html(input.access.replaceAll('_',' '))} path">
         ${selected?.length ? pathCrumbs(selected) : "Choose path"}
       </button>
       ${locator[0] === "returns" && selected?.length ? `<p class="path-effect">${
@@ -1954,7 +2719,6 @@ function pathInput(operation, input, locator, value) {
 
 function pathObservation(operation, input, locator) {
   return `<div class="path-observation">
-    <small class="value-status">Selected Example value</small>
     <div class="path-values" data-path-observation="${locatorToken(locator)}"
          data-input-meta="${metaToken(input)}" aria-live="polite">${pathObservationValues(operation, input, locator)}</div>
   </div>`;
@@ -1962,9 +2726,6 @@ function pathObservation(operation, input, locator) {
 
 function pathObservationValues(operation, input, locator) {
   const open = state.pathPicker && samePath(state.pathPicker.locator, locator);
-  if (open && observedExampleContext(operation).status === "Not reached") {
-    return '<span class="value-status">This Example did not reach this Step.</span>';
-  }
   const configured = hasAt(operation, locator) ? valueAt(operation, locator) : defaultInput(input);
   return pathValues(operation, input, open ? state.pathDraft : configured, open ? [] : locator);
 }
@@ -2025,12 +2786,14 @@ function candidatesInput(operation, input, locator, candidates, scopeInputs, sco
           scopeBase
         )).join("") || '<p class="empty-options">No candidate configured.</p>'}
       </div>
+      <details class="candidate-add" ${candidates.length ? '' : 'open'}><summary>Add value source</summary>
       <input type="search" id="${html(id)}-candidate-search" value="${html(query)}"
              data-candidate-query="${token}" data-input-meta="${metaToken(input)}"
              placeholder="Search value sources" autocomplete="off">
       <div data-candidate-options="${token}" data-input-meta="${metaToken(input)}">
         ${candidateOptions(input, locator)}
       </div>
+      </details>
     </section>`;
 }
 
@@ -2039,7 +2802,7 @@ function matcherGroupsInput(operation, input, locator, groups, scopeInputs, scop
   const token = locatorToken(locator);
   return `
     <section class="inspector-section matcher-groups" data-input-name="${html(input.name)}">
-      <div class="section-heading"><strong>${html(inputLabel(input.name))}</strong><span>Any group may match</span></div>
+      <div class="section-heading"><strong>${html(inputLabel(input.name))}</strong></div>
       <div class="matcher-group-list">
         ${groups.map((group, index) => matcherGroupEditor(
           operation,
@@ -2052,15 +2815,15 @@ function matcherGroupsInput(operation, input, locator, groups, scopeInputs, scop
           scopeBase
         )).join("") || '<p class="empty-options">No condition group configured.</p>'}
       </div>
-      <div class="matcher-group-add">
-        <div class="section-heading"><strong>Add OR group</strong><span>Choose its first matcher</span></div>
+      <details class="matcher-group-add" id="${html(inputId(locator))}-alternative" ${groups.length?'':'open'}>
+        <summary>Add alternative (OR)</summary>
         <input type="search" value="${html(queryAt(state.candidateQueries, queryLocator))}"
                data-matcher-group-query="${token}" data-input-meta="${metaToken(input)}"
                placeholder="Search value sources" autocomplete="off">
         <div data-matcher-group-options="${token}" data-input-meta="${metaToken(input)}">
           ${matcherGroupOptions(input, locator)}
         </div>
-      </div>
+      </details>
     </section>`;
 }
 
@@ -2070,15 +2833,8 @@ function matcherGroupEditor(operation, input, locator, group, index, size, scope
   return `
     <article class="matcher-group" data-matcher-group="${index}">
       <div class="candidate-heading matcher-group-heading">
-        <strong>${index ? 'OR: all of' : 'All of'}</strong>
-        <div>
-          <button type="button" data-move-matcher-group="${index}" data-direction="-1"
-                  data-matcher-groups-locator="${locatorToken(locator)}" ${index === 0 ? "disabled" : ""}>Up</button>
-          <button type="button" data-move-matcher-group="${index}" data-direction="1"
-                  data-matcher-groups-locator="${locatorToken(locator)}" ${index === size - 1 ? "disabled" : ""}>Down</button>
-          <button type="button" data-remove-matcher-group="${index}"
-                  data-matcher-groups-locator="${locatorToken(locator)}">Remove</button>
-        </div>
+        ${size>1?`<strong>${index ? 'OR' : 'Match all'}</strong>`:''}
+        ${orderedActions('matcher-group', index, size, `data-matcher-groups-locator="${locatorToken(locator)}"`)}
       </div>
       <div class="candidate-list">
         ${group.map((matcher, matcherIndex) => candidateEditor(
@@ -2099,12 +2855,14 @@ function matcherGroupEditor(operation, input, locator, group, index, size, scope
           }
         )).join("") || '<p class="empty-options">Add a matcher to repair this group.</p>'}
       </div>
+      <details class="matcher-add" id="${html(inputId(groupLocator))}-matcher"><summary>Add condition (AND)</summary>
       <input type="search" value="${html(queryAt(state.candidateQueries, groupLocator))}"
              data-candidate-query="${token}" data-input-meta="${metaToken(input)}"
              placeholder="Add AND matcher" autocomplete="off">
       <div data-candidate-options="${token}" data-input-meta="${metaToken(input)}">
         ${candidateOptions(input, groupLocator)}
       </div>
+      </details>
     </article>`;
 }
 
@@ -2141,29 +2899,19 @@ function candidateEditor(
       ? `${condition.all.length} ${condition.all.length === 1 ? "matcher" : "matchers"} must pass`
       : "add comparison";
   return `
-    <article class="candidate${view.selectable === false ? ' matcher-row' : ''}${selected ? " selected-candidate" : ""}" data-candidate-index="${index}"
+    <article class="candidate${!authored && view.selectable !== false && size === 1 ? ' single-candidate' : ''}${view.selectable === false ? ' matcher-row' : ''}${selected ? " selected-candidate" : ""}" data-candidate-index="${index}"
              ${path ? `data-candidate-path="${html(path)}"` : ""}>
       <div class="candidate-heading">
-        <strong>${view.selectable === false ? index ? 'AND' : 'Where' : `${html(noun)} ${index + 1}`}</strong>
-        <div>
-          <button type="button" data-move-candidate="${index}" data-direction="-1"
-                  data-candidate-locator="${locatorToken(locator)}" data-input-meta="${metaToken(input)}"
-                  ${index === 0 ? "disabled" : ""}>Up</button>
-          <button type="button" data-move-candidate="${index}" data-direction="1"
-                  data-candidate-locator="${locatorToken(locator)}" data-input-meta="${metaToken(input)}"
-                  ${index === size - 1 ? "disabled" : ""}>Down</button>
-          <button type="button" data-remove-candidate="${index}"
-                  data-candidate-locator="${locatorToken(locator)}" data-input-meta="${metaToken(input)}"
-                  ${removable ? "" : "disabled"}>Remove</button>
-        </div>
+        ${!authored && size === 1 || view.selectable===false && index===0 ? '' : `<strong>${view.selectable === false ? 'AND' : `${html(noun)} ${index + 1}`}</strong>`}
+        ${orderedActions('candidate', index, size, `data-candidate-locator="${locatorToken(locator)}" data-input-meta="${metaToken(input)}"`, removable)}
       </div>
       ${authored ? `
         <label for="${html(inputId(candidateLocator))}-label">Label</label>
         <input id="${html(inputId(candidateLocator))}-label" type="text"
-               value="${html(stepPresentation(operation.id).outcomes?.[candidate.outcome] || "")}" data-candidate-label="${locatorToken(locator)}"
+               value="${html(outcomeLabel(operation,candidate.outcome,''))}" data-candidate-label="${locatorToken(locator)}"
                data-candidate-index="${index}" autocomplete="off">` : ""}
-      <div class="candidate-source">
-      <label class="candidate-source-label" for="${html(inputId(candidateLocator))}-option">Value source</label>
+      <div class="candidate-source${option?.inputs.length===1 && option.inputs[0].type==='path' ? ' compact-source' : ''}">
+      <label class="candidate-source-label" for="${html(inputId(candidateLocator))}-option">Source</label>
       <select id="${html(inputId(candidateLocator))}-option"
               data-candidate-option="${locatorToken(locator)}" data-candidate-index="${index}"
               data-input-meta="${metaToken(input)}">
@@ -2175,11 +2923,11 @@ function candidateEditor(
       </select>
       ${option ? inputFields(operation, optionInputs, [...candidateLocator, "inputs"]) : ""}
       </div>
-      <div class="candidate-condition">
-        <div class="section-heading"><strong>${html(view.condition || "Accept when")}</strong><span data-candidate-status
+      <${view.selectable===false?'section':'details'} class="candidate-condition" ${view.selectable!==false&&(condition.all.length || condition.transforms.length) ? 'open' : ''}>
+        ${view.selectable===false?'':`<summary>${html(view.condition || "Accept when")}<span data-candidate-status
              data-candidate-default-status="${html(predicateStatus)}">${selected ? "Selected, " : ""}${
           html(predicateStatus)
-        }</span></div>
+        }</span></summary>`}
         ${conditionEditor(
           operation,
           input,
@@ -2190,7 +2938,7 @@ function candidateEditor(
           scopeInputs,
           scopeBase
         )}
-      </div>
+      </${view.selectable===false?'section':'details'}>
     </article>`;
 }
 
@@ -2241,11 +2989,9 @@ function conditionEditor(operation, input, option, candidateLocator, condition, 
           preparedShape,
           scopeInputs,
           scopeBase
-        )).join("") || `<p class="inspector-help">${condition.transforms.length
-          ? "Add a comparison for the prepared value."
-          : "Without a comparison, any present value is accepted. null, false and 0 are present values."}</p>`}
+        )).join("") || '<p class="value-status">Value exists</p>'}
       </div>
-      <details class="condition-add" ${condition.all.length ? '' : 'open'}><summary>Add comparison (AND)</summary>
+      <details class="condition-add" id="${html(inputId(queryLocator))}-add"><summary>Add comparison (AND)</summary>
       <input type="search" id="${html(inputId(queryLocator))}-search"
              value="${html(queryAt(state.candidateQueries, queryLocator))}"
              data-predicate-query="${token}" data-input-meta="${metaToken(input)}"
@@ -2282,17 +3028,8 @@ function predicateEditor(
   return `
     <article class="condition-predicate" data-condition-predicate="${index}">
       <div class="candidate-heading">
-        <strong>${index ? 'AND' : ''}</strong>
-        <div>
-          <button type="button" data-move-predicate="${index}" data-direction="-1"
-                  data-condition-locator="${locatorToken(candidateLocator)}"
-                  ${index === 0 ? "disabled" : ""}>Up</button>
-          <button type="button" data-move-predicate="${index}" data-direction="1"
-                  data-condition-locator="${locatorToken(candidateLocator)}"
-                  ${index === size - 1 ? "disabled" : ""}>Down</button>
-          <button type="button" data-remove-predicate="${index}"
-                  data-condition-locator="${locatorToken(candidateLocator)}">Remove</button>
-        </div>
+        <strong>${index ? 'AND' : 'Compare'}</strong>
+        ${orderedActions('predicate', index, size, `data-condition-locator="${locatorToken(candidateLocator)}"`)}
       </div>
       ${programEditor(operation, predicate, locator, steps, scopeInputs, scopeBase)}
     </article>`;
@@ -2394,6 +3131,10 @@ function matcherGroupOptions(input, locator) {
 function jsonInput(operation, input, locator, value) {
   const present = hasAt(operation, locator);
   const id = inputId(locator);
+  const path = inputDiagnosticPath(operation.id, locator);
+  const issues = allDiagnostics().filter(issue => issue.path === path && diagnosticOwner(issue) === operation.id);
+  const feedback = issues.length ? `<p id="${html(id)}-error" class="input-error" role="alert">${
+    issues.map(issue => html(issue.message)).join(" ")}</p>` : "";
   if (!input.required && !present) {
     return `
       <section class="inspector-section compact" data-input-name="${html(input.name)}">
@@ -2402,16 +3143,18 @@ function jsonInput(operation, input, locator, value) {
                  data-input-meta="${metaToken(input)}">
           <span>${input.inherited ? "Override " : "Use "}${html(inputLabel(input.name).toLowerCase())}</span>
         </label>
+        ${feedback}
       </section>`;
   }
   const optional = !input.required ? `
-    <label class="check-line">
+    <label class="check-line" id="${html(id)}-label">
       <input id="${html(id)}-present" type="checkbox" checked
-             data-toggle-input="${locatorToken(locator)}" data-input-meta="${metaToken(input)}">
-      <span>Use ${html(inputLabel(input.name).toLowerCase())}</span>
+             data-toggle-input="${locatorToken(locator)}" data-input-meta="${metaToken(input)}" aria-label="Use ${html(inputLabel(input.name).toLowerCase())}">
+      <span>${html(inputLabel(input.name))}</span>
     </label>` : "";
   const attributes = `id="${html(id)}-value" ${input.required ? 'aria-required="true"' : ''} data-input-json="${locatorToken(locator)}"
-                      data-input-meta="${metaToken(input)}"`;
+                      data-input-meta="${metaToken(input)}"${!input.required?` aria-labelledby="${html(id)}-label"`:''}${issues.length
+    ? ` aria-invalid="true" aria-describedby="${html(id)}-error"` : ""}`;
   let control;
   if (input.shape === "string") {
     control = `<input type="text" ${attributes} value="${html(value ?? "")}">`;
@@ -2420,7 +3163,7 @@ function jsonInput(operation, input, locator, value) {
       ? ` min="${html(numberText(input.minimum))}"` : "";
     const maximum = Object.hasOwn(input, "maximum")
       ? ` max="${html(numberText(input.maximum))}"` : "";
-    control = `<input type="number" step="any" ${attributes}${minimum}${maximum}
+    control = `<input type="number" step="${["Integer", "Long"].includes(input.validation) ? "1" : "any"}" ${attributes}${minimum}${maximum}
                       value="${value === undefined ? "" : html(numberText(value))}">`;
   } else if (input.shape === "boolean") {
     control = `<select ${attributes}>
@@ -2437,8 +3180,9 @@ function jsonInput(operation, input, locator, value) {
     <section class="inspector-section${input.required ? "" : " compact"}"
              data-input-name="${html(input.name)}">
       ${optional}
-      <label for="${html(id)}-value">${html(input.label || inputLabel(input.name))}${input.required ? " <small>Required</small>" : ""}</label>
+      ${input.required?`<label for="${html(id)}-value">${html(input.label || inputLabel(input.name))}</label>`:''}
       ${control}
+      ${feedback}
       ${input.required && input.shape === "string" && !present ? `
         <button type="button" id="${html(id)}-empty"
                 data-set-empty-json="${locatorToken(locator)}"
@@ -2473,7 +3217,7 @@ function programEditor(operation, input, locator, steps, scopeInputs, scopeBase)
     <div class="program-list">
       ${steps.map((step, index) => nestedStep(operation, input, locator, step, index, steps.length)).join("")}
     </div>
-    ${predicate && steps.length && shape === 'boolean' ? '<details class="condition-chain"><summary>Extend comparison</summary>' : ''}
+    <details class="program-add" id="${html(id)}-add"><summary>${predicate && steps.length && shape === 'boolean' ? 'Extend comparison' : action}</summary>
     <label class="program-search-label" for="${html(id)}-search">
       <strong>${action}</strong>
       <span>${html(status)}</span>
@@ -2485,7 +3229,7 @@ function programEditor(operation, input, locator, steps, scopeInputs, scopeBase)
     <div id="${html(id)}-options" data-step-options="${locatorToken(locator)}"
          data-input-meta="${metaToken(input)}" data-input-scope="${scope}">
       ${nestedOptions(operation, input, locator, scopeInputs, scopeBase)}
-    </div>${predicate && steps.length && shape === 'boolean' ? '</details>' : ''}`;
+    </div></details>`;
 }
 
 function nestedStep(operation, input, locator, step, index, size) {
@@ -2494,7 +3238,7 @@ function nestedStep(operation, input, locator, step, index, size) {
   const comparison = input.program_role === 'predicate' && size === 1;
   const choices = comparison ? matcherDefinitions(input.program_shape) : [];
   return `
-    <div class="nested-step">
+    <div class="nested-step" data-setting-path="${html(inputDiagnosticPath(operation.id,[...locator,index]))}" tabindex="-1">
       <div class="nested-step-summary">
         ${comparison ? `<select aria-label="Comparison" data-replace-comparison="${locatorToken(locator)}">
           ${choices.some(item => item.id === step.use) ? '' : `<option value="${html(step.use)}">${html(stepName(definition))}</option>`}
@@ -2505,15 +3249,17 @@ function nestedStep(operation, input, locator, step, index, size) {
         }</span>
         ${inputFields(operation, definition.inputs, [...locator, index, "inputs"])}
       </div>
-      ${comparison ? '' : `<div>
-        <button type="button" data-move-nested="${index}" data-direction="-1"
-                data-program-locator="${locatorToken(locator)}" ${index === 0 ? "disabled" : ""}>Up</button>
-        <button type="button" data-move-nested="${index}" data-direction="1"
-                data-program-locator="${locatorToken(locator)}" ${index === size - 1 ? "disabled" : ""}>Down</button>
-        <button type="button" data-remove-nested="${index}"
-                data-program-locator="${locatorToken(locator)}">Remove</button>
-      </div>`}
+      ${comparison ? '' : orderedActions('nested', index, size, `data-program-locator="${locatorToken(locator)}"`)}
     </div>`;
+}
+
+function orderedActions(kind, index, size, scope, removable = true) {
+  return `<div class="row-actions">${(size > 1 ? [[-1,'up','Move up'],[1,'down','Move down']] : []).map(([direction,icon,label]) =>
+    `<button type="button" data-move-${kind}="${index}" data-direction="${direction}" ${scope}
+      aria-label="${label}" title="${label}" ${(direction < 0 ? index === 0 : index === size-1) ? 'disabled' : ''}>
+      <i class="hud-symbol" data-symbol="${icon}" aria-hidden="true"></i></button>`).join('')}
+    <button type="button" data-remove-${kind}="${index}" ${scope} aria-label="Remove" title="Remove" ${removable ? '' : 'disabled'}>
+      <i class="hud-symbol" data-symbol="trash" aria-hidden="true"></i></button></div>`;
 }
 
 function nestedOptions(operation, input, locator, scopeInputs, scopeBase) {
@@ -2590,6 +3336,9 @@ function pathBrowser(input, operation, locator) {
       }));
   }
   const draft = state.pathDraft;
+  const fallback=defaultInput(input);
+  const resettable=input.resettable!==false && fallback!==undefined && hasAt(operation,locator)
+    && !samePath(valueAt(operation,locator),fallback);
   const selected = entries.find(entry => samePath(entry.path, draft));
   const usable = writable || manualRead
     ? draft.length >= 2
@@ -2652,8 +3401,9 @@ function pathBrowser(input, operation, locator) {
           <small class="path-hint" data-path-verification ${unverified ? "" : "hidden"}>${unverified
             ? "Path not verified by an Example. You can still use it." : ""}</small>
         </div>
-        <div class="path-actions">
+        <div class="path-actions" role="group" aria-label="${html(inputLabel(input.name))} actions">
           <div class="path-action-buttons">
+            ${resettable ? `<button class="path-reset" type="button" data-reset-path="${locatorToken(locator)}" data-input-meta="${metaToken(input)}">Reset</button>` : ''}
             <button class="path-cancel" id="cancel-path" type="button">Cancel</button>
             <button id="apply-path" type="button" ${usable ? "" : "disabled"}>Use this path</button>
           </div>
@@ -2666,13 +3416,43 @@ function picker() {
   if (!state.picker) {
     return "";
   }
+  if (state.picker.mode === 'arrival') {
+    const arrivals=state.picker.arrivals.map(link=> {
+      const source=state.world.scene.nodes.find(item=>item.id===link.from);
+      const owner=source?.regions?.map(id=>state.world.scene.nodes.find(item=>item.id===id && (item.group || item.summary==='area')))
+        .filter(Boolean).map(item=>item.name).reverse().join(' / ');
+      const definition=definitionOf(source?.use || node(link.from)?.use);
+      return {...link,name:source?.name || stepPresentation(link.from).name || (definition ? stepName(definition) : 'Incoming route'),
+        region:source?.kind==='region',locate:!source,
+        context:owner || (definition ? stepName(definition) : '')};
+    });
+    const choices=arrivals.map((link,index)=> {
+      const matching=arrivals.filter(item=>item.name===link.name && item.outcome===link.outcome);
+      const repeated=matching.filter(item=>item.context===link.context).length>1;
+      const context=matching.length>1 ? [repeated ? `Route ${index+1}` : '',link.context].filter(Boolean).join(' / ') : '';
+      const detail=[link.locate ? 'Locate' : '',link.region ? 'Open group' : outcomeLabel({id:link.from},link.outcome),context].filter(Boolean).join(' / ');
+      return `<button type="button" class="catalog-option" data-insert-arrival="${html(link.from+'.'+link.outcome)}">
+        <strong>${html(link.name)}</strong><small title="${html(detail)}">${html(detail)}</small></button>`;
+    }).join('');
+    return `
+    <div class="construction-palette arrival-palette">
+      <section class="step-picker" role="dialog" aria-label="Choose incoming route">
+        <header><h2>${arrivals.length>1 ? 'From which route?' : arrivals[0].locate ? 'Locate route' : 'Open group'}</h2><button type="button" data-close-picker aria-label="Close Step chooser">Close</button></header>
+        <div class="arrival-options">${choices}</div>
+      </section>
+    </div>`;
+  }
+  const isTrigger = state.picker.mode === 'trigger';
   return `
     <div class="construction-palette">
-      <section class="step-picker" role="dialog" aria-label="Add Step">
-        <header><div><span class="eyebrow">${html(stepPresentation(state.picker.anchor).name || stepName(definitionFor(node(state.picker.anchor))))}</span><h2>Add ${state.picker.mode === "trigger"
-          ? "Trigger" : "Step"}</h2></div><button type="button" data-close-picker aria-label="Close Step chooser">Close</button></header>
-        <input type="search" id="step-search" value="${html(state.picker.query)}"
-               placeholder="Search by name or id" autocomplete="off" autofocus>
+      <section class="step-picker" role="dialog" aria-label="${isTrigger ? 'Add Trigger' : 'Insert Step or Group'}">
+        <header><div><span class="eyebrow">${html(stepPresentation(state.picker.anchor).name || stepName(definitionFor(node(state.picker.anchor))))}</span><h2>${isTrigger ? 'Add Trigger' : 'Insert'}</h2></div><button type="button" data-close-picker aria-label="Close Step chooser">Close</button></header>
+        <div class="picker-searches">
+          <label for="step-search">${isTrigger ? 'Trigger' : 'Step'}<input type="search" id="step-search" value="${html(state.picker.queries.step)}"
+                 placeholder="Search ${isTrigger ? 'triggers' : 'steps'}" autocomplete="off" aria-controls="step-options" autofocus></label>
+          ${!isTrigger && Number(state.editor.group_count) > 0 ? `<label for="group-insert-search">Group<input type="search" id="group-insert-search"
+                 value="${html(state.picker.queries.group)}" placeholder="Search groups" autocomplete="off" aria-controls="step-options"></label>` : ''}
+        </div>
         <div id="step-options">${pickerOptions()}</div>
       </section>
     </div>`;
@@ -2683,8 +3463,7 @@ function groupPicker() {
     return "";
   }
   return `
-    <div class="picker-backdrop group-picker-backdrop">
-      <section class="step-picker group-picker" role="dialog" aria-modal="true" aria-label="Choose group">
+      <dialog id="group-dialog" class="step-picker group-picker" aria-label="Choose group">
         <header class="picker-heading">
           <div><span class="eyebrow">Creator groups</span><h2>Choose Group</h2></div>
           <button type="button" id="close-group-picker">Cancel</button>
@@ -2692,8 +3471,7 @@ function groupPicker() {
         <input type="search" id="group-picker-search" value="${html(state.groupPicker.query)}"
                placeholder="Search groups" autocomplete="off" autofocus>
         <div id="group-picker-options">${groupPickerOptions()}</div>
-      </section>
-    </div>`;
+      </dialog>`;
 }
 
 function groupPickerOptions() {
@@ -2716,7 +3494,16 @@ function pickerOptions() {
   if (!state.picker) {
     return "";
   }
-  const query = state.picker.query.toLowerCase();
+  const picker = state.picker;
+  const chosen = picker.chosen;
+  if (chosen) return `<div class="reuse-boundaries"><strong>${html(chosen.label || chosen.name)}</strong>${[['entries','Entrance'],['exits','Continuation']].map(([field,label]) => chosen[field].length > 1
+    ? `<label>${label}<select data-reuse-boundary="${field}">${chosen[field].map(item => `<option value="${html(item.id)}">${html(item.name)}</option>`).join('')}</select></label>` : '').join('')}
+    <div class="reuse-actions"><button type="button" data-apply-reuse="reuse">Use linked</button><button type="button" data-apply-reuse="copy">Place copy</button><button type="button" data-cancel-reuse>Back</button></div></div>`;
+  const query = picker.queries[picker.kind].toLowerCase();
+  const reusable = (picker.items || []).map(item =>
+    `<button type="button" class="catalog-option" data-reuse-item="${html(item.id)}" data-reuse-type="${item.kind}" ${item.entries.length>1?'disabled':''}><strong>${html(item.label || item.name)}</strong><small>${item.entries.length>1 ? `${item.entries.length} entrances, placement not yet supported` : `Existing ${item.kind}`}</small></button>`).join('');
+  const pages = picker.matches > picker.pageSize ? `<nav class="picker-pages" aria-label="Reuse pages"><button type="button" data-reuse-page="${Math.max(0,(picker.offset || 0)-picker.pageSize)}" ${picker.offset ? '' : 'disabled'}>Previous</button><button type="button" data-reuse-page="${(picker.offset || 0)+picker.pageSize}" ${(picker.offset || 0)+(picker.items?.length || 0)<picker.matches ? '' : 'disabled'}>Next</button></nav>` : '';
+  if (picker.kind === 'group') return (reusable || (picker.loading ? '<p role="status">Loading...</p>' : '<p class="empty-options">No group matches.</p>')) + pages;
   const candidates = state.picker.mode === "trigger"
     ? availableTriggers()
     : addableDefinitions();
@@ -2724,26 +3511,145 @@ function pickerOptions() {
     .filter(definition => definitionMatchesQuery(definition, query));
   const options = matching.filter(definition => state.picker.mode === "trigger"
       || automaticBindingsAvailable(state.picker.anchor, definition));
-  return options
+  const catalog = options
     .map(definition => `
-      <button type="button" class="catalog-option" data-add-step="${html(definition.id)}">
+      <button type="button" class="catalog-option" data-add-step="${html(definition.id)}" title="${html(definition.id)}">
         <strong>${html(stepName(definition))}</strong>
-        <small>${html(definition.id)}${definition.receives.length || definition.returns.length
-          ? ` · ${html(definition.receives.map(port => port.shape).join(" + ") || "context")} to ${html(
+        <small>${definition.receives.length || definition.returns.length
+          ? `${html(definition.receives.map(port => port.shape).join(" + ") || "context")} to ${html(
               definition.returns.map(port => port.shape).join(" + ") || "context"
-            )}` : ""}</small>
-      </button>`).join("") || '<p class="empty-options">No installed Step matches.</p>';
+            )}` : html(inputLabel(definition.kind))}</small>
+      </button>`).join("");
+  if (picker.mode === 'trigger') return catalog || '<p class="empty-options">No installed Trigger matches.</p>';
+  return (catalog ? `<div class="picker-results-label">New Steps</div>${catalog}` : '')
+    + (reusable ? `<div class="picker-results-label">Existing Steps</div>${reusable}` : '')
+    + (picker.loading ? '<p role="status">Loading...</p>' : '') + pages
+    || '<p class="empty-options">No Step matches.</p>';
 }
 
 function openPicker(mode, anchor, outcome = "") {
-  state.picker = { mode, anchor, outcome, query: "" };
+  state.picker = { mode, anchor, outcome, kind: 'step', queries: {step:'',group:''}, returnFocus:document.activeElement };
   state.pathPicker = "";
   state.pathDraft = [];
   render();
   document.querySelector("#step-search")?.focus();
+  if (mode !== 'trigger') void loadReusable();
+}
+
+async function openBeltPicker(id, outcome, arrivals = []) {
+  const source=state.world.scene.nodes.find(item=>item.id===id);
+  if (arrivals.length > 1 || arrivals.length===1 && (!source || source.kind==='region')) {
+    state.picker?.controller?.abort();
+    state.picker = {mode:'arrival',arrivals,returnFocus:document.activeElement};
+    render();
+    document.querySelector('[data-insert-arrival]')?.focus({preventScroll:true});
+    return;
+  }
+  if (!source || source.kind==='region') {
+    closePicker();
+    if (source) state.world.enter(source.id);
+    else state.world.focus(id);
+    return;
+  }
+  const previous = state.picker;
+  if (await loadEditor(id) !== 'loaded' || state.picker !== previous) return;
+  const returnFocus=previous?.returnFocus || document.activeElement;
+  state.selection={type:definitionFor(node(id)).kind,id};
+  state.regionSelection=null;
+  openPicker('step',id,outcome);
+  state.picker.returnFocus=returnFocus;
+  state.picker.arrival={from:id,outcome};
+  state.world?.repaint();
+}
+
+function closePicker() {
+  const previous = state.picker?.returnFocus;
+  state.picker?.controller?.abort();
+  state.picker = null;
+  render();
+  (previous?.isConnected ? previous : document.getElementById(previous?.id) || document.querySelector('#add-next-step') || document.querySelector('#graph'))
+    ?.focus({preventScroll:true});
+}
+
+function replacePickerOptions() {
+  const slot = document.querySelector('#step-options');
+  if (!slot) return;
+  const focused = slot.contains(document.activeElement) ? document.activeElement : null;
+  const identity = focused && ['addStep','reuseItem','reusePage','applyReuse','cancelReuse']
+    .find(key => Object.hasOwn(focused.dataset,key));
+  slot.innerHTML = pickerOptions();
+  if (identity) {
+    const replacement = [...slot.querySelectorAll('button')]
+      .find(button => button.dataset[identity] === focused.dataset[identity]);
+    (replacement || document.getElementById(state.picker.kind === 'group' ? 'group-insert-search' : 'step-search'))
+      ?.focus({preventScroll:true});
+  }
+}
+
+async function loadReusable() {
+  const picker = state.picker;
+  if (!picker || picker.mode === 'trigger') return;
+  const kind = picker.kind;
+  const request=picker.request=(picker.request || 0)+1;
+  picker.controller?.abort();
+  picker.controller=new AbortController();
+  picker.loading = true;
+  try {
+    const response = await fetch(`/api/editor?${new URLSearchParams({reuse:'1',reuse_kind:kind,q:picker.queries[kind],offset:picker.offset || 0})}`,{signal:picker.controller.signal});
+    const payload = parseExact(await response.text());
+    if (state.picker !== picker || request !== picker.request || picker.kind !== kind) return;
+    picker.items = response.ok ? payload.editor.reusable : [];
+    picker.matches = response.ok ? payload.editor.reuse_matches : 0;
+    picker.pageSize = response.ok ? payload.editor.reuse_page_size : 0;
+  } catch(error) {
+    if(error.name==='AbortError') return;
+    picker.items=[];
+    picker.matches=0;
+    picker.pageSize=0;
+  } finally {
+    if(state.picker===picker && request===picker.request && picker.kind===kind) {
+      picker.loading=false;
+      replacePickerOptions();
+    }
+  }
+}
+
+async function placeReuse(placement) {
+  const picker = state.picker, item = picker?.chosen;
+  if (!item) return;
+  const result = await editorAction({kind:placement, [item.kind === 'group' ? 'group' : 'node']:item.id,
+    from:picker.anchor + '.' + (picker.outcome || primaryOutcome(node(picker.anchor))), id:opaqueId('use'),
+    entry:document.querySelector('[data-reuse-boundary="entries"]')?.value || item.entries[0]?.id || '',
+    exit:document.querySelector('[data-reuse-boundary="exits"]')?.value || item.exits[0]?.id || ''});
+  if (result?.selection) {
+    document.querySelector('#inspector-navigation button')?.focus({preventScroll:true});
+  }
+}
+
+async function previewGroup(range) {
+  const members = state.selectedSteps.size ? [...state.selectedSteps] : [state.selection.id];
+  const command = {kind:'group',id:state.groupDraft?.command.id || opaqueId('group'),nodes:members};
+  if (range && members.length === 2) { command.start=members[0]; command.end=members[1]; command.nodes=[]; }
+  const preview = await editorAction(command,true);
+  if (!preview) return;
+  state.groupDraft={command,nodes:Object.keys(preview.creator_changes.steps || {})};
+  render();
+  const form = document.querySelector('#group-draft');
+  form?.scrollIntoView({block:'end'});
+  form?.querySelector('input')?.focus({preventScroll:true});
+  state.world?.repaint();
 }
 
 function previewCatalogStep(event) {
+  if (state.picker?.mode === 'arrival') {
+    const option=event.target.closest('[data-insert-arrival]') || document.activeElement?.closest('[data-insert-arrival]');
+    const arrival=state.picker.arrivals.find(link=>link.from+'.'+link.outcome===option?.dataset.insertArrival);
+    if (state.picker.arrival !== arrival) {
+      state.picker.arrival=arrival;
+      state.world?.repaint();
+    }
+    return;
+  }
   const hovered = event.target.closest("[data-add-step]");
   const option = hovered || document.activeElement?.closest("[data-add-step]");
   if (!state.picker || state.picker.mode === "trigger") return;
@@ -2759,6 +3665,26 @@ function previewCatalogStep(event) {
 
 document.addEventListener("focusin", previewCatalogStep);
 document.addEventListener("pointerover", previewCatalogStep);
+document.addEventListener('focusin', event => {
+  const picker = state.picker;
+  if (!picker || !['step-search','group-insert-search'].includes(event.target.id)) return;
+  const kind = event.target.id === 'step-search' ? 'step' : 'group';
+  if (picker.kind !== kind) {
+    picker.kind = kind;
+    picker.chosen = null;
+    picker.items = [];
+    picker.matches = 0;
+    picker.pageSize = 0;
+    picker.offset = 0;
+    picker.loading = true;
+    replacePickerOptions();
+    void loadReusable();
+  } else if (picker.chosen) {
+    picker.chosen = null;
+    replacePickerOptions();
+    event.target.select();
+  }
+});
 
 function addCatalogStep(id) {
   const definition = definitionOf(id);
@@ -2792,6 +3718,7 @@ function addCatalogStep(id) {
   state.pathDraft = [];
   state.inspectorMode = "inspect";
   dirty(true);
+  document.querySelector('#inspector-navigation button')?.focus({preventScroll:true});
 }
 
 function insertStep(afterId, definition, selectedOutcome = "") {
@@ -2821,6 +3748,8 @@ function insertFlatStep(afterId, definition, id, outcome, bindings) {
   const source = after.id + "." + outcome;
   const outgoing = state.project.links.find(link => link.from === source);
   const target = outgoing.to;
+  const group = stepPresentation(afterId).group;
+  if (group && group === stepPresentation(target).group) state.creator.steps[id] = {...stepPresentation(id), group};
   outgoing.to = id;
   definition.outcomes.forEach(candidate => state.project.links.push({
     from: id + "." + candidate,
@@ -2866,6 +3795,28 @@ function automaticBindingsAvailable(afterId, definition) {
 }
 
 function deleteSelection() {
+  if (state.selection.type === 'step') {
+    const id=state.selection.id;
+    if(state.build === 'Not built' || state.jsonDraft?.node === id) {
+      const accepted=state.builtProject.nodes.find(item=>item.id===id);
+      if(accepted) {
+        state.project.nodes=state.project.nodes.map(item=>item.id===id?clone(accepted):item);
+        if(state.jsonDraft?.node===id) state.jsonDraft=null;
+        state.build='Built';
+        state.pendingProject=false;
+      } else {
+        const incoming=state.project.links.filter(link=>link.to===id);
+        const next=outcomeTarget(node(id),primaryOutcome(node(id)));
+        incoming.forEach(link=>link.to=next);
+        state.project.links=state.project.links.filter(link=>linkNode(link)!==id);
+        state.project.nodes=state.project.nodes.filter(item=>item.id!==id);
+        delete state.creator.steps[id]; state.jsonDraft=null;
+        state.selection={type:'step',id:incoming.length?linkNode(incoming[0]):'app'};
+        dirty(); return;
+      }
+    }
+    void editorAction({kind:'delete',node:id}); return;
+  }
   if (state.selection.type === "trigger") {
     const trigger = node(state.selection.id);
     state.removedFlows.push(trigger.id);
@@ -2877,45 +3828,11 @@ function deleteSelection() {
     );
     removeCreatorReferences(ids);
     state.selection = { type: "app", id: "app" };
-  } else if (state.selection.type === "step" && removableStep(node(state.selection.id))) {
-    removeStep(state.selection.id);
   } else {
     return;
   }
   state.revealNode = state.selection.id;
   dirty(true);
-}
-
-function removeStep(id) {
-  const selected = node(id);
-  const removed = new Set([id]);
-  const predecessor = state.project.links.find(link => link.to === selected.id);
-  const predecessorId = predecessor ? linkNode(predecessor) : "";
-  removeFlatStep(id);
-  removeCreatorReferences(removed);
-  if (state.jsonDraft?.node === id) state.jsonDraft = null;
-  const previous = node(predecessorId);
-  state.selection = definitionOf(previous?.use)?.kind === "trigger"
-    ? { type: "trigger", id: previous.id }
-    : { type: "step", id: previous?.id || "" };
-}
-
-function removeFlatStep(id) {
-  const selected = node(id);
-  if (!selected) {
-    return;
-  }
-  const incoming = state.project.links.find(link => link.to === selected.id);
-  const outgoing = state.project.links.find(link =>
-    link.from === selected.id + "." + primaryOutcome(selected)
-  );
-  if (incoming && outgoing) {
-    incoming.to = outgoing.to;
-  }
-  state.project.links = state.project.links.filter(link =>
-    linkNode(link) !== selected.id && link.to !== selected.id
-  );
-  state.project.nodes = state.project.nodes.filter(candidate => candidate.id !== selected.id);
 }
 
 function updateExample(field, source) {
@@ -2933,7 +3850,7 @@ function updateExample(field, source) {
     }
     state.exampleDraft = null;
     state.localDiagnostics = [];
-    dirty();
+    dirty(true, {keepForm:true});
   } catch (error) {
     state.exampleDraft = { trigger: trigger.id, example: state.exampleIndex, field, source };
     invalidateDraft();
@@ -2971,16 +3888,33 @@ function updateExampleName(value) {
     return;
   }
   example.name = value;
-  dirty();
+  dirty(true, {keepForm:true});
 }
 
-function selectExample(index, trigger = node(state.selection.id)) {
+function selectExample(index, trigger = node(state.selection.id), {deferObservation = false} = {}) {
+  cancelAttention();
+  const sourceChanged = state.exampleTrigger !== trigger.id;
   state.exampleTrigger = trigger.id;
-  state.exampleIndex = Math.max(-1, Math.min(index, trigger.examples.length - 1));
+  state.exampleIndex = Math.max(-1, Math.min(index, (trigger.examples?.length ?? state.exampleIds.get(trigger.id)?.size ?? 0) - 1));
+  state.application.example = state.exampleIds.get(trigger.id)?.get(state.exampleIndex) || null;
   state.exampleDraft = null;
+  state.applicationController?.abort('selection');
   clearPreview(true, false);
   render();
-  requestSelectedTrace();
+  scheduleApplicationPoll(0);
+  if (deferObservation) return Promise.resolve();
+  const trace = requestSelectedTrace();
+  if (sourceChanged && !state.editorController && !state.regionSelection && state.selection.id
+      && state.editor.sources?.some(source => source.id === trigger.id)) {
+    const selected = state.selection.id;
+    void loadEditor(selected).then(result => {
+      if (result === 'loaded' && state.selection.id === selected && !state.regionSelection) {
+        render();
+        void requestSelectedTrace();
+      }
+    });
+  }
+  return trace;
 }
 
 function addExample() {
@@ -3067,7 +4001,7 @@ function validPathIndex(source) {
 }
 
 function applyPath() {
-  const operation = selectedOperation();
+  const operation = editableOperation(state.pathPicker.locator);
   setAt(operation, state.pathPicker.locator, clone(state.pathDraft));
   closePathPicker();
   dirty();
@@ -3084,9 +4018,9 @@ function resetPath(locator, input) {
     return;
   }
   if (input.required) {
-    setAt(selectedOperation(), locator, clone(fallback));
+    setAt(editableOperation(locator), locator, clone(fallback));
   } else {
-    deleteAt(selectedOperation(), locator);
+    deleteAt(editableOperation(locator), locator);
   }
   closePathPicker();
   dirty();
@@ -3104,10 +4038,10 @@ function setJsonValue(locator, input, source) {
     const value = input.shape === "string" ? source
       : input.shape === "boolean" ? source === "true"
         : parseExact(source);
-    setAt(selectedOperation(), locator, value);
+    setAt(editableOperation(locator), locator, value);
     state.jsonDraft = null;
     state.localDiagnostics = [];
-    dirty();
+    dirty(true, {keepForm:true});
   } catch (error) {
     state.jsonDraft = { node: state.selection.id, locator, source };
     invalidateDraft();
@@ -3133,7 +4067,7 @@ function jsonEditorValue(locator, value) {
 
 function toggleInput(locator, input, present) {
   state.jsonDraft = null;
-  const operation = selectedOperation();
+  const operation = editableOperation(locator);
   if (present) {
     if (locator[0] === "inputs" && !plainObject(operation.inputs)) {
       operation.inputs = {};
@@ -3152,7 +4086,7 @@ function selectOption(locator, input, optionName) {
     return;
   }
   state.jsonDraft = null;
-  setAt(selectedOperation(), locator, {
+  setAt(editableOperation(locator), locator, {
     option: option.name,
     inputs: defaultInputs(option.inputs)
   });
@@ -3164,7 +4098,7 @@ function addCandidate(locator, input, optionName) {
   if (!option) {
     return;
   }
-  const operation = selectedOperation();
+  const operation = editableOperation(locator);
   const label = input.authored_outcomes ? nextCaseLabel(operation) : "";
   let candidates = valueAt(operation, locator);
   if (!Array.isArray(candidates)) {
@@ -3186,10 +4120,10 @@ function addMatcherGroup(locator, input, optionName) {
   if (!option) {
     return;
   }
-  let groups = valueAt(selectedOperation(), locator);
+  let groups = valueAt(editableOperation(locator), locator);
   if (!Array.isArray(groups)) {
     groups = [];
-    setAt(selectedOperation(), locator, groups);
+    setAt(editableOperation(locator), locator, groups);
   }
   groups.push([authoredCandidate(option)]);
   delete state.candidateQueries[locatorToken([...locator, "new-group"])];
@@ -3219,7 +4153,7 @@ function nextCaseLabel(operation) {
 
 function selectCandidate(locator, input, index, optionName) {
   const option = input.options.find(candidate => candidate.name === optionName);
-  const candidates = valueAt(selectedOperation(), locator);
+  const candidates = valueAt(editableOperation(locator), locator);
   if (!option || !Array.isArray(candidates) || !candidates[index]) {
     return;
   }
@@ -3241,11 +4175,11 @@ function updateCandidateLabel(locator, index, value) {
     return;
   }
   setOutcomeLabel(selectedOperation().id, candidates[index].outcome, label);
-  creatorDirty();
+  creatorDirty({keepForm:true});
 }
 
 function moveListItem(locator, index, direction) {
-  const items = valueAt(selectedOperation(), locator);
+  const items = valueAt(editableOperation(locator), locator);
   const target = index + direction;
   if (!Array.isArray(items) || target < 0 || target >= items.length) {
     return;
@@ -3270,12 +4204,12 @@ function moveDraft(locator, index, target) {
 }
 
 function removeListItem(locator, index, input = {}) {
-  const items = valueAt(selectedOperation(), locator);
+  const items = valueAt(editableOperation(locator), locator);
   if (!Array.isArray(items) || index < 0 || index >= items.length) {
     return;
   }
   if (input.authored_outcomes) {
-    const operation = selectedOperation();
+    const operation = editableOperation(locator);
     const candidate = items[index];
     if (!candidate?.outcome || outcomeTarget(operation, candidate.outcome) !== "end") {
       return;
@@ -3294,7 +4228,7 @@ function removeListItem(locator, index, input = {}) {
 
 function addNested(locator, id) {
   const definition = definitionOf(id);
-  const steps = programAt(selectedOperation(), locator);
+  const steps = programAt(editableOperation(locator), locator);
   if (!definition || !Array.isArray(steps)) {
     return;
   }
@@ -3347,7 +4281,7 @@ function compactCondition(operation, locator) {
 
 function addPredicate(locator, id) {
   const definition = definitionOf(id);
-  const candidate = valueAt(selectedOperation(), locator);
+  const candidate = valueAt(editableOperation(locator), locator);
   if (!definition || !candidate) {
     return;
   }
@@ -3359,7 +4293,7 @@ function addPredicate(locator, id) {
 }
 
 function movePredicate(locator, index, direction) {
-  const candidate = valueAt(selectedOperation(), locator);
+  const candidate = valueAt(editableOperation(locator), locator);
   if (candidate && Array.isArray(candidate.when)) {
     candidate.when = conditionOf(candidate.when);
   }
@@ -3374,7 +4308,7 @@ function movePredicate(locator, index, direction) {
 }
 
 function removePredicate(locator, index) {
-  const candidate = valueAt(selectedOperation(), locator);
+  const candidate = valueAt(editableOperation(locator), locator);
   if (candidate && Array.isArray(candidate.when)) {
     candidate.when = conditionOf(candidate.when);
   }
@@ -3391,7 +4325,7 @@ function removePredicate(locator, index) {
 }
 
 function moveNested(locator, index, direction) {
-  const steps = programAt(selectedOperation(), locator);
+  const steps = programAt(editableOperation(locator), locator);
   const target = index + direction;
   if (target < 0 || target >= steps.length) {
     return;
@@ -3402,12 +4336,12 @@ function moveNested(locator, index, direction) {
 }
 
 function removeNested(locator, index) {
-  const steps = programAt(selectedOperation(), locator);
+  const steps = programAt(editableOperation(locator), locator);
   if (!Array.isArray(steps) || index < 0 || index >= steps.length) {
     return;
   }
   steps.splice(index, 1);
-  compactCondition(selectedOperation(), locator);
+  compactCondition(editableOperation(locator), locator);
   state.jsonDraft = null;
   delete state.stepQueries[locatorToken(locator)];
   dirty();
@@ -3937,6 +4871,9 @@ function clearPreview(clearSummary = false, clearCases = true) {
   state.traceController?.abort();
   state.traceController = null;
   state.traceStep = null;
+  state.traceChanges = null;
+  state.traceReadError = null;
+  state.regionTrace = null;
   state.traceKey = "";
   if (clearCases) {
     state.traceCases = [];
@@ -3956,12 +4893,14 @@ function clearPreview(clearSummary = false, clearCases = true) {
 function replaceApplication(application) {
   const changed = !currentApplication(application);
   if (changed) {
+    cancelAttention();
     clearPreview(true);
     state.observationController?.abort();
     state.observations = null;
     document.querySelector("#status-observations").hidden = true;
     scheduleWorldObservations();
     state.exampleIds = new Map();
+    state.exampleFailures = [];
     state.exampleInventoryKey = "";
     state.exampleCoverageKey = "";
   }
@@ -3991,8 +4930,11 @@ async function refreshApplication() {
   }
   let nextDelay;
   state.applicationRefreshing = true;
+  const controller = state.applicationController = new AbortController();
+  const timeout = setTimeout(() => controller.abort('timeout'), 30_000);
+  const signal = controller.signal;
   try {
-    const response = await fetch("/api/application", { cache: "no-store" });
+    const response = await fetch("/api/application", { cache: "no-store", signal });
     if (response.ok) {
       const application = parseExact(await response.text());
       const processChanged = replaceApplication(application);
@@ -4006,9 +4948,9 @@ async function refreshApplication() {
       }
       const cachedExampleId = selectedExampleId();
       const [examplesResponse, exampleResponse] = await Promise.all([
-        fetch("/api/examples/status", { cache: "no-store" }),
+        fetch("/api/examples/status", { cache: "no-store", signal }),
         cachedExampleId
-          ? fetch(`/api/examples/${encodeURIComponent(cachedExampleId)}`, { cache: "no-store" })
+          ? fetch(`/api/examples/${encodeURIComponent(cachedExampleId)}`, { cache: "no-store", signal })
           : Promise.resolve(null)
       ]);
       if (!currentApplication(application)) {
@@ -4023,12 +4965,13 @@ async function refreshApplication() {
         nextDelay = 25;
         return;
       }
-      const inventoryReady = await refreshExampleIds(application);
+      const inventoryReady = await refreshExampleIds(application,signal,examples);
       if (!inventoryReady) {
         nextDelay = observationRetryDelay();
         return;
       }
-      const coverageReady = await refreshExampleCoverage(application, examples);
+      await refreshExampleScope(application, signal, examples);
+      const coverageReady = await refreshExampleCoverage(application, examples,signal);
       if (!coverageReady) {
         nextDelay = observationRetryDelay();
         return;
@@ -4037,7 +4980,7 @@ async function refreshApplication() {
       const selectedResponse = exampleId === cachedExampleId
         ? exampleResponse
         : exampleId
-          ? await fetch(`/api/examples/${encodeURIComponent(exampleId)}`, { cache: "no-store" })
+          ? await fetch(`/api/examples/${encodeURIComponent(exampleId)}`, { cache: "no-store", signal })
           : null;
       if (selectedResponse && !selectedResponse.ok) {
         nextDelay = observationRetryDelay();
@@ -4045,6 +4988,7 @@ async function refreshApplication() {
       }
       const example = selectedResponse ? parseExact(await selectedResponse.text()) : null;
       if (!currentApplication(application)
+          || selectedExampleId() !== exampleId
           || (example?.application_pid !== undefined
           && Number(example.application_pid) !== Number(application.pid))) {
         nextDelay = 25;
@@ -4070,29 +5014,35 @@ async function refreshApplication() {
       nextDelay = observationRetryDelay();
     }
   } catch (_error) {
-    // The current build state remains visible while the rolling application restarts.
-    nextDelay = observationRetryDelay();
+    // A cancelled selection or unavailable snapshot must not hold the next Example.
+    nextDelay = signal.reason === 'selection' ? 25 : observationRetryDelay();
   } finally {
+    clearTimeout(timeout);
+    state.applicationController = null;
     state.applicationRefreshing = false;
+    renderAttention();
     if (state.optionsPending) {
       state.optionsPending = false;
       refreshPickerOptions();
-      if (!state.pathPicker) refreshNestedOptions();
+      if (state.pathPicker) refreshPathPicker();
+      else refreshNestedOptions();
     }
     const running = ["queued", "running"].includes(state.application.examples?.state);
     scheduleApplicationPoll(nextDelay ?? (document.hidden ? 2_000 : running ? 100 : 500));
   }
 }
 
-async function refreshExampleIds(application) {
-  const key = JSON.stringify([application.fingerprint || "", application.pid || 0]);
+async function refreshExampleIds(application, signal, examples) {
+  const key = JSON.stringify([application.fingerprint || "", application.pid || 0,
+    examples?.revision, examples?.state]);
   if (state.exampleInventoryKey === key) {
     return true;
   }
-  const response = await fetch("/api/examples", { cache: "no-store" });
+  const response = await fetch("/api/examples", { cache: "no-store", signal });
   if (!response.ok) {
     if (currentApplication(application)) {
       state.exampleIds = new Map();
+      state.exampleFailures = [];
       state.exampleInventoryKey = "";
     }
     return false;
@@ -4110,15 +5060,17 @@ async function refreshExampleIds(application) {
       return;
     }
     const trigger = ids.get(example.trigger) || new Map();
-    trigger.set(Number(example.index), example.id);
+    trigger.set(Number(example.index), example);
     ids.set(example.trigger, trigger);
   });
   state.exampleIds = ids;
+  state.exampleFailures = inventory.state === 'completed'
+    ? [...ids.values()].flatMap(choices => [...choices.values()]).filter(example => failedRunStates.has(example.status)) : [];
   state.exampleInventoryKey = key;
   return true;
 }
 
-async function refreshExampleCoverage(application, examples) {
+async function refreshExampleCoverage(application, examples, signal) {
   if (examples.state !== "completed") {
     state.exampleCoverageKey = "";
     return true;
@@ -4134,7 +5086,7 @@ async function refreshExampleCoverage(application, examples) {
     examples.covered_steps = previous.covered_steps;
     return true;
   }
-  const response = await fetch("/api/examples/coverage", { cache: "no-store" });
+  const response = await fetch("/api/examples/coverage", { cache: "no-store", signal });
   if (!response.ok) {
     return false;
   }
@@ -4152,10 +5104,11 @@ async function refreshExampleCoverage(application, examples) {
 }
 
 function selectedExampleId() {
-  return state.exampleIds.get(state.exampleTrigger)?.get(state.exampleIndex) || "";
+  return state.exampleIds.get(state.exampleTrigger)?.get(state.exampleIndex)?.id || "";
 }
 
 function refreshApplicationFacts() {
+  renderExampleContext();
   const builtAt = Number(state.application.built_at || 0);
   const values = {
     "application-pid": state.application.pid || "",
@@ -4283,7 +5236,7 @@ async function refreshMetrics() {
 function renderMetrics() {
   const panel = document.querySelector("#metrics-panel");
   if (panel) {
-    panel.innerHTML = metricsPanel();
+    renderDockMarkup(panel, metricsPanel());
   }
   renderWorldStatus();
 }
@@ -4363,6 +5316,7 @@ function metricFacts(title, rows) {
     .filter(([_label, value]) => value !== null && value !== undefined)
     .map(([label, value, id]) => `<div${id ? ` data-metric-id="${html(id)}"` : ""}><dt>${html(label)}</dt><dd>${html(value)}</dd></div>`)
     .join("");
+  if (!facts) return "";
   return `<section class="inspector-section facts runtime-metrics">
     <div class="section-heading"><strong>${html(title)}</strong></div>
     <dl>${facts}</dl>
@@ -4434,7 +5388,8 @@ function formatPercentPpm(value) {
 }
 
 async function requestSelectedTrace() {
-  if (state.build === "Building" || state.rebuildRequired || !state.application.pid || state.jsonDraft || state.exampleDraft) {
+  if (state.build === "Building" || !state.application.pid || state.jsonDraft || state.exampleDraft
+      || state.editorController && state.editorController.node !== state.selection.id) {
     return;
   }
   const example = selectedTraceCase();
@@ -4446,18 +5401,37 @@ async function requestSelectedTrace() {
     }
     return;
   }
-  const summaryKey = [
-    state.application.fingerprint || "",
-    state.application.pid || 0,
-    example.id,
-    example.status,
-    example.events
-  ].join(":");
+  if (state.regionSelection) return requestRegionTrace(example);
+  const summaryKey = exampleSummaryKey(example);
   const operation = ["trigger", "step"].includes(state.selection.type)
     ? selectedOperation()
     : null;
   const observation = operation ? observationFor(operation) : null;
   if (!observation) {
+    if (state.traceSummaryKey === summaryKey && state.traceSummary || state.traceKey === summaryKey
+        && (state.traceController || state.traceReadError?.key === summaryKey)) return;
+    state.traceController?.abort();
+    const controller = state.traceController = new AbortController();
+    state.traceKey = summaryKey;
+    try {
+      const summary = await readExampleProjection(`/api/examples/${encodeURIComponent(example.id)}/view`, controller.signal);
+      if (controller.signal.aborted || state.traceController !== controller || selectedExampleId() !== example.id
+          || exampleSummaryKey(selectedTraceCase() || {}) !== summaryKey) return;
+      if (Number(summary.application_pid) !== Number(state.application.pid) || !Array.isArray(summary.nodes))
+        throw new Error('Example summary is from another application.');
+      summary.nodes = new Set(summary.nodes || []);
+      state.traceSummary = summary;
+      state.traceSummaryKey = summaryKey;
+      state.traceReadError = null;
+      refreshTraceView();
+    } catch (error) {
+      if (error.name !== 'AbortError' && state.traceController === controller) {
+        state.traceReadError = {key:summaryKey, message:error.message};
+        renderExampleContext();
+      }
+    } finally {
+      if (state.traceController === controller) state.traceController = null;
+    }
     return;
   }
   const casesKey = [
@@ -4471,7 +5445,8 @@ async function requestSelectedTrace() {
     operation.id
   ].join(":");
   const key = summaryKey + ":" + casesKey;
-  if (state.traceKey === key && (state.traceController || state.traceSummary && state.traceCasesKey === casesKey)) {
+  if (state.traceKey === key && (state.traceController || state.traceReadError?.key === summaryKey
+      || state.traceSummary && state.traceCasesKey === casesKey)) {
     return;
   }
   state.traceController?.abort();
@@ -4480,25 +5455,30 @@ async function requestSelectedTrace() {
   state.traceKey = key;
   const applicationPid = Number(state.application.pid);
   try {
-    const summaryRequest = state.traceSummaryKey === summaryKey && state.traceSummary
-      ? Promise.resolve(state.traceSummary)
-      : readExampleProjection(
+    const summary = state.traceSummaryKey === summaryKey && state.traceSummary
+      ? state.traceSummary
+      : await readExampleProjection(
         `/api/examples/${encodeURIComponent(example.id)}/view`,
         controller.signal
       );
-    const casesRequest = state.traceCasesKey === casesKey
-      ? Promise.resolve({
+    if (controller.signal.aborted || state.traceController !== controller || state.traceKey !== key) return;
+    if (Number(summary.application_pid) !== applicationPid
+        || !(summary.nodes instanceof Set) && !Array.isArray(summary.nodes)) {
+      throw new Error("Example summary is from another application.");
+    }
+    summary.nodes = summary.nodes instanceof Set
+      ? summary.nodes
+      : new Set(summary.nodes.filter(Number.isInteger));
+    state.traceSummary = summary;
+    state.traceSummaryKey = summaryKey;
+    const stepCases = state.traceCasesKey === casesKey
+      ? {
         application_pid: state.traceCasesPid,
         node: observation.node,
         cases: state.traceCases
-      })
-      : readExampleProjection(`/api/examples/steps/${observation.node}`, controller.signal);
-    const [summary, stepCases] = await Promise.all([summaryRequest, casesRequest]);
-    summary.nodes = summary.nodes instanceof Set
-      ? summary.nodes
-      : new Set((summary.nodes || []).filter(Number.isInteger));
-    if (Number(summary.application_pid) !== applicationPid
-        || !Array.isArray(stepCases.cases)
+      }
+      : await readExampleProjection(`/api/examples/steps/${observation.node}`, controller.signal);
+    if (!Array.isArray(stepCases.cases)
         || Number(stepCases.application_pid) !== applicationPid
         || Number(stepCases.node) !== observation.node) {
       throw new Error("Built Example projection is from another application process.");
@@ -4506,8 +5486,7 @@ async function requestSelectedTrace() {
     if (controller.signal.aborted || state.traceController !== controller || state.traceKey !== key) {
       return;
     }
-    state.traceSummary = summary;
-    state.traceSummaryKey = summaryKey;
+    state.traceReadError = null;
     state.traceCases = stepCases.cases.filter(plainObject);
     state.traceCasesKey = casesKey;
     state.traceCasesPid = Number(stepCases.application_pid);
@@ -4521,6 +5500,8 @@ async function requestSelectedTrace() {
         && plainObject(selected?.projection)
       ? selected.projection
       : null;
+    state.traceChanges = state.traceStep && plainObject(state.traceStep.input_context) && plainObject(state.traceStep.context)
+      ? contextChanges(state.traceStep.input_context, state.traceStep.context) : null;
     state.previewCases = matchesBuilt && observation.context === "input"
       ? state.traceCases.flatMap(candidate => plainObject(candidate.projection)
       ? [{
@@ -4540,6 +5521,7 @@ async function requestSelectedTrace() {
     }
     state.traceController = null;
     state.traceStep = null;
+    state.traceReadError = {key:summaryKey, message:error.message};
     state.traceCases = [];
     state.traceCasesKey = "";
     state.traceCasesPid = 0;
@@ -4552,8 +5534,61 @@ async function requestSelectedTrace() {
       stages: [],
       message: error instanceof Error ? error.message : "Built example trace is unavailable."
     };
-    state.runResult = "";
+    state.runResult = exampleRunResult(example);
     refreshTraceView();
+  }
+}
+
+async function requestRegionTrace(example) {
+  const region = state.regionSelection, revision = state.world?.scene?.revision;
+  if (!region || !revision) return;
+  const summaryKey = exampleSummaryKey(example), key = `${summaryKey}:${revision}:${region.id}`;
+  if (state.regionTrace?.key === key) return;
+  state.traceController?.abort();
+  const controller = state.traceController = new AbortController();
+  state.regionTrace = {key, region:region.id, example:example.id, kind:'pending', status:'Loading Example'};
+  renderDockObservation();
+  const current = () => !controller.signal.aborted && state.traceController === controller
+    && state.regionSelection?.id === region.id && selectedExampleId() === example.id
+    && exampleSummaryKey(selectedTraceCase() || {}) === summaryKey && state.world?.scene?.revision === revision;
+  try {
+    const query = new URLSearchParams({revision, region:region.id});
+    const summary = await readExampleProjection(`/api/examples/${encodeURIComponent(example.id)}/view?${query}`, controller.signal);
+    const section = summary.section;
+    if (!current()) return;
+    if (Number(summary.application_pid) !== Number(state.application.pid)
+        || Number(section?.application_pid) !== Number(state.application.pid) || section.region !== region.id
+        || section.revision !== revision || !Array.isArray(section.passages)) throw new Error('Section observation is stale.');
+    summary.nodes = summary.nodes instanceof Set ? summary.nodes : new Set(summary.nodes || []);
+    state.traceSummary = summary;
+    state.traceSummaryKey = summaryKey;
+    state.traceReadError = null;
+    const visit = section.passages[0];
+    if (!visit) {
+      state.regionTrace = {key, region:region.id, example:example.id, kind:'unreached', status:'Not reached by this Example'};
+    } else {
+      const entry = await readExampleProjection(`/api/examples/${encodeURIComponent(example.id)}/steps/${visit.entry.index}`, controller.signal);
+      const exit = visit.exit.index === visit.entry.index ? entry
+        : await readExampleProjection(`/api/examples/${encodeURIComponent(example.id)}/steps/${visit.exit.index}`, controller.signal);
+      if (!current()) return;
+      const failed = failedRunStates.has(exit.status);
+      if ([entry,exit].some(value => Number(value.application_pid) !== Number(state.application.pid))
+          || !plainObject(entry.input_context) || !failed && !plainObject(exit.context)) throw new Error('Section values are unavailable.');
+      state.regionTrace = {key, region:region.id, example:example.id, passages:section.passages, index:0,
+        kind:failed ? 'failed' : 'succeeded', progress:`${section.reached}/${section.count}`,
+        status:failed ? `Stopped at ${visit.exit.name}, ${section.reached}/${section.count} reached` : `${section.reached}/${section.count} reached`,
+        changes:failed ? {before:entry.input_context} : contextChanges(entry.input_context, exit.context)};
+    }
+    refreshTraceView();
+  } catch (error) {
+    if (current()) {
+      state.regionTrace = {key, region:region.id, example:example.id, kind:'unavailable', status:error.message || 'Example data unavailable'};
+      state.traceReadError = {key:summaryKey, message:state.regionTrace.status};
+      renderExampleContext();
+      renderDockObservation();
+    }
+  } finally {
+    if (state.traceController === controller) state.traceController = null;
   }
 }
 
@@ -4562,7 +5597,10 @@ async function readExampleProjection(path, signal) {
   const source = await response.text();
   if (!response.ok) {
     const failure = parseExact(source);
-    throw new Error(failure.message || "Built example trace is unavailable.");
+    throw new Error(response.status === 409 ? 'Example changed. Retry after the update.'
+      : response.status === 413 ? 'Example values exceed the display limit.'
+      : response.status === 503 ? 'Application is updating or busy. Retry when ready.'
+      : failure.message || 'Recorded Example values could not be read.');
   }
   const projection = parseExact(source);
   if (!plainObject(projection)) {
@@ -4572,21 +5610,12 @@ async function readExampleProjection(path, signal) {
 }
 
 function selectedTraceCase() {
-  if (state.exampleIndex < 0 || state.rebuildRequired) return null;
-  const operation = state.selection.type === "trigger" || state.selection.type === "step"
-    ? node(state.selection.id)
-    : null;
-  const trigger = operation ? triggerFor(operation.id) : null;
-  if (!trigger) {
-    return null;
-  }
-  const index = Math.max(0, Math.min(state.exampleIndex, trigger.examples.length - 1));
+  if (state.exampleIndex < 0) return null;
   const example = state.application.example;
-  return example?.trigger === trigger.id && Number(example.index) === index ? example : null;
+  return example?.id === selectedExampleId() ? example : null;
 }
 
 function selectTracePreview(example = selectedTraceCase()) {
-  const summary = state.traceSummary || {};
   const operation = state.selection.type === "step" ? selectedOperation() : null;
   const reached = operation && plainObject(state.traceStep) ? state.traceStep : null;
   if (reached) {
@@ -4598,19 +5627,21 @@ function selectTracePreview(example = selectedTraceCase()) {
   } else {
     state.preview = null;
   }
-  if (plainObject(summary.result)) {
-    const result = { example: example?.name, ...summary.result };
-    state.runResult = JSON.stringify(result, null, 2);
-  } else if (example && !["succeeded", "running", "queued"].includes(example.status)) {
-    state.runResult = JSON.stringify({
+  state.runResult = exampleRunResult(example);
+  refreshTraceView();
+}
+
+function exampleRunResult(example) {
+  const summary = state.traceSummaryKey === exampleSummaryKey(example || {}) ? state.traceSummary : null;
+  if (plainObject(summary?.result)) return JSON.stringify({example:example?.name, ...summary.result}, null, 2);
+  if (example && !["succeeded", "running", "queued"].includes(example.status)) {
+    return JSON.stringify({
       example: example.name,
       status: example.status,
       ...(example.message ? { message: example.message } : {})
     }, null, 2);
-  } else {
-    state.runResult = "";
   }
-  refreshTraceView();
+  return "";
 }
 
 function selectedCandidates(operation, options, outcome) {
@@ -4629,14 +5660,29 @@ function selectedCandidates(operation, options, outcome) {
 }
 
 function refreshTraceView() {
+  renderExampleContext();
+  updateWorldMarks(state.world?.scene);
   applyExampleCoverage();
-  refreshPickerOptions();
-  renderPreview();
   if (state.pathPicker) {
     renderBuildStatus();
     refreshPathPicker();
     return;
   }
+  for (const slot of document.querySelectorAll("[data-issues-owner]")) {
+    const markup = issueList(slot.dataset.issuesOwner);
+    const template = document.createElement("template");
+    template.innerHTML = markup;
+    for (const open of slot.querySelectorAll('details[open][id]')) {
+      const matching=[...template.content.querySelectorAll('details[id]')].find(detail=>detail.id===open.id);
+      if(matching)matching.open=true;
+    }
+    const comparable=slot.cloneNode(true);
+    for(const article of comparable.querySelectorAll('article[hidden]'))article.removeAttribute('hidden');
+    comparable.hidden=!comparable.children.length;
+    if (!comparable.isEqualNode(template.content.firstElementChild)) slot.replaceWith(template.content.firstElementChild);
+  }
+  refreshPickerOptions();
+  renderPreview();
   refreshNestedOptions();
   renderRunResult();
 }
@@ -4662,8 +5708,9 @@ function applyExampleCoverage() {
   const examples = state.application.examples;
   if (!state.project) return;
   const deployed = state.builtProject || state.project;
-  const bits = !state.rebuildRequired && state.application.state === "running" ? examples?.coverage_bits || "" : "";
+  const bits = state.application.state === "running" ? examples?.coverage_bits || "" : "";
   if (state.coverageSource !== deployed || state.coverageBits !== bits) {
+    state.coverageBytes = bits ? Uint8Array.from(atob(bits), character => character.charCodeAt(0)) : new Uint8Array();
     state.worldCovered = exampleCoverage(bits, deployed);
     state.worldCovered.delete("app");
     state.coverageSource = deployed;
@@ -4694,23 +5741,28 @@ function renderPreview() {
   renderDockObservation();
   const operation = selectedOperation();
   if (!operation) return;
-  const results = document.querySelector("#example-results-values");
-  if (results) {
-    const content = exampleResultsValues(operation);
-    if (results.innerHTML !== content) results.innerHTML = content;
-  }
   refreshPathObservations(operation);
+  const feedback = document.querySelector('#preview-observation');
+  if (feedback) {
+    const observed = observedExampleContext(operation);
+    const content = selectedTraceCase() && observed.status ? observationFeedback(observed,'','configure') : '';
+    renderDockMarkup(feedback, content);
+  }
   const inputs = previewInputs(operation);
   document.querySelectorAll("[data-input-result]").forEach(slot => {
     const name = slot.dataset.inputResult;
     const content = inputs.has(name)
-      ? exampleValue(inputs.get(name), `data-preview-input-value="${html(name)}"`) : "";
+      ? `<span class="value-status">Value used</span>${exampleValue(inputs.get(name), `data-preview-input-value="${html(name)}"`)}` : "";
     if (slot.innerHTML !== content) slot.innerHTML = content;
   });
   const first = document.querySelector("[data-preview-input-value]");
   if (first && state.selection.type === "step") first.id = "preview-source";
   const error = document.querySelector("#preview-error");
-  if (error) error.textContent = state.preview?.message || "";
+  if (error) {
+    const message=state.preview?.message || '';
+    error.textContent=nodeIssues(operation.id).some(diagnostic=>diagnostic.message===message
+      || diagnostic.node_name && diagnostic.message===diagnostic.node_name+': '+message) ? '' : message;
+  }
   document.querySelectorAll("[data-preview-slot]").forEach(slot => {
     slot.innerHTML = previewStage(
       operation,
@@ -4719,6 +5771,7 @@ function renderPreview() {
     );
   });
   refreshCandidateSelection();
+  renderFieldDiagnostics(operation);
 }
 
 function refreshCandidateSelection() {
@@ -4796,39 +5849,39 @@ function previewInputs(operation) {
 }
 
 function observedExampleContext(operation, after = false) {
-  if (state.build !== "Built" || state.pendingProject) return { status: "Pending build" };
+  if (state.build !== "Built" || state.pendingProject) return { kind:'pending', status: "Pending build" };
   const selected = selectedTraceCase();
   const example = selected && state.traceCases.find(candidate => candidate.id === selected.id);
-  if (!example) return { status: state.traceController ? "Loading example" : "Unavailable" };
-  if (["queued", "running"].includes(example.status)) return { status: "Example running" };
-  const projection = example.projection;
-  if (state.traceContext === "input" && !plainObject(projection)) return { status: "Not reached" };
+  if (!example) return { kind:state.traceController ? 'pending' : 'unavailable', status: state.traceController ? "Loading Example" : "Values unavailable" };
+  if (["queued", "running"].includes(example.status)) return { kind:'pending', status: "Example running" };
+  const projection = state.traceStep?.id === operation.id ? state.traceStep : example.projection;
+  if (state.traceContext === "input" && !plainObject(projection)) return { kind:'unreached', status:'Not reached by this Example' };
   if (after && state.traceContext !== "input"
-      && definitionFor(operation)?.kind !== "trigger") return { status: "Pending build" };
+      && definitionFor(operation)?.kind !== "trigger") return { kind:'pending', status: "Pending build" };
   const context = state.traceContext === "trigger" ? example.initial_context
     : after || state.traceContext === "output" ? projection?.context : projection?.input_context;
-  return plainObject(context) ? { root: { context } } : { status: "Unavailable" };
+  return plainObject(context) ? { root: { context } } : { kind:'unavailable', status: "Values unavailable" };
 }
 
 function pathValues(operation, input, path, locator) {
   if (!path?.length) return "";
   const before = observedExampleContext(operation);
-  if (before.status) return `<span class="value-status">${before.status}</span>`;
+  if (before.status) return "";
   const value = valueAt(before.root, path);
   if (definitionFor(operation)?.kind === "trigger") return exampleValue(value, 'data-path-value="after"');
   const received = locator[0] === "receives" ? `data-preview-input-value="${html(locator[1])}"` : "";
   const source = exampleValue(value, `data-path-value="before" ${received}`);
   if (input.access === "read") return source;
   const after = observedExampleContext(operation, true);
-  const result = after.status ? `<span class="value-status">${after.status}</span>`
-    : exampleValue(valueAt(after.root, path), `data-path-value="after"${
+  if (after.status) return source;
+  const result = exampleValue(valueAt(after.root, path), `data-path-value="after"${
       locator[0] === "returns" ? ` data-preview-output="${html(locator[1])}"` : ""}`);
   return `${source}<span class="value-arrow" aria-label="becomes">&rarr;</span>${result}`;
 }
 
 function pathChoiceValue(operation, path) {
   const observation = observedExampleContext(operation);
-  return observation.status ? `<span class="value-status">${observation.status}</span>`
+  return observation.status ? ""
     : exampleValue(valueAt(observation.root, path), "", false);
 }
 
@@ -4872,18 +5925,20 @@ function renderRunResult() {
   }
 }
 
-function dirty(projectChanged = true) {
-  if (projectChanged || !Object.keys(documentChanges(state.builtProject, state.project)).length) {
+function dirty(projectChanged = true, {keepForm = false} = {}) {
+  cancelAttention();
+  if (!state.saveFailure?.reload && (projectChanged || !Object.keys(documentChanges(state.builtProject, state.project)).length)) {
     state.saveFailure = null;
   }
   if (projectChanged) {
-    if (state.builtProject && !state.builtProject.nodes.some(operation => operation.id === state.selection.id)) {
+    if (state.selection.type === 'trigger' && state.builtProject
+        && !state.builtProject.nodes.some(operation => operation.id === state.selection.id)) {
       state.revealNode = state.selection.id;
     }
     clearPreview(false, state.selection.type === "trigger");
     resetMetrics();
     state.pendingProject = true;
-    state.build = "Building";
+    state.build = state.saveFailure?.reload ? 'Not built' : 'Building';
     state.runResult = "";
   }
   state.revision++;
@@ -4900,25 +5955,29 @@ function dirty(projectChanged = true) {
     const creatorSource = JSON.stringify(state.creator);
     enqueueWrite({ revision, projectChanged: functional, projectSource, creatorSource });
   }, 120);
-  render();
+  if (keepForm) {
+    renderBuildStatus();
+    refreshTraceView();
+    refreshInspectorTabs();
+  } else render();
 }
 
-function creatorDirty() {
-  dirty(false);
+function creatorDirty(options) {
+  dirty(false, options);
 }
 
 function enqueueWrite(write) {
   state.pendingWrite = state.pendingWrite
     ? { ...write, projectChanged: state.pendingWrite.projectChanged || write.projectChanged }
     : write;
-  if (!state.writeActive) {
+  if (!state.writeActive && !state.saveFailure?.reload) {
     state.writeActive = true;
     state.writePromise = drainWrites();
   }
 }
 
 async function drainWrites() {
-  while (state.pendingWrite) {
+  while (state.pendingWrite && !state.saveFailure?.reload) {
     const write = state.pendingWrite;
     state.pendingWrite = null;
     await save(write.revision, write.projectChanged, write.projectSource, write.creatorSource);
@@ -4943,6 +6002,7 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     state.pendingProject ||= projectChanged;
     return false;
   }
+  let requestSent=false;
   try {
     const project = parseExact(projectSource);
     const creator = parseExact(creatorSource);
@@ -4950,78 +6010,43 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     const changes = projectChanged ? documentChanges(state.builtProject, project) : {};
     const removedFlows = [...state.removedFlows];
     if (removedFlows.length) changes.remove_flows = removedFlows;
-    if (Object.keys(changes).length || projectChanged && state.rebuildRequired) {
-      const projectResponse = await fetch("/api/project", {
-        method: "PATCH",
+    const metadataChanges = documentChanges(state.savedCreator, creator);
+    if (Object.keys(changes).length || Object.keys(metadataChanges).length) {
+      requestSent=true;
+      const response = await fetch("/api/editor", {
+        method: "POST",
         headers: mutationHeaders(),
-        body: JSON.stringify({ revision: state.projectVersion, changes })
+        body: JSON.stringify({ revision: state.projectVersion, creator_revision:state.creatorVersion,
+          command:{kind:"patch", project:changes, creator:metadataChanges, node:state.selection.id} })
       });
-      payload = parseExact(await projectResponse.text());
-      // Persistence may succeed even if activation fails. Keep the acknowledged edit baseline
-      // separate from whether that source reached the running application, including stale replies.
-      if (projectResponse.ok || payload.saved === true) {
-        state.projectVersion = payload.revision;
-        state.builtProject = project;
-        state.rebuildRequired = !projectResponse.ok;
-        if (state.rebuildRequired) clearPreview(true);
-        state.removedFlows = state.removedFlows.filter(id => !removedFlows.includes(id));
-        state.pendingPrune ||= removedFlows.length > 0;
-        state.workspace = payload.workspace;
-        state.sceneDirty = true;
-      }
-      if (!projectResponse.ok) {
-        // Appearance edits advance the UI revision without replacing the functional draft.
+      payload = parseExact(await response.text());
+      if (!response.ok) {
         if (revision === state.revision || projectSource === JSON.stringify(state.project)) {
-          state.saveFailure = {
-            message: payload.message || "Review the highlighted fields. Your draft is kept in the editor.",
-            retryable: projectResponse.status >= 500
-          };
+          const retainedFailure=state.saveFailure?.retryable && Object.keys(documentChanges(state.builtProject,project)).length>0;
+          state.saveFailure={message:payload.message || payload.diagnostics?.[0]?.message || 'Project could not be saved.',
+            retryable:response.status>=500 || response.status!==409 && Boolean(retainedFailure)};
         }
         if (revision === state.revision) {
           if (payload.application) {
             replaceApplication(payload.application);
           }
-          state.diagnostics = payload.diagnostics || [{
-            code: "CREATOR_SAVE_FAILED",
-            message: payload.message || "Project is not buildable.",
-            path: ""
-          }];
+          state.diagnostics = payload.diagnostics || [response.status === 409
+            ? { code: "CREATOR_EDIT_CONFLICT", message: "The project changed in another editor. Your unsaved changes are retained. Reload before saving.", path: "" }
+            : { code: "CREATOR_SAVE_FAILED", message: payload.message || "Project is not buildable.", path: "" }];
           state.build = "Not built";
           render();
         }
         return false;
       }
-    }
-    const metadataChanges = documentChanges(state.savedCreator, creator);
-    if (state.pendingPrune) metadataChanges.prune_removed_steps = true;
-    if (Object.keys(metadataChanges).length) {
-      const creatorResponse = await fetch("/api/creator", {
-        method: "PATCH",
-        headers: mutationHeaders(),
-        body: JSON.stringify({ revision: state.creatorVersion, changes: metadataChanges })
-      });
-      payload = parseExact(await creatorResponse.text());
-      if (!creatorResponse.ok) {
-        if (revision === state.revision) {
-          const retryProject = state.saveFailure?.retryable === true
-            && Object.keys(documentChanges(state.builtProject, project)).length > 0;
-          state.diagnostics = payload.diagnostics || [{
-            code: "CREATOR_METADATA_SAVE_FAILED",
-            message: payload.message || "Creator metadata could not be saved.",
-            path: ""
-          }];
-          state.saveFailure = {
-            message: payload.message || "Appearance changes could not be saved. Your draft is kept in the editor.",
-            retryable: retryProject || creatorResponse.status >= 500
-          };
-          state.build = "Not saved";
-          render();
-        }
-        return false;
-      }
+      // A stale UI response still advances the transport baseline for the next queued save.
+      state.projectVersion = payload.revision;
       state.creatorVersion = payload.creator_revision;
+      state.history = payload.history;
+      if (projectChanged) state.builtProject = project;
       state.savedCreator = creator;
-      state.pendingPrune = false;
+      state.removedFlows = state.removedFlows.filter(id => !removedFlows.includes(id));
+      state.workspace = payload.workspace;
+      state.sceneDirty = true;
     }
     if (revision !== state.revision) {
       return true;
@@ -5029,7 +6054,7 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     if (payload?.application) {
       replaceApplication(payload.application);
     }
-    state.build = state.rebuildRequired || Object.keys(documentChanges(state.builtProject, state.project)).length ? "Not built" : "Built";
+    state.build = Object.keys(documentChanges(state.builtProject, state.project)).length ? "Not built" : "Built";
     if (state.build === "Built") {
       state.saveFailure = null;
       state.diagnostics = payload?.diagnostics || state.diagnostics;
@@ -5038,7 +6063,8 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     if (state.pathPicker) {
       renderBuildStatus();
       const status = document.querySelector("#change-status");
-      if (status) status.outerHTML = changeStatus();
+      // Keep the active chooser stationary until its form is rebuilt on close.
+      if (status && state.build === 'Built') status.style.visibility = 'hidden';
       if (!refreshPathPicker()) {
         render();
       }
@@ -5051,6 +6077,12 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     }
     return true;
   } catch (error) {
+    if(requestSent) {
+      state.saveFailure={message:'Save not confirmed.',retryable:true,reload:true};
+      state.build='Not built';
+      render();
+      return false;
+    }
     if (revision === state.revision || projectChanged && projectSource === JSON.stringify(state.project)) {
       state.saveFailure = { message: "Creator could not confirm this change. Your draft is kept in the editor.", retryable: true };
     }
@@ -5236,6 +6268,7 @@ function iconKey(icon) {
 function releaseUnusedIconUrls() {
   const live = new Set();
   Object.values(state.world?.scene?.icons || {}).forEach(icon => live.add(iconKey(icon)));
+  if(document.querySelector('#presentation-symbols[open]'))state.icons?.forEach(icon=>live.add(iconKey(icon)));
   state.creator.groups.forEach(group => {
     if (group.icon) {
       live.add(iconKey(group.icon));
@@ -5301,8 +6334,9 @@ function authoredOutcomeInput(definition) {
     .find(field => field.type === "candidates" && field.authored_outcomes);
 }
 
-function outcomeLabel(candidate, outcome) {
-  return stepPresentation(candidate?.id).outcomes?.[outcome] || inputLabel(outcome);
+function outcomeLabel(candidate, outcome, fallback = inputLabel(outcome)) {
+  const labels=stepPresentation(candidate?.id).outcomes;
+  return labels && Object.hasOwn(labels,outcome) && labels[outcome] || fallback;
 }
 
 function outcomeTarget(candidate, outcome) {
@@ -5336,8 +6370,7 @@ function insertionAllowed(candidate, outcome) {
   const destination = destinations[0];
   const target = node(destination);
   return destination === "end" || Boolean(target
-    && definitionFor(target)?.kind === "step"
-    && state.project.links.filter(link => link.to === destination).length === 1);
+    && definitionFor(target)?.kind === "step");
 }
 
 function reachableSteps(trigger) {
@@ -5383,11 +6416,11 @@ function groupPages() {
 }
 
 function stepPresentation(id) {
-  return state.creator.steps[id] || {};
+  return Object.hasOwn(state.creator.steps,id) ? state.creator.steps[id] : {};
 }
 
 function setOutcomeLabel(id, outcome, label) {
-  const presentation = state.creator.steps[id] || {};
+  const presentation = stepPresentation(id);
   const outcomes = presentation.outcomes || {};
   if (label === undefined) {
     delete outcomes[outcome];
@@ -5434,7 +6467,7 @@ function flowTrigger(operation) {
 
 async function openGroupManager(id = "") {
   const selected = selectedOperation();
-  state.managedGroup = id || state.regionSelection?.group || groupForStep(selected?.id)?.id || state.creator.groups[0]?.id || "";
+  state.managedGroup = id || state.regionSelection?.group || groupForStep(selected?.id)?.id || "";
   state.groupQuery = "";
   state.groupPicker = null;
   state.inspectorMode = "groups";
@@ -5461,7 +6494,7 @@ function setStepGroup(stepId, groupId, save = true) {
       || (groupId && !state.creator.groups.some(group => group.id === groupId))) {
     return false;
   }
-  const presentation = state.creator.steps[stepId] || {};
+  const presentation = stepPresentation(stepId);
   if (groupId) {
     presentation.group = groupId;
     state.creator.steps[stepId] = presentation;
@@ -5477,8 +6510,15 @@ function setStepGroup(stepId, groupId, save = true) {
   if (save) {
     state.revealNode = stepId;
     creatorDirty();
+    document.querySelector('#choose-group')?.focus({preventScroll:true});
   }
   return true;
+}
+
+function closeGroupPicker() {
+  state.groupPicker = null;
+  render();
+  document.querySelector('#choose-group')?.focus({preventScroll:true});
 }
 
 function deleteGroup(id) {
@@ -5517,16 +6557,38 @@ function selectedOperation() {
   return node(state.selection.id);
 }
 
+function editableOperation(locator) {
+  const operation = selectedOperation();
+  let cursor = operation, fields, input, inputSlot = false;
+  // Materialize only the edited path. Sibling defaults must stay omitted.
+  for (const part of locator) {
+    if (!plainObject(cursor) && !Array.isArray(cursor)) break;
+    if (inputSlot) {
+      input = fields?.find(field => field.name === part);
+      if (input && !Object.hasOwn(cursor,part)) {
+        const fallback = defaultInput(input);
+        if (input.type === 'options' && fallback) fallback.inputs = {};
+        if (input.type === 'candidates') fallback.forEach(candidate => candidate.inputs = {});
+        if (fallback !== undefined) cursor[part] = fallback;
+      }
+      inputSlot = false;
+    } else if (part === 'inputs') {
+      fields = definitionOf(cursor.use)?.inputs || input?.options?.find(option => option.name === cursor.option)?.inputs;
+      if (fields && !Object.hasOwn(cursor,part)) cursor[part] = {};
+      inputSlot = true;
+    } else if (cursor === operation && ['receives','returns'].includes(part) && !Object.hasOwn(cursor,part)) {
+      cursor[part] = {};
+    }
+    cursor = cursor[part];
+  }
+  return operation;
+}
+
 function selectStep(id) {
   clearPreview();
   resetMetrics();
   state.exampleDraft = null;
   state.selection = { type: "step", id };
-  const trigger = triggerFor(id);
-  if (trigger && state.exampleTrigger !== trigger.id) {
-    state.exampleTrigger = trigger.id;
-    state.exampleIndex = 0;
-  }
   state.inspectorMode = "inspect";
   state.pathPicker = null;
   clearInputQueries();
@@ -5540,8 +6602,9 @@ function selectStep(id) {
 function presentationOwner(target) {
   const [kind, id] = target.split(":", 2);
   if (kind === "step" && node(id)) {
-    state.creator.steps[id] = state.creator.steps[id] || {};
-    return state.creator.steps[id];
+    const presentation = stepPresentation(id);
+    state.creator.steps[id] = presentation;
+    return presentation;
   }
   if (kind === "group") {
     return state.creator.groups.find(group => group.id === id) || null;
@@ -5559,10 +6622,10 @@ function updatePresentation(target, field, source) {
     : trimmed;
   const defaults = RailixWorld.appearance;
   const parsed = ["aspect", "roundness"].includes(field) && value !== "" ? Number(value) : value;
-  setPresentation(target, field, parsed === "" || parsed === defaults[field] ? undefined : parsed);
+  setPresentation(target, field, parsed === "" || parsed === defaults[field] ? undefined : parsed, {keepForm:true});
 }
 
-function setPresentation(target, field, value) {
+function setPresentation(target, field, value, options) {
   const owner = presentationOwner(target);
   if (!owner || !["name", "color", "icon", "shape", "aspect", "roundness"].includes(field)) {
     return;
@@ -5576,7 +6639,7 @@ function setPresentation(target, field, value) {
   if (kind === "step" && !Object.keys(owner).length) {
     delete state.creator.steps[id];
   }
-  creatorDirty();
+  creatorDirty(options);
 }
 
 function node(id) {
@@ -5731,11 +6794,23 @@ function html(value) {
 }
 
 function showInspector(open) {
+  if(!open){closeSettings(false);closeProjectImport(false);}
   document.querySelector("#inspector").hidden = !open;
-  if (!open) document.querySelector("#graph").focus({ preventScroll: true });
+  if (!open) {
+    state.iconController?.abort();
+    document.querySelector("#graph").focus({ preventScroll: true });
+  } else if(innerWidth>650) {
+    const handle=document.querySelector('#inspector-resize');
+    handle.setAttribute('aria-valuenow',String(Math.round(document.querySelector('#inspector').getBoundingClientRect().width)));
+    handle.setAttribute('aria-valuemax',String(Math.max(320,innerWidth-240)));
+  }
 }
 
 function clearSelection() {
+  cancelAttention();
+  state.selectedSteps.clear();
+  state.groupDraft = null;
+  state.world?.connection(null);
   state.editorRequest++;
   state.editorController?.abort();
   state.world?.cancelFocus();
@@ -5751,17 +6826,79 @@ function clearSelection() {
   render();
 }
 
-document.addEventListener("click", event => {
-  const groupPointer = state.groupPointer;
-  state.groupPointer = null;
-  // An Inspector opening beneath the pointer must not steal the second group click.
-  if (event.detail === 2 && groupPointer && groupPointer.id === state.regionSelection?.id
-    && Math.hypot(event.clientX - groupPointer.x, event.clientY - groupPointer.y) <= 4) {
-    event.preventDefault();
-    focusRegion(groupPointer.id);
+document.addEventListener('toggle', event => {
+  const branch = event.target;
+  if(branch.id==='presentation-symbols') {
+    if(branch.open)void loadIcons();else {state.iconController?.abort();releaseUnusedIconUrls();}
     return;
   }
+  if (!branch.matches('#selection-evidence details') || !branch.isConnected) return;
+  const view = state.evidenceView, snapshot = branch.hasAttribute('data-context-snapshot');
+  const value = branch.dataset.contextValue, token = value || branch.dataset.contextBranch;
+  if (!token) return;
+  const key = value ? `value:${branch.dataset.contextSide}:` + token : (snapshot ? 'before:' : '') + token;
+  const initial = branch.dataset.contextDefaultOpen === 'true';
+  if ((view.open.get(key) ?? initial) === branch.open) return;
+  view.open.set(key,branch.open);
+  renderDockObservation();
+}, true);
+
+document.addEventListener("click", event => {
+  if (event.target.closest('#creator-retry')) { window.location.reload(); return; }
   const target = event.target;
+  const icon=target.closest('[data-select-icon]');
+  if(icon) {
+    const selected=state.icons?.find(item=>item.id===icon.dataset.selectIcon);
+    const owner=presentationOwner(document.querySelector('#presentation-symbols').dataset.presentationTarget);
+    if(selected && owner){owner.icon={media_type:selected.media_type,data:selected.data};creatorDirty();}
+    return;
+  }
+  if(target.closest('[data-retry-icons]')){void loadIcons();return;}
+  const setting = target.closest('[data-show-setting]');
+  if (setting) {
+    state.inspectorMode='inspect';
+    render();
+    focusDiagnosticPath(setting.dataset.showSetting);
+    return;
+  }
+  const inspected = target.closest('[data-inspect-region]');
+  if (inspected) {
+    const region = state.world.scene.nodes.find(node => node.id === inspected.dataset.inspectRegion);
+    if (region) selectWorldGroup(region.group, region.id);
+    return;
+  }
+  const arrival=target.closest('[data-insert-arrival]');
+  if (arrival && state.picker?.mode === 'arrival') {
+    const link=state.picker.arrivals.find(link=>link.from+'.'+link.outcome===arrival.dataset.insertArrival);
+    if (link) void openBeltPicker(link.from,link.outcome);
+    return;
+  }
+  const reuse = target.closest('[data-reuse-item]');
+  const reusePage=target.closest('[data-reuse-page]');
+  if(reusePage && state.picker) {state.picker.offset=Number(reusePage.dataset.reusePage);void loadReusable();return;}
+  if (reuse && state.picker) {
+    state.picker.chosen = state.picker.items.find(item => item.id === reuse.dataset.reuseItem && item.kind === reuse.dataset.reuseType);
+    const options = document.querySelector('#step-options');
+    options.innerHTML = pickerOptions();
+    options.scrollTop = 0;
+    document.querySelector('[data-apply-reuse]')?.focus({preventScroll:true}); return;
+  }
+  if (target.closest('[data-apply-reuse]')) { void placeReuse(target.closest('[data-apply-reuse]').dataset.applyReuse); return; }
+  if (target.closest('[data-cancel-reuse]') && state.picker) {
+    state.picker.chosen = null;
+    const options = document.querySelector('#step-options');
+    options.innerHTML = pickerOptions();
+    options.scrollTop = 0;
+    document.getElementById(state.picker.kind === 'group' ? 'group-insert-search' : 'step-search')?.focus({preventScroll:true}); return;
+  }
+  if (target.closest('[data-group-selection]')) {
+    void previewGroup(false); return;
+  }
+  if (target.closest('[data-group-range]')) { void previewGroup(true); return; }
+  if (target.closest('[data-cancel-group]')) { state.groupDraft = null; render(); return; }
+  if (target.closest('[data-detach-use]')) {
+    void editorAction({kind:'detach', ...(state.editor.reuse?.group ? {group:state.editor.reuse.group} : {node:state.selection.id})}); return;
+  }
   const tab = target.closest('[data-settings-tab]');
   if (tab) {
     selectSettingsTab(tab.dataset.settingsTab);
@@ -5770,6 +6907,9 @@ document.addEventListener("click", event => {
   }
   const editTrigger = target.closest('[data-edit-trigger]');
   if (editTrigger) {
+    if(state.selection.type==='trigger' && state.selection.id===editTrigger.dataset.editTrigger){
+      state.inspectorMode='examples';render();showInspector(true);return;
+    }
     void selectWorldNode(editTrigger.dataset.editTrigger).then(selected => {
       if (selected) { state.inspectorMode = 'examples'; render(); showInspector(true); }
     });
@@ -5779,13 +6919,79 @@ document.addEventListener("click", event => {
     state.audio?.action('click');
   }
   if (target.closest(".build-indicator")) {
-    document.querySelector('#application-status').innerHTML = buildDetails();
+    document.querySelector('#application-status').dataset.view='runtime';
+    document.querySelector('#application-status').setAttribute('aria-label','Application and build');
+    document.querySelector('#application-details').innerHTML = buildDetails();
+    state.attentionOffset = 0;
+    state.attentionError = '';
+    queueMicrotask(renderAttention);
+    return;
+  }
+  if(target.closest('#issue-count,[data-open-issues]')) {
+    state.attentionOffset=0;
+    state.attentionError='';
+    document.querySelector('#application-status').dataset.view='issues';
+    document.querySelector('#application-status').setAttribute('aria-label','Problems');
+    document.querySelector('#application-details').innerHTML='<header><strong>Problems</strong><button type="button" popovertarget="application-status" popovertargetaction="hide" aria-label="Close problems">Close</button></header><section id="attention-list" aria-label="Problems"></section>';
+    document.querySelector('#application-status').showPopover();renderAttention();return;
+  }
+  const exampleIssue = target.closest('[data-example-issue]');
+  if (exampleIssue) { void openExampleIssue(exampleIssue.dataset.exampleIssue); return; }
+  if (target.closest('[data-retry-example-scope]')) { state.exampleScope=null; renderExampleContext(); scheduleApplicationPoll(0); return; }
+  const issuePage = target.closest('[data-attention-page]');
+  if (issuePage) {
+    state.attentionOffset = Number(issuePage.dataset.attentionPage);
+    renderAttention();
+    document.querySelector('#attention-list li button')?.focus();
+    return;
+  }
+  const location = target.closest('[data-world-level]');
+  if (location) {
+    cancelAttention();showInspector(false);
+    state.world.leave((state.world.navigation.length || 0)-Number(location.dataset.worldLevel));
+    return;
+  }
+  if (target.closest('[data-clear-example]')) {
+    selectExample(-1, {id:state.exampleTrigger});
+    return;
+  }
+  if (target.closest('[data-retry-example]')) { clearPreview(true); void requestSelectedTrace(); renderExampleContext(); return; }
+  const evidenceStep = target.closest('[data-evidence-step]');
+  if (target.closest('[data-evidence-fields]')) {
+    const view = state.evidenceView;
+    for (const branch of document.querySelectorAll('#selection-evidence [data-context-branch]'))
+      view.open.set((branch.hasAttribute('data-context-snapshot') ? 'before:' : '') + branch.dataset.contextBranch, branch.open);
+    view.all = !view.all;
+    renderDockObservation();
+    document.querySelector('[data-evidence-fields]')?.focus({preventScroll:true});
+    return;
+  }
+  const moreContext = target.closest('[data-context-more]');
+  if (moreContext) {
+    const key = (moreContext.hasAttribute('data-context-snapshot') ? 'before:' : '') + moreContext.dataset.contextMore;
+    const parent = moreContext.parentElement.parentElement;
+    state.evidenceView.limits.set(key,Number(moreContext.dataset.contextOffset)+80);
+    const focus = moreContext.id, summary = parent.querySelector(':scope > summary')?.id;
+    renderDockObservation();
+    (document.getElementById(focus) || document.getElementById(summary))?.focus({preventScroll:true});
+    return;
+  }
+  if (evidenceStep) {
+    if (evidenceStep.closest('#application-status')) document.querySelector('#application-status').hidePopover();
+    const id = evidenceStep.dataset.evidenceStep;
+    if(evidenceStep.hasAttribute('data-diagnostic-path'))state.inspectorMode='inspect';
+    void selectWorldNode(id).then(selected => { if (selected) {
+      state.world.focus(id);
+      if(evidenceStep.dataset.diagnosticPath)focusDiagnosticPath(evidenceStep.dataset.diagnosticPath);
+    }});
     return;
   }
   if (target.closest("#project-import-submit")) {
     void importProjectJson();
     return;
   }
+  if (target.closest('#project-import-preview-source')) { updateProjectImportPreview(); return; }
+  if (target.closest("#project-import-reload")) { void importProjectJson(true); return; }
   if (target.closest("#project-import-clear")) {
     clearProjectImport();
     return;
@@ -5793,12 +6999,11 @@ document.addEventListener("click", event => {
   const exampleTrigger = target.closest("[data-locate-trigger]");
   if (exampleTrigger) {
     const id = exampleTrigger.dataset.locateTrigger;
-    void selectWorldNode(id).then(selected => { if (selected) state.world.focus(id); });
+    void selectWorldNode(id).then(selected => { if (selected) state.world.focus(id,.5); });
     return;
   }
   if (target.closest("#dock-focus")) {
-    showInspector(false);
-    void state.world?.focus(state.regionSelection?.id || state.selection.id);
+    state.world?.focus(state.regionSelection?.id || state.selection.id, state.regionSelection ? .5 : undefined);
     return;
   }
   if (target.closest("#enter-region") && state.regionSelection) {
@@ -5869,9 +7074,10 @@ document.addEventListener("click", event => {
     setStepGroup(state.groupPicker.step, assignGroup.dataset.assignGroup);
     return;
   }
-  if (target.closest("#close-group-picker") || target.matches(".group-picker-backdrop")) {
-    state.groupPicker = null;
-    render();
+  const groupDialog = target.matches('#group-dialog') ? target.getBoundingClientRect() : null;
+  if (target.closest("#close-group-picker") || groupDialog && (event.clientX < groupDialog.left
+      || event.clientX > groupDialog.right || event.clientY < groupDialog.top || event.clientY > groupDialog.bottom)) {
+    closeGroupPicker();
     return;
   }
   if (target.closest("#focus-group")) {
@@ -5887,7 +7093,8 @@ document.addEventListener("click", event => {
     return;
   }
   if (target.closest("#retry-save")) {
-    dirty(state.rebuildRequired || Object.keys(documentChanges(state.builtProject, state.project)).length > 0);
+    if(state.saveFailure?.reload){window.location.reload();return;}
+    dirty(Object.keys(documentChanges(state.builtProject, state.project)).length > 0);
     return;
   }
   if (target.closest("#add-next-step")) {
@@ -5914,8 +7121,7 @@ document.addEventListener("click", event => {
     return;
   }
   if (target.matches(".picker-backdrop") || target.closest("[data-close-picker]")) {
-    state.picker = null;
-    render();
+    closePicker();
     return;
   }
   const pathDraft = target.closest("[data-path-draft-json]");
@@ -6016,6 +7222,8 @@ document.addEventListener("click", event => {
   }
   const addPredicateButton = target.closest("[data-add-predicate]");
   if (addPredicateButton) {
+    const picker=addPredicateButton.closest('details');
+    if(picker)picker.open=false;
     addPredicate(
       parseToken(addPredicateButton.dataset.conditionLocator),
       addPredicateButton.dataset.addPredicate
@@ -6065,11 +7273,6 @@ document.addEventListener("click", event => {
     deleteSelection();
     return;
   }
-  const example = target.closest("[data-select-example]");
-  if (example) {
-    selectExample(Number(example.dataset.selectExample));
-    return;
-  }
   if (target.closest("#add-example")) {
     addExample();
     return;
@@ -6081,12 +7284,25 @@ document.addEventListener("click", event => {
 });
 
 document.addEventListener("input", event => {
-  if (event.target.id === "step-search" && state.picker) {
-    state.picker.query = event.target.value;
+  if (event.target.id === 'symbol-search') { renderIconOptions(); return; }
+  if (['step-search','group-insert-search'].includes(event.target.id) && state.picker) {
+    const kind = event.target.id === 'step-search' ? 'step' : 'group';
+    state.picker.kind = kind;
+    state.picker.queries[kind] = event.target.value;
+    state.picker.offset = 0;
+    state.picker.chosen = null;
+    state.picker.items = [];
+    state.picker.matches = 0;
+    state.picker.pageSize = 0;
+    state.picker.loading = true;
     state.world?.preview(null);
-    document.querySelector("#step-options").innerHTML = pickerOptions();
+    replacePickerOptions();
+    void loadReusable();
   } else if (event.target.id === "group-search") {
     state.groupQuery = event.target.value;
+    const detail = document.querySelector('[data-managed-group-details]');
+    const selected = state.creator.groups.find(group => group.id === state.managedGroup);
+    if (detail) detail.hidden = Boolean(state.groupQuery && !groupName(selected || {}).toLowerCase().includes(state.groupQuery.toLowerCase()));
     void loadEditor(state.selection.id).then(loaded => {
       const list = document.querySelector("#group-results");
       if (loaded === "loaded" && list) list.innerHTML = groupListMarkup(state.creator.groups.filter(group =>
@@ -6133,7 +7349,13 @@ document.addEventListener("input", event => {
     document.querySelector("#append-path-index").disabled =
       !validPathIndex(state.pathIndex);
   } else if (event.target.id === "project-import-source") {
+    const reader=state.projectImport.reader;
+    state.projectImport.reader=null;
+    reader?.abort();
+    state.projectImport.preview=null;
+    document.querySelector('#project-import-file').value='';
     projectImportStatus("");
+    renderProjectImport();
   }
 });
 
@@ -6152,6 +7374,11 @@ document.addEventListener("change", event => {
     return;
   }
   const target = event.target;
+  if (target.id === 'project-import-source') { updateProjectImportPreview(); return; }
+  if (target.matches('[data-linked-use]')) { void selectWorldNode(target.value).then(() => state.world.focus(target.value)); return; }
+  if (target.matches('[data-observation-source]')) {
+    selectExample(0, {id:target.value}); return;
+  }
   if (target.id === "theme-select") {
     changeSettings({theme:target.value, theme_variant:''});
     reflectTheme();
@@ -6161,9 +7388,10 @@ document.addEventListener("change", event => {
   if (target.id === 'theme-variant') { changeSettings({theme_variant:target.value}); void applyTheme(); return; }
   if (target.id === 'reduced-motion') { changeSettings({reduced_motion:target.checked}); return; }
   if (target.id === "project-import-file") { void readProjectImportFile(target); return; }
-  if (target.id === "dock-example" || target.id === "results-example") {
-    selectExample(Number(target.value), target.id === "dock-example" && state.hoverTrigger?.id === target.dataset.trigger
-      ? state.hoverTrigger : node(target.dataset.trigger));
+  if (target.id === 'visible-example') {
+    const example = target.selectedOptions[0];
+    if (!target.value) selectExample(-1, {id:state.exampleTrigger});
+    else if (example?.dataset.trigger) selectExample(Number(example.dataset.index), node(example.dataset.trigger) || {id:example.dataset.trigger});
     return;
   }
   if (target.matches("[data-input-json]")) {
@@ -6237,10 +7465,29 @@ document.addEventListener("change", event => {
 });
 
 document.addEventListener("keydown", event => {
-  if (event.isComposing || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
-  const optionList = event.target.matches('input[type="search"]') ? event.target.nextElementSibling
+  if (event.isComposing || event.defaultPrevented || event.altKey) return;
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z'
+      && !event.target.isContentEditable && !event.target.closest('input,textarea,select,[role="textbox"]')) {
+    event.preventDefault();
+    const kind=event.shiftKey?'redo':'undo';
+    if (!document.querySelector(`#editor-${kind}`).disabled) void editorAction({kind});
+    return;
+  }
+  if (event.ctrlKey || event.metaKey) return;
+  if (event.key === 'Tab' && state.groupPicker) {
+    const fields = [...document.querySelectorAll('#group-dialog button:not(:disabled),#group-dialog input:not(:disabled)')]
+      .filter(field => field.getClientRects().length);
+    if (event.target === (event.shiftKey ? fields[0] : fields.at(-1))) {
+      event.preventDefault();
+      (event.shiftKey ? fields.at(-1) : fields[0])?.focus();
+      return;
+    }
+  }
+  const pickerSearch = ['step-search','group-insert-search'].includes(event.target.id);
+  const optionList = pickerSearch ? document.querySelector('#step-options')
+    : event.target.matches('input[type="search"]') ? event.target.nextElementSibling
     : event.target.closest('#step-options,[data-step-options],[data-predicate-options]');
-  const search = optionList?.previousElementSibling;
+  const search = optionList?.id === 'step-options' ? document.getElementById(state.picker?.kind === 'group' ? 'group-insert-search' : 'step-search') : optionList?.previousElementSibling;
   if (search?.matches('input[type="search"]') && ['ArrowDown','ArrowUp','Escape'].includes(event.key)) {
     const options = [...optionList.querySelectorAll('button:not(:disabled)')].filter(button => button.getClientRects().length);
     const index = options.indexOf(event.target);
@@ -6252,7 +7499,9 @@ document.addEventListener("keydown", event => {
   if (event.key !== "Escape") {
     if (editing || event.target.closest('button:not([data-world-id]),[data-world-overlay],#inspector,#overlay')) return;
     const key=event.key.toLowerCase();
-    if (key==='e' && (state.regionSelection || state.selection.id)) {
+    if (key==='e' && !state.regionSelection && !state.selection.id && state.world?.navigation.length) {
+      event.preventDefault(); document.querySelector('#world-location [data-inspect-region]')?.click();
+    } else if (key==='e' && (state.regionSelection || state.selection.id)) {
       event.preventDefault(); showInspector(true);
     } else if (key==='enter' && state.regionSelection) {
       event.preventDefault(); if (!event.repeat) focusRegion(state.regionSelection.id);
@@ -6262,10 +7511,15 @@ document.addEventListener("keydown", event => {
     return;
   }
   if (document.querySelector(':popover-open')) return;
+  if (!document.querySelector('#audio-panel').hidden) {
+    event.preventDefault();closeSettings();return;
+  }
+  if (!document.querySelector('#project-import-panel').hidden) {
+    event.preventDefault();closeProjectImport();return;
+  }
   if (state.picker || state.groupPicker) {
-    state.picker = null;
-    state.groupPicker = null;
-    render();
+    if (state.picker) closePicker();
+    else closeGroupPicker();
     return;
   }
   if (state.pathPicker) {
@@ -6273,10 +7527,39 @@ document.addEventListener("keydown", event => {
     render();
     return;
   }
+  if (state.groupDraft) {
+    event.preventDefault();
+    state.groupDraft = null;
+    render();
+    document.querySelector('[data-group-selection]')?.focus({preventScroll:true});
+    return;
+  }
   if (editing) return;
   if (!document.querySelector("#inspector").hidden) showInspector(false);
   else clearSelection();
 });
+
+document.addEventListener('cancel', event => {
+  if (event.target.id === 'group-dialog') {
+    event.preventDefault();
+    closeGroupPicker();
+  }
+}, true);
+
+document.addEventListener('submit', event => {
+  if (event.target.id !== 'group-draft' || !state.groupDraft) return;
+  event.preventDefault();
+  const command={...state.groupDraft.command,name:new FormData(event.target).get('name')};
+  void editorAction(command).then(result => {
+    if (!result) return;
+    state.groupDraft = null;
+    const region = state.world?.scene?.nodes.find(item => item.kind === 'region' && item.group === command.id);
+    if (region) selectWorldGroup(command.id, region.id);
+    else render();
+    document.querySelector('#inspector-navigation button')?.focus({preventScroll:true});
+  });
+});
+for (const kind of ['undo','redo']) document.querySelector(`#editor-${kind}`).addEventListener('click', () => void editorAction({kind}));
 
 document.addEventListener("visibilitychange", () => {
   clearTimeout(state.groupMeanTimer);
@@ -6288,38 +7571,84 @@ document.addEventListener("visibilitychange", () => {
 });
 
 document.querySelector("#zoom-out").addEventListener("click", () => state.world?.zoom(1 / 1.4));
+document.querySelector('#scope-overview').addEventListener('click', () => state.world?.fit());
 document.querySelector('#leave-group').addEventListener('click', () => state.world?.leave());
 document.querySelector('#theme-download').addEventListener('click', () => void downloadTheme());
 document.querySelector('#toggle-effects').addEventListener('click', () => {
-  const effects = state.settings.effects !== true;
+  const effects = state.settings.effects === false;
   state.audio?.applyPreferences({...state.settings, effects});
   void state.audio?.effects(effects);
   changeSettings({effects});
 });
 document.querySelector('#toggle-music').addEventListener('click', () => void state.audio?.toggleMusic());
-document.querySelector('#audio-panel').addEventListener('toggle', event => { if (event.newState === 'open') void refreshSettings(); });
-document.querySelector('#audio-panel').addEventListener('toggle', event => { if (event.newState === 'open') selectSettingsTab('appearance'); });
+document.querySelector('#open-settings').addEventListener('click',openSettings);
+document.querySelector('#close-settings').addEventListener('click',()=>closeSettings());
+document.querySelector('#open-project-import').addEventListener('click',openProjectImport);
+document.querySelector('#close-project-import').addEventListener('click',()=>closeProjectImport());
+document.querySelector('#application-status').addEventListener('toggle', event => {
+  if (event.newState === 'open') renderAttention();
+  else cancelAttention();
+});
 document.addEventListener('pointerdown', () => {
   if (state.musicGesture || state.settings.music_enabled === false || state.settings.music_volume === 0) return;
   state.musicGesture = true;
   void state.audio?.play();
 }, {once:true, capture:true});
-document.querySelector('#trigger-example').addEventListener('pointerenter', () => clearTimeout(state.hoverTimer));
-document.querySelector('#trigger-example').addEventListener('pointerleave', () => hoverTrigger(''));
-document.querySelector('#trigger-example').addEventListener('focusin', () => clearTimeout(state.hoverTimer));
-document.querySelector('#trigger-example').addEventListener('focusout', () => hoverTrigger(''));
 document.querySelector("#zoom-in").addEventListener("click", () => state.world?.zoom(1.4));
 document.querySelector("#zoom-fit").addEventListener("click", () => { showInspector(false); state.world?.focus('app', .5); });
-window.addEventListener("beforeunload", () => {
+{
+  const handle=document.querySelector('#inspector-resize');
+  let drag=null;
+  const resize=width=>{
+    const maximum=Math.max(320,innerWidth-240), value=Math.round(Math.max(320,Math.min(maximum,width)));
+    document.documentElement.style.setProperty('--inspector-width',value+'px');
+    handle.setAttribute('aria-valuenow',String(value));handle.setAttribute('aria-valuemax',String(maximum));
+  };
+  handle.addEventListener('pointerdown',event=>{
+    if(event.button!==0)return;
+    event.preventDefault();event.stopPropagation();
+    drag={id:event.pointerId,x:event.clientX,width:document.querySelector('#inspector').getBoundingClientRect().width};
+    handle.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener('pointermove',event=>{if(drag?.id===event.pointerId)resize(drag.width+drag.x-event.clientX);});
+  handle.addEventListener('pointerup',event=>{drag=null;if(handle.hasPointerCapture(event.pointerId))handle.releasePointerCapture(event.pointerId);});
+  handle.addEventListener('pointercancel',()=>drag=null);
+  handle.addEventListener('lostpointercapture',()=>drag=null);
+  handle.addEventListener('dblclick',()=>resize(420));
+  handle.addEventListener('keydown',event=>{
+    const width=document.querySelector('#inspector').getBoundingClientRect().width;
+    const next={ArrowLeft:width+32,ArrowRight:width-32,Home:320,End:innerWidth-240,Enter:420}[event.key];
+    if(next===undefined)return;event.preventDefault();event.stopPropagation();resize(next);
+  });
+  window.addEventListener('resize',()=>{
+    handle.setAttribute('aria-valuemax',String(Math.max(320,innerWidth-240)));
+    if(innerWidth>650 && !document.querySelector('#inspector').hidden)handle.setAttribute('aria-valuenow',String(Math.round(document.querySelector('#inspector').getBoundingClientRect().width)));
+  });
+}
+window.addEventListener("beforeunload", event => {
+  const active = document.activeElement;
+  const typing = active?.matches('#inspector-content input:not([type=checkbox]):not([type=radio]):not([type=file]), #inspector-content textarea')
+    && active.value !== active.defaultValue;
+  if (state.actionPending || state.writeActive || state.pendingWrite || state.jsonDraft || state.exampleDraft || state.saveFailure?.reload
+      || document.querySelector('#project-import-source').value.trim() || state.projectImport.reader
+      || typing
+      || state.settingsVersion !== state.savedSettingsVersion
+      || state.audio?.dirtyEditor || state.audio?.mutation
+      || state.builtProject && (Object.keys(documentChanges(state.builtProject, state.project)).length
+        || Object.keys(documentChanges(state.savedCreator, state.creator)).length || state.removedFlows.length)) {
+    event.preventDefault();
+    event.returnValue = true;
+    return;
+  }
   state.audio?.dispose();
   clearTimeout(state.groupMeanTimer);
   state.groupMeanController?.abort();
   state.themeController?.abort();
-  state.hoverController?.abort();
-  clearTimeout(state.hoverTimer);
+  state.iconController?.abort();
   clearTimeout(state.settingsTimer);
   state.world?.dispose();
   clearTimeout(state.applicationPollTimer);
+  state.applicationController?.abort();
   clearTimeout(state.metricsPollTimer);
   clearTimeout(state.observationTimer);
   state.observationController?.abort();
@@ -6328,4 +7657,8 @@ window.addEventListener("beforeunload", () => {
   state.editorController?.abort();
   state.iconUrls.forEach(url => URL.revokeObjectURL(url));
   state.iconUrls.clear();
+});
+window.addEventListener('pagehide',()=>{
+  state.projectImport.reader?.abort();
+  state.projectImport.request?.abort();
 });

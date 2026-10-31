@@ -12,24 +12,92 @@ to [Creator](creator.md).
 
 Decisions: [ADR 0020](../adr/0020-creator-first-application-graph.md). Historical checks: [verification](../verification.md).
 
+## Step And Group Symbols
+
+**Inspector > Appearance > Symbol** searches the existing read-only icon catalog. Built-in symbols
+are embedded. Users can add SVG or PNG files under the configured Railix home's `icons/` directory
+without rebuilding Creator. Opening the chooser refreshes that catalog, while search reads its
+in-memory snapshot. Closing or replacing the chooser cancels its request.
+The existing catalog validates sizes, dimensions and filenames and bounds directory reads.
+Images are displayed as image resources, not inserted as executable markup.
+Choosing a symbol embeds its media type and data in `railix.creator.json`, preserving the selected
+project's appearance independently of the source file. Reset uses the default symbol. Undo restores
+the previous presentation. This metadata never changes the functional project or generated application.
+
 ## Themes And Renderer Descriptors
 
-The CSS material variables live in `app.css`; individual visible machines expose stable
-`data-station-id` and generic `data-kind` attributes. Add local `.css` files under `~/.railix/themes/`,
-including subfolders, then select **Settings > Appearance > Theme**. The panel shows the actual folder
-when Railix home is overridden. Themes are reread when opening Settings; no rebuild is needed.
-The embedded **Railix Foundry** default renders an App headquarters, Trigger portal, routing switch,
-processing buildings, recessed Ends and glass-covered groups with three symbolic inner machines.
-There are no per-contained-Step decorative objects. **Railix Classic** retains the former icon-plate
-machines on the same scene/camera path. Both are selectable and installable as editable theme folders;
-`assets/themes/foundry/theme.css` holds Foundry materials, while `web/app.css` remains the shared baseline.
-Foundry offers exactly **Renderer Canvas** (default) and **Renderer CSS** under **Settings > Appearance > Renderer**,
-each at high quality, without additional quality tiers. CSS keeps individually styleable building faces.
-Canvas reuses embedded PNG machines and scenery and draws moving transport natively, at up to two pixels
-per screen point on high-density displays. Both retain motion, selection, observations and shared group navigation.
-The choices and their names come from the theme descriptor, not a fixed global enum.
-**Install editable copy** installs the theme, variants and descriptor,
-and preserves every existing file. No local folder contents are required for the embedded defaults.
+Shared CSS variables theme the HUD, floor, labels and drawing palette. Add local CSS files under
+`~/.railix/themes/`, including subfolders, then select **Settings > Appearance > Theme**.
+The panel shows the actual folder when Railix home is overridden. Themes are reread when opening
+Settings. No rebuild is needed. User assets override embedded files at the same relative path.
+Settings uses the same resizable side panel as the Inspector, not a floating overlay. Opening it
+preserves the current Step or group selection and Inspector tab. Close or Escape returns to that
+view, or closes the panel if the Inspector was previously closed. Selecting another station shows
+that station instead. Sound-editor drafts remain intact when switching between these views.
+The embedded **Railix Foundry** default uses **Renderer Canvas**. Cached high-resolution building sprites
+share one scene, camera and picking model with native animated transport. Canvas adapts
+to high-density displays and its surface budget. **Railix Classic** supplies an alternative palette,
+not a separate geometry renderer. The CSS world renderer has been removed. CSS still styles the HUD
+and shared materials. Custom descriptors can select Canvas or the optional character renderer.
+A descriptor without an atlas inherits the embedded default atlas. There is no CSS rendering fallback.
+An unavailable saved variant shows a warning and uses its theme's default. A failed theme load retains
+the last working theme. An initial failure reports the error while the embedded Canvas default remains
+available. Its allowlisted embedded asset URLs bypass local overrides, so an invalid installed atlas
+cannot disable the fallback. **Install editable copy** installs the theme, variants and descriptor and preserves existing
+files. No local folder contents are required for embedded defaults.
+
+### Character Renderer Experiment
+
+The optional **Railix Signal (experiment)** theme leaves Foundry as the default.
+Signal uses dependency-free WebGL 2: one low-resolution
+3D scene, followed by a fixed bitmap-character or pixel pass. It is GPU rendering, not a
+CPU-only replacement. Labels, Inspector, editing, observations, scene routing and camera
+navigation remain the existing Creator implementation. No generated-application change is required.
+
+Its descriptor selects `"renderer":"character"`; CSS controls the material palette through
+`--character-ground`, `--character-metal`, `--character-cream`, `--character-roof`,
+`--character-dark`, `--character-edge`, `--character-mint`, `--character-teal`,
+`--character-copper`, `--character-warning` and `--character-error` (six-digit hex colors).
+`--character-cell` controls horizontal
+cell size in CSS pixels, clamped to 2-16. Smaller cells increase detail and rendering work.
+`--character-background` ranges from 0 to 1; `--character-pixels: 1` removes glyphs.
+`--character-density` adjusts the material-to-glyph curve (0.3-2, default 1);
+values below 1 give shadowed building faces denser character strokes without lighting the ground.
+`--character-glow` ranges from 0 to 1 (default 0). It spreads emissive light to four
+neighboring character cells, using the existing color buffer, not a full-resolution blur.
+The embedded variants demonstrate characters with background, glyphs without background,
+and pixels. Install an editable copy or add another theme folder using the same descriptor.
+All variants share geometry and a bundled, platform-independent glyph bitmap, not OS fonts.
+
+**Railix Circuit (experiment)** is a separate comparison theme using the same renderer.
+Its `--character-circuit: 1` preset draws chip housings, open group vaults, routing switches,
+portals and circuit-board scenery. It offers the same Characters, Glyphs and Pixels
+presentations as Signal. Characters is the default: colored glyphs and cell backgrounds,
+including transport, projected casing shadows, etched ground traces and cooling surfaces.
+Glyphs retains strokes only; Pixels is an explicit comparison option. Neither character
+presentation adds a non-character world layer. Luminous casings and selected transport
+light adjacent cells; unlit ground does not receive a full-screen dot texture.
+The cooling shimmer is stylized, not a reflection of scene objects. Geometry still uses the
+same three draw calls; there are no dynamic shadow maps, reflection passes or bloom buffers.
+Ground traces use world coordinates, respect entered-group scale and stay anchored while
+panning and zooming. Sub-cell trace detail fades to avoid distant aliasing. Signal remains
+available for comparison. These optional themes are not a new default.
+
+This spike has two fixed building families. Custom CSS cannot define new meshes, and the existing
+per-Step shape, rounding and color overrides are not yet applied by this renderer. Such metadata
+is preserved for the existing renderers. Different authored building families need a separate
+design decision; executable theme JavaScript is not introduced by this experiment.
+
+Static geometry is uploaded on scene reconciliation, while normal pan/zoom updates camera
+uniforms and animation runs in shaders. Scene drawing uses three draw calls, bounds mesh buffers,
+and caps the output surface at 8 megapixels. Hidden tabs stop animation; switching renderers
+disposes buffers, textures, programs and the graphics context. Context creation failure uses
+the existing Canvas theme and reports the error; context loss shows an explicit warning. Frame intervals and JavaScript
+submission timings are diagnostic measurements, not GPU utilization or battery measurements.
+Packaged-native execution, all-device graphics compatibility and power savings are not established
+by this experiment.
+
+### Custom Theme Folders
 
 A custom theme can use this optional layout. Embedded resources under `assets/` mirror the same
 relative roots as the user directory; each theme owns its own folder:
@@ -53,7 +121,7 @@ The optional sibling descriptor names variants and their files, relative to its 
 CSS URLs resolve relative to the stylesheet, so `variants/line.css` can use
 `url('../assets/portal.svg')`. Local files at embedded paths override only those assets; missing files
 fall back to their embedded equivalents. A Canvas variant adds `"renderer":"canvas"` and an `"atlas"`
-path to its descriptor. PNG and SVG are source formats, not different renderers: both are decoded and
+path to its descriptor. PNG, WebP and SVG are source formats, not different renderers: all are decoded and
 rasterized once, then cached. No PixiJS or other graphics dependency is required. Packaged-Creator tests add
 and edit nested themes, PNG assets and MML sounds/music while the executable is running without system
 Java; the running application and functional project are unaffected. User extensions remain external
@@ -63,18 +131,22 @@ An atlas is version 1 with a `sprites` object. Each entry names a relative `file
 The installed Foundry atlas is the editable example. `step` is the required fallback; existing node
 kinds and output symbols select optional specialized sprites. Source images match the theme's fixed
 camera; arbitrary CSS cannot restyle their internal pixels. The Inspector uses the same loaded image.
-Optional `scenery-ridge`, `scenery-grove` and `scenery-basin` entries replace the corresponding CSS
-environment plots. They use the same loader, resource overrides and bitmap budget. Their ground anchor
-is the plot's top-left world coordinate (a 307.2 by 230.4 world-unit plot); a static first frame is cached
-beneath transport and machines. Missing scenery entries retain CSS, so existing custom atlases still work.
-Foundry includes all three scenery images in Renderer Canvas and in its editable installation.
+Foundry opts into static member previews with `--world-group-preview: 1`. For collapsed groups with
+member samples, Canvas draws up to six silhouettes using the existing theme palette and glass
+canopy. Canvas caches this composition with the other static buildings. It does not add animations
+or image downloads per member. Set this token to `0` when a custom group sprite
+should supply the entire group appearance instead. Other themes keep their existing rendering
+unless they opt in. Missing member samples retain the normal group building.
+The functional workbench does not place decorative scenery. The default atlas therefore omits
+scenery entries instead of downloading and decoding images it never paints. Existing Foundry
+scenery files remain part of its editable installation, not functional graph objects.
 Native foundation colors, selection and cargo use CSS tokens such as `--canvas-wall`,
 `--canvas-selection`, `--canvas-error`, `--canvas-tread`, `--canvas-cargo-top`,
 `--canvas-cargo-light` and `--canvas-cargo-shade`.
 Shape/aspect/roundness overrides still control the common foundation geometry. Atlases are limited to
 64 shared sprites, 16 megapixels decoded in total and 32 frames per sprite, not 64 project Steps.
 Each of the three viewport drawing surfaces is capped at 8 megapixels; high-resolution drawing adapts
-to that surface budget. Broken atlases show a warning and restore CSS instead of leaving an empty world.
+to that surface budget. Broken atlases show a warning and retain the last working Canvas assets.
 Theme assets use a separate read-only, HttpOnly cookie; it cannot authorize project reads or mutations.
 Local asset reads retain the existing 1 MiB per-file boundary; external resources are blocked.
 Themes can select building geometry with `--world-buildings: 1` (Classic uses `0`); taller custom
@@ -109,12 +181,17 @@ editable copies without replacing existing files. Reopening Settings refreshes t
 discarding an unfinished editor draft. Content revisions and a shared filesystem lock reject stale
 saves from another Creator or external edits observed before saving. A conflict keeps the draft;
 refresh the library and reselect the file to load its latest content before editing again.
+Selecting a file with unsaved score edits asks before discarding them. Cancelling retains
+the current file selection and draft. Leaving or reloading also warns about unsaved scores
+or an unfinished library write. The warning is not browser-crash recovery.
 External editors do not share Creator's lock, so edits racing the filesystem replacement itself
 cannot be coordinated. Malformed files remain selectable for repair. Embedded scores
 are read-only originals; edit and save a local MML copy. Existing version-1 JSON scores remain readable
 and are not rewritten merely by opening the editor. Old `sounds/music/` files remain readable;
 new writes and installs use the separate `music/` root. MML overrides win over legacy JSON sources;
 deleting an override can reveal the preserved legacy source again.
+The score editor deletes MML overrides, not preserved legacy sources. A delete without an override
+explains that the legacy source is read-only and an MML copy can be saved.
 Play/Pause retains the same composition. Hidden tabs suspend the music clock and scheduler,
 then resume the same track and position when visible; manual pause and mute remain respected.
 Effects and editor previews release their resources when hidden. Stop or closing the page releases music too.
@@ -159,8 +236,12 @@ snare .15 .001 .09 | r@1 c@2 c@2 c@2 r@1
 Catalog keys distinguish embedded and local scores; event mappings and playlists use those keys
 rather than frontend file lists. `GET/POST /api/settings` uses content
 revisions, bounded reads, atomic replacement and a nonblocking file lock for competing Creator writers.
-Conflicts are explicit, not silent last-writer wins. Settings are read at startup/menu opening, not
-polled. Theme, reduced-motion and audio preferences are shared across projects. CSS is loaded as text under
+Conflicts are explicit, not silent last-writer wins. Settings save/read failures remain visible in
+every Settings tab, not only Appearance. Settings are read at startup/menu opening, not
+polled. Preference edits made before the first read completes are retained over the loaded values
+and saved once its revision is available. A stale read cannot replace a later accepted snapshot or save.
+Theme, reduced-motion and audio preferences are shared across projects.
+CSS is loaded as text under
 a same-origin page policy; no remote imports/assets, script evaluation, or symlink traversal are allowed.
 
 Local themes with matching IDs replace theme catalog entries, not duplicate them;
@@ -178,7 +259,9 @@ conservative height envelope for culling; no per-machine layout reads are added 
 deletes or installs defaults. Revisions hash current local sources. An unsaved browser draft retains
 the revision it loaded even when the catalog refreshes.
 Pinned directory handles, no-follow reads and atomic replacement avoid path traversal and partial
-updates. Default installation uses CREATE_NEW. Directory creation uses pinned parents and has no
+updates. Theme and score creation share the same secure directory traversal and CREATE_NEW writer.
+A failed new-file write removes its incomplete file without replacing existing user files.
+Directory creation uses pinned parents and has no
 symlink-following fallback when an atomic move is unsupported.
 Read and delete requests never create directories. Legacy score-to-text conversion is owned once by
 the server catalog boundary, shared by installation and editing; the browser only plays validated scores.

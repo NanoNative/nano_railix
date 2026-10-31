@@ -2,11 +2,143 @@ package dev.nanonative.railix.core;
 
 import dev.nanonative.railix.core.project.CompileResult;
 import dev.nanonative.railix.core.project.ProjectCompiler;
+import dev.nanonative.railix.core.step.StepCatalog;
+import dev.nanonative.railix.core.step.StepDefinition;
+import dev.nanonative.railix.core.step.StepInput;
+import dev.nanonative.railix.core.step.StepResult;
+import dev.nanonative.railix.core.value.ValueShape;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 final class GeneratedApplicationVariantsE2eTest {
+    @Test
+    void compilerRejectsAnInaccessibleImplementationClassBeforeGeneratingJava() {
+        assertThat(compileWith(InaccessibleProcess.class)).isInstanceOfSatisfying(CompileResult.Rejected.class,
+                rejected->assertThat(rejected.diagnostics()).anySatisfy(diagnostic->{
+                    assertThat(diagnostic.code()).isEqualTo("PROJECT_STEP_PROCESS_INVALID");
+                    assertThat(diagnostic.message()).contains("public implementation class");
+                    assertThat(diagnostic.path()).contains(".inputs.steps[0].use");
+                }));
+    }
+
+    static final class InaccessibleProcess {
+        public static StepResult process(final StepInput configuration, final StepInput input) {
+            return StepResult.outcome("ok");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(classes = {MissingProcess.class, InstanceProcess.class, WrongProcess.class,
+            PrivateProcess.class, WrongReturn.class})
+    void compilerRejectsInvalidProcessBeforeGeneratingJava(final Class<?> implementation) {
+        final CompileResult result = compileWith(implementation);
+
+        assertThat(result).isInstanceOfSatisfying(CompileResult.Rejected.class, rejected ->
+                assertThat(rejected.diagnostics()).anySatisfy(diagnostic -> {
+                    assertThat(diagnostic.code()).isEqualTo("PROJECT_STEP_PROCESS_INVALID");
+                    assertThat(diagnostic.message()).contains("public static StepResult process(StepInput, StepInput)");
+                    assertThat(diagnostic.path()).contains(".inputs.steps[0].use");
+                }));
+    }
+
+    @Test
+    void compilerAcceptsAnUnrelatedProcessOverload() {
+        assertThat(compileWith(OverloadedProcess.class)).isInstanceOf(CompileResult.Compiled.class);
+    }
+
+    @Test
+    void compilerRejectsInvalidOptionalLifecycleMethods() {
+        assertThat(compileWith(InvalidPre.class)).isInstanceOfSatisfying(CompileResult.Rejected.class,
+                rejected -> assertThat(rejected.diagnostics()).anySatisfy(diagnostic -> {
+                    assertThat(diagnostic.code()).isEqualTo("PROJECT_STEP_LIFECYCLE_INVALID");
+                    assertThat(diagnostic.message()).contains("public static StepResult pre(StepInput, StepInput)");
+                }));
+    }
+
+    public static final class InvalidPre {
+        public static StepResult process(final StepInput configuration, final StepInput context) {
+            return StepResult.outcome("ok");
+        }
+
+        public static String pre(final StepInput configuration, final StepInput context) {
+            return "ok";
+        }
+    }
+
+    private static CompileResult compileWith(final Class<?> implementation) {
+        final StepDefinition replacement = StepDefinition.named("text.lowercase", "1")
+                .primaryOutcome("ok").receive("value", ValueShape.STRING)
+                .returns("value", ValueShape.STRING).implementation(implementation);
+        final StepCatalog catalog = StepCatalog.of(CreatorFirstProjectCompilationE2eTest.contextCatalog()
+                .definitions().stream().map(step -> step.id().equals("text.lowercase") ? replacement : step)
+                .toArray(StepDefinition[]::new));
+
+        return ProjectCompiler.compileApplication(
+                CreatorFirstProjectCompilationE2eTest.contextProject(), catalog);
+    }
+
+    public static final class MissingProcess {
+    }
+
+    public static final class InstanceProcess {
+        public StepResult process(final StepInput configuration, final StepInput context) {
+            return StepResult.outcome("ok");
+        }
+    }
+
+    public static final class WrongProcess {
+        public static StepResult process(final StepInput context) {
+            return StepResult.outcome("ok");
+        }
+    }
+
+    public static final class PrivateProcess {
+        private static StepResult process(final StepInput configuration, final StepInput context) {
+            return StepResult.outcome("ok");
+        }
+    }
+
+    public static final class WrongReturn {
+        public static String process(final StepInput configuration, final StepInput context) {
+            return "ok";
+        }
+    }
+
+    public static final class OverloadedProcess {
+        public static StepResult process(final StepInput configuration, final StepInput context) {
+            return process(context);
+        }
+
+        private static StepResult process(final StepInput context) {
+            return StepResult.outcome("ok");
+        }
+    }
+
+    @Test
+    void generatedApplicationsCallStaticStepFunctionsWithoutHandlerInstances() {
+        final CompileResult.Compiled application = compiled();
+
+        for (final String source : java.util.List.of(
+                application.productionApplicationSource(), application.developmentApplicationSource())) {
+            assertThat(source).contains("::process")
+                    .doesNotContain(" HANDLER_", "new dev.nanonative.railix.core.TestStepHandlers");
+        }
+    }
+
+    @Test
+    void generatedLaunchersDoNotImplementBuiltinTriggerBehavior() {
+        final CompileResult.Compiled application = compiled();
+
+        for (final String source : java.util.List.of(
+                application.productionApplicationSource(), application.developmentApplicationSource())) {
+            assertThat(source).doesNotContain("runCli(", "runHttp(", "cliSuccess(",
+                    "--railix-http", "CLI exit code must", "HttpStepHandlers.Trigger.serve(");
+        }
+    }
+
     @Test
     void productionApplicationExposesOnlyTheProductionRuntimeBoundary() {
         final String source = compiled().productionApplicationSource();
@@ -75,7 +207,7 @@ final class GeneratedApplicationVariantsE2eTest {
     @Test
     void productionStepCallsContainNoTraceOnlyArgumentsOrSelectors() {
         assertThat(compiled().productionApplicationSource())
-                .contains("WorkflowRuntime.StepCall CALL_0 = HANDLER_0::run;")
+                .containsPattern("WorkflowRuntime\\.StepCall CALL_0 = [\\w.]+::process;")
                 .doesNotContain(
                         "final String invocation",
                         "private static String use_",
@@ -162,7 +294,7 @@ final class GeneratedApplicationVariantsE2eTest {
                         "(execution, 2, CALLS);",
                         "(execution, 2, TRACE_CALLS));"
                 )
-                .containsPattern("Handlers_\\d+\\.HANDLER_\\d+::run")
+                .containsPattern("Handlers_\\d+\\.CALL_\\d+")
                 .containsPattern("Handlers_\\d+::trace_\\d+");
     }
 
@@ -201,7 +333,7 @@ final class GeneratedApplicationVariantsE2eTest {
                 );
         assertThat(developmentPlans)
                 .contains("WorkflowRuntime.InputResolver INPUTS_2")
-                .containsPattern("new WorkflowRuntime\\.NestedStep\\([^;]+HANDLER_\\d+\\)")
+                .containsPattern("new WorkflowRuntime\\.NestedStep\\([^;]+CALL_\\d+\\)")
                 .doesNotContain(
                         "TRACE_INPUTS_",
                         "TRACE_DATA_",
