@@ -35,6 +35,10 @@ const state = {
   settingsVersion: 0,
   settingsTimer: 0,
   settingsWriting: false,
+  configurationView: null,
+  configurationDraft: null,
+  configurationDraftRevision: 0,
+  configurationMessage: "",
   hoverTrigger: null,
   hoverTimer: 0,
   hoverController: null,
@@ -234,6 +238,7 @@ async function boot() {
 }
 
 function render() {
+  renderConfiguration();
   if (!state.project) {
     return;
   }
@@ -541,8 +546,11 @@ async function loadEditor(id, group = state.managedGroup, query = state.groupQue
           const identity = key === "links" ? "from" : "id";
           result[key] = result[key].filter(entry => !Object.hasOwn(values, entry[identity]));
           result[key].push(...Object.values(values).filter(value => value !== null).flat());
-        } else if (key === "steps") {
-          Object.entries(values).forEach(([id, value]) => value === null ? delete result.steps[id] : result.steps[id] = value);
+        } else if (key === "steps" || key === "configuration") {
+          const entries = new Map(Object.entries(result[key] || {}));
+          Object.entries(values).forEach(([id, value]) => value === null ? entries.delete(id) : entries.set(id, value));
+          if (key === 'configuration' && !entries.size) delete result[key];
+          else result[key] = Object.fromEntries(entries);
         } else result[key] = values;
       }
       return result;
@@ -1124,12 +1132,175 @@ function reflectSettings() {
 }
 
 function selectSettingsTab(tab) {
-  for (const name of ['appearance', 'sound', 'music']) {
+  for (const name of ['appearance', 'sound', 'music', 'configuration']) {
     const selected = name === tab;
     document.querySelector(`#settings-${name}-tab`).setAttribute('aria-selected', String(selected));
     document.querySelector(`#settings-${name}`).hidden = !selected;
   }
   if (tab === 'sound' || tab === 'music') state.audio?.setEditorKind(tab);
+  document.querySelector('#audio-status').hidden = tab === 'configuration';
+  if (tab === 'configuration') renderConfiguration(true);
+}
+
+function configurationRows() {
+  return Object.entries(state.project?.configuration || {}).map(([key, value]) => ({key,
+    type: exactNumber(value) || typeof value === 'number' ? 'number' : typeof value,
+    value: typeof value === 'string' ? value : String(numberText(value))}));
+}
+
+function renderConfiguration(force = false) {
+  const host = document.querySelector('#configuration-rows');
+  if (!host || !state.project || document.querySelector('#settings-configuration').hidden
+      || !document.querySelector('#audio-panel').matches(':popover-open')) return;
+  const diagnostics = [...state.localDiagnostics, ...state.diagnostics]
+    .filter(issue => state.saveFailure || issue.code?.includes('CONFIGURATION') || issue.path?.includes('input_sources')
+      || issue.message?.startsWith('Configuration "'));
+  document.querySelector('#configuration-status').textContent = state.configurationMessage
+    || diagnostics.map(issue => issue.message).join(' ')
+    || (state.saveFailure ? state.saveFailure.message : state.build === 'Building' ? 'Building project configuration…' : '');
+  if (!force && (host.contains(document.activeElement) || state.configurationDraft !== null)) return;
+  const rows = state.configurationDraft || configurationRows();
+  state.configurationView = {rows: rows.map(row => ({...row})),
+    revision: state.configurationDraft !== null ? state.configurationDraftRevision : state.projectVersion};
+  host.innerHTML = rows.length ? rows.map((row, index) => `<div class="configuration-row" data-configuration-row="${index}">
+    <label>Key<textarea rows="1" data-configuration-field="key" spellcheck="false" autocapitalize="off"></textarea></label>
+    <label>Type<select data-configuration-field="type">${['string','number','boolean'].map(type => `<option value="${type}" ${row.type === type ? 'selected' : ''}>${type[0].toUpperCase()+type.slice(1)}</option>`).join('')}</select></label>
+    <label class="configuration-value">Value${row.type === 'boolean'
+      ? `<select data-configuration-field="value"><option value="true" ${row.value === 'true' ? 'selected' : ''}>true</option><option value="false" ${row.value === 'false' ? 'selected' : ''}>false</option></select>`
+      : row.type === 'string' ? '<textarea rows="1" data-configuration-field="value" spellcheck="false" autocapitalize="off"></textarea>'
+      : '<input type="text" data-configuration-field="value" spellcheck="false" inputmode="decimal">'}</label>
+    <button type="button" data-configuration-remove="${index}">Remove</button>
+  </div>`).join('') : '<p>No project configuration values.</p>';
+  host.querySelectorAll('[data-configuration-row]').forEach((element, index) => {
+    for (const field of element.querySelectorAll('[data-configuration-field]')) {
+      field.value = rows[index][field.dataset.configurationField];
+    }
+  });
+}
+
+function updateConfigurationDraft(target) {
+  beginConfigurationDraft();
+  const index = Number(target.closest('[data-configuration-row]').dataset.configurationRow);
+  const row = state.configurationDraft[index];
+  row[target.dataset.configurationField] = target.value;
+  state.configurationMessage = '';
+  if (target.dataset.configurationField === 'type') {
+    row.value = row.type === 'boolean' ? 'false' : '';
+    renderConfiguration(true);
+    document.querySelector(`[data-configuration-row="${index}"] [data-configuration-field=type]`)?.focus();
+  }
+}
+
+function beginConfigurationDraft() {
+  if (state.configurationDraft === null) {
+    state.configurationDraft = (state.configurationView?.rows || configurationRows()).map(row => ({...row}));
+    state.configurationDraftRevision = state.configurationView?.revision ?? state.projectVersion;
+  }
+  return state.configurationDraft;
+}
+
+function applyConfiguration() {
+  if (state.configurationDraft !== null && state.configurationDraftRevision !== state.projectVersion) {
+    state.configurationMessage = 'The project changed while you edited configuration. Reset the draft before saving.';
+    renderConfiguration(); return;
+  }
+  const rows = state.configurationDraft || configurationRows();
+  const entries = [];
+  const keys = new Set();
+  for (const row of rows) {
+    if (!row.key || /[^A-Za-z0-9_-]/.test(row.key)) {
+      state.configurationMessage = 'Configuration names must use one or more letters (A-Z, a-z), digits, underscores (_) or hyphens (-).';
+      renderConfiguration(); return;
+    }
+    if (keys.has(row.key)) {
+      state.configurationMessage = `Duplicate configuration key: ${row.key}.`;
+      renderConfiguration(); return;
+    }
+    keys.add(row.key);
+    let value = row.value;
+    if (row.type === 'number') {
+      let valid = true;
+      try {
+        value = parseExact(row.value);
+      } catch (_) { valid = false; }
+      if (!valid || !(exactNumber(value) || typeof value === 'number') || !canonicalNumber(row.value).canonical) {
+        state.configurationMessage = `Enter a supported Number for ${row.key}.`;
+        renderConfiguration(); return;
+      }
+    } else if (row.type === 'string' && /[^!-~]/.test(value)) {
+      state.configurationMessage = `Configuration "${row.key}": String values must use printable ASCII letters, digits or punctuation, without whitespace or control characters.`;
+      renderConfiguration(); return;
+    } else if (row.type === 'boolean') value = row.value === 'true';
+    entries.push([row.key, value]);
+  }
+  if (entries.length) state.project.configuration = Object.fromEntries(entries);
+  else delete state.project.configuration;
+  state.configurationDraft = null;
+  state.configurationMessage = '';
+  dirty();
+}
+
+function inputSource(operation, locator) {
+  const sources = valueAt(operation, locator.slice(0, -2))?.input_sources;
+  return sources && Object.hasOwn(sources, locator.at(-1)) ? sources[locator.at(-1)] : undefined;
+}
+
+function configurationValue(key) {
+  const configuration = state.project?.configuration;
+  return configuration && Object.hasOwn(configuration, key) ? configuration[key] : undefined;
+}
+
+function configuredJsonValue(operation, locator) {
+  const source = inputSource(operation, locator);
+  return source ? configurationValue(source.configuration) : valueAt(operation, locator);
+}
+
+function compareConfigurationNumbers(left, right) {
+  const parts = value => {
+    const match = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(String(numberText(value)));
+    const coefficient = BigInt(match[1] + match[2] + (match[3] || ''));
+    return {coefficient, scale: coefficient === 0n ? 0n : BigInt((match[3] || '').length) - BigInt(match[4] || '0')};
+  };
+  const a = parts(left), b = parts(right), scale = a.scale > b.scale ? a.scale : b.scale;
+  const difference = a.coefficient * 10n ** (scale-a.scale) - b.coefficient * 10n ** (scale-b.scale);
+  return difference === 0n ? 0 : difference > 0n ? 1 : -1;
+}
+
+function configurationInputSource(operation, input, locator) {
+  const selected = inputSource(operation, locator)?.configuration;
+  const entries = Object.entries(state.project.configuration || {}).filter(([, value]) => {
+    const shape = exactNumber(value) ? 'number' : typeof value;
+    return (input.shape === 'any' || input.shape === shape)
+      && (shape !== 'number' || ((!Object.hasOwn(input, 'minimum') || compareConfigurationNumbers(value, input.minimum) >= 0)
+        && (!Object.hasOwn(input, 'maximum') || compareConfigurationNumbers(value, input.maximum) <= 0)));
+  });
+  const present = entries.some(([key]) => key === selected);
+  return `<label class="input-configuration-source">Value source<select aria-label="${html(input.label || inputLabel(input.name))} source"
+    data-input-source="${locatorToken(locator)}" data-input-meta="${metaToken(input)}">
+    <option value="" ${selected === undefined ? 'selected' : ''}>Literal</option>
+    <optgroup label="Project configuration">${selected !== undefined && !present ? `<option value="${html(selected)}" selected>${html(selected)} (unavailable)</option>` : ''}
+    ${entries.map(([key]) => `<option value="${html(key)}" ${selected === key ? 'selected' : ''}>${html(key)}</option>`).join('')}</optgroup>
+  </select></label>`;
+}
+
+function selectInputSource(locator, input, key) {
+  const operation = selectedOperation();
+  const owner = valueAt(operation, locator.slice(0, -2));
+  const name = locator.at(-1);
+  if (key) {
+    owner.input_sources = {...owner.input_sources, [name]: {configuration:key}};
+    deleteAt(operation, locator);
+  } else {
+    const previous = inputSource(operation, locator)?.configuration;
+    const value = configurationValue(previous);
+    if (owner.input_sources) {
+      delete owner.input_sources[name];
+      if (!Object.keys(owner.input_sources).length) delete owner.input_sources;
+    }
+    setAt(operation, locator, value === undefined ? (defaultInput(input) ?? initialValue(input)) : clone(value));
+  }
+  state.jsonDraft = null;
+  dirty();
 }
 
 document.querySelector('.settings-tabs').addEventListener('keydown', event => {
@@ -1639,6 +1810,10 @@ function applyImportedProject(payload) {
   state.pathPicker = null;
   state.jsonDraft = null;
   state.exampleDraft = null;
+  state.configurationView = null;
+  state.configurationDraft = null;
+  state.configurationDraftRevision = 0;
+  state.configurationMessage = '';
   state.exampleTrigger = "";
   state.exampleIndex = 0;
   state.revealNode = "";
@@ -2392,11 +2567,21 @@ function matcherGroupOptions(input, locator) {
 }
 
 function jsonInput(operation, input, locator, value) {
+  const sourceControl = configurationInputSource(operation, input, locator);
+  const source = inputSource(operation, locator);
+  if (source) {
+    const value = configurationValue(source.configuration);
+    const type = exactNumber(value) ? 'number' : typeof value;
+    return `<section class="inspector-section" data-input-name="${html(input.name)}"><strong>${html(input.label || inputLabel(input.name))}</strong>
+      ${sourceControl}<p class="configuration-reference-value">${value === undefined ? 'Configuration key unavailable'
+        : `${type[0].toUpperCase()+type.slice(1)}: <code>${html(JSON.stringify(value))}</code>`}</p></section>`;
+  }
   const present = hasAt(operation, locator);
   const id = inputId(locator);
   if (!input.required && !present) {
     return `
       <section class="inspector-section compact" data-input-name="${html(input.name)}">
+        ${sourceControl}
         <label class="check-line">
           <input id="${html(id)}-present" type="checkbox" data-toggle-input="${locatorToken(locator)}"
                  data-input-meta="${metaToken(input)}">
@@ -2438,6 +2623,7 @@ function jsonInput(operation, input, locator, value) {
              data-input-name="${html(input.name)}">
       ${optional}
       <label for="${html(id)}-value">${html(input.label || inputLabel(input.name))}${input.required ? " <small>Required</small>" : ""}</label>
+      ${sourceControl}
       ${control}
       ${input.required && input.shape === "string" && !present ? `
         <button type="button" id="${html(id)}-empty"
@@ -3230,6 +3416,7 @@ function selectCandidate(locator, input, index, optionName) {
     inputs: defaultInputs(option.inputs),
     when: conditionOf(candidates[index].when)
   };
+  delete candidates[index].input_sources;
   dirty();
 }
 
@@ -3757,7 +3944,7 @@ function invalidSurrogate(value) {
 }
 
 function configuredInputShape(operation, input, locator, scopeInputs, scopeBase) {
-  const value = valueAt(operation, locator);
+  const value = input.type === 'json' ? configuredJsonValue(operation, locator) : valueAt(operation, locator);
   if (input.type === "json") {
     return value === undefined ? "" : valueShape(value);
   }
@@ -3786,7 +3973,7 @@ function configuredInputShape(operation, input, locator, scopeInputs, scopeBase)
 
 function configuredInputValues(operation, input, locator, scopeInputs, scopeBase) {
   const count = observedRoots(operation).length || 1;
-  const value = valueAt(operation, locator);
+  const value = input.type === 'json' ? configuredJsonValue(operation, locator) : valueAt(operation, locator);
   if (input.type === "json") {
     return Array(count).fill(value);
   }
@@ -5079,8 +5266,8 @@ function documentChanges(before, after) {
   return Object.fromEntries([...new Set([...Object.keys(before), ...Object.keys(after)])].flatMap(key => {
     const left = before[key];
     const right = after[key];
-    if (["nodes", "groups", "links", "steps"].includes(key)) {
-      const index = key === "steps" ? value => value : key === "links" ? connections : entries;
+    if (["nodes", "groups", "links", "steps", "configuration"].includes(key)) {
+      const index = key === "steps" || key === "configuration" ? value => value || {} : key === "links" ? connections : entries;
       const changes = changed(index(left), index(right));
       return Object.keys(changes).length ? [[key, changes]] : [];
     }
@@ -5768,6 +5955,26 @@ document.addEventListener("click", event => {
     event.preventDefault();
     return;
   }
+  if (target.closest('#configuration-add')) {
+    beginConfigurationDraft().push({key:'', type:'string', value:''});
+    renderConfiguration(true);
+    document.querySelector('#configuration-rows .configuration-row:last-child [data-configuration-field=key]')?.focus();
+    return;
+  }
+  const removeConfiguration = target.closest('[data-configuration-remove]');
+  if (removeConfiguration) {
+    beginConfigurationDraft().splice(Number(removeConfiguration.dataset.configurationRemove), 1);
+    renderConfiguration(true); return;
+  }
+  if (target.closest('#configuration-apply')) { applyConfiguration(); return; }
+  if (target.closest('#configuration-reset')) {
+    if (Object.hasOwn(state.builtProject, 'configuration')) state.project.configuration = clone(state.builtProject.configuration);
+    else delete state.project.configuration;
+    state.configurationDraft = null;
+    state.configurationMessage = '';
+    dirty();
+    renderConfiguration(true); return;
+  }
   const editTrigger = target.closest('[data-edit-trigger]');
   if (editTrigger) {
     void selectWorldNode(editTrigger.dataset.editTrigger).then(selected => {
@@ -6081,6 +6288,10 @@ document.addEventListener("click", event => {
 });
 
 document.addEventListener("input", event => {
+  if (event.target.matches('[data-configuration-field]')) {
+    if (event.target.tagName !== 'SELECT') updateConfigurationDraft(event.target);
+    return;
+  }
   if (event.target.id === "step-search" && state.picker) {
     state.picker.query = event.target.value;
     state.world?.preview(null);
@@ -6138,16 +6349,28 @@ document.addEventListener("input", event => {
 });
 
 document.addEventListener("change", event => {
+  if (event.target.matches('[data-configuration-field]')) {
+    if (event.target.tagName === 'SELECT') updateConfigurationDraft(event.target);
+    return;
+  }
+  if (event.target.matches('[data-input-source]')) {
+    selectInputSource(parseToken(event.target.dataset.inputSource), parseToken(event.target.dataset.inputMeta), event.target.value);
+    return;
+  }
   const comparison = event.target.closest('[data-replace-comparison]');
   if (comparison) {
     const steps = programAt(selectedOperation(), parseToken(comparison.dataset.replaceComparison));
     const definition = definitionOf(comparison.value);
     if (!steps || steps.length !== 1 || !definition) return;
-    const previous = definitionOf(steps[0].use), inputs = defaultInputs(definition.inputs);
-    for (const input of definition.inputs) if (previous.inputs.some(field => field.name === input.name
-        && field.type === input.type && field.shape === input.shape) && Object.hasOwn(steps[0].inputs, input.name))
-      inputs[input.name] = steps[0].inputs[input.name];
-    steps[0] = {use: definition.id, inputs};
+    const previous = definitionOf(steps[0].use), inputs = defaultInputs(definition.inputs), sources = new Map();
+    for (const input of definition.inputs) {
+      if (!previous.inputs.some(field => field.name === input.name && field.type === input.type && field.shape === input.shape)) continue;
+      if (Object.hasOwn(steps[0].input_sources || {}, input.name)) {
+        sources.set(input.name, steps[0].input_sources[input.name]);
+        delete inputs[input.name];
+      } else if (Object.hasOwn(steps[0].inputs, input.name)) inputs[input.name] = steps[0].inputs[input.name];
+    }
+    steps[0] = {use: definition.id, inputs, ...(sources.size ? {input_sources: Object.fromEntries(sources)} : {})};
     dirty();
     return;
   }

@@ -117,6 +117,17 @@ button:disabled {
 #audio-panel output { font-variant-numeric: tabular-nums; }
 #audio-panel nav { display: flex; gap: 8px; margin-top: 14px; }
 #audio-panel .settings-tabs { gap: 0; margin: 0 0 12px; border-bottom: 1px solid var(--hud-border); }
+#audio-panel .settings-tabs { flex-wrap: wrap; }
+.configuration-row { border-bottom: 1px solid var(--hud-border); padding-block: 8px; display: grid; grid-template-columns: minmax(0, 1fr) 100px; gap: 6px 10px; }
+.configuration-row label { min-width: 0; display: block !important; margin: 0 !important; font-size: 12px; }
+.configuration-row input, .configuration-row select, .configuration-row textarea { width: 100%; min-width: 0; margin-top: 4px; }
+.configuration-row textarea { min-height: 40px; height: 40px; resize: vertical; font: inherit; white-space: pre; }
+.configuration-row .configuration-value { grid-column: 1 / -1; }
+.configuration-row button { justify-self: start; }
+#configuration-status { font-size: 12px; overflow-wrap: anywhere; }
+.input-configuration-source { display: grid; gap: 6px; margin-bottom: 8px; }
+.input-configuration-source select { width: 100%; }
+.configuration-reference-value { overflow-wrap: anywhere; }
 #audio-panel .settings-tabs button { border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--hud-subtle); }
 #audio-panel .settings-tabs button[aria-selected=true] { color: var(--hud-accent); border-bottom: 2px solid var(--hud-accent); }
 [data-audio-preference][aria-pressed=true] { color: var(--hud-accent); }

@@ -35,6 +35,7 @@
         <button type="button" role="tab" id="settings-appearance-tab" aria-controls="settings-appearance" aria-selected="true" data-settings-tab="appearance">Appearance</button>
         <button type="button" role="tab" id="settings-sound-tab" aria-controls="settings-sound" aria-selected="false" data-settings-tab="sound">Sound</button>
         <button type="button" role="tab" id="settings-music-tab" aria-controls="settings-music" aria-selected="false" data-settings-tab="music">Music</button>
+        <button type="button" role="tab" id="settings-configuration-tab" aria-controls="settings-configuration" aria-selected="false" data-settings-tab="configuration">Configuration</button>
       </nav>
       <section id="settings-appearance" role="tabpanel" aria-labelledby="settings-appearance-tab">
       <div class="theme-choices"><div><label for="theme-select">Theme</label><select id="theme-select"></select></div>
@@ -63,6 +64,13 @@
       <nav aria-label="Music playback"><button id="music-play" type="button" disabled><i class="hud-symbol" data-symbol="play" aria-hidden="true"></i><span>Play</span></button><button id="music-stop" type="button"><i class="hud-symbol" data-symbol="stop" aria-hidden="true"></i>Stop</button><button id="music-next" type="button" disabled><i class="hud-symbol" data-symbol="next" aria-hidden="true"></i>Next</button></nav>
       </section>
       <p id="audio-status" role="status">Loading sound library</p>
+      <section id="settings-configuration" role="tabpanel" aria-labelledby="settings-configuration-tab" hidden>
+        <p>Project values are non-secret and fixed when the application is built.</p>
+        <p>Names allow A-Z, a-z, 0-9, _ and -. String values allow ASCII letters, digits and punctuation, with no spaces, tabs or line breaks.</p>
+        <div id="configuration-rows"></div>
+        <nav aria-label="Project configuration"><button id="configuration-add" type="button">Add value</button><button id="configuration-apply" type="button">Apply and build</button><button id="configuration-reset" type="button">Reset draft</button></nav>
+        <p id="configuration-status" role="status"></p>
+      </section>
     </section>
     <button class="build-indicator" type="button" popovertarget="application-status" aria-label="Application build and runtime details"><strong id="build-state" role="status">Loading</strong></button>
     <section id="application-status" popover aria-label="Application and build"></section>

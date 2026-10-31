@@ -146,6 +146,12 @@ second selected-Step list. Link topology owns execution. JSON object key order d
 This describes the implemented baseline. The planned compilation-selection policy below changes
 artifact inclusion, not ownership of the saved graph or the rule that Creator metadata is optional.
 
+The [typed project configuration slice](environments-and-security.md#typed-project-configuration-first-slice)
+adds project-owned values and explicit input references to this baseline. Its CFG requirements
+own the implemented additive schema and compatibility contract.
+References resolve to ordinary typed literal bindings during compilation, preserving the
+existing Step execution contract and flat graph.
+
 The platform supplies one `railix.app` Step at canonical node ID `app`. It is mandatory, unique,
 persisted, and non-deletable. Trigger definitions are catalog Steps connected from App. Each
 Trigger owns a non-empty list of named Examples. An Example has a required payload and an optional

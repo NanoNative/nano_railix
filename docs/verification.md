@@ -1046,3 +1046,189 @@ Latest scenery-atlas evidence: `railix-scenery-retina-package-smoke.log` and
 the current descriptor choices; it no longer runs the removed Standard variants.
 The original captured sprite strips can be reproduced separately with `railix.sprite.export=true`;
 no screenshot converter runs in the shipped Creator.
+
+## Typed Project Configuration 2026-10-31
+
+Local Java 25 verification of [CFG-001 to CFG-006](specs/environments-and-security.md#typed-project-configuration-first-slice),
+using installed headless Chrome for the browser checks. These results describe this worktree,
+not a hosted CI run. Counts are executions per command; the suites overlap.
+
+The broader compiler, matcher, editor and generated-application regression passed **349 tests**:
+
+```sh
+./mvnw --batch-mode --no-transfer-progress -pl modules/railix-creator -am \
+  -Drailix.test.forks=1 -Drailix.browser.viewport.width=320 \
+  -Dtest=RailixValueNullContractTest,ProjectConfigurationE2eTest,CreatorFirstProjectCompilationE2eTest,CreatorFirstCompilerRejectionE2eTest,MatcherGroupsE2eTest,PrimitiveStepsCreatorProjectE2eTest,CreatorConfigurationE2eTest,CreatorEditorE2eTest,GeneratedApplicationParityE2eTest,RailixCreatorConfigurationBrowserIT \
+  -Dsurefire.failIfNoSpecifiedTests=false test
+```
+
+After the final keyboard-focus change, the focused suite passed **108 tests** at both
+the default 1280px viewport and at 320px. The narrow command was:
+
+```sh
+mvn test --batch-mode --no-transfer-progress -pl modules/railix-creator -am \
+  -Drailix.test.forks=1 -Drailix.browser.viewport.width=320 \
+  -Dtest=RailixValueNullContractTest,ProjectConfigurationE2eTest,PrimitiveStepsCreatorProjectE2eTest,CreatorConfigurationE2eTest,RailixCreatorConfigurationBrowserIT \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+The desktop command omitted `-Drailix.browser.viewport.width=320`. Both renderers exercised
+authoring, binding, execution, save/reload, precise numeric values, invalid/duplicate drafts,
+in-use deletion rejection and recovery. Page screenshots were inspected at desktop and narrow
+sizes. Compiler and generated-application checks additionally exercised literal-name
+compatibility, missing references on defaulted inputs, shape/range constraints, nested
+candidates/transforms/matchers, a locked third-party option, old/new application isolation and
+two uses of one key where transforming the first leaves the second unchanged.
+
+The numeric-looking String `00123` was then added to the UI round-trip case; both renderer
+invocations passed at 320px with this focused selector (**84 tests**, including prerequisites):
+
+```sh
+mvn test --batch-mode --no-transfer-progress -pl modules/railix-creator -am \
+  -Drailix.test.forks=1 -Drailix.browser.viewport.width=320 \
+  '-Dtest=RailixValueNullContractTest,PrimitiveStepsCreatorProjectE2eTest,RailixCreatorConfigurationBrowserIT#configurationCanBeAuthoredBoundExecutedAndReopened' \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+The existing saved-source/activation-failure recovery path also passed its three scenarios
+(**85 tests** including prerequisites):
+
+```sh
+mvn test --batch-mode --no-transfer-progress -pl modules/railix-creator -am \
+  -Drailix.test.forks=1 \
+  '-Dtest=RailixValueNullContractTest,PrimitiveStepsCreatorProjectE2eTest,CreatorEditorBrowserIT#savedStepFailureDoesNotTurnTheNextEditIntoARevisionConflict' \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Packaging also passed:
+
+```sh
+./mvnw --batch-mode --no-transfer-progress -DskipTests package
+```
+
+The resulting Creator JAR and macOS application image both contain the configuration compiler
+and UI; the JAR bundled inside the native image matches the standalone JAR byte-for-byte.
+This packaging command skips test execution. The full native-launch integration suite was not run.
+Owned test, browser and packaging processes had exited at the end of verification.
+
+The full `clean verify` publication gate was not run. Focused checks do not replace the
+complete desktop/mobile browser, soak and packaged/native integration suites.
+
+### Configuration Character Rules Follow-up
+
+The user narrowed names to `[A-Za-z0-9_-]+` and confirmed that String values allow
+punctuation but reject whitespace and control characters. The precise rule is owned by
+[CFG-002 and CFG-004](specs/environments-and-security.md#behavior): String values contain
+printable ASCII only, with empty String still supported. Ordinary Step literal Strings keep
+their existing contract. New compiler and browser regressions demonstrated acceptance of
+invalid names/values before the validation change.
+
+The final compiler run passed **64 tests** (56 configuration cases and 8 canonical-value
+prerequisites):
+
+```sh
+./mvnw --batch-mode --no-transfer-progress -pl modules/railix-core -am \
+  -Dtest=RailixValueNullContractTest,ProjectConfigurationE2eTest \
+  -Dsurefire.failIfNoSpecifiedTests=false test
+```
+
+The HTTP/generated-application and narrow browser run passed **94 tests** (7 Creator
+configuration cases, 5 browser invocations and 82 upstream prerequisites):
+
+```sh
+mvn test --batch-mode --no-transfer-progress -pl modules/railix-creator -am \
+  -Drailix.test.forks=1 -Drailix.browser.viewport.width=320 \
+  -Dtest=RailixValueNullContractTest,PrimitiveStepsCreatorProjectE2eTest,CreatorConfigurationE2eTest,RailixCreatorConfigurationBrowserIT \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+All 5 browser invocations also passed at the default 1280px viewport in the earlier focused
+run. That run failed in the new HTTP regression because its initial baseline preceded
+startup's normal JSON formatting; the corrected baseline passed in the command above.
+Both renderers exercised save, execution and reopen. The new browser case rejects spaces,
+tabs and line breaks without saving, retains a leading-newline draft across rerendering,
+and round-trips URL punctuation, backslashes and quotes. Compiler checks also distinguish
+literal backslash sequences in `C:\new\test` from actual control characters, reject invalid
+unused entries and references, and preserve ordinary literal String compatibility.
+Desktop and narrow screenshots were inspected. `git diff --check` passed.
+
+Packaging and the full `clean verify` gate were not rerun for this follow-up.
+
+### Configuration Row Identity, Import and Visibility Follow-up
+
+The configuration editor now captures its displayed rows and project revision together.
+Starting a draft copies that view, so a canonical editor reload cannot redirect a positional
+value edit, type change or removal to another key. Import resets the configuration view,
+draft, draft revision and message. Row construction runs only while the Configuration tab
+is visible in the open Settings panel.
+
+All five new browser invocations failed before the fix. The final desktop focused run
+passed **105 tests** (14 configuration browser invocations, 7 configuration API/generated-app
+cases, 2 existing import/literal-comparison browser cases and 82 upstream prerequisites):
+
+```sh
+mvn test --batch-mode --no-transfer-progress -pl modules/railix-creator -am \
+  -Drailix.test.forks=1 \
+  '-Dtest=RailixValueNullContractTest,PrimitiveStepsCreatorProjectE2eTest,CreatorConfigurationE2eTest,RailixCreatorConfigurationBrowserIT,CreatorEditorBrowserIT#comparisonCanBeChangedInPlaceWithoutLosingItsOperand+buildDetailsImportsACompleteProjectJson' \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+The five new cases also passed at 320px: **87 tests**, including 82 prerequisites:
+
+```sh
+mvn test --batch-mode --no-transfer-progress -pl modules/railix-creator -am \
+  -Drailix.test.forks=1 -Drailix.browser.viewport.width=320 \
+  '-Dtest=RailixValueNullContractTest,PrimitiveStepsCreatorProjectE2eTest,RailixCreatorConfigurationBrowserIT#savedConfigurationRowsKeepTheirIdentityAfterReload+importingAProjectClearsConfigurationDraftsAndMessages+inactiveConfigurationDoesNotBuildOrRebuildRows' \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+The same isolated headless-Chrome fixture, viewport, HQ renderer and warmup were used to
+repeat the public Overview/Inspect tab-click measurement with 1,000 unused configuration
+entries and Settings closed. Median synchronous handler durations fell from **59.7 to
+4.4 ms** for Overview and **82.6 to 25.4 ms** for Inspect; hidden row count fell from 1,000
+to zero. These timings do not measure painting or frame rate. The DOM regression additionally
+checks that opening Configuration builds the rows and unrelated interactions do not rebuild
+them while inactive. `git diff --check` passed.
+
+Packaging and the full `clean verify` gate were not rerun for this follow-up.
+
+### Configuration Binding Replacement Follow-up
+
+Comparison replacement now carries compatible configuration references alongside literals
+and removes the replacement's literal default for a referenced input. Candidate-option
+replacement clears only that candidate's owned `input_sources`, preserving its condition
+and outcome metadata. These changes implement the editing behavior in
+[CFG-006](specs/environments-and-security.md#behavior).
+
+Before the fix, the four new browser invocations produced three failures: configured
+comparison preservation and the Current/Field candidate transitions. The incompatible
+comparison case already passed and guards against retaining obsolete references.
+
+The final desktop focused run passed **99 tests** (9 configuration browser invocations,
+7 configuration API/generated-application cases, 1 existing literal-operand browser case
+and 82 upstream prerequisites):
+
+```sh
+mvn test --batch-mode --no-transfer-progress -pl modules/railix-creator -am \
+  -Drailix.test.forks=1 \
+  '-Dtest=RailixValueNullContractTest,PrimitiveStepsCreatorProjectE2eTest,CreatorConfigurationE2eTest,RailixCreatorConfigurationBrowserIT,CreatorEditorBrowserIT#comparisonCanBeChangedInPlaceWithoutLosingItsOperand' \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+The new transition cases also passed at 320px: **86 tests**, including 82 prerequisites:
+
+```sh
+mvn test --batch-mode --no-transfer-progress -pl modules/railix-creator -am \
+  -Drailix.test.forks=1 -Drailix.browser.viewport.width=320 \
+  '-Dtest=RailixValueNullContractTest,PrimitiveStepsCreatorProjectE2eTest,RailixCreatorConfigurationBrowserIT#changingComparisonKeepsItsConfiguredOperand+changingComparisonDropsIncompatibleBindings+changingCandidateSourceDropsOnlyItsOwnedBindings' \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+The new cases inspect saved JSON, reload the editor, and build/run the saved project in a
+separate generated application. They exercise Equals/Not Equals in both directions,
+incompatible operand removal, Current/Field selection, retention of condition-owned
+configuration references, and returning to Literal defaults without conflicts. Execution
+checks use a separate `output` field so the CLI Trigger's default `result` does not mask
+absence. The browser-served resource matches the final source. `git diff --check` passed.
+
+Packaging and the full `clean verify` gate were not rerun for this follow-up.
