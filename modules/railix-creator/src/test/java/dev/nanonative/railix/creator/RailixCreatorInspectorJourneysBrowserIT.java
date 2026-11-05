@@ -459,7 +459,7 @@ final class RailixCreatorInspectorJourneysBrowserIT extends RailixCreatorBrowser
         page.locator("#close-inspector").press("Escape");
         page.locator("#open-settings").click();
         page.locator("#settings-sound-tab").press("End");
-        assertThat(page.locator("#settings-music-tab")).hasAttribute("aria-selected", "true");
+        assertThat(page.locator("#settings-configuration-tab")).hasAttribute("aria-selected", "true");
         page.locator("#close-settings").press("Escape");
         assertThat(page.locator("#inspector")).isHidden();
         assertThat(page.locator("#open-settings")).isFocused();
