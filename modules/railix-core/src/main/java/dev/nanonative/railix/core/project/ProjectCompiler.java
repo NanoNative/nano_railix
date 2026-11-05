@@ -19,23 +19,27 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /** Sole parser and compiler for one functional Railix project. */
 public final class ProjectCompiler {
     private final List<StepValidation.Request> validations = new ArrayList<>();
+    private final Map<String, String> configurationKeys = new LinkedHashMap<>();
     private static final int MAX_ARRAY_GAP = 1_024;
-    private static final Set<String> PROJECT_FIELDS = Set.of("format", "id", "nodes", "links");
+    private static final int MAX_CONFIGURATION_STRING_LENGTH = 4_096;
+    private static final Pattern CONFIGURATION_KEY = Pattern.compile("[A-Za-z0-9_-]{1,64}");
+    private static final Set<String> PROJECT_FIELDS = Set.of("format", "id", "nodes", "links", "configuration");
     private static final Set<String> NODE_FIELDS = Set.of(
-            "id", "use", "inputs", "receives", "returns", "examples", "metrics"
+            "id", "use", "inputs", "input_sources", "receives", "returns", "examples", "metrics"
     );
     private static final Set<String> EXAMPLE_FIELDS = Set.of("id", "name", "payload", "context");
     private static final Set<String> LINK_FIELDS = Set.of("from", "to");
-    private static final Set<String> OPTION_FIELDS = Set.of("option", "inputs");
-    private static final Set<String> CANDIDATE_FIELDS = Set.of("option", "inputs", "when");
+    private static final Set<String> OPTION_FIELDS = Set.of("option", "inputs", "input_sources");
+    private static final Set<String> CANDIDATE_FIELDS = Set.of("option", "inputs", "input_sources", "when");
     private static final Set<String> AUTHORED_OUTCOME_CANDIDATE_FIELDS = Set.of(
-            "outcome", "option", "inputs", "when"
+            "outcome", "option", "inputs", "input_sources", "when"
     );
-    private static final Set<String> NESTED_FIELDS = Set.of("use", "inputs");
+    private static final Set<String> NESTED_FIELDS = Set.of("use", "inputs", "input_sources");
     private static final Set<String> CONDITION_FIELDS = Set.of("transforms", "all");
 
     private ProjectCompiler() {
@@ -109,7 +113,11 @@ public final class ProjectCompiler {
         if (!nodeValues.diagnostics().isEmpty()) {
             return new CompileResult.Rejected(nodeValues.diagnostics());
         }
-        final NodeRead nodeRead = nodes(nodeValues.value(), catalog);
+        final ObjectRead configuration = configuration(authored);
+        if (!configuration.diagnostics().isEmpty()) {
+            return new CompileResult.Rejected(configuration.diagnostics());
+        }
+        final NodeRead nodeRead = nodes(nodeValues.value(), new InputContext(catalog, configuration.value()));
         if (!nodeRead.diagnostics().isEmpty()) {
             return new CompileResult.Rejected(nodeRead.diagnostics());
         }
@@ -156,7 +164,10 @@ public final class ProjectCompiler {
         }
 
         final List<Diagnostic> validationProblems = StepValidation.validate(catalog, validations);
-        if (!validationProblems.isEmpty()) return new CompileResult.Rejected(validationProblems);
+        if (!validationProblems.isEmpty()) return new CompileResult.Rejected(validationProblems.stream().map(issue -> {
+            final String key = configurationKeys.get(issue.path());
+            return key == null ? issue : configurationDiagnostic(issue, key);
+        }).toList());
         final ApplicationGenerator.Result application = ApplicationGenerator.generate(
                 new ApplicationPlan(id.value(), plans, triggers, examples),
                 catalog
@@ -188,9 +199,52 @@ public final class ProjectCompiler {
         return Optional.empty();
     }
 
+    private static ObjectRead configuration(final RailixValue.ObjectValue project) {
+        final RailixValue value = project.values().get("configuration");
+        if (value == null) {
+            return new ObjectRead(RailixValue.object(Map.of()), List.of());
+        }
+        if (!(value instanceof RailixValue.ObjectValue values)) {
+            return ObjectRead.rejected("PROJECT_CONFIGURATION_OBJECT_REQUIRED", "Project configuration must be an object.", "configuration");
+        }
+        for (final var entry : values.values().entrySet()) {
+            final Optional<Diagnostic> problem = configurationEntryProblem(entry.getKey(), entry.getValue());
+            if (problem.isPresent()) {
+                return new ObjectRead(RailixValue.object(Map.of()), List.of(problem.get()));
+            }
+        }
+        return new ObjectRead(values, List.of());
+    }
+
+    private static Optional<Diagnostic> configurationEntryProblem(final String key, final RailixValue value) {
+        final String path = child("configuration", key);
+        if (!CONFIGURATION_KEY.matcher(key).matches()) {
+            return Optional.of(Diagnostic.atPath("PROJECT_CONFIGURATION_KEY_INVALID",
+                    "Configuration names must use 1 to 64 letters (A-Z, a-z), digits, underscores (_) or hyphens (-).", path));
+        }
+        return switch (value) {
+            case RailixValue.NumberValue _, RailixValue.BooleanValue _ -> Optional.empty();
+            case RailixValue.StringValue text -> configurationStringProblem(text.value())
+                    .map(message -> configurationDiagnostic(
+                            Diagnostic.atPath("PROJECT_CONFIGURATION_VALUE_INVALID", message, path), key));
+            default -> Optional.of(Diagnostic.atPath("PROJECT_CONFIGURATION_VALUE_INVALID",
+                    "Configuration \"" + key + "\" must be String, Number or Boolean.", path));
+        };
+    }
+
+    private static Optional<String> configurationStringProblem(final String value) {
+        if (value.length() > MAX_CONFIGURATION_STRING_LENGTH) {
+            return Optional.of("String values must contain at most 4096 characters.");
+        }
+        if (value.chars().anyMatch(character -> character < '!' || character > '~')) {
+            return Optional.of("String values must use printable ASCII letters, digits or punctuation, without whitespace or control characters.");
+        }
+        return Optional.empty();
+    }
+
     private NodeRead nodes(
             final RailixValue.ArrayValue values,
-            final StepCatalog catalog
+            final InputContext context
     ) {
         final List<Node> nodes = new ArrayList<>();
         final Set<String> ids = new LinkedHashSet<>();
@@ -248,7 +302,7 @@ public final class ProjectCompiler {
             if (!use.diagnostics().isEmpty()) {
                 return new NodeRead(List.of(), use.diagnostics());
             }
-            final StepDefinition definition = catalog.find(use.value()).orElse(null);
+            final StepDefinition definition = context.catalog().find(use.value()).orElse(null);
             if (definition == null) {
                 return NodeRead.rejected(
                         "PROJECT_STEP_UNKNOWN",
@@ -321,7 +375,8 @@ public final class ProjectCompiler {
                     inputs.value(),
                     definition.inputs(),
                     path + ".inputs",
-                    catalog
+                    context,
+                    object.values().get("input_sources")
             );
             if (!compiled.diagnostics().isEmpty()) {
                 return new NodeRead(List.of(), compiled.diagnostics());
@@ -476,10 +531,16 @@ public final class ProjectCompiler {
             final RailixValue.ObjectValue authored,
             final List<StepDefinition.Field> declarations,
             final String path,
-            final StepCatalog catalog
+            final InputContext context,
+            final RailixValue sourceValue
     ) {
         final Map<String, StepDefinition.Field> fields = new LinkedHashMap<>();
         declarations.forEach(field -> fields.put(field.name(), field));
+        final String sourcePath = path.substring(0, path.length() - "inputs".length()) + "input_sources";
+        final InputSourcesRead sources = inputSources(sourceValue, authored, fields, context.configuration(), sourcePath);
+        if (!sources.diagnostics().isEmpty()) {
+            return new InputsRead(Map.of(), sources.diagnostics());
+        }
         for (final String name : authored.values().keySet()) {
             if (!fields.containsKey(name)) {
                 return InputsRead.rejected(
@@ -492,34 +553,101 @@ public final class ProjectCompiler {
         final Map<String, ApplicationPlan.Binding> bindings = new LinkedHashMap<>();
         for (final StepDefinition.Field field : declarations) {
             final String fieldPath = path + "." + field.name();
-            final RailixValue value = authored.values().get(field.name());
-            final InputRead input = input(value, field.input(), fieldPath, catalog, bindings);
+            final Optional<String> key = Optional.ofNullable(sources.keys().get(field.name()));
+            final RailixValue value = key.isPresent()
+                    ? context.configuration().values().get(key.get()) : authored.values().get(field.name());
+            key.ifPresent(name -> configurationKeys.put(fieldPath, name));
+            final InputRead input = input(value, field.input(), fieldPath, context, bindings);
             if (!input.diagnostics().isEmpty()) {
-                return new InputsRead(Map.of(), input.diagnostics());
+                final List<Diagnostic> diagnostics = key.map(name -> input.diagnostics().stream()
+                        .map(issue -> configurationDiagnostic(issue, name)).toList()).orElse(input.diagnostics());
+                return new InputsRead(Map.of(), diagnostics);
             }
             bindings.put(field.name(), input.binding());
         }
         return new InputsRead(bindings, List.of());
     }
 
+    private static InputSourcesRead inputSources(
+            final RailixValue value,
+            final RailixValue.ObjectValue authored,
+            final Map<String, StepDefinition.Field> fields,
+            final RailixValue.ObjectValue configuration,
+            final String path
+    ) {
+        if (value == null) {
+            return new InputSourcesRead(Map.of(), List.of());
+        }
+        if (!(value instanceof RailixValue.ObjectValue sources)) {
+            return InputSourcesRead.rejected("PROJECT_INPUT_SOURCES_OBJECT_REQUIRED", "Input sources must be an object.", path);
+        }
+        final Map<String, String> keys = new LinkedHashMap<>();
+        for (final var source : sources.values().entrySet()) {
+            final StepDefinition.Field field = fields.get(source.getKey());
+            final String location = child(path, source.getKey());
+            if (field == null) {
+                return InputSourcesRead.rejected("PROJECT_INPUT_SOURCE_UNKNOWN",
+                        "Configuration source targets an undeclared input: " + source.getKey() + ".", location);
+            }
+            if (!(field.input() instanceof StepDefinition.JsonInput)) {
+                return InputSourcesRead.rejected("PROJECT_INPUT_SOURCE_INELIGIBLE",
+                        "Configuration sources require a canonical JSON input: " + source.getKey() + ".", location);
+            }
+            if (authored.values().containsKey(source.getKey())) {
+                return InputSourcesRead.rejected("PROJECT_INPUT_SOURCE_CONFLICT",
+                        "Input cannot contain both a literal and a configuration reference: " + source.getKey() + ".", location);
+            }
+            final TextRead key = configurationReference(source.getValue(), configuration, location);
+            if (!key.diagnostics().isEmpty()) {
+                return new InputSourcesRead(Map.of(), key.diagnostics());
+            }
+            keys.put(source.getKey(), key.value());
+        }
+        return new InputSourcesRead(keys, List.of());
+    }
+
+    private static TextRead configurationReference(
+            final RailixValue value,
+            final RailixValue.ObjectValue configuration,
+            final String path
+    ) {
+        if (!(value instanceof RailixValue.ObjectValue reference)
+                || !reference.values().keySet().equals(Set.of("configuration"))
+                || !(reference.values().get("configuration") instanceof RailixValue.StringValue key)
+                || !CONFIGURATION_KEY.matcher(key.value()).matches()) {
+            return new TextRead("", List.of(Diagnostic.atPath("PROJECT_INPUT_SOURCE_INVALID",
+                    "Input source must contain exactly one configuration key of 1 to 64 characters using letters, digits, underscores or hyphens.", path)));
+        }
+        if (!configuration.values().containsKey(key.value())) {
+            return new TextRead("", List.of(Diagnostic.atPath("PROJECT_CONFIGURATION_KEY_UNKNOWN",
+                    "Configuration key does not exist: \"" + key.value() + "\".", path + ".configuration")));
+        }
+        return new TextRead(key.value(), List.of());
+    }
+
+    private static Diagnostic configurationDiagnostic(final Diagnostic issue, final String key) {
+        return new Diagnostic(issue.code(), "Configuration \"" + key + "\": " + issue.message(),
+                issue.path(), issue.line(), issue.column());
+    }
+
     private InputRead input(
             final RailixValue authored,
             final StepDefinition.Input declaration,
             final String path,
-            final StepCatalog catalog,
+            final InputContext context,
             final Map<String, ApplicationPlan.Binding> previous
     ) {
         return switch (declaration) {
             case StepDefinition.JsonInput json -> json(authored, json, path);
             case StepDefinition.PathInput selectedPath -> path(authored, selectedPath, path);
-            case StepDefinition.OptionsInput options -> options(authored, options, path, catalog);
+            case StepDefinition.OptionsInput options -> options(authored, options, path, context);
             case StepDefinition.CandidatesInput candidates -> candidates(
-                    authored, candidates, path, catalog, previous
+                    authored, candidates, path, context, previous
             );
             case StepDefinition.MatcherGroupsInput matcherGroups -> matcherGroups(
-                    authored, matcherGroups, path, catalog, previous
+                    authored, matcherGroups, path, context, previous
             );
-            case StepDefinition.StepsInput steps -> steps(authored, steps, path, catalog);
+            case StepDefinition.StepsInput steps -> steps(authored, steps, path, context);
         };
     }
 
@@ -581,7 +709,7 @@ public final class ProjectCompiler {
             RailixValue value,
             final StepDefinition.OptionsInput declaration,
             final String path,
-            final StepCatalog catalog
+            final InputContext context
     ) {
         if (value == null && declaration.defaultOption().isPresent()) {
             value = RailixValue.object(Map.of(
@@ -602,14 +730,14 @@ public final class ProjectCompiler {
                     path
             );
         }
-        return choice(object, declaration.options(), path, catalog, OPTION_FIELDS, "OPTIONS", "OPTION");
+        return choice(object, declaration.options(), path, context, OPTION_FIELDS, "OPTIONS", "OPTION");
     }
 
     private InputRead choice(
             final RailixValue.ObjectValue object,
             final List<StepDefinition.Option> declaredOptions,
             final String path,
-            final StepCatalog catalog,
+            final InputContext context,
             final Set<String> fields,
             final String label,
             final String code
@@ -655,7 +783,7 @@ public final class ProjectCompiler {
         if (!childInputs.diagnostics().isEmpty()) {
             return new InputRead(new ApplicationPlan.JsonBinding(List.of()), childInputs.diagnostics());
         }
-        final InputsRead children = inputs(childInputs.value(), option.inputs(), path + ".inputs", catalog);
+        final InputsRead children = inputs(childInputs.value(), option.inputs(), path + ".inputs", context, object.values().get("input_sources"));
         if (!children.diagnostics().isEmpty()) {
             return new InputRead(new ApplicationPlan.JsonBinding(List.of()), children.diagnostics());
         }
@@ -670,9 +798,9 @@ public final class ProjectCompiler {
             final RailixValue value,
             final StepDefinition.StepsInput declaration,
             final String path,
-            final StepCatalog catalog
+            final InputContext context
     ) {
-        final NestedRead nested = nestedSteps(value, path, catalog);
+        final NestedRead nested = nestedSteps(value, path, context);
         if (!nested.diagnostics().isEmpty()) {
             return new InputRead(new ApplicationPlan.JsonBinding(List.of()), nested.diagnostics());
         }
@@ -689,7 +817,7 @@ public final class ProjectCompiler {
             RailixValue value,
             final StepDefinition.CandidatesInput declaration,
             final String path,
-            final StepCatalog catalog,
+            final InputContext context,
             final Map<String, ApplicationPlan.Binding> previous
     ) {
         if (value == null && declaration.defaultCandidate().isPresent()) {
@@ -712,7 +840,7 @@ public final class ProjectCompiler {
         for (int index = 0; index < array.values().size(); index++) {
             final String candidatePath = path + "[" + index + "]";
             final CandidateRead candidate = candidate(
-                    array.values().get(index), declaration.options(), candidatePath, catalog, previous,
+                    array.values().get(index), declaration.options(), candidatePath, context, previous,
                     "Candidate", "CANDIDATE", declaration.authoredOutcomes()
             );
             if (!candidate.diagnostics().isEmpty()) {
@@ -734,11 +862,11 @@ public final class ProjectCompiler {
             final RailixValue value,
             final StepDefinition.MatcherGroupsInput declaration,
             final String path,
-            final StepCatalog catalog,
+            final InputContext context,
             final Map<String, ApplicationPlan.Binding> previous
     ) {
         if (declaration.authoredOutcomes()) {
-            return routedMatchers(value, declaration, path, catalog, previous);
+            return routedMatchers(value, declaration, path, context, previous);
         }
         final RailixValue resolved = value == null ? RailixValue.array(List.of()) : value;
         if (!(resolved instanceof RailixValue.ArrayValue groups)) {
@@ -772,7 +900,7 @@ public final class ProjectCompiler {
                         matchers.values().get(matcherIndex),
                         declaration.options(),
                         groupPath + "[" + matcherIndex + "]",
-                        catalog,
+                        context,
                         previous,
                         "Matcher",
                         "MATCHER",
@@ -789,7 +917,7 @@ public final class ProjectCompiler {
     }
 
     private InputRead routedMatchers(final RailixValue value, final StepDefinition.MatcherGroupsInput declaration,
-                                    final String path, final StepCatalog catalog,
+                                    final String path, final InputContext context,
                                     final Map<String, ApplicationPlan.Binding> previous) {
         final RailixValue resolved = value == null ? RailixValue.array(List.of()) : value;
         if (!(resolved instanceof RailixValue.ArrayValue array)) {
@@ -803,7 +931,7 @@ public final class ProjectCompiler {
             if (!(array.values().get(index) instanceof RailixValue.ObjectValue route)) {
                 return InputRead.rejected("PROJECT_ROUTE_OBJECT_REQUIRED", "Route must be an object.", routePath);
             }
-            final var unknown = unknown(route, Set.of("outcome", "groups", "inputs"),
+            final var unknown = unknown(route, Set.of("outcome", "groups", "inputs", "input_sources"),
                     "PROJECT_ROUTE_FIELD_UNKNOWN", "Unknown route field: ", routePath);
             if (unknown.isPresent()) return new InputRead(new ApplicationPlan.JsonBinding(List.of()), List.of(unknown.get()));
             final TextRead outcome = text(route, "outcome", "PROJECT_ROUTE_OUTCOME_REQUIRED",
@@ -814,12 +942,13 @@ public final class ProjectCompiler {
                         "Route outcomes must be unique safe lowercase identifiers.", routePath + ".outcome");
             }
             final InputRead condition = matcherGroups(route.values().get("groups"), matchers,
-                    routePath + ".groups", catalog, previous);
+                    routePath + ".groups", context, previous);
             if (!condition.diagnostics().isEmpty()) return condition;
             final ObjectRead fields = object(route, "inputs", "PROJECT_ROUTE_INPUTS_OBJECT_REQUIRED",
                     "Route inputs must be an object.", routePath + ".inputs");
             if (!fields.diagnostics().isEmpty()) return new InputRead(new ApplicationPlan.JsonBinding(List.of()), fields.diagnostics());
-            final InputsRead inputs = inputs(fields.value(), declaration.routeInputs(), routePath + ".inputs", catalog);
+            final InputsRead inputs = inputs(fields.value(), declaration.routeInputs(), routePath + ".inputs",
+                    context, route.values().get("input_sources"));
             if (!inputs.diagnostics().isEmpty()) return new InputRead(new ApplicationPlan.JsonBinding(List.of()), inputs.diagnostics());
             routes.add(new ApplicationPlan.RoutePlan(outcome.value(),
                     (ApplicationPlan.MatcherGroupsBinding) condition.binding(), inputs.bindings()));
@@ -831,7 +960,7 @@ public final class ProjectCompiler {
             final RailixValue candidate,
             final List<StepDefinition.Option> options,
             final String path,
-            final StepCatalog catalog,
+            final InputContext context,
             final Map<String, ApplicationPlan.Binding> previous,
             final String label,
             final String code,
@@ -848,7 +977,7 @@ public final class ProjectCompiler {
                 object,
                 options,
                 path,
-                catalog,
+                context,
                 authoredOutcomes ? AUTHORED_OUTCOME_CANDIDATE_FIELDS : CANDIDATE_FIELDS,
                 label,
                 code
@@ -877,7 +1006,7 @@ public final class ProjectCompiler {
             }
             outcome = outcomeRead.value();
         }
-        final ConditionRead condition = condition(object.values().get("when"), path + ".when", catalog, label, code);
+        final ConditionRead condition = condition(object.values().get("when"), path + ".when", context, label, code);
         if (!condition.diagnostics().isEmpty()) {
             return CandidateRead.rejected(condition.diagnostics());
         }
@@ -912,7 +1041,7 @@ public final class ProjectCompiler {
     private ConditionRead condition(
             final RailixValue value,
             final String path,
-            final StepCatalog catalog,
+            final InputContext context,
             final String label,
             final String code
     ) {
@@ -920,7 +1049,7 @@ public final class ProjectCompiler {
             return ConditionRead.empty();
         }
         if (value instanceof RailixValue.ObjectValue structured) {
-            return structuredCondition(structured, path, catalog, label, code);
+            return structuredCondition(structured, path, context, label, code);
         }
         return ConditionRead.rejected(
                 "PROJECT_" + code + "_CONDITION_OBJECT_REQUIRED",
@@ -932,7 +1061,7 @@ public final class ProjectCompiler {
     private ConditionRead structuredCondition(
             final RailixValue.ObjectValue value,
             final String path,
-            final StepCatalog catalog,
+            final InputContext context,
             final String label,
             final String code
     ) {
@@ -972,7 +1101,7 @@ public final class ProjectCompiler {
                     path + ".all"
             );
         }
-        final NestedRead transforms = nestedSteps(transformsArray, path + ".transforms", catalog);
+        final NestedRead transforms = nestedSteps(transformsArray, path + ".transforms", context);
         if (!transforms.diagnostics().isEmpty()) {
             return ConditionRead.rejected(transforms.diagnostics());
         }
@@ -998,7 +1127,7 @@ public final class ProjectCompiler {
                         predicatePath
                 );
             }
-            final NestedRead predicate = nestedSteps(array, predicatePath, catalog);
+            final NestedRead predicate = nestedSteps(array, predicatePath, context);
             if (!predicate.diagnostics().isEmpty()) {
                 return ConditionRead.rejected(predicate.diagnostics());
             }
@@ -1110,7 +1239,7 @@ public final class ProjectCompiler {
     private NestedRead nestedSteps(
             final RailixValue value,
             final String path,
-            final StepCatalog catalog
+            final InputContext context
     ) {
         final RailixValue resolved = value == null ? RailixValue.array(List.of()) : value;
         if (!(resolved instanceof RailixValue.ArrayValue array)) {
@@ -1147,7 +1276,7 @@ public final class ProjectCompiler {
             if (!use.diagnostics().isEmpty()) {
                 return new NestedRead(List.of(), use.diagnostics());
             }
-            final StepDefinition definition = catalog.find(use.value()).orElse(null);
+            final StepDefinition definition = context.catalog().find(use.value()).orElse(null);
             if (definition == null) {
                 return NestedRead.rejected(
                         "PROJECT_NESTED_STEP_UNKNOWN",
@@ -1194,7 +1323,8 @@ public final class ProjectCompiler {
                     nestedInputs.value(),
                     definition.inputs(),
                     stepPath + ".inputs",
-                    catalog
+                    context,
+                    object.values().get("input_sources")
             );
             if (!compiled.diagnostics().isEmpty()) {
                 return new NestedRead(List.of(), compiled.diagnostics());
@@ -1978,6 +2108,9 @@ public final class ProjectCompiler {
         return new CompileResult.Rejected(List.of(diagnostic));
     }
 
+    private record InputContext(StepCatalog catalog, RailixValue.ObjectValue configuration) {
+    }
+
     private record Node(
             String id,
             StepDefinition definition,
@@ -2051,6 +2184,12 @@ public final class ProjectCompiler {
     private record ExampleWrite(RailixValue value, Diagnostic diagnostic) {
         static ExampleWrite rejected(final String code, final String message, final String path) {
             return new ExampleWrite(RailixValue.nullValue(), Diagnostic.atPath(code, message, path));
+        }
+    }
+
+    private record InputSourcesRead(Map<String, String> keys, List<Diagnostic> diagnostics) {
+        static InputSourcesRead rejected(final String code, final String message, final String path) {
+            return new InputSourcesRead(Map.of(), List.of(Diagnostic.atPath(code, message, path)));
         }
     }
 
@@ -2180,6 +2319,9 @@ public final class ProjectCompiler {
     }
 
     private record ObjectRead(RailixValue.ObjectValue value, List<Diagnostic> diagnostics) {
+        static ObjectRead rejected(final String code, final String message, final String path) {
+            return new ObjectRead(RailixValue.object(Map.of()), List.of(Diagnostic.atPath(code, message, path)));
+        }
     }
 
     private record ArrayRead(RailixValue.ArrayValue value, List<Diagnostic> diagnostics) {

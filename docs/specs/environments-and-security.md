@@ -2,12 +2,14 @@
 
 ## Human Review
 
-Status: **Planned; design discussion**, updated on 2026-09-21. The user accepted the
-local Git-backed default, optional external managers, usability, early rejection, immutable
+Status: **Typed configuration implemented; security design planned**, updated on 2026-11-05.
+The user accepted the local Git-backed default, optional external managers, usability, early rejection, immutable
 deployed identities/permissions, credential rotation and compliance-support goals, not a
 cryptographic architecture or implementation. The latest clarification rejects live user
 management; it supersedes the earlier proposal for a mutable account/role service.
-Runtime settings and secrets remain unsupported as recorded in [ADR 0019](../adr/0019-runtime-settings-and-secrets.md).
+Runtime settings are now supported and secrets remain unsupported as recorded in [ADR 0019](../adr/0019-runtime-settings-and-secrets.md).
+Typed configuration keys have a maximum length of 64 characters and String values of 4,096
+characters, as accepted on 2026-11-01.
 
 Owns: environment configuration, secret access and lifecycle, platform identities and ingress
 policy boundaries. [System model](system-model.md#accepted-platform-boundaries) owns artifact
@@ -99,6 +101,153 @@ failure and permission rules. Git history is not an erasable personal-data store
 provenance, vulnerability handling and reproducible artifact identity belong in release evidence.
 Keep compliance reports and authoring tools outside production unless a selected capability needs
 runtime enforcement; essential enforcement cannot be removed merely to meet a size target.
+
+## Typed Project Configuration: First Slice
+
+This slice establishes reusable, non-secret values in the functional project. It does not
+implement secret storage or claim SEC-009 coverage. Named environments, OS environment imports,
+configuration expressions, live updates and mutable global variables are outside this slice.
+The following CFG requirements and representation define the initial implementation contract.
+
+### Behavior
+
+- **CFG-001 — Project ownership:** Settings MUST expose a Project configuration tab with
+  Key / Type / Value entries for the current project. Values MUST persist with the functional
+  project, not global Creator preferences or presentation metadata. A project with no entries
+  MUST retain its existing behavior. The tab MUST identify values as non-secret and build-fixed.
+- **CFG-002 — Canonical types:** The first slice MUST support String, Number and Boolean using
+  Railix's existing canonical values. Type selection MUST be explicit in the editor; no type
+  inference from string contents or implicit conversion is permitted. Numeric values MUST
+  retain their exact value through browser editing, API transport, saving and compilation,
+  using the existing exact-number path and numeric limits. Missing entries, empty strings,
+  zero and false MUST remain distinct. Configuration String values MUST contain at most 4,096
+  decoded characters and MUST be empty or contain only printable ASCII characters from `!`
+  through `~` (U+0021–U+007E). Whitespace, control
+  characters and non-ASCII characters MUST be rejected without trimming or substitution.
+  Array, Object and Null entries are deferred; existing Step literal inputs and their String
+  contents remain unchanged.
+- **CFG-003 — Input binding:** A compatible canonical JSON input MUST accept a project
+  configuration reference, including inputs owned by selected options, candidates, matchers,
+  route settings and nested Steps. Built-in and third-party definitions MUST use the same binding rule.
+  References MUST NOT target writable paths, receive/return ports, option selectors, outcome
+  names or whole nested programs. Steps MUST receive ordinary resolved typed inputs through
+  their existing contract, without configuration lookup APIs or access to the entire map.
+- **CFG-004 — Validation:** Compilation MUST reject unknown keys, unsupported entry types,
+  invalid configuration names, String characters or entry lengths, references to undeclared or ineligible
+  inputs, and values that fail the consuming input's existing shape/range constraints.
+  A reference and a literal for the same input MUST be
+  rejected as ambiguous. An explicit broken reference MUST NOT fall back to an input default,
+  even for an optional input. Diagnostics MUST identify the configuration key and owning input
+  path when applicable. Unused entries MUST still be validated as supported canonical values.
+- **CFG-005 — Build lifetime:** References MUST resolve during compilation into immutable
+  values. Development and production builds MUST use the same resolution rules. Editing a
+  value changes a subsequent build; it MUST NOT mutate an existing application or its active
+  Flows. Transforming a configured value produces Flow data, leaving the configuration intact.
+  Configuration snapshots MUST be immutable; concurrent readers retain their snapshot while
+  edits validate a replacement through the revision-checked project boundary.
+  SEC-009 credential rotation MUST NOT be routed through this compile-time literal mechanism.
+- **CFG-006 — Editing:** Configuration edits MUST use the existing revision-checked project
+  edit/save/build path. Configuration key additions, changes and deletions MUST participate
+  in complete-action undo/redo, including adding the first and removing the last entry. Creator MUST retain an invalid edit as a visible draft while preserving
+  the last accepted project and application. Removing a referenced key or changing its type
+  incompatibly MUST identify affected inputs and reject the invalid save. The initial UI MUST
+  require rebinding consumers before removing or renaming a referenced key; no automatic
+  rename propagation is included. Valid edits retain the existing distinction between saved
+  source and successful activation: a failed build/activation MUST NOT appear as a live update.
+  Changing a comparison MUST preserve configuration references under the same compatibility
+  rules as literal operands. Changing a candidate option MUST reset that option's owned
+  literals and references while preserving its condition and outcome identity.
+  Creator MUST reject oversized entries with a clear error while retaining their full draft text;
+  it MUST NOT truncate values or names to make them valid.
+  Live application configuration remains read-only. Unsaved configuration drafts MUST block
+  switching workspaces until applied or reset, preserving the draft for correction.
+  Live/Draft comparison MUST show project configuration changes on the App, retaining the
+  observed build's values separately from the draft's values.
+
+### Representation And Compiler Boundary
+
+Add an optional `configuration` object to `railix.project.json`. Its keys are unique,
+case-sensitive names containing 1 to 64 ASCII letters (`A-Z`, `a-z`), digits (`0-9`),
+underscores (`_`) or hyphens (`-`), matched exactly. No leading-letter rule is imposed.
+Other punctuation, whitespace and control characters are not permitted in names. Values
+use native canonical JSON types; there is no second stored type tag that could disagree with
+the value. The explicit Type control selects the value representation when authoring.
+String values may contain punctuation such as `@`, `/`, `\` and quotes. Use ordinary JSON
+escaping: `/` needs no escape; a backslash is stored as `\\` and a quote as `\"`.
+Validate the decoded characters: JSON escapes for a newline, carriage return, tab or space
+do not make those characters valid. Do not pre-escape values before serializing JSON.
+The String limit is 4,096 decoded characters, including any literal quotes or backslashes;
+JSON escape syntax does not increase the character count. Both length limits are per entry
+and apply in Creator validation and the compiler. Existing projects exceeding them are rejected
+on load, import or build without truncation. Existing numeric and transport limits still apply.
+
+Illustrative project-root member:
+
+```json
+"configuration": {
+  "tax_rate": 0.20,
+  "account_code": "00123",
+  "feature_enabled": false
+}
+```
+
+Add an optional `input_sources` object beside `inputs` wherever the recursive grammar owns
+named inputs: a graph node, nested Step invocation, selected option/candidate/matcher, or authored Branch route.
+Each entry names a declared canonical JSON input and contains exactly one `configuration`
+key naming the project entry. An illustrative fragment for an input named `rate` is:
+
+```json
+"inputs": {},
+"input_sources": {
+  "rate": { "configuration": "tax_rate" }
+}
+```
+
+Keep references separate from literal data. An ordinary literal object containing a field
+named `configuration` or `input_sources` MUST keep its original meaning. No reserved string
+interpolation or object-marker detection is introduced inside literal values. Missing
+`input_sources` preserves current default/required-input behavior. Other binding sources are
+outside this slice.
+
+The compiler resolves references through the same validation used for literal JSON inputs
+and lowers them to the existing literal binding. Preserve the authored key reference in the
+saved project; do not replace it with a copied literal there. This needs no new runtime
+binding, Step handler signature, global configuration service or expression evaluator.
+
+Creator's input control offers Literal / Project configuration for eligible fields and shows
+the selected key, type and value. Show the selector when compatible keys exist or an input
+already references configuration, including a missing or incompatible key that needs correction.
+Other inputs retain their literal controls without an empty source selector. Suggestions use
+the input's declared compatibility rules.
+For a transformation candidate, choose **Enter a fixed value** in the candidate's Value source
+selector, then choose the configuration key in the input's second Value source selector.
+Configuration references can also supply transformation parameters. The enclosing Step
+continues to determine execution and data flow.
+
+Extend the existing project edit payload with per-key configuration updates; an edit-payload
+JSON null deletes an entry, while saved configuration Null values remain unsupported. Reuse
+the existing revision conflict and authenticated mutation boundary. Creator authors through
+`/api/editor` transactions, including history; `/api/project` per-key patches remain supported.
+`/api/settings` owns global Creator preferences. Derive references/usage from the current authored project;
+do not persist another dependency index.
+
+These fields are additive to the current project format. Updated tooling MUST read
+existing projects without rewriting their literals or requiring configuration entries. Older
+tooling may reject projects using the new fields; forward compatibility is not promised.
+Interpret these fields only at the declared structural boundaries; previously legal literal
+data is not reserved as new syntax.
+
+### Acceptance
+
+Exercise exact scalar values, character restrictions, explicit references, defaults, nested and
+third-party inputs, declared validators, independent generated builds, revision conflicts,
+rejected drafts, key-level undo/redo, and save/reopen. Browser checks must include the complete
+Current / Enter a fixed value / configuration-key journey, imports, row identity after reload,
+unified Branch route settings and Boolean defaults, read-only live workspaces,
+and desktop/narrow layouts. Focused checks do not replace the full publication gate.
+Accept 64-character keys and 4,096-character Strings; reject 65-character keys (including
+references) and 4,097-character Strings, even when unused. Verify decoded escaping, preservation
+of oversized drafts, and continued support for longer ordinary Step literal Strings.
 
 ## Proposed Direction, Not Accepted Architecture
 

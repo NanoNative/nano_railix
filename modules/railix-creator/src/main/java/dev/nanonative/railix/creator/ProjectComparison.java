@@ -28,6 +28,8 @@ final class ProjectComparison {
                 final var fields = new LinkedHashMap<>(node.values());
                 fields.remove("examples");
                 final String id = ((RailixValue.StringValue) fields.get("id")).value();
+                if (id.equals("app") && side.getKey().containsKey("configuration"))
+                    fields.put("configuration", side.getKey().get("configuration"));
                 fields.put("connections", RailixValue.array(outgoing.getOrDefault(id, List.of())));
                 side.getValue().put(id, RailixValue.object(fields));
             }

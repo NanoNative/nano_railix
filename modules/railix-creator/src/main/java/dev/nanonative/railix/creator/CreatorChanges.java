@@ -496,7 +496,7 @@ final class CreatorChanges {
         for (final String field : fields) {
             final RailixValue left = before.values().get(field), right = after.values().get(field);
             if (java.util.Objects.equals(left, right)) continue;
-            if (Set.of("nodes", "links", "groups", "steps").contains(field)) {
+            if (Set.of("nodes", "links", "groups", "steps", "configuration").contains(field)) {
                 final Map<String, RailixValue> a = index(before, field);
                 final Map<String, RailixValue> b = index(after, field);
                 final Map<String, RailixValue> entries = new LinkedHashMap<>();
@@ -577,7 +577,7 @@ final class CreatorChanges {
         return result;
     }
     private static Map<String, RailixValue> index(final RailixValue.ObjectValue document, final String field) {
-        if (field.equals("steps")) return object(document, field).values();
+        if (field.equals("steps") || field.equals("configuration")) return object(document, field).values();
         if (!field.equals("links")) return keyed(array(document, field), "id");
         final Map<String, List<RailixValue>> byPort = new LinkedHashMap<>();
         array(document, field).forEach(value -> byPort.computeIfAbsent(text(object(value), "from"), ignored -> new ArrayList<>()).add(value));
