@@ -61,6 +61,10 @@ const state = {
   savedSettingsVersion: 0,
   settingsTimer: 0,
   settingsWriting: false,
+  configurationView: null,
+  configurationDraft: null,
+  configurationDraftRevision: 0,
+  configurationMessage: "",
   themesDirectory: "",
   themeError: "",
   themeController: null,
@@ -278,6 +282,7 @@ async function boot() {
 }
 
 function render() {
+  renderConfiguration();
   if (!state.project) {
     return;
   }
@@ -386,7 +391,8 @@ function reportWorkspaceFailure(message) {
 }
 
 async function switchWorkspace(liveView,connection=state.liveConnection) {
-  if (state.switchingWorkspace || state.actionPending || state.writeActive || state.pendingProject || state.saveFailure) {
+  if (state.switchingWorkspace || state.actionPending || state.writeActive || state.pendingProject || state.saveFailure
+      || state.configurationDraft !== null) {
     reportWorkspaceFailure('Finish or discard the local edit before changing versions.');return false;
   }
   const before=state.liveView, previousConnection=state.liveConnection;
@@ -418,6 +424,7 @@ async function switchWorkspace(liveView,connection=state.liveConnection) {
       }
     }
     state.project=payload.project;state.builtProject=clone(payload.project);state.editor=payload.editor;state.history=payload.history;
+    state.configurationView=null;state.configurationMessage='';
     state.creator=payload.creator;state.savedCreator=clone(payload.creator);state.projectVersion=payload.revision;state.creatorVersion=payload.creator_revision;
     state.catalog=catalog.steps;state.definitions=new Map(catalog.steps.map(definition=>[definition.id,definition]));
     state.workspace=payload.workspace;state.diagnostics=payload.diagnostics || [];state.localDiagnostics=[];state.liveChanges=payload.comparison_instance===state.liveConnection?.instance ? payload.changes || {} : {};
@@ -944,6 +951,8 @@ function renderBuildStatus() {
   document.querySelector('#project-menu').disabled=!state.project || state.actionPending && !state.projectImport.reload;
   document.querySelector('#open-settings').disabled=state.actionPending;
   document.querySelector('#open-project-import').disabled=state.liveView;
+  for (const id of ['configuration-add', 'configuration-apply', 'configuration-reset'])
+    document.getElementById(id).disabled = state.liveView || !state.project || !state.builtProject;
   const selecting = Boolean(state.editorController && !state.editorController.signal.aborted
     && state.editorController.node && state.editorController.node !== (state.regionSelection ? 'app' : state.selection.id));
   document.querySelector('#inspector').setAttribute('aria-busy',String(selecting || state.inspectorMode === 'groups' && Boolean(state.editorController)));
@@ -1305,8 +1314,11 @@ async function loadEditor(id, group = state.managedGroup, query = state.groupQue
           const identity = key === "links" ? "from" : "id";
           result[key] = result[key].filter(entry => !Object.hasOwn(values, entry[identity]));
           result[key].push(...Object.values(values).filter(value => value !== null).flat());
-        } else if (key === "steps") {
-          Object.entries(values).forEach(([id, value]) => value === null ? delete result.steps[id] : result.steps[id] = value);
+        } else if (key === "steps" || key === "configuration") {
+          const entries = new Map(Object.entries(result[key] || {}));
+          Object.entries(values).forEach(([id, value]) => value === null ? entries.delete(id) : entries.set(id, value));
+          if (key === 'configuration' && !entries.size) delete result[key];
+          else result[key] = Object.fromEntries(entries);
         } else result[key] = values;
       }
       return result;
@@ -1979,13 +1991,212 @@ function closeSettings(restore=true) {
 }
 
 function selectSettingsTab(tab) {
-  for (const name of ['appearance', 'sound', 'music']) {
+  for (const name of ['appearance', 'sound', 'music', 'configuration']) {
     const selected = name === tab;
     document.querySelector(`#settings-${name}-tab`).setAttribute('aria-selected', String(selected));
     document.querySelector(`#settings-${name}-tab`).tabIndex = selected ? 0 : -1;
     document.querySelector(`#settings-${name}`).hidden = !selected;
   }
   if (tab === 'sound' || tab === 'music') state.audio?.setEditorKind(tab);
+  document.querySelector('#audio-status').hidden = tab === 'configuration';
+  if (tab === 'configuration') renderConfiguration(true);
+}
+
+function configurationRows() {
+  return Object.entries(state.project?.configuration || {}).map(([key, value]) => ({key,
+    type: valueShape(value),
+    value: typeof value === 'string' ? value : String(numberText(value))}));
+}
+
+function renderConfiguration(force = false) {
+  const host = document.querySelector('#configuration-rows');
+  if (!host || !state.project || document.querySelector('#settings-configuration').hidden
+      || document.querySelector('#audio-panel').hidden) return;
+  const diagnostics = [...state.localDiagnostics, ...state.diagnostics]
+    .filter(issue => state.saveFailure || issue.code?.includes('CONFIGURATION') || issue.path?.includes('input_sources')
+      || issue.message?.startsWith('Configuration "'));
+  document.querySelector('#configuration-status').textContent = state.configurationMessage
+    || diagnostics.map(issue => issue.message).join(' ')
+    || (state.liveView ? 'Live application configuration is read-only.'
+      : state.saveFailure ? state.saveFailure.message : state.build === 'Building' ? 'Building project configuration…' : '');
+  if (!force && (host.contains(document.activeElement) || state.configurationDraft !== null)) return;
+  const rows = state.configurationDraft || configurationRows();
+  state.configurationView = {rows: rows.map(row => ({...row})),
+    revision: state.configurationDraft !== null ? state.configurationDraftRevision : state.projectVersion};
+  host.innerHTML = rows.length ? rows.map((row, index) => `<div class="configuration-row" data-configuration-row="${index}">
+    <label>Key<textarea rows="1" data-configuration-field="key" spellcheck="false" autocapitalize="off"></textarea></label>
+    <label>Type<select data-configuration-field="type">${['string','number','boolean'].map(type => `<option value="${type}">${type[0].toUpperCase()+type.slice(1)}</option>`).join('')}</select></label>
+    <label class="configuration-value">Value${row.type === 'boolean'
+      ? '<select data-configuration-field="value"><option value="true">true</option><option value="false">false</option></select>'
+      : row.type === 'string' ? '<textarea rows="1" data-configuration-field="value" spellcheck="false" autocapitalize="off"></textarea>'
+      : '<input type="text" data-configuration-field="value" spellcheck="false" inputmode="decimal">'}</label>
+    <button type="button" data-configuration-remove="${index}">Remove</button>
+  </div>`).join('') : '<p>No project configuration values.</p>';
+  host.querySelectorAll('[data-configuration-row]').forEach((element, index) => {
+    for (const field of element.querySelectorAll('[data-configuration-field]')) {
+      field.value = rows[index][field.dataset.configurationField];
+    }
+  });
+  host.querySelectorAll('input, select, textarea, button').forEach(field => field.disabled = state.liveView);
+}
+
+function updateConfigurationDraft(target) {
+  const draft = beginConfigurationDraft();
+  if (draft === null) return;
+  const index = Number(target.closest('[data-configuration-row]').dataset.configurationRow);
+  const row = draft[index];
+  row[target.dataset.configurationField] = target.value;
+  state.configurationMessage = '';
+  if (target.dataset.configurationField === 'type') {
+    row.value = row.type === 'boolean' ? 'false' : '';
+    renderConfiguration(true);
+    document.querySelector(`[data-configuration-row="${index}"] [data-configuration-field=type]`)?.focus();
+  }
+}
+
+function beginConfigurationDraft() {
+  if (state.liveView || !state.project || !state.builtProject) return null;
+  if (state.configurationDraft === null) {
+    state.configurationDraft = (state.configurationView?.rows || configurationRows()).map(row => ({...row}));
+    state.configurationDraftRevision = state.configurationView?.revision ?? state.projectVersion;
+  }
+  return state.configurationDraft;
+}
+
+function readConfigurationRows(rows) {
+  const entries = new Map();
+  for (const row of rows) {
+    if (!row.key || row.key.length > 64 || /[^A-Za-z0-9_-]/.test(row.key)) {
+      return {error: 'Configuration names must use 1 to 64 letters (A-Z, a-z), digits, underscores (_) or hyphens (-).'};
+    }
+    if (entries.has(row.key)) {
+      return {error: `Duplicate configuration key: ${row.key}.`};
+    }
+    const result = readConfigurationValue(row);
+    if (result.error) return result;
+    entries.set(row.key, result.value);
+  }
+  return {value: Object.fromEntries(entries)};
+}
+
+function readConfigurationValue(row) {
+  switch (row.type) {
+    case 'number':
+      return canonicalNumber(row.value).canonical ? {value: parseExact(row.value)}
+        : {error: `Enter a supported Number for ${row.key}.`};
+    case 'string':
+      if (row.value.length > 4_096) {
+        return {error: `Configuration "${row.key}": String values must contain at most 4096 characters.`};
+      }
+      if (/[^!-~]/.test(row.value)) {
+        return {error: `Configuration "${row.key}": String values must use printable ASCII letters, digits or punctuation, without whitespace or control characters.`};
+      }
+      return {value: row.value};
+    case 'boolean':
+      return {value: row.value === 'true'};
+    default:
+      return {error: `Choose String, Number or Boolean for ${row.key}.`};
+  }
+}
+
+function applyConfiguration() {
+  if (state.liveView || !state.project || !state.builtProject) return;
+  if (state.configurationDraft !== null && state.configurationDraftRevision !== state.projectVersion) {
+    state.configurationMessage = 'The project changed while you edited configuration. Reset the draft before saving.';
+    renderConfiguration(); return;
+  }
+  const rows = state.configurationDraft || configurationRows();
+  const result = readConfigurationRows(rows);
+  if (result.error) {
+    state.configurationMessage = result.error;
+    renderConfiguration(); return;
+  }
+  if (Object.keys(result.value).length) state.project.configuration = result.value;
+  else delete state.project.configuration;
+  // Apply can leave a field focused, so retain the rows now represented by the form.
+  state.configurationView = {rows: rows.map(row => ({...row})), revision: state.projectVersion};
+  state.configurationDraft = null;
+  state.configurationMessage = '';
+  dirty();
+}
+
+function resetConfiguration() {
+  if (state.liveView || !state.project || !state.builtProject) return;
+  const changed = JSON.stringify(state.project.configuration) !== JSON.stringify(state.builtProject.configuration);
+  if (Object.hasOwn(state.builtProject, 'configuration')) state.project.configuration = clone(state.builtProject.configuration);
+  else delete state.project.configuration;
+  state.configurationDraft = null;
+  state.configurationMessage = '';
+  if (changed) dirty();
+  else renderConfiguration(true);
+}
+
+function inputSource(operation, locator) {
+  const sources = valueAt(operation, locator.slice(0, -2))?.input_sources;
+  return sources && Object.hasOwn(sources, locator.at(-1)) ? sources[locator.at(-1)] : undefined;
+}
+
+function configurationValue(key) {
+  const configuration = state.project?.configuration;
+  return configuration && Object.hasOwn(configuration, key) ? configuration[key] : undefined;
+}
+
+function configuredJsonValue(operation, locator) {
+  const source = inputSource(operation, locator);
+  return source ? configurationValue(source.configuration) : valueAt(operation, locator);
+}
+
+function compareConfigurationNumbers(left, right) {
+  const parts = value => {
+    const match = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(String(numberText(value)));
+    const coefficient = BigInt(match[1] + match[2] + (match[3] || ''));
+    return {coefficient, scale: coefficient === 0n ? 0n : BigInt((match[3] || '').length) - BigInt(match[4] || '0')};
+  };
+  const a = parts(left), b = parts(right), scale = a.scale > b.scale ? a.scale : b.scale;
+  const difference = a.coefficient * 10n ** (scale-a.scale) - b.coefficient * 10n ** (scale-b.scale);
+  return difference === 0n ? 0 : difference > 0n ? 1 : -1;
+}
+
+function configurationInputSource(operation, input, locator) {
+  const selected = inputSource(operation, locator)?.configuration;
+  const entries = Object.entries(state.project.configuration || {}).filter(([, value]) => {
+    const shape = valueShape(value);
+    return (input.shape === 'any' || input.shape === shape)
+      && (shape !== 'number' || ((!Object.hasOwn(input, 'minimum') || compareConfigurationNumbers(value, input.minimum) >= 0)
+        && (!Object.hasOwn(input, 'maximum') || compareConfigurationNumbers(value, input.maximum) <= 0)));
+  });
+  if (selected === undefined && !entries.length) return '';
+  const present = entries.some(([key]) => key === selected);
+  const sourcePath = inputDiagnosticPath(operation.id, [...locator.slice(0, -2), 'input_sources', input.name, 'configuration']);
+  return `<label class="input-configuration-source" data-setting-path="${html(sourcePath)}" tabindex="-1">Value source<select aria-label="${html(input.label || inputLabel(input.name))} source"
+    data-input-source="${locatorToken(locator)}" data-input-meta="${metaToken(input)}">
+    <option value="" ${selected === undefined ? 'selected' : ''}>Literal</option>
+    <optgroup label="Project configuration">${selected !== undefined && !present ? `<option value="${html(selected)}" selected>${html(selected)} (unavailable)</option>` : ''}
+    ${entries.map(([key]) => `<option value="${html(key)}" ${selected === key ? 'selected' : ''}>${html(key)}</option>`).join('')}</optgroup>
+  </select></label>`;
+}
+
+function selectInputSource(locator, input, key) {
+  if (state.liveView) return;
+  const operation = editableOperation(locator);
+  const owner = valueAt(operation, locator.slice(0, -2));
+  const name = locator.at(-1);
+  if (key) {
+    owner.input_sources = {...owner.input_sources, [name]: {configuration:key}};
+    deleteAt(operation, locator);
+  } else {
+    const previous = inputSource(operation, locator)?.configuration;
+    const value = configurationValue(previous);
+    if (owner.input_sources) {
+      delete owner.input_sources[name];
+      if (!Object.keys(owner.input_sources).length) delete owner.input_sources;
+    }
+    setAt(operation, locator, value === undefined ? (defaultInput(input) ?? initialValue(input)) : clone(value));
+  }
+  if (state.jsonDraft?.node === operation.id && samePath(state.jsonDraft.locator, locator)) {
+    state.jsonDraft = null;
+  }
+  dirty();
 }
 
 document.querySelector('.settings-tabs').addEventListener('keydown', event => {
@@ -2707,6 +2918,10 @@ function applyImportedProject(payload) {
   state.pathPicker = null;
   state.jsonDraft = null;
   state.exampleDraft = null;
+  state.configurationView = null;
+  state.configurationDraft = null;
+  state.configurationDraftRevision = 0;
+  state.configurationMessage = '';
   state.exampleTrigger = "";
   state.exampleIndex = 0;
   state.revealNode = "";
@@ -3408,8 +3623,18 @@ function jsonInput(operation, input, locator, value) {
   const issues = allDiagnostics().filter(issue => issue.path === path && diagnosticOwner(issue) === operation.id);
   const feedback = issues.length ? `<p id="${html(id)}-error" class="input-error" role="alert">${
     issues.map(issue => html(issue.message)).join(" ")}</p>` : "";
+  const sourceControl = configurationInputSource(operation, input, locator);
+  const source = inputSource(operation, locator);
+  if (source) {
+    const value = configurationValue(source.configuration);
+    const type = valueShape(value);
+    return `<section class="inspector-section" data-input-name="${html(input.name)}"><strong>${html(input.label || inputLabel(input.name))}</strong>
+      ${sourceControl}<p class="configuration-reference-value">${value === undefined ? 'Configuration key unavailable'
+        : `${type[0].toUpperCase()+type.slice(1)}: <code>${html(JSON.stringify(value))}</code>`}</p>${feedback}</section>`;
+  }
   if (input.shape === 'boolean' && typeof input.default === 'boolean' && !input.inherited) {
     return `<section class="inspector-section compact" data-input-name="${html(input.name)}">
+      ${sourceControl}
       <label class="check-line" for="${html(id)}-value"><input id="${html(id)}-value" type="checkbox"
         data-input-json="${locatorToken(locator)}" data-input-meta="${metaToken(input)}"
         ${(value ?? input.default) ? 'checked' : ''}${issues.length ? ` aria-invalid="true" aria-describedby="${html(id)}-error"` : ''}>
@@ -3418,6 +3643,7 @@ function jsonInput(operation, input, locator, value) {
   if (optional && !present) {
     return `
       <section class="inspector-section compact" data-input-name="${html(input.name)}">
+        ${sourceControl}
         <label class="check-line">
           <input id="${html(id)}-present" type="checkbox" data-toggle-input="${locatorToken(locator)}"
                  data-input-meta="${metaToken(input)}">
@@ -3464,6 +3690,7 @@ function jsonInput(operation, input, locator, value) {
       ${!optional?`<div class="section-heading input-heading"><label for="${html(id)}-value">${html(input.label || inputLabel(input.name))}</label>
         ${resettable ? `<button type="button" class="input-reset" data-reset-input="${locatorToken(locator)}"
           data-input-meta="${metaToken(input)}" title="Use default value">Reset</button>` : ''}</div>`:''}
+      ${sourceControl}
       ${control}
       ${feedback}
       ${input.required && input.shape === "string" && !present ? `
@@ -4465,6 +4692,7 @@ function selectCandidate(locator, input, index, optionName) {
     inputs: defaultInputs(option.inputs),
     when: conditionOf(candidates[index].when)
   };
+  delete candidates[index].input_sources;
   dirty();
 }
 
@@ -4992,7 +5220,7 @@ function invalidSurrogate(value) {
 }
 
 function configuredInputShape(operation, input, locator, scopeInputs, scopeBase) {
-  const value = valueAt(operation, locator);
+  const value = input.type === 'json' ? configuredJsonValue(operation, locator) : valueAt(operation, locator);
   if (input.type === "json") {
     return value === undefined ? "" : valueShape(value);
   }
@@ -5021,7 +5249,7 @@ function configuredInputShape(operation, input, locator, scopeInputs, scopeBase)
 
 function configuredInputValues(operation, input, locator, scopeInputs, scopeBase) {
   const count = observedRoots(operation).length || 1;
-  const value = valueAt(operation, locator);
+  const value = input.type === 'json' ? configuredJsonValue(operation, locator) : valueAt(operation, locator);
   if (input.type === "json") {
     return Array(count).fill(value);
   }
@@ -6353,11 +6581,12 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
     if (removedFlows.length) changes.remove_flows = removedFlows;
     const metadataChanges = documentChanges(state.savedCreator, creator);
     if (Object.keys(changes).length || Object.keys(metadataChanges).length) {
+      const baseRevision = state.projectVersion;
       requestSent=true;
       const response = await fetch("/api/editor", {
         method: "POST",
         headers: mutationHeaders(),
-        body: JSON.stringify({ revision: state.projectVersion, creator_revision:state.creatorVersion,
+        body: JSON.stringify({ revision: baseRevision, creator_revision:state.creatorVersion,
           command:{kind:"patch", project:changes, creator:metadataChanges, node:state.selection.id} })
       });
       payload = parseExact(await response.text());
@@ -6380,6 +6609,12 @@ async function save(revision, projectChanged, projectSource, creatorSource) {
         return false;
       }
       // A stale UI response still advances the transport baseline for the next queued save.
+      // Advance matching form baselines only on this save's acknowledgment, preserving newer typing.
+      if (state.projectVersion === baseRevision) {
+        if (state.configurationDraft !== null && state.configurationDraftRevision === baseRevision)
+          state.configurationDraftRevision = payload.revision;
+        if (state.configurationView?.revision === baseRevision) state.configurationView.revision = payload.revision;
+      }
       state.projectVersion = payload.revision;
       state.creatorVersion = payload.creator_revision;
       state.history = payload.history;
@@ -6452,8 +6687,8 @@ function documentChanges(before, after) {
   return Object.fromEntries([...new Set([...Object.keys(before), ...Object.keys(after)])].flatMap(key => {
     const left = before[key];
     const right = after[key];
-    if (["nodes", "groups", "links", "steps"].includes(key)) {
-      const index = key === "steps" ? value => value : key === "links" ? connections : entries;
+    if (["nodes", "groups", "links", "steps", "configuration"].includes(key)) {
+      const index = key === "steps" || key === "configuration" ? value => value || {} : key === "links" ? connections : entries;
       const changes = changed(index(left), index(right));
       return Object.keys(changes).length ? [[key, changes]] : [];
     }
@@ -7331,6 +7566,19 @@ document.addEventListener("click", event => {
     event.preventDefault();
     return;
   }
+  if (target.closest('#configuration-add')) {
+    beginConfigurationDraft()?.push({key:'', type:'string', value:''});
+    renderConfiguration(true);
+    document.querySelector('#configuration-rows .configuration-row:last-child [data-configuration-field=key]')?.focus();
+    return;
+  }
+  const removeConfiguration = target.closest('[data-configuration-remove]');
+  if (removeConfiguration) {
+    beginConfigurationDraft()?.splice(Number(removeConfiguration.dataset.configurationRemove), 1);
+    renderConfiguration(true); return;
+  }
+  if (target.closest('#configuration-apply')) { applyConfiguration(); return; }
+  if (target.closest('#configuration-reset')) { resetConfiguration(); return; }
   const editTrigger = target.closest('[data-edit-trigger]');
   if (editTrigger) {
     if(state.selection.type==='trigger' && state.selection.id===editTrigger.dataset.editTrigger){
@@ -7719,6 +7967,10 @@ document.addEventListener("click", event => {
 });
 
 document.addEventListener("input", event => {
+  if (event.target.matches('[data-configuration-field]')) {
+    if (event.target.tagName !== 'SELECT') updateConfigurationDraft(event.target);
+    return;
+  }
   if (event.target.id === 'symbol-search') { renderIconOptions(); return; }
   if (['step-search','group-insert-search'].includes(event.target.id) && state.picker) {
     const kind = event.target.id === 'step-search' ? 'step' : 'group';
@@ -7795,16 +8047,28 @@ document.addEventListener("input", event => {
 });
 
 document.addEventListener("change", event => {
+  if (event.target.matches('[data-configuration-field]')) {
+    if (event.target.tagName === 'SELECT') updateConfigurationDraft(event.target);
+    return;
+  }
+  if (event.target.matches('[data-input-source]')) {
+    selectInputSource(parseToken(event.target.dataset.inputSource), parseToken(event.target.dataset.inputMeta), event.target.value);
+    return;
+  }
   const comparison = event.target.closest('[data-replace-comparison]');
   if (comparison) {
     const steps = programAt(selectedOperation(), parseToken(comparison.dataset.replaceComparison));
     const definition = definitionOf(comparison.value);
     if (!steps || steps.length !== 1 || !definition) return;
-    const previous = definitionOf(steps[0].use), inputs = defaultInputs(definition.inputs);
-    for (const input of definition.inputs) if (previous.inputs.some(field => field.name === input.name
-        && field.type === input.type && field.shape === input.shape) && Object.hasOwn(steps[0].inputs, input.name))
-      inputs[input.name] = steps[0].inputs[input.name];
-    steps[0] = {use: definition.id, inputs};
+    const previous = definitionOf(steps[0].use), inputs = defaultInputs(definition.inputs), sources = new Map();
+    for (const input of definition.inputs) {
+      if (!previous.inputs.some(field => field.name === input.name && field.type === input.type && field.shape === input.shape)) continue;
+      if (Object.hasOwn(steps[0].input_sources || {}, input.name)) {
+        sources.set(input.name, steps[0].input_sources[input.name]);
+        delete inputs[input.name];
+      } else if (Object.hasOwn(steps[0].inputs, input.name)) inputs[input.name] = steps[0].inputs[input.name];
+    }
+    steps[0] = {use: definition.id, inputs, ...(sources.size ? {input_sources: Object.fromEntries(sources)} : {})};
     dirty();
     return;
   }
@@ -8078,7 +8342,8 @@ window.addEventListener("beforeunload", event => {
   const active = document.activeElement;
   const typing = active?.matches('#inspector-content input:not([type=checkbox]):not([type=radio]):not([type=file]), #inspector-content textarea')
     && active.value !== active.defaultValue;
-  if (state.actionPending || state.writeActive || state.pendingWrite || state.jsonDraft || state.exampleDraft || state.saveFailure?.reload
+  if (state.actionPending || state.writeActive || state.pendingWrite || state.jsonDraft || state.exampleDraft
+      || state.configurationDraft !== null || state.saveFailure?.reload
       || document.querySelector('#project-import-source').value.trim() || state.projectImport.reader
       || typing
       || state.settingsVersion !== state.savedSettingsVersion
