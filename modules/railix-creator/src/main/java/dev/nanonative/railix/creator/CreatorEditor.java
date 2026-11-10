@@ -254,9 +254,14 @@ final class CreatorEditor {
             editor.put("reuse_matches", RailixValue.number(reusable.size()));
             editor.put("reuse_page_size", RailixValue.number(64));
         }
+        final Map<String, RailixValue> projectView = new LinkedHashMap<>();
+        projectView.put("format", project.values().get("format"));
+        projectView.put("id", project.values().get("id"));
+        projectView.put("nodes", RailixValue.array(new ArrayList<>(visible.values())));
+        projectView.put("links", RailixValue.array(links));
+        if (project.values().containsKey("configuration")) projectView.put("configuration", project.values().get("configuration"));
         return RailixValue.object(Map.of(
-                "project", RailixValue.object(Map.of("format", project.values().get("format"), "id", project.values().get("id"),
-                        "nodes", RailixValue.array(new ArrayList<>(visible.values())), "links", RailixValue.array(links))),
+                "project", RailixValue.object(projectView),
                 "creator", RailixValue.object(presentation),
                 "editor", RailixValue.object(editor)));
     }
@@ -320,7 +325,7 @@ final class CreatorEditor {
             final RailixValue.ObjectValue changes,
             final boolean project
     ) {
-        final Set<String> fields = project ? Set.of("format", "id", "nodes", "links") : Set.of("groups", "steps", "theme", "reuse");
+        final Set<String> fields = project ? Set.of("format", "id", "nodes", "links", "configuration") : Set.of("groups", "steps", "theme", "reuse");
         final Map<String, RailixValue> result = new LinkedHashMap<>(document.values());
         for (final var entry : changes.values().entrySet()) {
             final String field = entry.getKey();
@@ -335,9 +340,9 @@ final class CreatorEditor {
             if (!(entry.getValue() instanceof RailixValue.ObjectValue edits)) {
                 throw new IllegalArgumentException(field + " edits must be an object keyed by stable ID.");
             }
-            if (field.equals("steps")) {
+            if (field.equals("steps") || field.equals("configuration")) {
                 final Map<String, RailixValue> steps = new LinkedHashMap<>(
-                        ((RailixValue.ObjectValue) document.values().get(field)).values());
+                        object(document, field).values());
                 edits.values().forEach((id, value) -> {
                     if (value instanceof RailixValue.NullValue) {
                         steps.remove(id);
@@ -345,7 +350,10 @@ final class CreatorEditor {
                         steps.put(id, value);
                     }
                 });
-                result.put(field, RailixValue.object(steps));
+                if (field.equals("configuration") && steps.isEmpty())
+                    result.remove(field);
+                else
+                    result.put(field, RailixValue.object(steps));
             } else {
                 result.put(field, entries((RailixValue.ArrayValue) document.values().get(field), edits,
                         field.equals("links") ? "from" : "id"));

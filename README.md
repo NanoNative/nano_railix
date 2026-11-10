@@ -25,7 +25,7 @@ for execution contracts and the [roadmap](docs/roadmap.md) for supported and pla
 | [Creator](docs/specs/creator.md) | Authoring, presentation metadata, factory world and navigation. |
 | [Creator assets](docs/specs/creator-assets.md) | Settings, theme folders, renderer variants and editable sounds/music. |
 | [Examples and validation](docs/specs/examples-and-validation.md) | Separate Example ownership, Creator checks and planned field authoring. |
-| [Environments and security](docs/specs/environments-and-security.md) | Multi-project secret-management goals and open identity, recovery and ingress design. |
+| [Environments and security](docs/specs/environments-and-security.md) | Typed project configuration fixed at build time; secret-management goals and open identity, recovery and ingress design. |
 | [Database and data access](docs/specs/database-and-data-access.md) | Planned durable database and permission-controlled Creator data administration; no time-series database. |
 | [docs/roadmap.md](docs/roadmap.md) | Delivery sequence, dependencies, progress and unsupported scope. |
 | [docs/adr/](docs/adr/) | Architectural decisions, rationale, alternatives and consequences. |
