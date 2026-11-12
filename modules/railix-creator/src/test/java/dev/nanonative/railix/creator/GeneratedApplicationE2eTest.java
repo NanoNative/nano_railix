@@ -895,8 +895,10 @@ final class GeneratedApplicationE2eTest {
 
     @Test
     void authHttpExampleRoutesPathsAndMethods() throws Exception {
-        final String source = Files.readString(Path.of("..", "..", "examples", "auth-http-app", "railix.project.json"));
-        final Path jar = productionArtifact(project(directory.resolve("auth-example"), source), source).jar();
+        final Path project = CreatorProjects.copyExample("auth-http-app", directory.resolve("auth-example"));
+        final var build = ProjectFiles.build(project, directory.resolve("railix-home"), false);
+        assertThat(build.result()).isInstanceOf(CompileResult.Compiled.class);
+        final Path jar = ApplicationBuilder.buildProduction(project, build).jar();
         record RequestCase(String method, String path, String body, int status, String expected) {}
         final String registered = "{\"registered\":true,\"message\":\"Dummy registration response.\"}";
         final String unauthorized = "{\"authenticated\":false,\"error\":\"unauthorized\"}";

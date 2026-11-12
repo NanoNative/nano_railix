@@ -1,11 +1,14 @@
 # Auth HTTP App
 
-This example routes HTTP requests by path, then by method:
+This example routes HTTP requests by path, then by method, and uses two custom
+Java Steps after a successful credential check:
 
 ```text
-App -> HTTP -> Path Switch
-                /login -> Login method Switch -> POST -> Check credentials
-                /register -> Register method Switch -> POST -> Fixed response
+App -> HTTP -> Path Branch
+                /login -> Method Branch -> POST -> Check credentials
+                                                    Match -> CustomUpper -> CustomLower -> Fixed login response
+                                                    Otherwise -> Unauthorized response
+                /register -> Method Branch -> POST -> Fixed response
                 Otherwise -> Not-found response
 ```
 
@@ -19,8 +22,28 @@ App -> HTTP -> Path Switch
 
 Registration ignores the request body and creates no account.
 
-The Trigger includes Examples for login success, missing/incorrect credentials,
+Login first checks the exact demo credentials: `alice@example.com` and
+`demo-password`. On a match, `CustomUpper` trims and uppercases the email, then
+`CustomLower` trims and lowercases it. Both write their result back to
+`context.payload.request.body.email`. These transformations happen after the
+credential check, so they do not make login case-insensitive. The successful
+response uses fixed values for `user` (`alice@example.com`) and `token`
+(`railix-demo-token`).
+
+The project has three source documents:
+
+| File | Contents |
+| --- | --- |
+| [railix.project.json](railix.project.json) | Flow, Step placements and field mappings. |
+| [railix.examples.json](railix.examples.json) | Eight saved HTTP Trigger Examples. |
+| [railix.custom-steps.json](railix.custom-steps.json) | Java method source for `CustomUpper` and `CustomLower`. |
+
+Keep all three files together when copying this example. The custom methods are
+compiled when the project is opened in Creator, built or run from source.
+The saved Examples cover login success, missing/incorrect credentials,
 registration, unsupported methods, and an unknown path.
+
+Run the following commands from this directory (`examples/auth-http-app`).
 
 Open it in Creator:
 

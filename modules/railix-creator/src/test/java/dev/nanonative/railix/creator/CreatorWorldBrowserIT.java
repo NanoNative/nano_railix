@@ -1807,8 +1807,13 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
 
     @Test
     void authRouteCanBeInspectedAndGroupedWithoutChangingItsExecution() throws IOException {
-        openProject(Files.readString(Path.of("../../examples/auth-http-app/railix.project.json")));
-        final String source = Files.readString(directory.resolve("project.json"));
+        creator.close();
+        final Path project = CreatorProjects.copyExample("auth-http-app", directory.resolve("auth-example"));
+        creator = CreatorServer.start(0, project, directory.resolve("railix-home"));
+        page.navigate(creator.baseUri().toString());
+        waitForText("#build-state", "Built");
+        awaitScene();
+        final String source = Files.readString(project);
         selectWorldNode("credentials");
         assertThat(page.locator("#inspector-identity h2").innerText()).isNotBlank();
         selectWorldNode("not-found-body");
@@ -1824,7 +1829,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                 new Page.GetByRoleOptions().setName("Create group").setExact(true)).click();
         page.waitForFunction("() => !state.actionPending && state.creator.groups.some(group => group.name === 'Not-found response')");
         assertThat(page.locator("#inspector-identity h2").textContent()).isEqualTo("Not-found response");
-        assertThat(Files.readString(directory.resolve("project.json"))).isEqualTo(source);
+        assertThat(Files.readString(project)).isEqualTo(source);
         assertThat(pageErrors).isEmpty();
     }
 

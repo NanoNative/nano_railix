@@ -21,6 +21,19 @@ final class CreatorProjects {
         return ProjectFiles.identify(example("lowercase-app"), true);
     }
 
+    /** Copies a complete example's source documents into a fresh test workspace. */
+    static Path copyExample(final String name, final Path workspace) throws IOException {
+        final Path example = Path.of("..", "..", "examples", name);
+        Files.createDirectories(workspace);
+        final Path project = Files.copy(example.resolve("railix.project.json"), workspace.resolve("railix.project.json"));
+        for (final String document : ProjectFiles.PROJECT_DOCUMENTS) {
+            if (!document.equals("railix.project.json") && Files.exists(example.resolve(document))) {
+                Files.copy(example.resolve(document), workspace.resolve(document));
+            }
+        }
+        return project;
+    }
+
     static String grouping() {
         return """
                 {"format":1,"id":"grouping","nodes":[
