@@ -13,13 +13,28 @@
 <body>
   <header class="workbench-header">
     <button type="button" id="project-menu" class="workbench-brand" popovertarget="project-actions" aria-label="Project actions" title="Project actions" disabled><b aria-hidden="true">R</b><span>RAILIX</span></button>
-    <nav id="project-actions" popover aria-label="Project actions"><button type="button" id="open-project-import" aria-controls="project-import-panel"><i class="hud-symbol" data-symbol="enter" aria-hidden="true"></i>Import project</button><button type="button" id="open-live-connections">Connect live app</button></nav>
+    <nav id="project-actions" popover aria-label="Project actions"><button type="button" id="open-project-import" aria-controls="project-import-panel"><i class="hud-symbol" data-symbol="enter" aria-hidden="true"></i>Import project</button><button type="button" data-create-custom-step>Create custom Step</button><button type="button" id="open-live-connections">Connect live app</button></nav>
     <nav id="workspace-source" aria-label="Application version" hidden><button type="button" data-workspace-source="draft" aria-pressed="true">Draft</button><button type="button" data-workspace-source="live" aria-pressed="false">Live <small>Read-only</small></button><button type="button" id="show-live-changes" aria-label="Compare draft with live app"></button><button type="button" id="start-local" aria-label="Start locally" title="Start locally" hidden><i class="hud-symbol" data-symbol="play" aria-hidden="true"></i><span class="start-local-label">Start locally</span></button></nav>
     <nav id="group-navigation" aria-label="Location"><div id="world-location"></div><button id="scope-overview" type="button" title="Fit this work area" aria-label="Overview"><i class="hud-symbol" data-symbol="fit" aria-hidden="true"></i><span>Overview</span></button><button id="leave-group" type="button" aria-label="Leave group" title="Leave group"><i class="hud-symbol" data-symbol="back" aria-hidden="true"></i></button></nav>
     <div id="workbench-actions"></div>
     <nav id="example-session" aria-label="Visible Example" hidden></nav>
   </header>
   <main class="creator-shell">
+    <dialog id="custom-step-dialog" aria-labelledby="custom-step-title">
+      <header><h2 id="custom-step-title">Create custom Step</h2><button type="button" id="close-custom-step" aria-label="Close custom Step editor">Close</button></header>
+      <form id="custom-step-form">
+        <label for="custom-step-name">Step name</label>
+        <input id="custom-step-name" type="text" required autocomplete="off" placeholder="Normalize text">
+        <label for="custom-step-source">Java method</label>
+        <textarea id="custom-step-source" rows="12" spellcheck="false" required aria-describedby="custom-step-help custom-step-status">public static String normalize(String text) {
+    return text.strip().toLowerCase(java.util.Locale.ROOT);
+}</textarea>
+        <p id="custom-step-help">Write one public static method. Inputs and the result may use String, boolean, BigDecimal or RailixValue. Parameter names become inputs; the output is named result.</p>
+        <p id="custom-step-status" role="status">Compile the Step before it becomes available in Add Step.</p>
+        <pre id="custom-step-diagnostics" role="alert" hidden></pre>
+        <nav><button id="compile-custom-step" type="submit">Compile Step</button><button id="new-custom-step" type="button" hidden>Create another</button></nav>
+      </form>
+    </dialog>
     <dialog id="live-connections" aria-labelledby="live-title"><header><h2 id="live-title">Live applications</h2><button type="button" data-close-live aria-label="Close connections"><i class="hud-symbol" data-symbol="close" aria-hidden="true"></i></button></header><div id="live-content"></div><p id="live-message" role="status"></p><form id="live-source-selection" hidden><label for="live-source-path">Matching project file</label><input id="live-source-path" type="text" required placeholder="/path/to/railix.project.json"><button type="submit">Use matching project</button></form></dialog>
     <section class="canvas-panel" aria-label="Project graph">
       <div id="graph" class="graph-stage" tabindex="0" aria-label="Flow diagram. Scroll to zoom, drag or Shift-scroll to pan.">
@@ -141,6 +156,7 @@
   <script src="/world-character.js" defer></script>
   <script src="/world.js" defer></script>
   <script src="/audio.js" defer></script>
+  <script src="/custom-steps.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

@@ -45,7 +45,6 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -96,7 +95,8 @@ public final class CreatorServer implements AutoCloseable {
     private final HttpServer server;
     private final ExecutorService executor;
     private final ScheduledExecutorService bodyDeadlines;
-    private final StepCatalog catalog;
+    private volatile StepCatalog catalog;
+    private long catalogRevision;
     private final IconLibrary icons;
     private final Path themeDirectory;
     private final Path soundDirectory;
@@ -643,6 +643,8 @@ public final class CreatorServer implements AutoCloseable {
         if ("/api/catalog".equals(path)) {
             return getOnly(exchange, json(200, catalog()));
         }
+        if ("/api/custom-steps".equals(path))
+            return createCustomStep(exchange);
         if ("/api/editor".equals(path)) {
             if ("POST".equals(exchange.getRequestMethod())) return editorAction(exchange);
             if (!"GET".equals(exchange.getRequestMethod())) return methodNotAllowed();
@@ -2309,13 +2311,14 @@ public final class CreatorServer implements AutoCloseable {
                 return json(409,RailixValue.object(Map.of("message",RailixValue.string("Live connection changed. Choose the application again."))));
         }
         if (captured == null) return unavailable("not-connected");
-        if (path.equals("/api/live/catalog")) return json(200, RailixValue.object(Map.of("steps", RailixValue.array(
+        if (path.equals("/api/live/catalog")) return json(200, RailixValue.object(Map.of("revision", RailixValue.number(0), "steps", RailixValue.array(
                 captured.project.catalog().definitions().stream().<RailixValue>map(CreatorServer::definition).toList()))));
         if (path.equals("/api/live/application")) return json(200, captured.snapshot());
         if (path.equals("/api/live/editor")) {
             final var payload = new LinkedHashMap<>(captured.editor.view(exchange.getRequestURI().getRawQuery(), captured.project.creator()).values());
             payload.put("revision", RailixValue.number(0));
             payload.put("creator_revision", RailixValue.number(0));
+            payload.put("catalog_revision", RailixValue.number(0));
             payload.put("application", captured.snapshot());
             payload.put("history", RailixValue.object(Map.of("undo", RailixValue.bool(false), "redo", RailixValue.bool(false))));
             payload.put("diagnostics", RailixValue.array(List.of()));
@@ -3521,6 +3524,7 @@ public final class CreatorServer implements AutoCloseable {
         final Map<String, RailixValue> payload = new LinkedHashMap<>(Map.of(
                 "revision", RailixValue.number(visibleEdit == null ? sourceRevision : visibleProjectRevision),
                 "creator_revision", RailixValue.number(visibleEdit == null ? creatorRevision : visibleCreatorRevision),
+                "catalog_revision", RailixValue.number(catalogRevision),
                 "diagnostics", diagnosticValues(creatorDiagnostics),
                 "application", visibleEdit == null ? applicationSnapshotLocked() : visibleApplication,
                 "workspace", RailixValue.object(Map.of(
@@ -3593,12 +3597,100 @@ public final class CreatorServer implements AutoCloseable {
     }
 
     private RailixValue.ObjectValue catalog() {
-        return RailixValue.object(Map.of(
-                "steps",
-                RailixValue.array(catalog.definitions().stream()
+        final StepCatalog snapshot;
+        final long revision;
+        synchronized (applicationLock) {
+            snapshot = catalog;
+            revision = catalogRevision;
+        }
+        return RailixValue.object(Map.of("revision", RailixValue.number(revision),
+                "steps", RailixValue.array(snapshot.definitions().stream()
                         .<RailixValue>map(CreatorServer::definition)
                         .toList())
         ));
+    }
+
+    private sealed interface CustomStepRequest permits CustomStepDraft, InvalidCustomStepRequest { }
+    private record CustomStepDraft(String name, String methodSource) implements CustomStepRequest { }
+    private record InvalidCustomStepRequest(String message) implements CustomStepRequest { }
+
+    private Response createCustomStep(final HttpExchange exchange) throws IOException {
+        if (!"POST".equals(exchange.getRequestMethod())) {
+            return methodNotAllowed();
+        }
+        final BodyRead body = body(exchange, MAX_REQUEST_BYTES);
+        if (!body.diagnostics().isEmpty()) {
+            return bodyResponse(body);
+        }
+        return switch (parseCustomStepRequest(body.value())) {
+            case CustomStepDraft draft -> compileAndPublishCustomStep(draft);
+            case InvalidCustomStepRequest invalid -> customStepInputRejected(invalid.message());
+        };
+    }
+
+    private static CustomStepRequest parseCustomStepRequest(final byte[] body) {
+        final String document;
+        try {
+            document = utf8(body);
+        } catch (final CharacterCodingException invalid) {
+            return new InvalidCustomStepRequest("Java source must be UTF-8.");
+        }
+        final var invalid = new InvalidCustomStepRequest("A custom Step needs a name and Java method source.");
+        final var parsed = RailixJson.parse(document);
+        if (!(parsed instanceof RailixJson.Parsed valid)) return invalid;
+        if (!(valid.value() instanceof RailixValue.ObjectValue request)) return invalid;
+        if (!request.values().keySet().equals(Set.of("name", "source"))) return invalid;
+        if (!(request.values().get("name") instanceof RailixValue.StringValue name)) return invalid;
+        if (!(request.values().get("source") instanceof RailixValue.StringValue source)) return invalid;
+        return new CustomStepDraft(name.value().strip(), source.value());
+    }
+
+    private Response compileAndPublishCustomStep(final CustomStepDraft draft) throws IOException {
+        synchronized (buildLock) {
+            synchronized (applicationLock) {
+                if (!open.get()) return unavailable("closed");
+                if (visibleEdit != null || deploymentPending) return unavailable("edit-in-progress");
+            }
+            final String document = CustomSteps.read(projectFile);
+            final CustomSteps.Preparation result;
+            try {
+                result = CustomSteps.prepare(catalog, projectFile, document, draft.name(), draft.methodSource());
+            } catch (final IllegalArgumentException invalid) {
+                return customStepInputRejected(invalid.getMessage());
+            }
+            if (result instanceof CustomSteps.Rejected rejected) return customStepCompilationRejected(rejected);
+            final var prepared = (CustomSteps.Prepared) result;
+            synchronized (applicationLock) {
+                if (!open.get()) return unavailable("closed");
+                return publishCustomStepLocked(prepared);
+            }
+        }
+    }
+
+    /** Requires buildLock and applicationLock; disk publication precedes the shared-state update. */
+    private Response publishCustomStepLocked(final CustomSteps.Prepared prepared) throws IOException {
+        persist(projectFile.resolveSibling(CustomSteps.FILE), prepared.document());
+        catalog = prepared.catalog();
+        catalogRevision++;
+        editor = null;
+        return json(200, RailixValue.object(Map.of("status", RailixValue.string("compiled"),
+                "definition", definition(prepared.definition()), "catalog", catalog())));
+    }
+
+    private static Response customStepInputRejected(final String message) {
+        return json(422, RailixValue.object(Map.of("message", RailixValue.string(message))));
+    }
+
+    private static Response customStepCompilationRejected(final CustomSteps.Rejected rejected) {
+        return json(422, RailixValue.object(Map.of("status", RailixValue.string("uncompiled"),
+                "diagnostics", customStepDiagnostics(rejected.diagnostics()))));
+    }
+
+    private static RailixValue.ArrayValue customStepDiagnostics(final List<Diagnostic> issues) {
+        return RailixValue.array(issues.stream().<RailixValue>map(issue ->
+                RailixValue.object(Map.of("code", RailixValue.string(issue.code()),
+                        "message", RailixValue.string(issue.message()), "path", RailixValue.string(issue.path()),
+                        "line", RailixValue.number(issue.line()), "column", RailixValue.number(issue.column())))).toList());
     }
 
     private static RailixValue definition(final StepDefinition definition) {
@@ -3629,6 +3721,7 @@ public final class CreatorServer implements AutoCloseable {
             case "/", "/index.html" -> "index.html";
             case "/app.css" -> "app.css";
             case "/app.js" -> "app.js";
+            case "/custom-steps.js" -> "custom-steps.js";
             case "/world.js" -> "world.js";
             case "/world-canvas.js" -> "world-canvas.js";
             case "/world-character.js" -> "world-character.js";
@@ -3747,6 +3840,7 @@ public final class CreatorServer implements AutoCloseable {
                 || "/api/live".equals(path)
                 || "/api/application".equals(path)
                 || "/api/editor".equals(path)
+                || "/api/custom-steps".equals(path)
                 || "/api/creator".equals(path)
                 || "/api/themes".equals(path)
                 || "/api/sounds".equals(path)

@@ -764,6 +764,8 @@ body[data-reduced-motion=true] #visible-example .example-mark { animation: none 
 .construction-palette:not(.arrival-palette) { top: auto; bottom: calc(var(--status-height) + 12px); --picker-header: var(--header-height); }
 .construction-palette:not(.arrival-palette) .step-picker { height: min(500px, calc(100dvh - var(--picker-header) - var(--status-height) - 24px)); max-height: none; }
 .construction-palette header { display: flex; flex: none; justify-content: space-between; align-items: center; }
+.construction-palette .picker-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.construction-palette .picker-actions button { flex-shrink: 0; }
 .construction-palette .picker-searches { display: grid; flex: none; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 12px; }
 .construction-palette .picker-searches label { display: grid; gap: 5px; }
 .construction-palette .picker-searches input { min-width: 0; margin: 0; }
@@ -2009,6 +2011,21 @@ body:has(#workspace-source:not([hidden])) #example-session { grid-row:2; grid-co
 #workspace-source small { font-size:.72em; opacity:.75; margin-left:4px; }
 #start-local { display:flex; align-items:center; gap:6px; }
 #workspace-source [hidden] { display:none; }
+#custom-step-dialog { box-sizing:border-box; width:min(760px,calc(100vw - 24px)); max-height:calc(100dvh - 24px); padding:20px; overflow:auto; color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+#custom-step-dialog::backdrop { background:rgb(10 22 28 / 40%); }
+#custom-step-dialog header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
+#custom-step-dialog h2 { margin:0; font-size:1.25rem; }
+#custom-step-dialog button { font:inherit; min-height:36px; padding:8px 12px; color:inherit; background:var(--panel); border:1px solid var(--line); border-radius:6px; }
+#custom-step-dialog button:enabled:hover { border-color:var(--focus); }
+#custom-step-dialog #compile-custom-step { background:color-mix(in srgb,var(--focus) 15%,var(--panel)); }
+#custom-step-form { display:grid; gap:10px; min-width:0; }
+#custom-step-form label { font-weight:600; }
+#custom-step-form input, #custom-step-form textarea { box-sizing:border-box; width:100%; min-width:0; }
+#custom-step-source { font:13px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace; tab-size:4; resize:vertical; min-height:180px; }
+#custom-step-help { margin:0; font-size:.85rem; line-height:1.5; opacity:.8; }
+#custom-step-status { margin:4px 0; overflow-wrap:anywhere; }
+#custom-step-diagnostics { white-space:pre-wrap; overflow-wrap:anywhere; margin:0; padding:12px; border:1px solid var(--line); border-radius:6px; font-size:.85rem; }
+#custom-step-form nav { display:flex; flex-wrap:wrap; gap:10px; }
 #live-connections { width:min(540px,calc(100vw - 32px)); max-height:calc(100dvh - 48px); padding:20px; color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:12px; }
 #live-connections::backdrop { background:rgb(10 22 28 / 40%); }
 #live-connections header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }

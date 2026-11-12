@@ -63,6 +63,16 @@ final class ApplicationBuilder {
     private ApplicationBuilder() {
     }
 
+    /** Materializes the production runtime API for project-owned Java compilation. */
+    static Path runtimeApi(final Path directory) throws IOException {
+        final var content = runtime(List.of(), false, Set.of()).entries();
+        final Path api = directory.resolve("runtime-api.jar");
+        try (var output = new JarOutputStream(Files.newOutputStream(api, StandardOpenOption.CREATE_NEW))) {
+            for (final RuntimeEntry entry : content.values()) write(output, entry);
+        }
+        return api;
+    }
+
     static DevelopmentBuild build(
             final Path projectFile,
             final CompileResult.Compiled compiled

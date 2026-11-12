@@ -34,15 +34,16 @@ final class ProjectFiles {
     static final int MAX_DOCUMENT_BYTES = 64 * 1024 * 1024;
     static final String ARCHIVE_ROOT = "META-INF/railix/project/";
     static final List<String> PROJECT_DOCUMENTS = List.of("railix.project.json", "railix.examples.json",
-            "railix.creator.json", "railix.dependencies.lock.json");
+            "railix.creator.json", "railix.dependencies.lock.json", CustomSteps.FILE);
 
     private ProjectFiles() { }
 
     /** Uses the same installed bundle resolver for local and restored project documents. */
     static StepCatalog catalog(final Path project, final Path home) throws IOException {
         final Path lock = project.resolveSibling("railix.dependencies.lock.json");
-        final var catalog = StepCatalog.embedded(ProjectFiles.class.getClassLoader(), home.resolve("artifacts"));
-        return Files.exists(lock) ? catalog.install(lock, home.resolve("artifacts")) : catalog;
+        final StepCatalog defaults = StepCatalog.embedded(ProjectFiles.class.getClassLoader(), home.resolve("artifacts"));
+        final StepCatalog base = Files.exists(lock) ? defaults.install(lock, home.resolve("artifacts")) : defaults;
+        return CustomSteps.compileAndInstall(base, project, CustomSteps.read(project));
     }
 
     /** Identifies the compiled source and locked implementations, not Examples or presentation. */
@@ -88,7 +89,9 @@ final class ProjectFiles {
         if (!snapshot.diagnostics().isEmpty()) return new Build(new CompileResult.Rejected(snapshot.diagnostics()), Map.of());
         final String lock = documents.get(ARCHIVE_ROOT + "railix.dependencies.lock.json");
         final StepCatalog defaults = StepCatalog.embedded(ProjectFiles.class.getClassLoader(), home.resolve("artifacts"));
-        final StepCatalog catalog = lock == null ? defaults : defaults.installSource(lock, home.resolve("artifacts"));
+        final StepCatalog base = lock == null ? defaults : defaults.installSource(lock, home.resolve("artifacts"));
+        final String custom = documents.get(ARCHIVE_ROOT + CustomSteps.FILE);
+        final StepCatalog catalog = custom == null ? base : CustomSteps.compileAndInstall(base, project, custom);
         final var result = ProjectCompiler.compileApplication(snapshot.source(), catalog);
         if (result instanceof CompileResult.Rejected rejected) {
             return new Build(new CompileResult.Rejected(snapshot.locations(rejected.diagnostics())), Map.of());
@@ -215,9 +218,7 @@ final class ProjectFiles {
         } finally {
             if (staging != null) {
                 try {
-                    for (final String name : PROJECT_DOCUMENTS) Files.deleteIfExists(staging.resolve(
-                            name.equals("railix.project.json") ? project.getFileName().toString() : name));
-                    Files.deleteIfExists(staging);
+                    deleteTemporaryWorkspace(staging);
                 } catch (final IOException cleanup) {
                     if (failure != null) failure.addSuppressed(cleanup);
                     else throw cleanup;
@@ -237,9 +238,11 @@ final class ProjectFiles {
                 final var result = build(local, home, true);
                 if (result.result() instanceof CompileResult.Compiled compiled && identity(compiled).equals(revision)) {
                     final StepCatalog defaults = StepCatalog.embedded(ProjectFiles.class.getClassLoader(), home.resolve("artifacts"));
-                    final StepCatalog catalog = result.documents().containsKey(ARCHIVE_ROOT + "railix.dependencies.lock.json")
+                    final StepCatalog base = result.documents().containsKey(ARCHIVE_ROOT + "railix.dependencies.lock.json")
                             ? defaults.installSource(result.documents().get(ARCHIVE_ROOT + "railix.dependencies.lock.json"), home.resolve("artifacts"))
                             : defaults;
+                    final String custom = result.documents().get(ARCHIVE_ROOT + CustomSteps.FILE);
+                    final StepCatalog catalog = custom == null ? base : CustomSteps.compileAndInstall(base, selected, custom);
                     final var metadata = CreatorDocument.parse(result.documents().getOrDefault(ARCHIVE_ROOT + "railix.creator.json", CreatorDocument.EMPTY), compiled.source(), catalog);
                     if (!metadata.diagnostics().isEmpty()) throw new IOException("Observed Creator metadata is invalid.");
                     return new Snapshot(compiled.source(), metadata.value(), catalog);
@@ -255,15 +258,19 @@ final class ProjectFiles {
             if (!metadata.diagnostics().isEmpty()) throw new IOException("Observed Creator metadata is invalid.");
             return new Snapshot(compiled.source(), metadata.value(), catalog);
         } finally {
-            if (temporary != null) {
-                for (final String document : PROJECT_DOCUMENTS) Files.deleteIfExists(temporary.resolve("source").resolve(document));
-                Files.deleteIfExists(temporary.resolve("source"));
-                Files.deleteIfExists(temporary);
-            }
+            if (temporary != null) deleteTemporaryWorkspace(temporary);
         }
     }
 
     record Snapshot(String source, RailixValue.ObjectValue creator, StepCatalog catalog) { }
+
+    /** Deletes temporary workspaces created including project-local compiler artifacts. */
+    private static void deleteTemporaryWorkspace(final Path directory) throws IOException {
+        try (var paths = Files.walk(directory)) {
+            for (final Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList())
+                Files.deleteIfExists(path);
+        }
+    }
 
     /** Loads a transient compiler/editor projection, never a second writable Example source. */
     static Read read(final Path project) throws IOException {
