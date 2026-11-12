@@ -37,8 +37,27 @@ public final class StepBundle {
      */
     public static Path write(final Path classes, final Path artifact, final Class<?> provider,
                              final List<StepDefinition> definitions) throws IOException {
+        return write(classes, artifact, StepContractJson.writeManifest(provider, definitions));
+    }
+
+    /**
+     * Writes compiled Steps without loading a definitions provider. Executable definitions
+     * must already carry their implementation addresses and have no validation callbacks.
+     *
+     * @param classes compiled provider directory, without dependencies
+     * @param artifact destination JAR
+     * @param definitions authoritative definitions with implementation addresses
+     * @return the absolute path of the completed bundle
+     * @throws IllegalArgumentException for missing arguments or invalid declarations
+     * @throws IOException for unreadable classes, an unsafe entry or failed publication
+     */
+    public static Path write(final Path classes, final Path artifact,
+                             final List<StepDefinition> definitions) throws IOException {
+        return write(classes, artifact, StepContractJson.writeManifest(definitions));
+    }
+
+    private static Path write(final Path classes, final Path artifact, final String manifest) throws IOException {
         if (classes == null || artifact == null) throw new IllegalArgumentException("Bundle paths cannot be Java null.");
-        final String manifest = StepContractJson.writeManifest(provider, definitions);
         final Path root = classes.toAbsolutePath().normalize();
         final Path output = artifact.toAbsolutePath().normalize();
         if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Provider classes directory is missing: " + root + ".");

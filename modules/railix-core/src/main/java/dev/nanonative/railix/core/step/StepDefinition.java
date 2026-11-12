@@ -1677,7 +1677,7 @@ public final class StepDefinition {
             );
         }
 
-        /** Binds an implementation address while decoding a verified bundle manifest. */
+        /** Binds a compiled or decoded implementation address without loading the class. */
         StepDefinition implementedBy(final String className, final String classEntry, final List<String> modules) {
             return new StepDefinition(
                     this,

@@ -8,8 +8,6 @@ import com.sun.source.util.JavacTask;
 import com.sun.source.util.SourcePositions;
 import com.sun.source.util.Trees;
 import dev.nanonative.railix.core.project.Diagnostic;
-import dev.nanonative.railix.core.value.RailixJson;
-import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueShape;
 
 import javax.lang.model.element.Modifier;
@@ -21,7 +19,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -29,11 +26,8 @@ import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.jar.JarEntry;
-import java.util.jar.JarOutputStream;
 
 /** Build-time Java-method adaptation shared by authoring tools; absent from generated application runtimes. */
 public final class JavaStepCompiler {
@@ -128,8 +122,8 @@ public final class JavaStepCompiler {
             final var compilationFailure = compileAdapter(compiler, source, classes, runtimeApi, wrappedMethod, method);
             if (compilationFailure.isPresent()) return compilationFailure.orElseThrow();
             // Define after javac so duplicate parameter names remain source diagnostics.
-            final StepDefinition definition = stepDefinition(id, name, method);
-            return writeBundle(root, temporary, classes, definition, className);
+            final StepDefinition definition = stepDefinition(id, name, method, className);
+            return writeBundle(root, temporary, classes, definition);
         } finally {
             try (var paths = Files.walk(temporary)) {
                 for (final Path path : paths.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
@@ -229,66 +223,20 @@ public final class JavaStepCompiler {
         return new InvalidMethod(List.of(new Diagnostic("CUSTOM_STEP_INVALID", message, "source", line, column)));
     }
 
-    private static StepDefinition stepDefinition(final String id, final String name, final InspectedMethod method) {
+    private static StepDefinition stepDefinition(final String id, final String name, final InspectedMethod method,
+                                                  final String className) {
         final var builder = StepDefinition.named(id, "1").displayName(name);
         method.receives().forEach(port -> builder.receive(port.name(), port.shape()));
-        return builder.returns("result", method.resultShape()).define();
+        return builder.returns("result", method.resultShape())
+                .implementedBy(className, className.replace('.', '/') + ".class", List.of());
     }
 
     private static Compiled writeBundle(final Path root, final Path temporary, final Path classes,
-                                        final StepDefinition definition, final String className) throws IOException {
-        final var contract = StepContractJson.value(definition);
-        final String contractDigest = "sha256:" + digest(RailixJson.write(contract));
-        final String manifest = bundleManifest(contract, className, contractDigest);
-        final Path jar = writeBundleJar(classes, temporary.resolve("step.jar"), manifest);
+                                        final StepDefinition definition) throws IOException {
+        final Path jar = StepBundle.write(classes, temporary.resolve("step.jar"), List.of(definition));
+        final String lock = StepCatalog.bundleLock(jar, root);
         final String hash = digest(Files.readAllBytes(jar));
-        final Path destination = root.resolve(hash + ".jar");
-        Files.move(jar, destination, StandardCopyOption.REPLACE_EXISTING);
-        final String lock = dependencyLock(definition, className, contractDigest, "sha256:" + hash, Files.size(destination));
-        return new Compiled(definition, destination, lock);
-    }
-
-    private static String bundleManifest(final RailixValue.ObjectValue contract, final String className,
-                                          final String contractDigest) {
-        final String implementationEntry = className.replace('.', '/') + ".class";
-        final var manifestStep = RailixValue.object(Map.of("contract", contract,
-                "contract_digest", RailixValue.string(contractDigest), "implementation", RailixValue.string(className),
-                "implementation_entry", RailixValue.string(implementationEntry)));
-        final var manifest = RailixValue.object(Map.of("format", RailixValue.number(1),
-                "steps", RailixValue.array(List.of(manifestStep))));
-        return RailixJson.write(manifest);
-    }
-
-    private static Path writeBundleJar(final Path classes, final Path jar, final String manifest) throws IOException {
-        try (var output = new JarOutputStream(Files.newOutputStream(jar)); var paths = Files.walk(classes)) {
-            for (final Path path : paths.filter(Files::isRegularFile).sorted().toList()) {
-                final JarEntry entry = new JarEntry(classes.relativize(path).toString().replace('\\', '/'));
-                entry.setTime(0);
-                output.putNextEntry(entry);
-                Files.copy(path, output);
-                output.closeEntry();
-            }
-            final JarEntry metadata = new JarEntry("META-INF/railix/steps.json");
-            metadata.setTime(0);
-            output.putNextEntry(metadata);
-            output.write(manifest.getBytes(StandardCharsets.UTF_8));
-            output.closeEntry();
-        }
-        return jar;
-    }
-
-    private static String dependencyLock(final StepDefinition definition, final String className, final String contractDigest,
-                                         final String artifactDigest, final long artifactBytes) {
-        final var artifact = RailixValue.object(Map.of("digest", RailixValue.string(artifactDigest),
-                "origin", RailixValue.string("source:java-method"), "size", RailixValue.number(artifactBytes)));
-        final var lockedStep = RailixValue.object(Map.of("id", RailixValue.string(definition.id()),
-                "version", RailixValue.string(definition.version()), "contract", RailixValue.string(contractDigest),
-                "implementation", RailixValue.string(className),
-                "implementation_entry", RailixValue.string(className.replace('.', '/') + ".class")));
-        final var bundle = RailixValue.object(Map.of("artifact", RailixValue.string(artifactDigest),
-                "runtime", RailixValue.array(List.of()), "steps", RailixValue.array(List.of(lockedStep))));
-        return RailixJson.write(RailixValue.object(Map.of("format", RailixValue.number(1),
-                "artifacts", RailixValue.array(List.of(artifact)), "bundles", RailixValue.array(List.of(bundle)))));
+        return new Compiled(definition, root.resolve(hash + ".jar"), lock);
     }
 
     private static Optional<ValueShape> supportedShape(final Tree type) {

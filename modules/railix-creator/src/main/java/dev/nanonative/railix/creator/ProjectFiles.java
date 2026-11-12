@@ -19,6 +19,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.TreeMap;
+import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -73,8 +74,8 @@ final class ProjectFiles {
     /** Compiles and optionally packages one captured set of ordinary source documents. */
     static Build build(final Path project, final Path home, final boolean includeProject) throws IOException {
         if (Files.exists(journal(project.toAbsolutePath().normalize())))
-            return new Build(new CompileResult.Rejected(List.of(Diagnostic.atPath("PROJECT_EDIT_PENDING",
-                    "Finish or recover the editor action before building.", ""))), Map.of());
+            return new Build.Rejected(new CompileResult.Rejected(List.of(Diagnostic.atPath("PROJECT_EDIT_PENDING",
+                    "Finish or recover the editor action before building.", ""))));
         final Map<String, String> documents = new TreeMap<>();
         for (final String name : PROJECT_DOCUMENTS) {
             if (!includeProject && name.equals("railix.creator.json")) continue;
@@ -82,11 +83,11 @@ final class ProjectFiles {
             if (Files.exists(file)) documents.put(ARCHIVE_ROOT + name, readText(file));
         }
         final String graph = documents.get(ARCHIVE_ROOT + "railix.project.json");
-        if (graph == null) return new Build(new CompileResult.Rejected(List.of(Diagnostic.atPath("PROJECT_SOURCE_REQUIRED",
-                "Select an existing project file.", ""))), Map.of());
+        if (graph == null) return new Build.Rejected(new CompileResult.Rejected(List.of(Diagnostic.atPath("PROJECT_SOURCE_REQUIRED",
+                "Select an existing project file.", ""))));
         final String examples = documents.get(ARCHIVE_ROOT + "railix.examples.json");
         final Read snapshot = examples == null ? new Read(identify(graph, true), List.of()) : combine(graph, examples);
-        if (!snapshot.diagnostics().isEmpty()) return new Build(new CompileResult.Rejected(snapshot.diagnostics()), Map.of());
+        if (!snapshot.diagnostics().isEmpty()) return new Build.Rejected(new CompileResult.Rejected(snapshot.diagnostics()));
         final String lock = documents.get(ARCHIVE_ROOT + "railix.dependencies.lock.json");
         final StepCatalog defaults = StepCatalog.embedded(ProjectFiles.class.getClassLoader(), home.resolve("artifacts"));
         final StepCatalog base = lock == null ? defaults : defaults.installSource(lock, home.resolve("artifacts"));
@@ -94,24 +95,33 @@ final class ProjectFiles {
         final StepCatalog catalog = custom == null ? base : CustomSteps.compileAndInstall(base, project, custom);
         final var result = ProjectCompiler.compileApplication(snapshot.source(), catalog);
         if (result instanceof CompileResult.Rejected rejected) {
-            return new Build(new CompileResult.Rejected(snapshot.locations(rejected.diagnostics())), Map.of());
+            return new Build.Rejected(new CompileResult.Rejected(snapshot.locations(rejected.diagnostics())));
         }
         if (Files.exists(journal(project.toAbsolutePath().normalize())))
-            return new Build(new CompileResult.Rejected(List.of(Diagnostic.atPath("PROJECT_EDIT_PENDING",
-                    "Project files are being edited. Retry after the action completes.", ""))), Map.of());
+            return new Build.Rejected(new CompileResult.Rejected(List.of(Diagnostic.atPath("PROJECT_EDIT_PENDING",
+                    "Project files are being edited. Retry after the action completes.", ""))));
         for (final String name : PROJECT_DOCUMENTS) {
             if (!includeProject && name.equals("railix.creator.json")) continue;
             final Path file = name.equals("railix.project.json") ? project : project.resolveSibling(name);
             final String captured = documents.get(ARCHIVE_ROOT + name);
             if (Files.exists(file) != (captured != null) || captured != null && !captured.equals(readText(file)))
-                return new Build(new CompileResult.Rejected(List.of(Diagnostic.atPath("PROJECT_SOURCE_CHANGED",
-                        "Project files changed during compilation. Build again.", ""))), Map.of());
+                return new Build.Rejected(new CompileResult.Rejected(List.of(Diagnostic.atPath("PROJECT_SOURCE_CHANGED",
+                        "Project files changed during compilation. Build again.", ""))));
         }
-        return new Build(result,
-                includeProject ? java.util.Collections.unmodifiableMap(documents) : Map.of());
+        return new Build.Compiled((CompileResult.Compiled) result,
+                includeProject ? java.util.Collections.unmodifiableMap(documents) : Map.of(), catalog);
     }
 
-    record Build(CompileResult result, Map<String, String> documents) { }
+    sealed interface Build {
+        CompileResult result();
+        Map<String, String> documents();
+
+        record Compiled(CompileResult.Compiled result, Map<String, String> documents, StepCatalog catalog) implements Build { }
+
+        record Rejected(CompileResult.Rejected result) implements Build {
+            @Override public Map<String, String> documents() { return Map.of(); }
+        }
+    }
 
     /** Opens ordinary project files after matching an artifact, without loading artifact classes. */
     static ApplicationSource fromApplication(final Path artifact, final Path destination, final Path home) throws IOException {
@@ -126,33 +136,13 @@ final class ProjectFiles {
         try {
             final String expected;
             try (JarFile jar = new JarFile(artifact.toFile())) {
-                final var manifestEntry = jar.getJarEntry(JarFile.MANIFEST_NAME);
-                if (manifestEntry == null || manifestEntry.getSize() < 0 || manifestEntry.getSize() > MAX_DOCUMENT_BYTES)
-                    throw new IOException("PROJECT_SOURCE_ID_REQUIRED: Application has no supported project identity.");
-                final var manifest = jar.getManifest();
-                expected = manifest == null ? null : manifest.getMainAttributes().getValue("Railix-Project-Id");
-                if (expected == null || !expected.matches("sha256-[a-f0-9]{64}"))
-                    throw new IOException("PROJECT_SOURCE_ID_REQUIRED: Application has no supported project identity.");
+                expected = applicationRevision(jar);
                 if (Files.exists(project)) {
                     if (Files.exists(journal(project)))
                         throw new IOException("PROJECT_EDIT_PENDING: Open the project normally to recover its interrupted editor action first.");
                     return new ApplicationSource(project, expected);
                 }
-                final Map<String, java.util.jar.JarEntry> embedded = new TreeMap<>();
-                final var entries = jar.entries();
-                while (entries.hasMoreElements()) {
-                    final var entry = entries.nextElement();
-                    if (!entry.getName().startsWith(ARCHIVE_ROOT)) continue;
-                    final String name = entry.getName().substring(ARCHIVE_ROOT.length());
-                    if (!PROJECT_DOCUMENTS.contains(name) || embedded.containsKey(name) || entry.isDirectory()
-                            || entry.getSize() < 0 || entry.getSize() > MAX_DOCUMENT_BYTES)
-                        throw new IOException("PROJECT_SOURCE_INVALID: Unexpected or oversized project entry: " + entry.getName());
-                    embedded.put(name, entry);
-                }
-                if (embedded.isEmpty())
-                    throw new IOException("PROJECT_SOURCE_REQUIRED: Select matching local project files for this application.");
-                if (!embedded.containsKey("railix.project.json"))
-                    throw new IOException("PROJECT_SOURCE_INVALID: Embedded project data have no project document.");
+                final var embedded = projectEntries(jar);
                 if (Files.exists(project.getParent(), java.nio.file.LinkOption.NOFOLLOW_LINKS))
                     throw new IOException("PROJECT_DESTINATION_EXISTS: Select a new workspace directory. Existing files are never replaced.");
                 if (!Files.isDirectory(project.getParent().getParent()))
@@ -161,34 +151,11 @@ final class ProjectFiles {
                 catch (final IOException destinationFailure) {
                     throw new IOException("PROJECT_DESTINATION_WRITE_FAILED: Cannot create the temporary workspace.", destinationFailure);
                 }
-                final byte[] buffer = new byte[8192];
-                for (final var entry : embedded.entrySet()) {
-                    final Path file = staging.resolve(entry.getKey().equals("railix.project.json")
-                            ? project.getFileName().toString() : entry.getKey());
-                    final java.io.OutputStream output;
-                    try { output = Files.newOutputStream(file, StandardOpenOption.CREATE_NEW); }
-                    catch (final IOException destinationFailure) {
-                        throw new IOException("PROJECT_DESTINATION_WRITE_FAILED: Cannot create a project document.", destinationFailure);
-                    }
-                    try (output; var input = jar.getInputStream(entry.getValue())) {
-                        long size = 0;
-                        for (int count = input.read(buffer); count >= 0; count = input.read(buffer)) {
-                            size += count;
-                            if (size > MAX_DOCUMENT_BYTES || size > entry.getValue().getSize())
-                                throw new IOException("PROJECT_SOURCE_INVALID: Project entry exceeds its declared size.");
-                            try { output.write(buffer, 0, count); }
-                            catch (final IOException destinationFailure) {
-                                throw new IOException("PROJECT_DESTINATION_WRITE_FAILED: Cannot write a project document.", destinationFailure);
-                            }
-                        }
-                        if (size != entry.getValue().getSize()) throw new IOException("PROJECT_SOURCE_INVALID: Project entry size changed.");
-                    }
-                }
+                extractProject(jar, embedded, staging, project.getFileName().toString());
             } catch (final SecurityException invalidSignature) {
                 throw new IOException("PROJECT_SOURCE_INVALID: Application signature verification failed.", invalidSignature);
             } catch (final IOException unreadable) {
-                if (unreadable.getMessage() != null && unreadable.getMessage().startsWith("PROJECT_")) throw unreadable;
-                throw new IOException("PROJECT_SOURCE_INVALID: Cannot read or extract the application archive.", unreadable);
+                throw archiveFailure(unreadable);
             }
             final Path candidate = staging.resolve(project.getFileName());
             if (Files.exists(journal(candidate))) throw new IOException("PROJECT_EDIT_PENDING: Recover the project in Creator first.");
@@ -229,37 +196,111 @@ final class ProjectFiles {
 
     record ApplicationSource(Path project, String revision) { }
 
+    private static String applicationRevision(final JarFile jar) throws IOException {
+        final var manifestEntry = jar.getJarEntry(JarFile.MANIFEST_NAME);
+        if (manifestEntry == null || manifestEntry.getSize() < 0 || manifestEntry.getSize() > MAX_DOCUMENT_BYTES)
+            throw new IOException("PROJECT_SOURCE_ID_REQUIRED: Application has no supported project identity.");
+        final var manifest = jar.getManifest();
+        final String revision = manifest == null ? null : manifest.getMainAttributes().getValue("Railix-Project-Id");
+        if (revision == null || !revision.matches("sha256-[a-f0-9]{64}"))
+            throw new IOException("PROJECT_SOURCE_ID_REQUIRED: Application has no supported project identity.");
+        return revision;
+    }
+
+    private static Map<String, JarEntry> projectEntries(final JarFile jar) throws IOException {
+        final Map<String, JarEntry> embedded = new TreeMap<>();
+        final var entries = jar.entries();
+        while (entries.hasMoreElements()) {
+            final var entry = entries.nextElement();
+            if (!entry.getName().startsWith(ARCHIVE_ROOT)) continue;
+            final String name = entry.getName().substring(ARCHIVE_ROOT.length());
+            if (!PROJECT_DOCUMENTS.contains(name) || embedded.containsKey(name) || entry.isDirectory()
+                    || entry.getSize() < 0 || entry.getSize() > MAX_DOCUMENT_BYTES)
+                throw new IOException("PROJECT_SOURCE_INVALID: Unexpected or oversized project entry: " + entry.getName());
+            embedded.put(name, entry);
+        }
+        if (embedded.isEmpty())
+            throw new IOException("PROJECT_SOURCE_REQUIRED: Select matching local project files for this application.");
+        if (!embedded.containsKey("railix.project.json"))
+            throw new IOException("PROJECT_SOURCE_INVALID: Embedded project data have no project document.");
+        return embedded;
+    }
+
+    /** Extracts checked entries into a caller-owned temporary workspace. */
+    private static void extractProject(final JarFile jar, final Map<String, JarEntry> embedded,
+                                       final Path directory, final String projectName) throws IOException {
+        final byte[] buffer = new byte[8192];
+        for (final var entry : embedded.entrySet()) {
+            final Path file = directory.resolve(entry.getKey().equals("railix.project.json") ? projectName : entry.getKey());
+            final java.io.OutputStream output;
+            try { output = Files.newOutputStream(file, StandardOpenOption.CREATE_NEW); }
+            catch (final IOException destinationFailure) {
+                throw new IOException("PROJECT_DESTINATION_WRITE_FAILED: Cannot create a project document.", destinationFailure);
+            }
+            try (output; var input = jar.getInputStream(entry.getValue())) {
+                long size = 0;
+                for (int count = input.read(buffer); count >= 0; count = input.read(buffer)) {
+                    size += count;
+                    if (size > MAX_DOCUMENT_BYTES || size > entry.getValue().getSize())
+                        throw new IOException("PROJECT_SOURCE_INVALID: Project entry exceeds its declared size.");
+                    try { output.write(buffer, 0, count); }
+                    catch (final IOException destinationFailure) {
+                        throw new IOException("PROJECT_DESTINATION_WRITE_FAILED: Cannot write a project document.", destinationFailure);
+                    }
+                }
+                if (size != entry.getValue().getSize()) throw new IOException("PROJECT_SOURCE_INVALID: Project entry size changed.");
+            }
+        }
+    }
+
+    private static IOException archiveFailure(final IOException failure) {
+        if (failure.getMessage() != null && failure.getMessage().startsWith("PROJECT_")) return failure;
+        return new IOException("PROJECT_SOURCE_INVALID: Cannot read or extract the application archive.", failure);
+    }
+
     /** Captures original project documents for an observed build, never persisting a derived topology. */
     static Snapshot snapshot(final Path artifact, final Path local, final Path home, final String revision) throws IOException {
-        Path temporary = null;
-        try {
-            Path selected = local;
-            if (Files.isRegularFile(local)) {
-                final var result = build(local, home, true);
-                if (result.result() instanceof CompileResult.Compiled compiled && identity(compiled).equals(revision)) {
-                    final StepCatalog defaults = StepCatalog.embedded(ProjectFiles.class.getClassLoader(), home.resolve("artifacts"));
-                    final StepCatalog base = result.documents().containsKey(ARCHIVE_ROOT + "railix.dependencies.lock.json")
-                            ? defaults.installSource(result.documents().get(ARCHIVE_ROOT + "railix.dependencies.lock.json"), home.resolve("artifacts"))
-                            : defaults;
-                    final String custom = result.documents().get(ARCHIVE_ROOT + CustomSteps.FILE);
-                    final StepCatalog catalog = custom == null ? base : CustomSteps.compileAndInstall(base, selected, custom);
-                    final var metadata = CreatorDocument.parse(result.documents().getOrDefault(ARCHIVE_ROOT + "railix.creator.json", CreatorDocument.EMPTY), compiled.source(), catalog);
-                    if (!metadata.diagnostics().isEmpty()) throw new IOException("Observed Creator metadata is invalid.");
-                    return new Snapshot(compiled.source(), metadata.value(), catalog);
-                }
-            }
-            temporary = Files.createTempDirectory("railix-observed-source-");
-            selected = fromApplication(artifact, temporary.resolve("source/railix.project.json"), home).project();
-            final var result = build(selected, home, true);
-            if (!(result.result() instanceof CompileResult.Compiled compiled) || !identity(compiled).equals(revision))
-                throw new IOException("PROJECT_SOURCE_MISMATCH: Select the project files for this running build.");
-            final StepCatalog catalog = catalog(selected, home);
-            final var metadata = CreatorDocument.parse(result.documents().getOrDefault(ARCHIVE_ROOT + "railix.creator.json", CreatorDocument.EMPTY), compiled.source(), catalog);
-            if (!metadata.diagnostics().isEmpty()) throw new IOException("Observed Creator metadata is invalid.");
-            return new Snapshot(compiled.source(), metadata.value(), catalog);
-        } finally {
-            if (temporary != null) deleteTemporaryWorkspace(temporary);
+        if (Files.isRegularFile(local)) {
+            final var result = build(local, home, true);
+            if (result instanceof Build.Compiled compiled && identity(compiled.result()).equals(revision))
+                return snapshot(compiled);
         }
+        return embeddedSnapshot(artifact, home, revision);
+    }
+
+    private static Snapshot embeddedSnapshot(final Path artifact, final Path home, final String revision) throws IOException {
+        final Path temporary = Files.createTempDirectory("railix-observed-source-");
+        try {
+            final String expected;
+            try (JarFile jar = new JarFile(artifact.toFile())) {
+                expected = applicationRevision(jar);
+                extractProject(jar, projectEntries(jar), temporary, "railix.project.json");
+            } catch (final SecurityException invalidSignature) {
+                throw new IOException("PROJECT_SOURCE_INVALID: Application signature verification failed.", invalidSignature);
+            } catch (final IOException unreadable) {
+                throw archiveFailure(unreadable);
+            }
+            final var result = build(temporary.resolve("railix.project.json"), home, true);
+            if (!(result instanceof Build.Compiled compiled)) {
+                final Diagnostic diagnostic = ((Build.Rejected) result).result().diagnostics().getFirst();
+                throw new IOException(diagnostic.code() + " " + diagnostic.path() + " " + diagnostic.message());
+            }
+            final String identity = identity(compiled.result());
+            if (!expected.equals(identity))
+                throw new IOException("PROJECT_SOURCE_MISMATCH: Project files do not match this application build.");
+            if (!revision.equals(identity))
+                throw new IOException("PROJECT_SOURCE_MISMATCH: Select the project files for this running build.");
+            return snapshot(compiled);
+        } finally {
+            deleteTemporaryWorkspace(temporary);
+        }
+    }
+
+    private static Snapshot snapshot(final Build.Compiled build) throws IOException {
+        final var metadata = CreatorDocument.parse(build.documents().getOrDefault(ARCHIVE_ROOT + "railix.creator.json", CreatorDocument.EMPTY),
+                build.result().source(), build.catalog());
+        if (!metadata.diagnostics().isEmpty()) throw new IOException("Observed Creator metadata is invalid.");
+        return new Snapshot(build.result().source(), metadata.value(), build.catalog());
     }
 
     record Snapshot(String source, RailixValue.ObjectValue creator, StepCatalog catalog) { }
