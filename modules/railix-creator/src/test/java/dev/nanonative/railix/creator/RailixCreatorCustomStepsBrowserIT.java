@@ -148,6 +148,88 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
     @Test
     @Tag("responsive")
     @Tag("browser-diagnostics")
+    void deletedDefinitionCanBeRecompiledWithoutEditingItsDraft() throws Exception {
+        openProject(choiceProject());
+        createCustomStep("Normalize");
+        openCustomStepManager();
+        confirmCustomStepDeletion();
+        assertThat(page.locator("#custom-step-manager-status")).containsText("no custom Steps");
+        page.locator("#close-custom-step-manager").click();
+
+        openCustomStepEditor();
+        assertThat(page.locator("#custom-step-name")).hasValue("Normalize");
+        assertThat(page.locator("#custom-step-source")).hasValue(CustomStepsE2eTest.METHOD);
+        assertThat(page.locator("#compile-custom-step")).isEnabled();
+        assertThat(page.locator("#custom-step-status")).containsText("Not compiled");
+        final var recreated = page.waitForResponse(response -> response.url().endsWith("/api/custom-steps")
+                && response.request().method().equals("POST"), () -> page.locator("#compile-custom-step").click());
+        org.assertj.core.api.Assertions.assertThat(recreated.status()).as(recreated.text()).isEqualTo(200);
+        assertThat(page.locator("#custom-step-status")).containsText("Compiled.");
+        page.locator("#close-custom-step").click();
+
+        flowHistory("undo");
+        openCustomStepEditor();
+        assertThat(page.locator("#compile-custom-step")).isEnabled();
+        assertThat(page.locator("#custom-step-source")).hasValue(CustomStepsE2eTest.METHOD);
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("custom-step-draft-after-undo-" + page.viewportSize().width + ".png")));
+        page.locator("#close-custom-step").click();
+        flowHistory("redo");
+        openCustomStepEditor();
+        assertThat(page.locator("#custom-step-status")).containsText("Compiled.");
+        assertThat(page.locator("#compile-custom-step")).isDisabled();
+        org.assertj.core.api.Assertions.assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    @Tag("browser-diagnostics")
+    void compiledDraftDistinguishesRestoredDefinitionsWithTheSameId() throws Exception {
+        openProject(choiceProject());
+        createCustomStep("Normalize");
+        openCustomStepManager();
+        confirmCustomStepDeletion();
+        assertThat(page.locator("#custom-step-manager-status")).containsText("no custom Steps");
+        page.locator("#close-custom-step-manager").click();
+        final String replacement = CustomStepsE2eTest.METHOD.replace("toLowerCase", "toUpperCase");
+        createCustomStep("Normalize", replacement);
+        flowHistory("undo"); // remove the replacement
+        flowHistory("undo"); // restore the original definition, with the same ID
+
+        openCustomStepEditor();
+        assertThat(page.locator("#custom-step-name")).hasValue("Normalize");
+        assertThat(page.locator("#custom-step-source")).hasValue(replacement);
+        assertThat(page.locator("#compile-custom-step")).isEnabled();
+        assertThat(page.locator("#custom-step-status")).containsText("Not compiled");
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("custom-step-draft-replaced-" + page.viewportSize().width + ".png")));
+        page.locator("#close-custom-step").click();
+        flowHistory("redo");
+        flowHistory("redo");
+        openCustomStepEditor();
+        assertThat(page.locator("#custom-step-status")).containsText("Compiled.");
+        assertThat(page.locator("#compile-custom-step")).isDisabled();
+        page.locator("#close-custom-step").click();
+
+        final var other = CreatorServerE2eSupport.request(creator.baseUri(), "POST", "/api/custom-steps",
+                "{\"name\":\"Other\",\"source\":\"public static boolean other() { return true; }\"}");
+        org.assertj.core.api.Assertions.assertThat(other.statusCode()).as(other.body()).isEqualTo(200);
+        openCustomStepManager(); // accept a catalog revision that changed an unrelated definition
+        assertThat(page.locator("#custom-step-list li")).hasCount(2);
+        page.locator("#close-custom-step-manager").click();
+        openCustomStepEditor();
+        assertThat(page.locator("#custom-step-status")).containsText("Compiled.");
+        assertThat(page.locator("#compile-custom-step")).isDisabled();
+        assertThat(page.locator("#custom-step-source")).hasValue(replacement);
+        page.locator("#custom-step-source").fill(replacement + "\n");
+        assertThat(page.locator("#compile-custom-step")).isEnabled();
+        assertThat(page.locator("#custom-step-status")).containsText("Not compiled");
+        org.assertj.core.api.Assertions.assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    @Tag("responsive")
+    @Tag("browser-diagnostics")
     void multipleParametersHaveIndependentTypedFieldMappings() throws Exception {
         openProject(choiceProject()
                 .replace("\"name\":\"match\"", "\"id\":\"first-case\",\"name\":\"match\"")
@@ -635,13 +717,18 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
     }
 
     private void createCustomStep(final String name, final String source) {
-        openProjectActions();
-        page.locator("#project-actions [data-create-custom-step]").click();
+        openCustomStepEditor();
         page.locator("#custom-step-name").fill(name);
         page.locator("#custom-step-source").fill(source);
         page.locator("#compile-custom-step").click();
         assertThat(page.locator("#custom-step-status")).containsText("Compiled.");
         page.locator("#close-custom-step").click();
+    }
+
+    private void openCustomStepEditor() {
+        openProjectActions();
+        page.locator("#project-actions [data-create-custom-step]").click();
+        assertThat(page.locator("#custom-step-dialog")).isVisible();
     }
 
     private void openProjectActions() {

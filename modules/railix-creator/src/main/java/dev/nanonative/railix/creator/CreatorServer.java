@@ -2314,7 +2314,8 @@ public final class CreatorServer implements AutoCloseable {
         }
         if (captured == null) return unavailable("not-connected");
         if (path.equals("/api/live/catalog")) return json(200, RailixValue.object(Map.of("revision", RailixValue.number(0), "steps", RailixValue.array(
-                captured.project.catalog().definitions().stream().<RailixValue>map(CreatorServer::definition).toList()))));
+                captured.project.catalog().definitions().stream()
+                        .<RailixValue>map(step -> definition(step, captured.project.catalog())).toList()))));
         if (path.equals("/api/live/application")) return json(200, captured.snapshot());
         if (path.equals("/api/live/editor")) {
             final var payload = new LinkedHashMap<>(captured.editor.view(exchange.getRequestURI().getRawQuery(), captured.project.creator()).values());
@@ -3636,7 +3637,7 @@ public final class CreatorServer implements AutoCloseable {
         }
         return RailixValue.object(Map.of("revision", RailixValue.number(revision),
                 "steps", RailixValue.array(snapshot.definitions().stream()
-                        .<RailixValue>map(CreatorServer::definition)
+                        .<RailixValue>map(step -> definition(step, snapshot))
                         .toList())
         ));
     }
@@ -3838,7 +3839,7 @@ public final class CreatorServer implements AutoCloseable {
         recordCustomStepHistory(prepared.saved(), true);
         final var payload = new LinkedHashMap<>(projectPayloadLocked(false).values());
         payload.put("status", RailixValue.string("compiled"));
-        payload.put("definition", definition(prepared.definition()));
+        payload.put("definition", definition(prepared.definition(), prepared.catalog()));
         payload.put("catalog", catalog());
         return json(200, RailixValue.object(payload));
     }
@@ -3859,9 +3860,11 @@ public final class CreatorServer implements AutoCloseable {
                         "line", RailixValue.number(issue.line()), "column", RailixValue.number(issue.column())))).toList());
     }
 
-    private static RailixValue definition(final StepDefinition definition) {
+    private static RailixValue definition(final StepDefinition definition, final StepCatalog catalog) {
         final Map<String, RailixValue> value = new LinkedHashMap<>(StepContractJson.value(definition).values());
         value.put("native", RailixValue.bool(definition.nativeStep()));
+        catalog.implementation(definition.id()).ifPresent(implementation ->
+                value.put("implementation", RailixValue.string(implementation.className())));
         return RailixValue.object(value);
     }
 

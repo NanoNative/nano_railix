@@ -75,7 +75,13 @@ this denylist nor successful javac compilation proves whole-application support.
   the user method to infer its behavior or ports.
 - **CUSTOM-003:** Source errors MUST identify the user's source location. The
   editor MUST retain the submitted draft after failure and make changed source
-  require another compile before publication.
+  require another compile before publication. An unchanged draft MUST show
+  “Compiled” only while its last compiled implementation remains in the current
+  catalog. Removing or replacing that definition, including through Undo/Redo,
+  MUST enable compilation while retaining the entered name and source. Restoring
+  the same implementation MUST restore its compiled status; unrelated catalog
+  changes MUST NOT reset it. Creator compares the existing compiler-generated
+  implementation identity returned with the definition and catalog.
 - **CUSTOM-004:** Published source MUST belong to the project. Reopening, ordinary
   production builds and source-inclusive application restoration MUST reconstruct
   the same Step contract/code through normal build ownership. Generated artifacts
@@ -178,6 +184,7 @@ insufficient. Signature/port inspection remains separate from these body checks.
 | CUSTOM-008 | Add a method to a multibyte source document exactly at the byte limit, reject the next addition, and reopen the accepted document. | API regression checks exact bytes, unchanged source/catalog after rejection and restoration of the accepted definitions. |
 | CUSTOM-002/005 | Submit concurrent distinct and duplicate definitions, then reopen the project. | Custom-Step API regression checks serialized publication, one duplicate rejection and catalog revision. Project lease exclusion stays covered by the existing `GeneratedApplicationE2eTest.secondCreatorCannotOwnTheSameProject` lifecycle regression. |
 | CUSTOM-001/003 | Submit malformed UTF-8/JSON, missing or incorrectly typed fields, unknown fields, a blank name and an oversized request. | API characterization preserves rejection bodies/statuses, the 1 MiB request cap, name normalization and absence of publication after rejection. |
+| CUSTOM-003 | Delete a compiled definition without editing its draft, recreate it, and Undo/Redo it. Restore different source under the same ID, then accept an unrelated catalog change. | Desktop/narrow browser regressions verify retained name/source, successful recompilation, and compiled status that follows the installed implementation. |
 | CUSTOM-007 | Use fully qualified spellings of the supported Java types. | Core regression compiles and installs the ordinary bundle and verifies its port shapes. |
 | CUSTOM-002/005 | Map two String parameters to distinct fields and a boolean parameter through Configure; reload and execute both branch Examples. | Desktop/narrow browser journey verifies independent saved mappings, compatible Boolean choices, exact execution results and persistence after reload. |
 | CUSTOM-009 | Submit denied APIs through the core policy and Creator, including fully qualified calls, method references and nested/local code. | Core/API regressions verify located rejection, no method execution, and unchanged accepted source/catalog/artifacts. The browser compilation/reuse journey checks the visible diagnostic and retained draft. |

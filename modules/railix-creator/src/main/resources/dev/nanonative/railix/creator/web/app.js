@@ -164,6 +164,7 @@ function setCatalog(catalog) {
   state.catalog = catalog.steps;
   state.definitions = new Map(catalog.steps.map(definition => [definition.id, definition]));
   state.catalogRevision = Number(catalog.revision);
+  customSteps.refreshCompiledStatus();
 }
 
 async function ensureCatalog(revision, signal) {
@@ -8252,8 +8253,9 @@ window.addEventListener('pagehide',()=>{
   state.projectImport.request?.abort();
 });
 
-initializeCustomSteps({
+const customSteps = initializeCustomSteps({
   canEdit: canEditCustomSteps,
+  getDefinition: id => state.definitions.get(id),
   submit: submitCustomStep,
   onChanged: acceptCustomStepChange,
   load: loadCustomSteps,

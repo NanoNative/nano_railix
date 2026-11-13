@@ -1,7 +1,7 @@
 "use strict";
 
 /** Owns custom-Step creation and management UI; callbacks retain transport and catalog ownership. */
-function initializeCustomSteps({canEdit, submit, onChanged, onClose, load, remove}) {
+function initializeCustomSteps({canEdit, getDefinition, submit, onChanged, onClose, load, remove}) {
   const dialog = document.querySelector('#custom-step-dialog');
   const form = document.querySelector('#custom-step-form');
   const name = document.querySelector('#custom-step-name');
@@ -12,6 +12,7 @@ function initializeCustomSteps({canEdit, submit, onChanged, onClose, load, remov
   const diagnostics = document.querySelector('#custom-step-diagnostics');
   const fields = [...form.querySelectorAll('input,textarea,button')];
   let compiling = false;
+  let compiledDefinition = null;
   const manager = document.querySelector('#custom-step-manager');
   const deleteDialog = document.querySelector('#custom-step-delete-dialog');
   const list = document.querySelector('#custom-step-list');
@@ -87,10 +88,23 @@ function initializeCustomSteps({canEdit, submit, onChanged, onClose, load, remov
 
   function markDraftChanged() {
     if (compiling) return;
+    compiledDefinition = null;
     button.disabled = false;
     button.textContent = 'Compile Step';
     status.textContent = 'Not compiled. Compile this draft to add a new Step.';
     diagnostics.hidden = true;
+  }
+
+  function refreshCompiledStatus() {
+    if (compiling || !compiledDefinition) return;
+    const current = getDefinition(compiledDefinition.id);
+    const available = Boolean(compiledDefinition.implementation
+      && current?.implementation === compiledDefinition.implementation);
+    button.disabled = available;
+    button.textContent = available ? 'Compiled' : 'Compile Step';
+    status.textContent = available
+      ? `Compiled. ${current.display_name} is available for compatible inputs in Add Step.`
+      : 'Not compiled. This draft is not available in the current project.';
   }
 
   function setBusy(busy) {
@@ -116,6 +130,7 @@ function initializeCustomSteps({canEdit, submit, onChanged, onClose, load, remov
     event.preventDefault();
     if (compiling || !canEdit()) return;
     const draft = {name:name.value.trim(), source:source.value};
+    compiledDefinition = null;
     setBusy(true);
     button.textContent = 'Compiling…';
     status.textContent = 'Compiling Java and checking the Step contract…';
@@ -129,7 +144,8 @@ function initializeCustomSteps({canEdit, submit, onChanged, onClose, load, remov
       }
       compiled = true;
       await onChanged(submission);
-      status.textContent = `Compiled. ${submission.payload.definition.display_name} is available for compatible inputs in Add Step.`;
+      const definition = submission.payload.definition;
+      compiledDefinition = {id:definition.id, implementation:definition.implementation};
       another.hidden = false;
     } catch (failure) {
       showFailure(failure.message || 'Compilation could not be confirmed. Reopen the project to check its catalog before retrying.',
@@ -138,6 +154,7 @@ function initializeCustomSteps({canEdit, submit, onChanged, onClose, load, remov
       setBusy(false);
       button.textContent = compiled ? 'Compiled' : 'Compile Step';
       button.disabled = compiled;
+      refreshCompiledStatus();
     }
   }
 
@@ -150,6 +167,7 @@ function initializeCustomSteps({canEdit, submit, onChanged, onClose, load, remov
     }
     if (!event.target.closest('[data-create-custom-step]') || !canEdit()) return;
     document.querySelector('#project-actions').hidePopover();
+    refreshCompiledStatus();
     if (!dialog.open) dialog.showModal();
     name.focus();
   });
@@ -174,4 +192,5 @@ function initializeCustomSteps({canEdit, submit, onChanged, onClose, load, remov
     markDraftChanged();
     name.focus();
   });
+  return {refreshCompiledStatus};
 }
