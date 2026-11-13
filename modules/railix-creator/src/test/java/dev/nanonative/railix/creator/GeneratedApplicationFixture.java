@@ -106,7 +106,7 @@ final class GeneratedApplicationFixture implements AutoCloseable {
         }
         return response.body().lines()
                 .filter(line -> !line.isBlank())
-                .map(line -> (RailixValue.ObjectValue) ((RailixJson.Parsed) RailixJson.parse(line)).value())
+                .map(line -> (RailixValue.ObjectValue) ((RailixJson.Parsed) RailixJson.parseDocument(line)).value())
                 .toList();
     }
 

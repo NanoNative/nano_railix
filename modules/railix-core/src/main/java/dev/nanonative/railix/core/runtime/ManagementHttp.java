@@ -169,7 +169,7 @@ public final class ManagementHttp {
     ) throws IOException {
         final Optional<String> json;
         try {
-            json = RailixJson.write(value, limit);
+            json = RailixJson.writeDocument(value, limit);
         } catch (final IllegalArgumentException exception) {
             sendInvalidResponse(exchange);
             return;

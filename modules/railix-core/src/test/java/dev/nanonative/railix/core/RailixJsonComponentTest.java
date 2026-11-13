@@ -1,6 +1,7 @@
 package dev.nanonative.railix.core;
 
 import dev.nanonative.railix.core.value.RailixJson;
+import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixValue;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -174,6 +175,47 @@ class RailixJsonComponentTest {
         assertThatThrownBy(() -> RailixJson.write(nested))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("Railix JSON exceeds the maximum container depth of 64.");
+    }
+
+    @Test
+    void enclosingDocumentsPreserveTheFullDataDepthWithoutRelaxingDataValidation() {
+        RailixValue value = RailixValue.number(0);
+        for (int depth = 0; depth < 63; depth++) value = RailixValue.array(List.of(value));
+        final RailixValue context = RailixValue.object(Map.of("result", value));
+        final RailixValue message = RailixValue.object(Map.of("status", RailixValue.string("succeeded"), "context", context));
+        final String json = RailixJson.writeDocument(message);
+
+        assertThat(RailixJson.parseDocument(json)).isEqualTo(new RailixJson.Parsed(message));
+        assertThat(RailixJson.parse(json)).isInstanceOf(RailixJson.Invalid.class);
+        assertThat(RailixData.normalize(RailixData.Format.JSON, json.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                .isInstanceOf(RailixData.Invalid.class);
+        assertThat(RailixJson.write(context)).startsWith("{\"result\":[");
+        assertThatThrownBy(() -> RailixJson.write(message)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void enclosingDocumentsRemainDepthBoundedForBothReadingAndWriting() {
+        RailixValue value = RailixValue.number(0);
+        for (int depth = 0; depth < RailixJson.MAX_DOCUMENT_DEPTH; depth++) value = RailixValue.array(List.of(value));
+        final String expected = "[".repeat(RailixJson.MAX_DOCUMENT_DEPTH) + "0" + "]".repeat(RailixJson.MAX_DOCUMENT_DEPTH);
+        assertThat(RailixJson.writeDocument(value)).isEqualTo(expected);
+        assertThat(RailixJson.parseDocument(expected)).isEqualTo(new RailixJson.Parsed(value));
+        final RailixValue tooDeep = RailixValue.array(List.of(value));
+        assertThat(RailixJson.parseDocument("[" + expected + "]")).isInstanceOf(RailixJson.Invalid.class);
+        assertThatThrownBy(() -> RailixJson.writeDocument(tooDeep)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void enclosingDocumentByteLimitsIncludeEnvelopeAndUtf8Encoding() {
+        final RailixValue value = RailixValue.object(Map.of("context", RailixValue.string("\u00e9")));
+        final String expected = RailixJson.writeDocument(value);
+        final int bytes = expected.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        assertThat(RailixJson.writeDocument(value, bytes)).contains(expected);
+        assertThat(RailixJson.writeDocument(value, bytes - 1)).isEmpty();
+        assertThatThrownBy(() -> RailixJson.writeDocument(value, 0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> RailixJson.writeDocument(null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> RailixJson.writeDocument(null, 1)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(RailixJson.parseDocument(null)).isInstanceOf(RailixJson.Invalid.class);
     }
 
     @ParameterizedTest(name = "{0}")

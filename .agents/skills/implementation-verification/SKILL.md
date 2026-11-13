@@ -20,6 +20,10 @@ Define the claimed behavior and choose evidence that can disprove it.
    a successful command with skipped suites is not evidence. A focused run is not the full gate.
    Direct test-plugin goals can load installed dependencies despite an earlier build.
    Compile in the same reactor invocation and verify the actual runtime classpath.
+   Combine related capabilities in complete user journeys, not only isolated feature tests.
+   For data-derived choices, distinguish missing or invalid data from inputs that never
+   reach the selected operation. Exercise branching, convergence, edits, reload and external
+   extensions where they share that behavior, with both accepted and rejected choices.
 4. Protect active previews and user outputs from clean builds. Do not run competing
    builds against the same output directory. Use an isolated snapshot when necessary.
 

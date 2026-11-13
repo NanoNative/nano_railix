@@ -9,6 +9,11 @@ import java.util.Optional;
 
 /** Standard-library JSON normalization for canonical Railix values. */
 public final class RailixJson {
+    /**
+     * Complete-message bound. Eight structural containers accommodate case/projection/stage/input
+     * envelopes around a depth-64 value. This does not change the canonical data-value limit.
+     */
+    public static final int MAX_DOCUMENT_DEPTH = RailixData.DEFAULT_MAX_DEPTH + 8;
     static final String NUMBER_SOURCE_LIMIT_MESSAGE = "JSON number exceeds the 1024-character source limit.";
     private static final String UNPAIRED_SURROGATE =
             "Unpaired Unicode surrogate is not allowed in JSON strings.";
@@ -26,6 +31,16 @@ public final class RailixJson {
 
     public static Result parse(final String source) {
         return parse(source, RailixData.DEFAULT_MAX_DEPTH);
+    }
+
+    /**
+     * Reads an enclosing JSON message using the same parser and a bounded envelope allowance.
+     * Callers must validate embedded application data through its ordinary data contract.
+     * @param source complete JSON message, with its byte bound enforced by the caller
+     * @return parsed document or a structured syntax/depth rejection
+     */
+    public static Result parseDocument(final String source) {
+        return parse(source, MAX_DOCUMENT_DEPTH);
     }
 
     static Result parse(final String source, final int maxDepth) {
@@ -56,6 +71,31 @@ public final class RailixJson {
     }
 
     /**
+     * Writes an enclosing JSON message without reducing the depth available to its payload.
+     * @param value message containing already validated application values
+     * @return complete canonical JSON
+     * @throws IllegalArgumentException for Java null or invalid/unrepresentable message values
+     */
+    public static String writeDocument(final RailixValue value) {
+        if (value == null) throw new IllegalArgumentException("Railix JSON value cannot be Java null.");
+        final JsonOutput json = new JsonOutput(0, true, MAX_DOCUMENT_DEPTH);
+        writeValue(value, json, 0);
+        return json.value();
+    }
+
+    /**
+     * Writes a bounded enclosing message through the ordinary canonical JSON writer.
+     * @param value message containing already validated application values
+     * @param maxBytes maximum complete UTF-8 message size, including its envelope
+     * @return complete JSON, or empty when its byte budget is exceeded
+     * @throws IllegalArgumentException for Java null, invalid values or a nonpositive byte budget
+     */
+    public static Optional<String> writeDocument(final RailixValue value, final int maxBytes) {
+        final JsonOutput json = bounded(value, maxBytes, true, MAX_DOCUMENT_DEPTH);
+        return json.exceeded() ? Optional.empty() : Optional.of(json.value());
+    }
+
+    /**
      * Writes canonical JSON only when its UTF-8 representation fits the supplied byte limit.
      *
      * @param value canonical value to write
@@ -64,7 +104,7 @@ public final class RailixJson {
      * @throws IllegalArgumentException when the value is Java null or the limit is below one
      */
     public static Optional<String> write(final RailixValue value, final int maxBytes) {
-        final JsonOutput json = bounded(value, maxBytes, true);
+        final JsonOutput json = bounded(value, maxBytes, true, RailixData.DEFAULT_MAX_DEPTH);
         return json.exceeded() ? Optional.empty() : Optional.of(json.value());
     }
 
@@ -77,21 +117,18 @@ public final class RailixJson {
      * @throws IllegalArgumentException when the value is Java null or the limit is below one
      */
     public static boolean fitsUtf8(final RailixValue value, final int maxBytes) {
-        return !bounded(value, maxBytes, false).exceeded();
+        return !bounded(value, maxBytes, false, RailixData.DEFAULT_MAX_DEPTH).exceeded();
     }
 
-    private static JsonOutput bounded(
-            final RailixValue value,
-            final int maxBytes,
-            final boolean capture
-    ) {
+    private static JsonOutput bounded(final RailixValue value, final int maxBytes,
+                                      final boolean capture, final int maxDepth) {
         if (value == null) {
             throw new IllegalArgumentException("Railix JSON value cannot be Java null.");
         }
         if (maxBytes < 1) {
             throw new IllegalArgumentException("Maximum JSON bytes must be at least 1.");
         }
-        final JsonOutput json = new JsonOutput(maxBytes, capture);
+        final JsonOutput json = new JsonOutput(maxBytes, capture, maxDepth);
         writeValue(value, json, 0);
         return json;
     }
@@ -117,7 +154,7 @@ public final class RailixJson {
             }
             case RailixValue.StringValue string -> writeString(string.value(), json);
             case RailixValue.ArrayValue array -> {
-                checkWriteDepth(depth);
+                checkWriteDepth(depth, json.maxDepth);
                 json.append('[');
                 for (int index = 0; index < array.values().size() && !json.exceeded(); index++) {
                     if (index > 0) {
@@ -128,7 +165,7 @@ public final class RailixJson {
                 json.append(']');
             }
             case RailixValue.ObjectValue object -> {
-                checkWriteDepth(depth);
+                checkWriteDepth(depth, json.maxDepth);
                 json.append('{');
                 boolean first = true;
                 for (final String key : object.values().keySet().stream().sorted().toList()) {
@@ -148,10 +185,10 @@ public final class RailixJson {
         }
     }
 
-    private static void checkWriteDepth(final int depth) {
-        if (depth >= RailixData.DEFAULT_MAX_DEPTH) {
+    private static void checkWriteDepth(final int depth, final int maxDepth) {
+        if (depth >= maxDepth) {
             throw new IllegalArgumentException(
-                    "Railix JSON exceeds the maximum container depth of " + RailixData.DEFAULT_MAX_DEPTH + "."
+                    "Railix JSON exceeds the maximum container depth of " + maxDepth + "."
             );
         }
     }
@@ -189,16 +226,18 @@ public final class RailixJson {
         private final StringBuilder value = new StringBuilder();
         private final int maxBytes;
         private final boolean capture;
+        private final int maxDepth;
         private int bytes;
         private boolean exceeded;
 
         private JsonOutput(final int maxBytes) {
-            this(maxBytes, true);
+            this(maxBytes, true, RailixData.DEFAULT_MAX_DEPTH);
         }
 
-        private JsonOutput(final int maxBytes, final boolean capture) {
+        private JsonOutput(final int maxBytes, final boolean capture, final int maxDepth) {
             this.maxBytes = maxBytes;
             this.capture = capture;
+            this.maxDepth = maxDepth;
         }
 
         private void append(final boolean source) {

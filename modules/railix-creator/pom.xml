@@ -35,7 +35,14 @@
                                 </filter>
                                 <filter>
                                     <artifact>dev.nanonative.railix:railix-stdlib</artifact>
-                                    <excludes><exclude>dev/nanonative/railix/stdlib/**</exclude></excludes>
+                                    <excludes>
+                                        <exclude>dev/nanonative/railix/stdlib/**</exclude>
+                                        <exclude>berlin/yuna/typemap/**</exclude>
+                                    </excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>berlin.yuna:type-map</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
                                 </filter>
                             </filters>
                             <transformers>

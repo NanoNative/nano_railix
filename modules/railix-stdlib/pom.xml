@@ -10,8 +10,43 @@
     </parent>
     <artifactId>railix-stdlib</artifactId>
 
+    <properties>
+        <type-map.version>2026.11.2</type-map.version>
+    </properties>
+
     <build>
+        <resources>
+            <resource><directory>src/main/resources</directory></resource>
+            <resource>
+                <directory>${project.basedir}/../..</directory>
+                <includes><include>LICENSE</include></includes>
+                <targetPath>META-INF/licenses/type-map</targetPath>
+            </resource>
+        </resources>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.11.0</version>
+                <executions>
+                    <execution>
+                        <id>bundle-provider-dependencies</id>
+                        <phase>process-resources</phase>
+                        <goals><goal>unpack</goal></goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>berlin.yuna</groupId>
+                                    <artifactId>type-map</artifactId>
+                                    <version>${type-map.version}</version>
+                                    <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                                    <includes>berlin/yuna/typemap/**</includes>
+                                </artifactItem>
+                            </artifactItems>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
@@ -42,6 +77,11 @@
     </build>
 
     <dependencies>
+        <dependency>
+            <groupId>berlin.yuna</groupId>
+            <artifactId>type-map</artifactId>
+            <version>${type-map.version}</version>
+        </dependency>
         <dependency>
             <groupId>dev.nanonative.railix</groupId>
             <artifactId>railix-core</artifactId>

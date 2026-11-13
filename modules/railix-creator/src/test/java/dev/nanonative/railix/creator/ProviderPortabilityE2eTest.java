@@ -395,13 +395,28 @@ final class ProviderPortabilityE2eTest {
                 }
             }
         }
+        final Path dependency = checkout.resolve("type-map.jar");
+        final var identity = berlin.yuna.typemap.logic.TypeConverter.class.getClassLoader()
+                .getResource("META-INF/maven/berlin.yuna/type-map/pom.properties");
+        assertThat(identity).as("Declared dependency archive").isNotNull();
+        final var dependencyUrl = ((java.net.JarURLConnection) identity.openConnection()).getJarFileURL();
+        try (var input = dependencyUrl.openStream()) { Files.copy(input, dependency); }
         final Path classes = Files.createDirectories(checkout.resolve("classes"));
         final var diagnostics = new javax.tools.DiagnosticCollector<javax.tools.JavaFileObject>();
         final var compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
         try (var files = compiler.getStandardFileManager(diagnostics, java.util.Locale.ROOT, java.nio.charset.StandardCharsets.UTF_8)) {
             assertThat(compiler.getTask(null, files, diagnostics,
-                    List.of("-proc:none", "--release", "25", "-cp", api.toString(), "-d", classes.toString()),
+                    List.of("-proc:none", "--release", "25", "-cp", api + java.io.File.pathSeparator + dependency, "-d", classes.toString()),
                     null, files.getJavaFileObjectsFromPaths(javaFiles)).call()).as(diagnostics.getDiagnostics().toString()).isTrue();
+        }
+        try (var archive = new java.util.jar.JarFile(dependency.toFile())) {
+            for (final var entry : archive.stream().filter(entry -> !entry.isDirectory()
+                    && entry.getName().startsWith("berlin/yuna/typemap/")).toList()) {
+                final Path target = classes.resolve(entry.getName()).normalize();
+                assertThat(target.startsWith(classes)).isTrue();
+                Files.createDirectories(target.getParent());
+                try (var input = archive.getInputStream(entry)) { Files.copy(input, target); }
+            }
         }
         final Path bundle = checkout.resolve("steps.jar");
         final Path exportLog = directory.resolve("export.log");
@@ -430,11 +445,22 @@ final class ProviderPortabilityE2eTest {
         final Path project = directory.resolve("railix.project.json");
         Files.writeString(project, source);
         final var artifact = ApplicationBuilder.buildProduction(project, (CompileResult.Compiled) result);
+        final String transformSource = TransformGeneratedE2eTest.cliProject("integer", "0");
+        final var transformCompiled = ProjectCompiler.compileApplication(transformSource, catalog);
+        assertThat(transformCompiled).isInstanceOf(CompileResult.Compiled.class);
+        final var transform = ApplicationBuilder.buildProduction(directory.resolve("transform.json"),
+                (CompileResult.Compiled) transformCompiled);
         try (var files = Files.walk(checkout)) {
             for (final Path file : files.sorted(Comparator.reverseOrder()).toList()) Files.delete(file);
         }
         final var run = CreatorFirstExecutionArtifacts.runJar(artifact.jar(), "InDePeNdEnT");
         assertThat(run.exitCode()).as(run.output()).isZero();
         assertThat(run.output()).isEqualTo("\"independent\"");
+        final var converted = CreatorFirstExecutionArtifacts.runJar(transform.jar(), "42");
+        assertThat(converted.exitCode()).as(converted.output()).isZero();
+        assertThat(converted.output()).isEqualTo("42");
+        final var fallback = CreatorFirstExecutionArtifacts.runJar(transform.jar(), "not-a-number");
+        assertThat(fallback.exitCode()).as(fallback.output()).isZero();
+        assertThat(fallback.output()).isEqualTo("0");
     }
 }
