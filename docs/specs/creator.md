@@ -497,7 +497,9 @@ Trigger ID into canonical stable-ID removals on the server; deleting a Group una
 including unloaded Steps. The editor saves complete actions through revision-checked
 `POST /api/editor`. Existing document PATCH APIs remain available for interchange. Nodes and groups are keyed by stable ID, links are
 keyed by source port with all of that port's targets retained. Removing an entry uses JSON null.
-An editor action contains `revision`, `creator_revision` and `command`, with optional `preview`.
+An editor action contains `revision`, `creator_revision` and `command`, with optional `preview`
+and `catalog_revision`. The browser supplies the catalog revision to reject actions against
+definitions that changed in another tab.
 Commands cover patches, connections, grouping, copy, reuse, detach, deletion, Undo and Redo.
 Preview validates the proposed graph and metadata without building or persisting them.
 Successful responses contain revisions, history availability, selection, workspace and
@@ -527,6 +529,14 @@ does not infer whether an unanswered request committed or merge concurrent edits
 Reload remains available when a local JSON or Example draft is invalid.
 Undo/Redo keeps bounded deltas for the current Creator session. History is not persisted.
 Oldest deltas are evicted above the scene-response byte budget, retaining the latest action.
+Custom-Step definition creation and deletion have no Undo/Redo operation.
+Creation preserves existing flow history. Successful unused-definition deletion
+clears all flow Undo/Redo history for the active Creator session, across all tabs,
+including unrelated edits; cancelled, rejected or failed deletion preserves it.
+The red Delete button opens a Railix-themed confirmation dialog warning that deletion
+cannot be undone and clears all flow history. Custom-Step placements retain ordinary flow Undo/Redo.
+See [custom-Step deletion and history](custom-java-steps.md#custom-step-deletion-and-history).
+
 Legacy document writes invalidate history. Revision conflicts preserve accepted work, and
 external file changes require reopening rather than silent overwrite. A temporary transaction
 backup under `.railix/run/` keeps the original file contents, including invalid optional metadata,

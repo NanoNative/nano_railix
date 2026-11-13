@@ -10,12 +10,12 @@ be able to compile a Java method without a Creator dependency.
 As on 2026-11-12 the implementation accepts Creator as the only editor while a project is
 open. The existing project lease excludes a second Creator in that workspace.
 The existing build lock serializes publications within the active Creator.
-Direct source-file edits belong between Creator sessions and arbitrary concurrent
-file editors are outside this ownership contract as of now. No retained custom-source
-snapshot and external-edit conflict handling is coded at the moment.Each submission 
-reads the saved document under the build lock, compiles its addition, and atomically 
-persists the candidate before publishing the catalog. Catalog revisions remain 
-necessary for refreshing browser tabs.
+Direct source-file edits belong between Creator sessions. The deletion
+increment retains a semantic source fingerprint and rejects intervening outside
+changes before publication. Each submission reads the saved document
+under the build lock, compiles its addition, and atomically persists the candidate
+before publishing the catalog. Catalog revisions remain necessary for refreshing
+browser tabs.
 
 Owns: this authoring flow and its project-local source. Existing Step contracts,
 generated execution, Examples, dependency ownership and lifecycle remain in their
@@ -26,6 +26,44 @@ public static method. It supports String, boolean, BigDecimal and RailixValue
 parameters/results. Creator derives receive ports from parameters and supplies
 one output named `result`. Advanced resource/control authoring and editing an
 already published custom definition are separate work.
+
+**Definition deletion and history policy accepted on 2026-11-13; runtime verification pending.**
+The user requires an option to delete a project-owned custom Step only after its
+uses have been removed. This covers the current materialized project,
+including linked placements, unvisited branches and actual nested Step calls.
+Example payloads or literal JSON containing the same `use` text are not uses.
+Prebuilt provider definitions remain outside this deletion flow. Existing binary
+artifacts remain available to applications that already own them.
+
+The user's clarification on 2026-11-13 supersedes the earlier definition-history
+direction: creating or deleting a custom definition has no Undo/Redo operation.
+Placing, editing and removing its occurrences retains the existing flow Undo/Redo
+behavior while the definition exists. Creation preserves flow history; successful
+definition deletion clears all flow Undo/Redo history in the active Creator
+session, across all tabs, so history cannot restore a placement whose definition
+was deleted. Before submitting deletion, the red Delete button must ask for
+confirmation and warn that deletion cannot be undone and clears all flow history.
+Cancellation and rejected or failed deletion preserve history. Recovery of unused saved
+methods whose Java no longer compiles remains a separate open increment: normal
+Creator startup currently rejects those documents. Runtime verification is
+excluded by the user's no-running constraint; regressions must be reported as
+unexecuted until execution is authorized.
+
+**Native Image authoring policy accepted on 2026-11-12; implemented on 2026-11-13.**
+The user selected rejection of known dynamic APIs for custom Steps created through
+Creator, retaining general Java access. This is a targeted denylist, not an API
+allowlist. The shared compiler supplies an explicit policy selected by Creator;
+its existing general-purpose API remains available to other authoring tools.
+Creator applies the same policy when rebuilding saved custom source. Prebuilt
+[portable providers](system-model.md#portable-step-providers) retain their existing
+SYS-036/037 dynamic-class contract. Native Image deployment remains future work;
+this adds a custom-source authoring constraint to the earlier
+[distribution decision](../adr/0013-small-java-product-boundary.md).
+
+The accepted scope covers resolved references in submitted source, including
+local/anonymous classes. It does not inspect the internals of called library/JDK
+implementations and does not certify their Native Image compatibility. Neither
+this denylist nor successful javac compilation proves whole-application support.
 
 ## Behavior
 
@@ -63,6 +101,64 @@ The accumulated source document uses the existing 64 MiB project-document limit.
 Each compile request still uses Creator's existing 1 MiB HTTP body limit, including
 the name, method source and JSON encoding. Neither limit is a Step execution limit.
 
+### Custom-Step deletion and history
+
+- **CUSTOM-011:** Creator MUST offer deletion of a project-owned custom-Step
+  definition only when no placement or nested invocation in the current project
+  references it. Example execution counts MUST NOT determine eligibility.
+- **CUSTOM-012:** The server MUST serialize the usage check and deletion with
+  placement/edit/publication under the existing build ownership. Rejected or
+  failed deletion MUST preserve accepted source, catalog and running application.
+  Accepted deletion MUST persist the source change before publishing a revised
+  catalog and MUST NOT restart the unchanged application. Other open tabs MUST
+  refresh removed definitions without resurrecting an older catalog response.
+
+- **CUSTOM-013:** Creating and deleting custom definitions MUST NOT create
+  Undo/Redo entries. Creation MUST preserve existing flow Undo/Redo history.
+  Placement, editing and removal of custom-Step occurrences MUST retain ordinary
+  flow Undo/Redo behavior while their definition exists. Successful definition
+  deletion MUST clear all flow Undo/Redo history in the active Creator session,
+  including unrelated edits and history shared by other tabs. Rejected or failed
+  deletion MUST preserve history. Conflicting outside source edits MUST be preserved.
+- **CUSTOM-014:** Clicking a custom definition's red Delete button MUST open a
+  Railix-themed confirmation dialog before submitting deletion. The dialog MUST name the definition
+  and warn that deletion cannot be undone and successful deletion clears all flow
+  Undo/Redo history for the session, across all tabs. Cancelling MUST leave source,
+  catalog and history unchanged and MUST NOT submit a deletion request. Cancel MUST
+  receive initial focus; Escape MUST cancel and return to the definition list.
+
+History remains in the active Creator server's memory and does not survive its
+restart. Deletion removes authoring source/catalog entries; it does not remove
+immutable binaries owned by existing builds. Broken-source (manually erroring the custom step json file)
+startup recovery is not supported.
+
+### Creator's dynamic-API restriction
+
+- **CUSTOM-009:** Creator's Java-method compilation MUST reject references to the
+  known dynamic APIs below, including reflective class/member lookup and
+  invocation. Rejection MUST identify the offending submitted-source location
+  through the existing diagnostics boundary and preserve accepted source/catalog
+  state under CUSTOM-001/003/005. Code MUST NOT be executed to inspect its behavior.
+- **CUSTOM-010:** Creator MUST select the same restriction for custom-source
+  creation, reopening, builds and restored source. Other authoring tools and
+  prebuilt provider installation MUST retain their existing policy. Ordinary
+  filesystem access MUST remain available. Compiler-generated lambdas and string concatenation
+  MUST NOT be rejected merely because their bytecode uses `invokedynamic`.
+
+| Rejected API surface | Scope |
+| --- | --- |
+| `java.lang.reflect`, `java.lang.invoke`, `java.lang.foreign`, `java.lang.instrument`, `javax.tools`, `javax.script` | References to types/members in these packages and subpackages. |
+| `Class` | Reflective member/annotation/generic/enclosing/nest lookup, `forName`, `newInstance`, `arrayType`, class-loader access and classpath-resource lookup. Class literals and ordinary type-name access remain available. |
+| `ClassLoader` and subclasses | Type/member references, including constructor calls and inherited methods. |
+| `ResourceBundle`, `ServiceLoader` and subclasses | Resource-bundle lookup and runtime provider discovery. |
+| `ObjectInputStream`, `ObjectOutputStream`, `ObjectStreamClass`, `ObjectStreamField` and subclasses | Java object serialization. Ordinary byte/text streams remain available. |
+| `Module.getResourceAsStream`, `System.load/loadLibrary`, `Runtime.load/loadLibrary`, `sun.misc.Unsafe`, `jdk.internal.misc.Unsafe` | Classpath resources and explicit native/unsafe access. Native method declarations in local classes are also rejected. |
+
+Checks use resolved API identities: fully qualified names, variable receivers,
+method references and code inside local/anonymous classes must not bypass the
+same policy. Matching words in source or scanning only `java.lang.reflect` is
+insufficient. Signature/port inspection remains separate from these body checks.
+
 ## Acceptance
 
 | Requirement | Public-boundary check | Evidence |
@@ -82,6 +178,14 @@ the name, method source and JSON encoding. Neither limit is a Step execution lim
 | CUSTOM-001/003 | Submit malformed UTF-8/JSON, missing or incorrectly typed fields, unknown fields, a blank name and an oversized request. | API characterization preserves rejection bodies/statuses, the 1 MiB request cap, name normalization and absence of publication after rejection. |
 | CUSTOM-007 | Use fully qualified spellings of the supported Java types. | Core regression compiles and installs the ordinary bundle and verifies its port shapes. |
 | CUSTOM-002/005 | Map two String parameters to distinct fields and a boolean parameter through Configure; reload and execute both branch Examples. | Desktop/narrow browser journey verifies independent saved mappings, compatible Boolean choices, exact execution results and persistence after reload. |
+| CUSTOM-009 | Submit denied APIs through the core policy and Creator, including fully qualified calls, method references and nested/local code. | Core/API regressions verify located rejection, no method execution, and unchanged accepted source/catalog/artifacts. The browser compilation/reuse journey checks the visible diagnostic and retained draft. |
+| CUSTOM-010 | Reopen/build custom source containing a denied call. Compile ordinary transformations, filesystem reads, lambdas, string concatenation and misleading names/comments. | Core/API regressions verify repeated rejection on Creator's source paths, successful ordinary execution, identical bundles under either policy and an unrestricted standalone authoring call. Called-library internals remain outside this increment. |
+| CUSTOM-009/010 | Build and run a representative produced application on the selected GraalVM target without adding custom-step reachability metadata. | Future deployment evidence; no Native Image compatibility claim is established by JVM policy tests. |
+| CUSTOM-011/012 | Delete an unused custom definition, reopen the project and recreate its name; reject deletion while a placement, linked use or nested invocation remains. Ignore matching text in literal/example data. | API regressions authored; not executed under the no-running constraint. |
+| CUSTOM-012 | Race placement with deletion, deliver an older catalog after deletion, and fail source persistence. | Concurrent placement/deletion, delayed-catalog browser and source-publication failure regressions authored; not executed under the no-running constraint. |
+| CUSTOM-006/012 | Keep a placement selected in one tab, remove it and its definition in another, then open and close Manage custom Steps. Repeat with an unsaved Example draft. | Desktop/narrow browser regression authored: matching project/catalog refresh returns a removed selection to the App; conflicting drafts retain their view and definitions with a reload diagnostic. Not executed under the no-running constraint. |
+| CUSTOM-013 | Create a definition without adding history; undo/redo its placement normally. Create another definition with existing Undo/Redo history and preserve it. Delete an unused definition with both history stacks populated, then recreate its name; earlier placements and definitions cannot be restored. Reject stale, in-use, externally changed and failed-persistence deletion without clearing history. | API and desktop/narrow browser regressions authored; not executed under the no-running constraint. |
+| CUSTOM-014 | Click Delete, inspect the themed warning and initial Cancel focus; cancel by button and Escape, verifying no DELETE request, unchanged definition/history and a usable button. Confirm deletion and verify both history actions become unavailable. | Desktop/narrow browser regression and warning screenshots authored; not executed under the no-running constraint. |
 
 ## Implementation Flow
 
@@ -105,7 +209,7 @@ loading errors and retries for both custom and existing Steps.
    compatibility rules still determine where the Step can be placed.
    The Creator session advances its catalog revision after publication. Editor
    snapshots carry that revision so other tabs fetch new definitions when needed.
-   Reopening installs saved definitions without rebuilding unused source documents.
+   Reopening installs saved definitions without rewriting their source documents.
 4. Placement, Examples and linked reuse use the existing editor/build path.
    Production packaging includes the referenced compiled implementation; it does
    not need Creator or a Java source interpreter during execution.
@@ -113,6 +217,19 @@ loading errors and retries for both custom and existing Steps.
    bundle JARs live under `.railix/custom-steps/artifacts/`. Source-inclusive
    artifacts also carry the custom source document so a fresh workspace can
    reconstruct the project.
+
+The Project menu's **Manage custom Steps** opens project-owned definitions and
+their usage status. `GET /api/custom-steps` supplies this list and the catalog
+revision; `DELETE /api/custom-steps` accepts `id` and `catalog_revision`. Providers
+cannot be deleted through this boundary. Usage comes from accepted compiler
+dependencies, including actual nested calls, rather than a search through JSON
+data. The red Delete button opens a Railix-themed confirmation dialog naming the definition and
+warning that deletion cannot be undone and will clear all flow Undo/Redo history
+for this Creator session, across all tabs. Cancellation sends no deletion request.
+Publication removes the saved record at the atomic single-file persistence
+boundary, publishes the revised catalog, then clears both flow history stacks.
+Failed deletion preserves history. Neither creation nor deletion records an
+undoable definition change; retained build artifacts are never deleted.
 
 Other authoring tools call the same core API with their own identity, classpath
 and output locations. The runtime API may be a directory or JAR; its supplied

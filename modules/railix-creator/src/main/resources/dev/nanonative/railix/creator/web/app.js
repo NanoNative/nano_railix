@@ -174,24 +174,97 @@ async function ensureCatalog(revision, signal) {
   if (epoch !== state.workspaceEpoch) throw new DOMException('Workspace changed', 'AbortError');
   if (!response.ok || Number(catalog.revision) < Number(revision))
     throw new Error('Step definitions could not be refreshed. Try again.');
-  if (Number(catalog.revision) > state.catalogRevision) setCatalog(catalog);
+  await applyCatalog(catalog);
 }
 
-function canCreateCustomStep() {
-  return Boolean(state.project) && !state.liveView && !state.switchingWorkspace;
+async function applyCatalog(catalog) {
+  if (Number(catalog.revision) <= state.catalogRevision) return;
+  const definitions = new Map(catalog.steps.map(definition => [definition.id, definition]));
+  if (state.catalog.every(definition => JSON.stringify(definition) === JSON.stringify(definitions.get(definition.id)))) {
+    setCatalog(catalog);
+    return;
+  }
+  await refreshProjectAfterCatalogChange();
+}
+
+async function refreshProjectAfterCatalogChange() {
+  // Only removals/replacements require a fresh project view. Keep local drafts untouched.
+  if (state.writeActive || state.pendingProject || state.saveFailure || state.jsonDraft || state.exampleDraft
+      || Object.keys(documentChanges(state.builtProject, state.project)).length
+      || Object.keys(documentChanges(state.savedCreator, state.creator)).length)
+    throw new Error('The project changed in another editor. Your unsaved changes are retained; reload before saving.');
+  const epoch = state.workspaceEpoch;
+  const revision = state.revision;
+  const [response, catalogResponse] = await fetchEditorAndCatalog();
+  if (epoch !== state.workspaceEpoch || revision !== state.revision) throw new DOMException('Workspace changed', 'AbortError');
+  if (!response.ok || !catalogResponse.ok) throw new Error('The project could not be refreshed. Try again.');
+  const project = parseExact(await response.text()), latest = parseExact(await catalogResponse.text());
+  if (epoch !== state.workspaceEpoch || revision !== state.revision) throw new DOMException('Workspace changed', 'AbortError');
+  if (Number(latest.revision) < state.catalogRevision || Number(project.revision) < Number(state.projectVersion)
+      || Number(project.creator_revision) < Number(state.creatorVersion)) return;
+  setCatalog(latest);
+  applyProjectSnapshot(project);
+  state.world?.resetScene();
+  render();
+}
+
+function canEditCustomSteps() {
+  return Boolean(state.project) && !state.liveView && !state.switchingWorkspace && !state.actionPending;
 }
 
 async function submitCustomStep(draft) {
-  const workspaceEpoch = state.workspaceEpoch;
-  const response = await fetch('/api/custom-steps', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(draft)});
-  return {ok:response.ok, payload:parseExact(await response.text()), workspaceEpoch};
+  return changeCustomStep('POST', draft);
 }
 
-function acceptCompiledCustomStep({payload, workspaceEpoch}) {
+async function changeCustomStep(method, body) {
+  if (!canEditCustomSteps()) throw new Error('Wait for the current edit to finish.');
+  const workspaceEpoch = state.workspaceEpoch;
+  state.actionPending = true;
+  renderBuildStatus();
+  try {
+    if (!await flushEdits()) throw new Error('Save the current edits before changing custom Steps.');
+    if (workspaceEpoch !== state.workspaceEpoch || state.liveView) throw new Error('The workspace changed. Reopen Custom Steps.');
+    const response = await fetch('/api/custom-steps', {method, headers:mutationHeaders(), body:JSON.stringify(body)});
+    return {ok:response.ok, payload:parseExact(await response.text()), workspaceEpoch};
+  } finally {
+    state.actionPending = false;
+    renderBuildStatus();
+  }
+}
+
+async function loadCustomSteps() {
+  const workspaceEpoch = state.workspaceEpoch;
+  const response = await fetch('/api/custom-steps', {cache:'no-store'});
+  const payload = parseExact(await response.text());
+  if (workspaceEpoch !== state.workspaceEpoch || !canEditCustomSteps()) throw new Error('The workspace changed. Reopen Custom Steps.');
+  if (!response.ok) throw new Error(payload.message || 'Custom Steps could not be loaded.');
+  await ensureCatalog(payload.catalog_revision);
+  if (Number(payload.catalog_revision) !== state.catalogRevision) return loadCustomSteps();
+  return payload;
+}
+
+async function acceptCustomStepChange({payload, workspaceEpoch}) {
   if (workspaceEpoch !== state.workspaceEpoch || state.liveView) return;
-  if (Number(payload.catalog.revision) > state.catalogRevision) setCatalog(payload.catalog);
-  if (state.picker?.mode === 'step') updatePickerSearch('step', payload.definition.display_name);
+  if (Number(payload.catalog.revision) < state.catalogRevision) return;
+  await applyCatalog(payload.catalog);
+  if (workspaceEpoch !== state.workspaceEpoch || state.liveView || Number(payload.catalog.revision) < state.catalogRevision) return;
+  if (Number(payload.revision) === Number(state.projectVersion) && Number(payload.creator_revision) === Number(state.creatorVersion))
+    state.history = payload.history;
+  renderBuildStatus();
+  if (state.picker?.mode === 'step') updatePickerSearch('step', payload.definition?.display_name || '');
+}
+
+async function fetchEditorAndCatalog(signal) {
+  // Deletion can shrink the catalog. Open a read view only with its matching definitions.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const project = await fetch('/api/editor', {cache:'no-store', signal});
+    const catalog = await fetch('/api/catalog', {cache:'no-store', signal});
+    if (!project.ok || !catalog.ok) return [project, catalog];
+    const view = parseExact(await project.clone().text());
+    const definitions = parseExact(await catalog.clone().text());
+    if (Number(view.catalog_revision) === Number(definitions.revision)) return [project, catalog];
+  }
+  throw new Error('Step definitions keep changing. Try opening the project again.');
 }
 
 function mutationHeaders() {
@@ -207,9 +280,7 @@ async function boot() {
     if (!exactJsonSupported()) {
       throw new Error("Browser does not support exact JSON numbers.");
     }
-    // Definitions only grow: reading them after the editor includes every referenced Step.
-    const [projectResponse, catalogResponse] = await fetch("/api/editor")
-      .then(async project => [project, await fetch("/api/catalog")]).catch(() => {
+    const [projectResponse, catalogResponse] = await fetchEditorAndCatalog().catch(() => {
       throw new Error("Check that the Creator is running, then retry.", {cause:"connection"});
     });
     if (projectResponse.status === 401 || catalogResponse.status === 401) {
@@ -441,8 +512,7 @@ async function switchWorkspace(liveView,connection=state.liveConnection) {
     for(const view of liveView ? [true,false] : [false]) {
       state.liveView=view;state.workspaceEpoch++;
       try {
-        const response=await fetch('/api/editor');
-        const catalogResponse=await fetch('/api/catalog');
+        const [response,catalogResponse]=await fetchEditorAndCatalog();
         const next=parseExact(await response.text()), definitions=parseExact(await catalogResponse.text());
         if(!response.ok || !catalogResponse.ok) throw Error(next.message || definitions.message || 'This version could not be opened.');
         payload=next;catalog=definitions;break;
@@ -978,7 +1048,7 @@ function renderBuildStatus() {
   document.querySelector('#project-menu').disabled=!state.project || state.actionPending && !state.projectImport.reload;
   document.querySelector('#open-settings').disabled=state.actionPending;
   document.querySelector('#open-project-import').disabled=state.liveView;
-  document.querySelectorAll('[data-create-custom-step]').forEach(button => button.disabled=!canCreateCustomStep());
+  document.querySelectorAll('[data-create-custom-step],[data-manage-custom-steps]').forEach(button => button.disabled=!canEditCustomSteps());
   const selecting = Boolean(state.editorController && !state.editorController.signal.aborted
     && state.editorController.node && state.editorController.node !== (state.regionSelection ? 'app' : state.selection.id));
   document.querySelector('#inspector').setAttribute('aria-busy',String(selecting || state.inspectorMode === 'groups' && Boolean(state.editorController)));
@@ -1156,13 +1226,15 @@ async function editorAction(command, preview = false) {
     if(!await flushEdits()) return null;
     requestSent=true;
     const response = await fetch('/api/editor', {method:'POST', headers:mutationHeaders(),
-      body:JSON.stringify({revision:state.projectVersion, creator_revision:state.creatorVersion, command, preview})});
+      body:JSON.stringify({revision:state.projectVersion, creator_revision:state.creatorVersion,
+        catalog_revision:state.catalogRevision, command, preview})});
     const payload = parseExact(await response.text());
     if (!response.ok) {
       state.localDiagnostics = payload.diagnostics || [{code:'CREATOR_EDIT_REJECTED', message:payload.message || 'The change was not applied.', node:command.node || state.selection.id}];
       render(); return null;
     }
     if (preview) return payload;
+    await ensureCatalog(payload.catalog_revision);
     state.projectVersion = payload.revision;
     state.creatorVersion = payload.creator_revision;
     state.history = payload.history;
@@ -1300,6 +1372,7 @@ async function loadEditor(id, group = state.managedGroup, query = state.groupQue
     const payload = parseExact(await response.text());
     if (response.ok) await ensureCatalog(payload.catalog_revision, controller.signal);
     if (request !== state.editorRequest) return "superseded";
+    if (response.ok && Number(payload.catalog_revision) !== state.catalogRevision) return loadEditor(id, group, query, offset, owner);
     if (writer !== state.writePromise || state.writeActive
         || version !== state.projectVersion || creatorVersion !== state.creatorVersion || trigger !== state.exampleTrigger) {
       return loadEditor(id, group, query, offset, owner);
@@ -2687,15 +2760,17 @@ async function importProjectJson(reload=false) {
       clearProjectImport();
       await response.body?.cancel().catch(()=>{});
     }
-    const response=await fetch('/api/editor',{cache:'no-store',signal:controller.signal});
+    const [response,catalogResponse]=await fetchEditorAndCatalog(controller.signal);
     const payload=parseExact(await response.text());
-    if(!response.ok) {
+    if(!response.ok || !catalogResponse.ok) {
       draft.reload=true;
       projectImportStatus('Refresh the project to continue.', 'error');
       return;
     }
-    await ensureCatalog(payload.catalog_revision, controller.signal);
-    applyImportedProject(payload);
+    const definitions=parseExact(await catalogResponse.text());
+    if(Number(definitions.revision)<state.catalogRevision) throw new Error('Step definitions changed. Refresh the project.');
+    setCatalog(definitions);
+    applyProjectSnapshot(payload);
     closeProjectImport(false);
     showInspector(false);
     render();
@@ -2714,7 +2789,7 @@ async function importProjectJson(reload=false) {
   }
 }
 
-function applyImportedProject(payload) {
+function applyProjectSnapshot(payload) {
   state.editorRequest++;
   state.editorController?.abort();
   state.editorController = null;
@@ -2738,6 +2813,9 @@ function applyImportedProject(payload) {
   state.selection = { type: "app", id: "app" };
   state.regionSelection = null;
   state.groupPointer = null;
+  state.groupDraft = null;
+  state.managedGroup = '';
+  state.selectedSteps.clear();
   state.inspectorMode = "inspect";
   state.picker = null;
   state.groupPicker = null;
@@ -3961,6 +4039,7 @@ async function loadReusable() {
     }
     await ensureCatalog(payload.catalog_revision, controller.signal);
     if (!currentPickerRequest(picker, kind, request)) return;
+    if (Number(payload.catalog_revision) !== state.catalogRevision) return loadReusable();
     picker.items = payload.editor.reusable;
     picker.matches = payload.editor.reuse_matches;
     picker.pageSize = payload.editor.reuse_page_size;
@@ -8173,9 +8252,11 @@ window.addEventListener('pagehide',()=>{
   state.projectImport.request?.abort();
 });
 
-initializeCustomStepEditor({
-  canCreate: canCreateCustomStep,
+initializeCustomSteps({
+  canEdit: canEditCustomSteps,
   submit: submitCustomStep,
-  onCompiled: acceptCompiledCustomStep,
+  onChanged: acceptCustomStepChange,
+  load: loadCustomSteps,
+  remove: (id, revision) => changeCustomStep('DELETE', {id, catalog_revision:revision}),
   onClose: () => { if (!state.picker) render(); }
 });

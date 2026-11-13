@@ -1,7 +1,7 @@
 "use strict";
 
-/** Owns the editor UI; callbacks retain application transport and catalog ownership. */
-function initializeCustomStepEditor({canCreate, submit, onCompiled, onClose}) {
+/** Owns custom-Step creation and management UI; callbacks retain transport and catalog ownership. */
+function initializeCustomSteps({canEdit, submit, onChanged, onClose, load, remove}) {
   const dialog = document.querySelector('#custom-step-dialog');
   const form = document.querySelector('#custom-step-form');
   const name = document.querySelector('#custom-step-name');
@@ -12,6 +12,78 @@ function initializeCustomStepEditor({canCreate, submit, onCompiled, onClose}) {
   const diagnostics = document.querySelector('#custom-step-diagnostics');
   const fields = [...form.querySelectorAll('input,textarea,button')];
   let compiling = false;
+  const manager = document.querySelector('#custom-step-manager');
+  const deleteDialog = document.querySelector('#custom-step-delete-dialog');
+  const list = document.querySelector('#custom-step-list');
+  const managerStatus = document.querySelector('#custom-step-manager-status');
+  const refresh = document.querySelector('#refresh-custom-steps');
+  let managing = false;
+  let managerRequest = 0;
+
+  function confirmDefinitionDeletion(step) {
+    document.querySelector('#custom-step-delete-description').textContent =
+      `This permanently removes the definition “${step.name}” from this project and cannot be undone.`;
+    deleteDialog.returnValue = 'cancel';
+    return new Promise(resolve => {
+      deleteDialog.addEventListener('close', () => resolve(deleteDialog.returnValue === 'delete'), {once:true});
+      deleteDialog.showModal();
+    });
+  }
+
+  async function deleteDefinition(step, revision, request) {
+    if (managing || !canEdit()) return;
+    managing = true;
+    try {
+      if (!await confirmDefinitionDeletion(step)) return;
+      if (!manager.open || request !== managerRequest || !canEdit()) return;
+      list.querySelectorAll('button').forEach(item => item.disabled = true);
+      refresh.disabled = true;
+      managerStatus.textContent = `Deleting ${step.name}…`;
+      const result = await remove(step.id, revision);
+      if (!result.ok) throw new Error(result.payload.message || 'The Step could not be deleted. Refresh before trying again.');
+      await onChanged(result);
+      if (manager.open && request === managerRequest) await refreshDefinitions();
+    } catch (failure) {
+      if (manager.open && request === managerRequest) managerStatus.textContent = failure.message || 'Deletion could not be confirmed. Refresh the list.';
+    } finally {
+      managing = false;
+      refresh.disabled = false;
+    }
+  }
+
+  async function refreshDefinitions() {
+    const request = ++managerRequest;
+    list.replaceChildren();
+    refresh.disabled = true;
+    managerStatus.textContent = 'Loading custom Steps…';
+    try {
+      const payload = await load();
+      if (!manager.open || request !== managerRequest) return;
+      managerStatus.textContent = payload.steps.length ? 'Only unused definitions can be deleted. Deletion cannot be undone and clears all flow Undo/Redo history for this session.' : 'This project has no custom Steps.';
+      for (const step of payload.steps) {
+        const row = document.createElement('li');
+        const detail = document.createElement('div');
+        const title = document.createElement('strong');
+        title.textContent = step.name;
+        const usage = document.createElement('p');
+        usage.textContent = step.in_use ? 'In use. Remove all placements and nested calls before deleting.' : 'Unused';
+        detail.append(title, usage);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'danger';
+        button.textContent = 'Delete';
+        button.setAttribute('aria-label', `Delete ${step.name}`);
+        button.disabled = step.in_use;
+        button.addEventListener('click', () => { void deleteDefinition(step, payload.catalog_revision, request); });
+        row.append(detail, button);
+        list.append(row);
+      }
+    } catch (failure) {
+      if (manager.open && request === managerRequest) managerStatus.textContent = failure.message || 'Custom Steps could not be loaded. Try again.';
+    } finally {
+      if (request === managerRequest) refresh.disabled = false;
+    }
+  }
 
   function markDraftChanged() {
     if (compiling) return;
@@ -42,7 +114,7 @@ function initializeCustomStepEditor({canCreate, submit, onCompiled, onClose}) {
 
   async function compileDraft(event) {
     event.preventDefault();
-    if (compiling || !canCreate()) return;
+    if (compiling || !canEdit()) return;
     const draft = {name:name.value.trim(), source:source.value};
     setBusy(true);
     button.textContent = 'Compiling…';
@@ -56,7 +128,7 @@ function initializeCustomStepEditor({canCreate, submit, onCompiled, onClose}) {
         return;
       }
       compiled = true;
-      onCompiled(submission);
+      await onChanged(submission);
       status.textContent = `Compiled. ${submission.payload.definition.display_name} is available for compatible inputs in Add Step.`;
       another.hidden = false;
     } catch (failure) {
@@ -70,7 +142,13 @@ function initializeCustomStepEditor({canCreate, submit, onCompiled, onClose}) {
   }
 
   document.addEventListener('click', event => {
-    if (!event.target.closest('[data-create-custom-step]') || !canCreate()) return;
+    if (event.target.closest('[data-manage-custom-steps]') && canEdit()) {
+      document.querySelector('#project-actions').hidePopover();
+      if (!manager.open) manager.showModal();
+      void refreshDefinitions();
+      return;
+    }
+    if (!event.target.closest('[data-create-custom-step]') || !canEdit()) return;
     document.querySelector('#project-actions').hidePopover();
     if (!dialog.open) dialog.showModal();
     name.focus();
@@ -79,6 +157,15 @@ function initializeCustomStepEditor({canCreate, submit, onCompiled, onClose}) {
   dialog.addEventListener('close', onClose);
   // Keep graph shortcuts outside the modal; native Escape and text editing still work.
   dialog.addEventListener('keydown', event => event.stopPropagation());
+  manager.addEventListener('keydown', event => event.stopPropagation());
+  deleteDialog.addEventListener('keydown', event => event.stopPropagation());
+  manager.addEventListener('close', () => {
+    managerRequest++;
+    if (deleteDialog.open) deleteDialog.close('cancel');
+    onClose();
+  });
+  document.querySelector('#close-custom-step-manager').addEventListener('click', () => manager.close());
+  refresh.addEventListener('click', () => { if (!managing) void refreshDefinitions(); });
   form.addEventListener('input', markDraftChanged);
   form.addEventListener('submit', compileDraft);
   another.addEventListener('click', () => {

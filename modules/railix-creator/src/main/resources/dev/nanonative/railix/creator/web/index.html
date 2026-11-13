@@ -13,13 +13,28 @@
 <body>
   <header class="workbench-header">
     <button type="button" id="project-menu" class="workbench-brand" popovertarget="project-actions" aria-label="Project actions" title="Project actions" disabled><b aria-hidden="true">R</b><span>RAILIX</span></button>
-    <nav id="project-actions" popover aria-label="Project actions"><button type="button" id="open-project-import" aria-controls="project-import-panel"><i class="hud-symbol" data-symbol="enter" aria-hidden="true"></i>Import project</button><button type="button" data-create-custom-step>Create custom Step</button><button type="button" id="open-live-connections">Connect live app</button></nav>
+    <nav id="project-actions" popover aria-label="Project actions"><button type="button" id="open-project-import" aria-controls="project-import-panel"><i class="hud-symbol" data-symbol="enter" aria-hidden="true"></i>Import project</button><button type="button" data-create-custom-step>Create custom Step</button><button type="button" data-manage-custom-steps>Manage custom Steps</button><button type="button" id="open-live-connections">Connect live app</button></nav>
     <nav id="workspace-source" aria-label="Application version" hidden><button type="button" data-workspace-source="draft" aria-pressed="true">Draft</button><button type="button" data-workspace-source="live" aria-pressed="false">Live <small>Read-only</small></button><button type="button" id="show-live-changes" aria-label="Compare draft with live app"></button><button type="button" id="start-local" aria-label="Start locally" title="Start locally" hidden><i class="hud-symbol" data-symbol="play" aria-hidden="true"></i><span class="start-local-label">Start locally</span></button></nav>
     <nav id="group-navigation" aria-label="Location"><div id="world-location"></div><button id="scope-overview" type="button" title="Fit this work area" aria-label="Overview"><i class="hud-symbol" data-symbol="fit" aria-hidden="true"></i><span>Overview</span></button><button id="leave-group" type="button" aria-label="Leave group" title="Leave group"><i class="hud-symbol" data-symbol="back" aria-hidden="true"></i></button></nav>
     <div id="workbench-actions"></div>
     <nav id="example-session" aria-label="Visible Example" hidden></nav>
   </header>
   <main class="creator-shell">
+    <dialog id="custom-step-manager" aria-labelledby="custom-step-manager-title">
+      <header><h2 id="custom-step-manager-title">Custom Steps</h2><button type="button" id="close-custom-step-manager">Close</button></header>
+      <p id="custom-step-manager-status" role="status"></p>
+      <ul id="custom-step-list"></ul>
+      <button type="button" id="refresh-custom-steps">Refresh</button>
+    </dialog>
+    <dialog id="custom-step-delete-dialog" role="alertdialog" aria-labelledby="custom-step-delete-title" aria-describedby="custom-step-delete-description custom-step-delete-warning">
+      <h2 id="custom-step-delete-title">Delete custom Step?</h2>
+      <p id="custom-step-delete-description"></p>
+      <p id="custom-step-delete-warning">Successful deletion clears all flow Undo/Redo history for this Creator session, across all tabs, including unrelated edits.</p>
+      <form method="dialog">
+        <button type="submit" id="cancel-custom-step-deletion" value="cancel" autofocus>Cancel</button>
+        <button type="submit" id="confirm-custom-step-deletion" class="danger" value="delete">Delete Step</button>
+      </form>
+    </dialog>
     <dialog id="custom-step-dialog" aria-labelledby="custom-step-title">
       <header><h2 id="custom-step-title">Create custom Step</h2><button type="button" id="close-custom-step" aria-label="Close custom Step editor">Close</button></header>
       <form id="custom-step-form">

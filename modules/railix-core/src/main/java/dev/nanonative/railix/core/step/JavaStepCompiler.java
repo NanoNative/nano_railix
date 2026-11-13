@@ -2,15 +2,25 @@ package dev.nanonative.railix.core.step;
 
 import com.sun.source.tree.ClassTree;
 import com.sun.source.tree.CompilationUnitTree;
+import com.sun.source.tree.IdentifierTree;
+import com.sun.source.tree.LineMap;
+import com.sun.source.tree.MemberReferenceTree;
+import com.sun.source.tree.MemberSelectTree;
 import com.sun.source.tree.MethodTree;
 import com.sun.source.tree.Tree;
 import com.sun.source.util.JavacTask;
 import com.sun.source.util.SourcePositions;
+import com.sun.source.util.TreePathScanner;
 import com.sun.source.util.Trees;
 import dev.nanonative.railix.core.project.Diagnostic;
+import dev.nanonative.railix.core.util.Sha256;
 import dev.nanonative.railix.core.value.ValueShape;
 
+import javax.lang.model.element.Element;
+import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
+import javax.lang.model.element.TypeElement;
+import javax.lang.model.type.DeclaredType;
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaCompiler;
 import javax.tools.JavaFileObject;
@@ -19,11 +29,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -31,6 +38,15 @@ import java.util.Set;
 
 /** Build-time Java-method adaptation shared by authoring tools; absent from generated application runtimes. */
 public final class JavaStepCompiler {
+    private static final List<String> DYNAMIC_PACKAGES = List.of("java.lang.reflect.", "java.lang.invoke.", "java.lang.foreign.",
+            "java.lang.instrument.", "javax.tools.", "javax.script.");
+    private static final Set<String> DYNAMIC_TYPES = Set.of("java.lang.ClassLoader", "java.util.ResourceBundle", "java.util.ServiceLoader",
+            "java.io.ObjectInputStream", "java.io.ObjectOutputStream", "java.io.ObjectStreamClass", "java.io.ObjectStreamField",
+            "sun.misc.Unsafe", "jdk.internal.misc.Unsafe");
+    private static final Set<String> DYNAMIC_CLASS_MEMBERS = Set.of("forName", "newInstance", "arrayType", "getClassLoader",
+            "getResource", "getResourceAsStream", "getConstructor", "getConstructors", "getMethod", "getMethods", "getField", "getFields",
+            "getClasses", "getRecordComponents", "getPermittedSubclasses", "getEnclosingClass", "getEnclosingMethod", "getEnclosingConstructor",
+            "getNestHost", "getNestMembers", "getSigners", "getTypeParameters", "isAnnotationPresent");
     private static final String PREFIX = """
             package railix.custom;
             import java.math.BigDecimal;
@@ -43,6 +59,14 @@ public final class JavaStepCompiler {
 
     /** One compilation either produces an ordinary bundle or explains why the source was rejected. */
     public sealed interface Result permits Compiled, Rejected { }
+
+    /** Authoring-time restrictions on resolved references in the submitted source, not called library internals. */
+    public enum SourcePolicy {
+        /** Accept the Java APIs supplied by the caller's runtime classpath and JDK. */
+        UNRESTRICTED,
+        /** Reject known reflection, loading, resource, serialization and native-access APIs. Not Native Image certification. */
+        REJECT_DYNAMIC_APIS
+    }
 
     /**
      * Bundle output accepted through {@link StepCatalog#installSource(String, Path)}.
@@ -70,7 +94,7 @@ public final class JavaStepCompiler {
     private sealed interface MethodInspection permits InspectedMethod, InvalidMethod { }
 
     private record InspectedMethod(String name, List<StepDefinition.Port> receives, ValueShape resultShape,
-                                   int line, int column) implements MethodInspection {
+                                   int line, int column, LineMap lines) implements MethodInspection {
         private InspectedMethod { receives = List.copyOf(receives); }
     }
 
@@ -82,6 +106,7 @@ public final class JavaStepCompiler {
      * Compiles one public static Java method into an ordinary version-1 Step bundle.
      * Supported parameters/results are String, boolean, BigDecimal and RailixValue.
      * Compilation does not invoke the method. No project document or catalog is modified.
+     * This overload uses {@link SourcePolicy#UNRESTRICTED}.
      *
      * @param id nonblank stable Step identifier chosen by the authoring tool
      * @param name nonblank display name
@@ -94,14 +119,34 @@ public final class JavaStepCompiler {
      */
     public static Result compile(final String id, final String name, final String methodSource,
                                  final Path runtimeApi, final Path outputDirectory) throws IOException {
-        if (id == null || name == null || methodSource == null || runtimeApi == null || outputDirectory == null)
+        return compile(id, name, methodSource, runtimeApi, outputDirectory, SourcePolicy.UNRESTRICTED);
+    }
+
+    /**
+     * Compiles a method with an explicit source-API policy; other behavior is defined by
+     * {@link #compile(String, String, String, Path, Path)}. Policy rejection returns located diagnostics
+     * before a bundle is published. The policy does not inspect called library implementations.
+     *
+     * @param id nonblank stable Step identifier chosen by the authoring tool
+     * @param name nonblank display name
+     * @param methodSource one Java method, without imports or a surrounding class
+     * @param runtimeApi caller-supplied runtime classpath directory or JAR
+     * @param outputDirectory caller-owned artifact store
+     * @param policy restrictions applied to resolved references in the submitted source
+     * @return an ordinary Step bundle or source diagnostics
+     * @throws IllegalArgumentException if any argument is Java null
+     * @throws IOException if the runtime API/compiler is unavailable or artifact I/O fails
+     */
+    public static Result compile(final String id, final String name, final String methodSource,
+                                 final Path runtimeApi, final Path outputDirectory, final SourcePolicy policy) throws IOException {
+        if (id == null || name == null || methodSource == null || runtimeApi == null || outputDirectory == null || policy == null)
             throw new IllegalArgumentException("Java Step compilation arguments cannot be Java null.");
         if (id.isBlank()) return rejected("Give the Step an identifier.", 0, 0);
         if (name.isBlank()) return rejected("Give the Step a name.", 0, 0);
         if (methodSource.isBlank()) return rejected("Enter one public static Java method.", 0, 0);
         if (!Files.isDirectory(runtimeApi) && !Files.isRegularFile(runtimeApi))
             throw new IOException("Runtime API must be an existing directory or JAR.");
-        final String hash = digest(id + "\n" + name + "\n" + methodSource);
+        final String hash = Sha256.hexDigest(id + "\n" + name + "\n" + methodSource);
         final String simpleName = "Step_" + hash.substring(0, 32);
         final String methodClass = "Method_" + hash.substring(0, 32);
         final String className = "railix.custom." + simpleName;
@@ -119,7 +164,7 @@ public final class JavaStepCompiler {
             final var method = (InspectedMethod) inspection;
             Files.writeString(source, adapterSource(wrappedMethod, simpleName, methodClass, method));
             final Path classes = Files.createDirectory(temporary.resolve("classes"));
-            final var compilationFailure = compileAdapter(compiler, source, classes, runtimeApi, wrappedMethod, method);
+            final var compilationFailure = compileAdapter(compiler, source, classes, runtimeApi, wrappedMethod, method, policy);
             if (compilationFailure.isPresent()) return compilationFailure.orElseThrow();
             // Define after javac so duplicate parameter names remain source diagnostics.
             final StepDefinition definition = stepDefinition(id, name, method, className);
@@ -148,7 +193,7 @@ public final class JavaStepCompiler {
         }
     }
 
-    /** Validates parsed syntax and derives ports without invoking the compiler or accessing files. */
+    /** Checks the Railix method contract and derives ports from javac's parsed AST. */
     private static MethodInspection inspectDeclaration(final CompilationUnitTree tree, final SourcePositions positions,
                                                        final MethodSource methodSource, final String methodClass) {
         if (tree.getTypeDecls().size() != 1 || !(tree.getTypeDecls().getFirst() instanceof ClassTree type)
@@ -171,7 +216,7 @@ public final class JavaStepCompiler {
                 return invalidMethod("Parameter " + parameter.getName() + " must use String, boolean, BigDecimal or RailixValue.", line, column);
             receives.add(new StepDefinition.Port(parameter.getName().toString(), parameterShape.orElseThrow()));
         }
-        return new InspectedMethod(method.getName().toString(), receives, resultShape.orElseThrow(), line, column);
+        return new InspectedMethod(method.getName().toString(), receives, resultShape.orElseThrow(), line, column, tree.getLineMap());
     }
 
     private static String adapterSource(final MethodSource source, final String adapterClass,
@@ -207,16 +252,110 @@ public final class JavaStepCompiler {
 
     private static Optional<Rejected> compileAdapter(final JavaCompiler compiler, final Path source, final Path classes,
                                                      final Path runtimeApi, final MethodSource methodSource,
-                                                     final InspectedMethod method) throws IOException {
+                                                     final InspectedMethod method, final SourcePolicy policy) throws IOException {
         final var issues = new DiagnosticCollector<JavaFileObject>();
         try (var files = compiler.getStandardFileManager(issues, Locale.ROOT, StandardCharsets.UTF_8)) {
-            final boolean success = Boolean.TRUE.equals(compiler.getTask(null, files, issues,
+            final JavacTask task = (JavacTask) compiler.getTask(null, files, issues,
                     List.of("-proc:none", "-g:none", "-encoding", "UTF-8",
                             "--release", Integer.toString(Runtime.version().feature()),
                             "-classpath", runtimeApi.toAbsolutePath().normalize().toString(), "-d", classes.toString()),
-                    null, files.getJavaFileObjects(source)).call());
-            return success ? Optional.empty() : Optional.of(new Rejected(diagnostics(issues, methodSource, method.line(), method.column())));
+                    null, files.getJavaFileObjects(source));
+            final var units = task.parse();
+            task.analyze();
+            if (hasErrors(issues)) return Optional.of(new Rejected(diagnostics(issues, methodSource, method.line(), method.column())));
+            if (policy == SourcePolicy.REJECT_DYNAMIC_APIS) {
+                for (final CompilationUnitTree unit : units) {
+                    final var inspection = new DynamicApiInspection(unit, Trees.instance(task), methodSource, method.lines());
+                    inspection.scan(unit, null);
+                    if (!inspection.diagnostics.isEmpty()) return Optional.of(new Rejected(inspection.diagnostics));
+                }
+            }
+            task.generate();
+            return hasErrors(issues) ? Optional.of(new Rejected(diagnostics(issues, methodSource, method.line(), method.column())))
+                    : Optional.empty();
         }
+    }
+
+    private static final class DynamicApiInspection extends TreePathScanner<Void, Void> {
+        private final CompilationUnitTree unit;
+        private final Trees trees;
+        private final MethodSource source;
+        private final LineMap lines;
+        private final List<Diagnostic> diagnostics = new ArrayList<>();
+
+        private DynamicApiInspection(final CompilationUnitTree unit, final Trees trees, final MethodSource source, final LineMap lines) {
+            this.unit = unit;
+            this.trees = trees;
+            this.source = source;
+            // The initial parse retains locations; the adapter's -g:none parse may omit its line map.
+            this.lines = lines;
+        }
+
+        @Override
+        public Void scan(final Tree tree, final Void unused) {
+            return diagnostics.isEmpty() ? super.scan(tree, unused) : null;
+        }
+
+        @Override
+        public Void visitIdentifier(final IdentifierTree tree, final Void unused) {
+            inspect(tree);
+            return super.visitIdentifier(tree, unused);
+        }
+
+        @Override
+        public Void visitMemberSelect(final MemberSelectTree tree, final Void unused) {
+            inspect(tree);
+            return super.visitMemberSelect(tree, unused);
+        }
+
+        @Override
+        public Void visitMemberReference(final MemberReferenceTree tree, final Void unused) {
+            inspect(tree);
+            return super.visitMemberReference(tree, unused);
+        }
+
+        @Override
+        public Void visitMethod(final MethodTree tree, final Void unused) {
+            if (tree.getModifiers().getFlags().contains(Modifier.NATIVE)) reject(tree, "native method declaration");
+            return super.visitMethod(tree, unused);
+        }
+
+        private void inspect(final Tree tree) {
+            final Element element = trees.getElement(getCurrentPath());
+            Element owner = element;
+            while (owner != null && !(owner instanceof TypeElement)) owner = owner.getEnclosingElement();
+            if (!(owner instanceof TypeElement type)) return;
+            if (dynamicType(type) || element instanceof ExecutableElement && dynamicMember(type, element.getSimpleName().toString())) {
+                reject(tree, type.getQualifiedName() + (element instanceof TypeElement ? "" : "." + element.getSimpleName()));
+            }
+        }
+
+        private void reject(final Tree tree, final String api) {
+            final long position = trees.getSourcePositions().getStartPosition(unit, tree);
+            if (position < 0 || !diagnostics.isEmpty()) return;
+            final int line = (int) lines.getLineNumber(position) - source.lineOffset();
+            if (line < 1 || line > source.submitted().lines().count()) return;
+            diagnostics.add(new Diagnostic("CUSTOM_STEP_DYNAMIC_API", "Dynamic API " + api + " is not supported in this custom Step.",
+                    "source", line, (int) lines.getColumnNumber(position)));
+        }
+    }
+
+    private static boolean dynamicType(final TypeElement type) {
+        final String name = type.getQualifiedName().toString();
+        if (DYNAMIC_PACKAGES.stream().anyMatch(name::startsWith) || DYNAMIC_TYPES.contains(name)) return true;
+        return type.getSuperclass() instanceof DeclaredType superclass && superclass.asElement() instanceof TypeElement parent
+                && dynamicType(parent);
+    }
+
+    private static boolean dynamicMember(final TypeElement type, final String name) {
+        return switch (type.getQualifiedName().toString()) {
+            case "java.lang.Class" -> name.startsWith("getDeclared") || name.startsWith("getGeneric")
+                    || name.startsWith("getAnnotation") || name.startsWith("getAnnotated")
+                    || DYNAMIC_CLASS_MEMBERS.contains(name);
+            case "java.lang.Module" -> name.equals("getResourceAsStream");
+            case "java.lang.System", "java.lang.Runtime" -> name.equals("load") || name.equals("loadLibrary");
+            default -> false;
+        };
     }
 
     private static InvalidMethod invalidMethod(final String message, final int line, final int column) {
@@ -235,7 +374,7 @@ public final class JavaStepCompiler {
                                         final StepDefinition definition) throws IOException {
         final Path jar = StepBundle.write(classes, temporary.resolve("step.jar"), List.of(definition));
         final String lock = StepCatalog.bundleLock(jar, root);
-        final String hash = digest(Files.readAllBytes(jar));
+        final String hash = Sha256.hexDigest(jar);
         return new Compiled(definition, root.resolve(hash + ".jar"), lock);
     }
 
@@ -269,13 +408,5 @@ public final class JavaStepCompiler {
 
     private static Rejected rejected(final String message, final int line, final int column) {
         return new Rejected(List.of(new Diagnostic("CUSTOM_STEP_INVALID", message, "source", line, column)));
-    }
-
-    private static String digest(final String text) { return digest(text.getBytes(StandardCharsets.UTF_8)); }
-    private static String digest(final byte[] bytes) {
-        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); }
-        catch (final NoSuchAlgorithmException unavailable) {
-            throw new IllegalStateException("SHA-256 is required.", unavailable);
-        }
     }
 }

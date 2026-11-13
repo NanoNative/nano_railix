@@ -4,6 +4,7 @@ import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.project.CompileResult;
 import dev.nanonative.railix.core.project.ProjectCompiler;
 import dev.nanonative.railix.core.step.StepCatalog;
+import dev.nanonative.railix.core.util.Sha256;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 
@@ -15,9 +16,6 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 import java.util.TreeMap;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -50,7 +48,7 @@ final class ProjectFiles {
     /** Identifies the compiled source and locked implementations, not Examples or presentation. */
     static String identity(final CompileResult.Compiled compiled) {
         try {
-            final var hash = MessageDigest.getInstance("SHA-256");
+            final var hash = Sha256.newDigest();
             hash.update(split(compiled.source(), EMPTY_EXAMPLES).project().getBytes(StandardCharsets.UTF_8));
             hash.update((byte) 0);
             compiled.applicationDependencies().stream().sorted(java.util.Comparator.comparing(StepCatalog.Implementation::className))
@@ -63,9 +61,7 @@ final class ProjectFiles {
                             hash.update((byte) 0); hash.update(digest.getBytes(StandardCharsets.UTF_8));
                         });
                     });
-            return "sha256-" + HexFormat.of().formatHex(hash.digest());
-        } catch (final NoSuchAlgorithmException unavailable) {
-            throw new IllegalStateException("SHA-256 is required by the Java platform.", unavailable);
+            return "sha256-" + Sha256.finishHex(hash);
         } catch (final IOException invalidCompiledSource) {
             throw new IllegalArgumentException("Compiled project source is invalid.", invalidCompiledSource);
         }

@@ -790,7 +790,6 @@ body[data-reduced-motion=true] #visible-example .example-mark { animation: none 
 
 .inspector summary { cursor: pointer; color: var(--ink); font-weight: 600; }
 .inspector details[open] summary { margin-bottom: 16px; }
-.condition-chain { margin-block: 10px; padding: 8px; border: 1px solid var(--hud-border); border-radius: 6px; }
 .condition-transforms { max-width: 100%; }
 .condition-transforms summary { overflow-wrap: anywhere; }
 .condition-transforms, .condition-add { margin-block: 8px; padding: 0; border: 0; }
@@ -1660,26 +1659,6 @@ body[data-reduced-motion=true] *, body[data-reduced-motion=true] *::before, body
 .matcher-groups:not(:has(.matcher-group)) > .section-heading { display: none; }
 .matcher-groups:not(:has(.matcher-group)) > .matcher-group-add { margin: 0; padding: 0; border: 0; }
 
-.example-tabs {
-  display: flex;
-  overflow-x: auto;
-  border-bottom: 1px solid var(--line);
-}
-
-.example-tabs button {
-  flex: 0 0 auto;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  padding: 10px;
-}
-
-.example-tabs button.active {
-  border-color: var(--accent);
-  color: var(--accent-dark);
-  font-weight: 700;
-}
-
 .button:hover {
   border-color: var(--ink);
 }
@@ -2026,6 +2005,21 @@ body:has(#workspace-source:not([hidden])) #example-session { grid-row:2; grid-co
 #custom-step-status { margin:4px 0; overflow-wrap:anywhere; }
 #custom-step-diagnostics { white-space:pre-wrap; overflow-wrap:anywhere; margin:0; padding:12px; border:1px solid var(--line); border-radius:6px; font-size:.85rem; }
 #custom-step-form nav { display:flex; flex-wrap:wrap; gap:10px; }
+#custom-step-manager, #custom-step-delete-dialog { box-sizing:border-box; width:min(620px,calc(100vw - 24px)); max-height:calc(100dvh - 24px); padding:20px; overflow:auto; color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+#custom-step-manager::backdrop, #custom-step-delete-dialog::backdrop { background:rgb(10 22 28 / 40%); }
+#custom-step-manager header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+#custom-step-manager h2, #custom-step-delete-dialog h2 { margin:0; font-size:1.25rem; }
+#custom-step-manager button, #custom-step-delete-dialog button { flex-shrink:0; font:inherit; min-height:36px; padding:8px 12px; color:inherit; background:var(--panel); border:1px solid var(--line); border-radius:6px; }
+#custom-step-manager button:enabled:hover, #custom-step-delete-dialog button:enabled:hover { border-color:var(--focus); }
+#custom-step-manager button.danger, #custom-step-delete-dialog button.danger { color:var(--red); border-color:var(--red); }
+#custom-step-manager button.danger:enabled:hover, #custom-step-delete-dialog button.danger:enabled:hover { background:color-mix(in srgb,var(--red) 10%,var(--panel)); }
+#custom-step-delete-dialog p { overflow-wrap:anywhere; line-height:1.5; }
+#custom-step-delete-dialog form { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; margin-top:20px; }
+#custom-step-manager-status { overflow-wrap:anywhere; }
+#custom-step-list { list-style:none; margin:16px 0; padding:0; }
+#custom-step-list li { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; padding:12px 0; border-top:1px solid var(--line); }
+#custom-step-list li > div { flex:1 1 200px; min-width:0; overflow-wrap:anywhere; }
+#custom-step-list p { margin:4px 0 0; font-size:.85rem; }
 #live-connections { width:min(540px,calc(100vw - 32px)); max-height:calc(100dvh - 48px); padding:20px; color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:12px; }
 #live-connections::backdrop { background:rgb(10 22 28 / 40%); }
 #live-connections header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }

@@ -4,19 +4,17 @@ import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.step.JavaStepCompiler;
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepDefinition;
+import dev.nanonative.railix.core.util.Sha256;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.text.Normalizer;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -32,6 +30,55 @@ final class CustomSteps {
     record Prepared(StepCatalog catalog, String document, StepDefinition definition) implements Preparation { }
     record Rejected(List<Diagnostic> diagnostics) implements Preparation {
         Rejected { diagnostics = List.copyOf(diagnostics); }
+    }
+
+    record Saved(String id, String name, int position) { }
+
+    static List<Saved> saved(final String document) throws IOException {
+        final List<Saved> result = new ArrayList<>();
+        for (final RailixValue value : records(document)) {
+            final var record = record(value);
+            final String name = text(record, "name");
+            result.add(new Saved(identifier(name), name, result.size()));
+        }
+        return List.copyOf(result);
+    }
+
+    static String fingerprint(final String document) throws IOException {
+        final var hash = Sha256.newDigest();
+        for (final var value : records(document)) {
+            final var entry = record(value);
+            hashText(hash, text(entry, "name"));
+            hashText(hash, text(entry, "source"));
+        }
+        return Sha256.finishHex(hash);
+    }
+
+    /** Length-prefixed UTF-16 preserves every source character without another document-sized serialization. */
+    private static void hashText(final MessageDigest hash, final String value) {
+        hash.update(java.nio.ByteBuffer.allocate(Integer.BYTES).putInt(value.length()).array());
+        final byte[] buffer = new byte[8192];
+        for (int offset = 0; offset < value.length();) {
+            final int count = Math.min(buffer.length / 2, value.length() - offset);
+            for (int index = 0; index < count; index++) {
+                final char character = value.charAt(offset + index);
+                buffer[index * 2] = (byte) (character >>> 8);
+                buffer[index * 2 + 1] = (byte) character;
+            }
+            hash.update(buffer, 0, count * 2);
+            offset += count;
+        }
+    }
+
+    static String deletion(final String document, final Saved step) throws IOException {
+        final List<RailixValue> next = new ArrayList<>(records(document));
+        next.remove(step.position());
+        return document(next);
+    }
+
+    private static String document(final List<RailixValue> steps) {
+        return RailixJson.write(RailixValue.object(Map.of("format", RailixValue.number(1), "steps", RailixValue.array(steps))),
+                ProjectFiles.MAX_DOCUMENT_BYTES).orElseThrow(() -> new IllegalArgumentException("Custom Step source exceeds the document limit."));
     }
 
     static String read(final Path project) throws IOException {
@@ -77,17 +124,15 @@ final class CustomSteps {
                                                    final String name, final String source) throws IOException {
         if (name.isBlank()) return new JavaStepCompiler.Rejected(List.of(new Diagnostic(
                 "CUSTOM_STEP_INVALID", "Give the custom Step a name.", "source", 0, 0)));
-        final String normalized = Normalizer.normalize(name, Normalizer.Form.NFKD)
-                .replaceAll("\\p{M}+", "").toLowerCase(Locale.ROOT)
-                .replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
-        final String id = "custom." + (normalized.isEmpty() ? digest(name).substring(0, 16) : normalized);
+        final String id = identifier(name);
         if (base.find(id).isPresent()) return new JavaStepCompiler.Rejected(List.of(new Diagnostic(
                 "CUSTOM_STEP_INVALID", "A Step with this name already exists. Use a new name.", "source", 0, 0)));
         final Path root = project.toAbsolutePath().normalize().getParent().resolve(".railix/custom-steps");
         Files.createDirectories(root);
         final Path temporary = Files.createTempDirectory(root, ".api-");
         try {
-            return JavaStepCompiler.compile(id, name, source, ApplicationBuilder.runtimeApi(temporary), root.resolve("artifacts"));
+            return JavaStepCompiler.compile(id, name, source, ApplicationBuilder.runtimeApi(temporary), root.resolve("artifacts"),
+                    JavaStepCompiler.SourcePolicy.REJECT_DYNAMIC_APIS);
         } finally {
             Files.deleteIfExists(temporary.resolve("runtime-api.jar"));
             Files.deleteIfExists(temporary);
@@ -116,8 +161,10 @@ final class CustomSteps {
         return ((RailixValue.StringValue) value.values().get(name)).value();
     }
 
-    private static String digest(final String source) {
-        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(source.getBytes(StandardCharsets.UTF_8))); }
-        catch (final NoSuchAlgorithmException unavailable) { throw new IllegalStateException("SHA-256 is required.", unavailable); }
+    private static String identifier(final String name) {
+        final String normalized = Normalizer.normalize(name, Normalizer.Form.NFKD)
+                .replaceAll("\\p{M}+", "").toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+        return "custom." + (normalized.isEmpty() ? Sha256.hexDigest(name).substring(0, 16) : normalized);
     }
 }

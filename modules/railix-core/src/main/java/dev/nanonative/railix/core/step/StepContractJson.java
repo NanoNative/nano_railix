@@ -1,6 +1,7 @@
 package dev.nanonative.railix.core.step;
 
 import dev.nanonative.railix.core.runtime.MetricDefinition;
+import dev.nanonative.railix.core.util.Sha256;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueRefinement;
@@ -127,7 +128,7 @@ public final class StepContractJson {
                     if (definition.kind() != StepDefinition.Kind.APP && definition.implementationAddress().isEmpty())
                         throw new IllegalArgumentException("Bundle Step must declare an implementation: " + definition.id() + ".");
                     final RailixValue.ObjectValue contract = value(definition);
-                    final String digest = sha256(RailixJson.write(contract).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    final String digest = Sha256.hexDigest(RailixJson.write(contract));
                     final Map<String, RailixValue> item = new LinkedHashMap<>(Map.of(
                             "contract", contract,
                             "contract_digest", RailixValue.string("sha256:" + digest)
@@ -234,16 +235,6 @@ public final class StepContractJson {
                 ? builder.define()
                 : builder.implementedBy(implementation, implementationEntry,
                         contract.values().containsKey("jdk_modules") ? strings(contract, "jdk_modules", "contract") : List.of());
-    }
-
-    private static String sha256(final byte[] bytes) {
-        try {
-            return java.util.HexFormat.of().formatHex(
-                    java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
-            );
-        } catch (final java.security.NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is not available.", exception);
-        }
     }
 
     private static RailixValue example(final StepDefinition.Example example) {

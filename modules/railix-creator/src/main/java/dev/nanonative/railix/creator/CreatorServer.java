@@ -9,6 +9,7 @@ import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepContractJson;
 import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.runtime.ObservationServer;
+import dev.nanonative.railix.core.util.Sha256;
 import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -154,6 +155,8 @@ public final class CreatorServer implements AutoCloseable {
     private final java.util.ArrayDeque<EditorHistory> editorRedo = new java.util.ArrayDeque<>();
     private long historyProjectRevision;
     private long historyCreatorRevision;
+    private Set<String> usedImplementationClasses;
+    private String customDocumentFingerprint;
 
     private CreatorServer(
             final HttpServer server,
@@ -170,7 +173,8 @@ public final class CreatorServer implements AutoCloseable {
             final Path creatorFile,
             final ProjectLease lease,
             final DevelopmentApplication application,
-            final String source,
+            final CompileResult.Compiled compiled,
+            final String customFingerprint,
             final RailixValue.ObjectValue creatorValue,
             final List<Diagnostic> creatorDiagnostics,
             final long nextGeneration,
@@ -192,7 +196,9 @@ public final class CreatorServer implements AutoCloseable {
         this.creatorFile = creatorFile;
         this.lease = lease;
         this.application = application;
-        this.source = source;
+        this.source = compiled.source();
+        this.usedImplementationClasses = implementationClasses(compiled);
+        this.customDocumentFingerprint = customFingerprint;
         this.sourceArtifactKey = application.artifact().directory().getFileName().toString();
         this.creatorValue = creatorValue;
         this.creatorDiagnostics = List.copyOf(creatorDiagnostics);
@@ -226,6 +232,7 @@ public final class CreatorServer implements AutoCloseable {
             final var preserved = ProjectFiles.recover(absoluteProject, Map.of());
             if (!preserved.isEmpty()) throw new IOException("External project changes were preserved: " + String.join(", ", preserved) + ". Reopen after checking these files.");
         }
+        final String customFingerprint = CustomSteps.fingerprint(CustomSteps.read(absoluteProject));
         final StepCatalog catalog = ProjectFiles.catalog(absoluteProject, railixHome);
         final IconLibrary icons = new IconLibrary(railixHome);
         final Path themeDirectory = Files.createDirectories(railixHome).toRealPath().resolve("themes");
@@ -287,6 +294,8 @@ public final class CreatorServer implements AutoCloseable {
         ExecutorService executor = null;
         ScheduledExecutorService bodyDeadlines = null;
         try {
+            if (!customFingerprint.equals(CustomSteps.fingerprint(CustomSteps.read(absoluteProject))))
+                throw new IOException("Custom Step source changed while opening Creator. Reopen the project.");
             ProjectFiles.writeProject(absoluteProject, canonical);
             if (!creatorExists || requestedCreatorResult.diagnostics().isEmpty()) {
                 persist(creatorFile, creatorResult.source());
@@ -312,7 +321,8 @@ public final class CreatorServer implements AutoCloseable {
                     creatorFile,
                     lease,
                     application,
-                    canonical,
+                    compiled,
+                    customFingerprint,
                     creatorResult.value(),
                     requestedCreatorResult.diagnostics(),
                     2,
@@ -644,7 +654,7 @@ public final class CreatorServer implements AutoCloseable {
             return getOnly(exchange, json(200, catalog()));
         }
         if ("/api/custom-steps".equals(path))
-            return createCustomStep(exchange);
+            return customSteps(exchange);
         if ("/api/editor".equals(path)) {
             if ("POST".equals(exchange.getRequestMethod())) return editorAction(exchange);
             if (!"GET".equals(exchange.getRequestMethod())) return methodNotAllowed();
@@ -1181,7 +1191,7 @@ public final class CreatorServer implements AutoCloseable {
             return invalidSettings("Saved Creator settings are invalid: " + failure.getMessage(), "");
         }
         try {
-            return new SettingsSnapshot(contentRevision(source), settingsValues(soundObject(source,
+            return new SettingsSnapshot(Sha256.hexDigest(source), settingsValues(soundObject(source,
                     "Saved Creator settings must be a JSON object.")), List.of());
         } catch (final IllegalArgumentException failure) {
             return invalidSettings("Saved Creator settings are invalid: " + failure.getMessage(), source);
@@ -1189,7 +1199,7 @@ public final class CreatorServer implements AutoCloseable {
     }
 
     private SettingsSnapshot invalidSettings(final String message, final String source) {
-        return new SettingsSnapshot(contentRevision(source), defaultSettings(), List.of(RailixValue.object(Map.of(
+        return new SettingsSnapshot(Sha256.hexDigest(source), defaultSettings(), List.of(RailixValue.object(Map.of(
                 "code", RailixValue.string("invalid-settings"), "message", RailixValue.string(message)
         ))));
     }
@@ -1222,14 +1232,6 @@ public final class CreatorServer implements AutoCloseable {
             if (lock != null) return lock;
         } catch (final OverlappingFileLockException ignored) { }
         throw conflict.get();
-    }
-
-    private static String contentRevision(final String source) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(source.getBytes(StandardCharsets.UTF_8)));
-        } catch (final java.security.NoSuchAlgorithmException unavailable) {
-            throw new IllegalStateException("SHA-256 is unavailable.", unavailable);
-        }
     }
 
     private static RailixValue.ObjectValue defaultSettings() {
@@ -1400,7 +1402,7 @@ public final class CreatorServer implements AutoCloseable {
                 "scores", RailixValue.array(scores),
                 "events", RailixValue.array(events),
                 "invalid", RailixValue.array(invalid),
-                "revision", RailixValue.string(contentRevision(RailixJson.write(RailixValue.object(sources))))
+                "revision", RailixValue.string(Sha256.hexDigest(RailixJson.write(RailixValue.object(sources))))
         ));
     }
 
@@ -2451,12 +2453,14 @@ public final class CreatorServer implements AutoCloseable {
         }
         final String inputs;
         synchronized (applicationLock) { inputs = ProjectFiles.inputs(projectSource, source); }
-        final CompileResult result = ProjectCompiler.compileApplication(inputs, catalog);
+        final StepCatalog compilationCatalog = catalog;
+        final CompileResult result = ProjectCompiler.compileApplication(inputs, compilationCatalog);
         if (result instanceof CompileResult.Rejected rejected) {
             return json(422, diagnostics(rejected.diagnostics(), application()));
         }
         synchronized (buildLock) {
             if (Files.exists(ProjectFiles.journal(projectFile))) return unavailable("editor-recovery-restart-required");
+            if (catalog != compilationCatalog) return customStepConflict("Step definitions changed. Reload before saving the project.");
             return accept((CompileResult.Compiled) result, revision, true);
         }
     }
@@ -2468,10 +2472,11 @@ public final class CreatorServer implements AutoCloseable {
         try {
             final var parsed = RailixJson.parse(utf8(body.value()));
             if (!(parsed instanceof RailixJson.Parsed valid) || !(valid.value() instanceof RailixValue.ObjectValue object)
-                    || !Set.of("revision", "creator_revision", "command", "preview").containsAll(object.values().keySet())
+                    || !Set.of("revision", "creator_revision", "catalog_revision", "command", "preview").containsAll(object.values().keySet())
                     || !(object.values().get("revision") instanceof RailixValue.NumberValue)
                     || !(object.values().get("creator_revision") instanceof RailixValue.NumberValue)
                     || !(object.values().get("command") instanceof RailixValue.ObjectValue)
+                    || object.values().containsKey("catalog_revision") && !(object.values().get("catalog_revision") instanceof RailixValue.NumberValue)
                     || object.values().containsKey("preview") && !(object.values().get("preview") instanceof RailixValue.BooleanValue))
                 throw new IllegalArgumentException("Editor actions need both revisions and a command.");
             request = object;
@@ -2494,7 +2499,8 @@ public final class CreatorServer implements AutoCloseable {
             final CreatorChanges.Edit change;
             synchronized (applicationLock) {
                 if (!open.get()) return unavailable("closed");
-                if (!revision(request, "revision", sourceRevision) || !revision(request, "creator_revision", creatorRevision))
+                if (!revision(request, "revision", sourceRevision) || !revision(request, "creator_revision", creatorRevision)
+                        || request.values().containsKey("catalog_revision") && !revision(request, "catalog_revision", catalogRevision))
                     return json(409, RailixValue.object(Map.of("message", RailixValue.string("The project changed. Your action was not applied."))));
                 if (historyProjectRevision != sourceRevision || historyCreatorRevision != creatorRevision) {
                     editorUndo.clear(); editorRedo.clear();
@@ -2868,6 +2874,7 @@ public final class CreatorServer implements AutoCloseable {
                             )));
                         }
                         source = compiled.source();
+                        usedImplementationClasses = implementationClasses(compiled);
                         sourceArtifactKey = applicationKey;
                         sourceRevision = revision;
                         reused = true;
@@ -3001,6 +3008,7 @@ public final class CreatorServer implements AutoCloseable {
                     superseded |= !open.get() || revision != projectRevision;
                     if (!superseded && persisted && activationFailure == null) {
                         source = compiled.source();
+                        usedImplementationClasses = implementationClasses(compiled);
                         sourceArtifactKey = candidate.artifact().directory().getFileName().toString();
                         sourceRevision = revision;
                         retirement = previous;
@@ -3213,7 +3221,7 @@ public final class CreatorServer implements AutoCloseable {
                 return json(409, RailixValue.object(Map.of("status", RailixValue.string("edit-conflict"))));
             final Path file = projectFile.resolveSibling("railix.examples.json");
             final String previous = documents.examples();
-            if (save && (!RailixValue.string(contentRevision(previous)).equals(request.values().get("revision"))
+            if (save && (!RailixValue.string(Sha256.hexDigest(previous)).equals(request.values().get("revision"))
                     || ((RailixValue.NumberValue) request.values().get("source_revision")).value()
                     .compareTo(java.math.BigDecimal.valueOf(revision)) != 0))
                 return json(409, RailixValue.object(Map.of("status", RailixValue.string("assertion-revision-conflict"))));
@@ -3269,7 +3277,7 @@ public final class CreatorServer implements AutoCloseable {
                             CreatorChanges.diff(before, after), CreatorChanges.diff(after, before), target[1]));
                 }
             }
-            return json(200, RailixValue.object(Map.of("revision", RailixValue.string(contentRevision(next)),
+            return json(200, RailixValue.object(Map.of("revision", RailixValue.string(Sha256.hexDigest(next)),
                     "source_revision", RailixValue.number(revision), "example", RailixValue.string(target[0]),
                     "step", RailixValue.string(target[1]), "checks", selected)));
         }
@@ -3614,10 +3622,21 @@ public final class CreatorServer implements AutoCloseable {
     private record CustomStepDraft(String name, String methodSource) implements CustomStepRequest { }
     private record InvalidCustomStepRequest(String message) implements CustomStepRequest { }
 
-    private Response createCustomStep(final HttpExchange exchange) throws IOException {
-        if (!"POST".equals(exchange.getRequestMethod())) {
-            return methodNotAllowed();
+    private Response customSteps(final HttpExchange exchange) throws IOException {
+        if ("GET".equals(exchange.getRequestMethod())) {
+            synchronized (buildLock) {
+                synchronized (applicationLock) {
+                    final String document = CustomSteps.read(projectFile);
+                    if (!CustomSteps.fingerprint(document).equals(customDocumentFingerprint)) return customSourceConflict();
+                    return json(200, RailixValue.object(Map.of("catalog_revision", RailixValue.number(catalogRevision),
+                            "steps", RailixValue.array(CustomSteps.saved(document).stream().<RailixValue>map(step ->
+                                    RailixValue.object(Map.of("id", RailixValue.string(step.id()), "name", RailixValue.string(step.name()),
+                                            "in_use", RailixValue.bool(customStepUsed(step.id()))))).toList()))));
+                }
+            }
         }
+        if ("DELETE".equals(exchange.getRequestMethod())) return deleteCustomStep(exchange);
+        if (!"POST".equals(exchange.getRequestMethod())) return methodNotAllowed();
         final BodyRead body = body(exchange, MAX_REQUEST_BYTES);
         if (!body.diagnostics().isEmpty()) {
             return bodyResponse(body);
@@ -3626,6 +3645,81 @@ public final class CreatorServer implements AutoCloseable {
             case CustomStepDraft draft -> compileAndPublishCustomStep(draft);
             case InvalidCustomStepRequest invalid -> customStepInputRejected(invalid.message());
         };
+    }
+
+    private Response deleteCustomStep(final HttpExchange exchange) throws IOException {
+        final BodyRead body = body(exchange, MAX_REQUEST_BYTES);
+        if (!body.diagnostics().isEmpty()) return bodyResponse(body);
+        final RailixValue.ObjectValue request;
+        try {
+            final var parsed = RailixJson.parse(utf8(body.value()));
+            if (!(parsed instanceof RailixJson.Parsed valid) || !(valid.value() instanceof RailixValue.ObjectValue object)
+                    || !object.values().keySet().equals(Set.of("id", "catalog_revision"))
+                    || !(object.values().get("id") instanceof RailixValue.StringValue)
+                    || !(object.values().get("catalog_revision") instanceof RailixValue.NumberValue))
+                return customStepInputRejected("Deleting a custom Step needs its identity and catalog revision.");
+            request = object;
+        } catch (final CharacterCodingException invalid) {
+            return customStepInputRejected("The request must be UTF-8.");
+        }
+        synchronized (buildLock) {
+            if (Files.exists(ProjectFiles.journal(projectFile))) return unavailable("editor-recovery-restart-required");
+            synchronized (applicationLock) {
+                if (!open.get()) return unavailable("closed");
+                if (visibleEdit != null || deploymentPending) return unavailable("edit-in-progress");
+                if (!revision(request, "catalog_revision", catalogRevision)) return customStepConflict("Step definitions changed. Refresh the list before deleting.");
+                final String document = CustomSteps.read(projectFile);
+                if (!CustomSteps.fingerprint(document).equals(customDocumentFingerprint)) return customSourceConflict();
+                if (!ProjectFiles.read(projectFile).source().equals(source)) return customStepConflict("Project files changed outside Creator. Restart before deleting a Step.");
+                final String id = CreatorChanges.text(request, "id");
+                final var saved = CustomSteps.saved(document).stream().filter(step -> step.id().equals(id)).findFirst();
+                if (saved.isEmpty()) return json(404, RailixValue.object(Map.of("message", RailixValue.string("This project has no such custom Step."))));
+                if (customStepUsed(id)) return customStepInUse();
+                final String next = CustomSteps.deletion(document, saved.orElseThrow());
+                if (!document.equals(CustomSteps.read(projectFile))) return customSourceConflict();
+                publishCustomDocument(catalog.withoutDefinition(id), next);
+                // Earlier flow deltas may restore a placement of the permanently deleted definition.
+                editorUndo.clear();
+                editorRedo.clear();
+                historyProjectRevision = sourceRevision;
+                historyCreatorRevision = creatorRevision;
+                final var payload = new LinkedHashMap<>(projectPayloadLocked(false).values());
+                payload.put("status", RailixValue.string("deleted"));
+                payload.put("catalog", catalog());
+                return json(200, RailixValue.object(payload));
+            }
+        }
+    }
+
+    private static Set<String> implementationClasses(final CompileResult.Compiled compiled) {
+        // The compiler collects actual invocations, including nested programs, and excludes literal/Example data.
+        return compiled.applicationDependencies().stream().map(StepCatalog.Implementation::className)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    private boolean customStepUsed(final String id) {
+        return catalog.implementation(id).map(implementation -> usedImplementationClasses.contains(implementation.className())).orElse(false);
+    }
+
+    private static Response customStepConflict(final String message) {
+        return json(409, RailixValue.object(Map.of("message", RailixValue.string(message))));
+    }
+
+    private static Response customSourceConflict() {
+        return customStepConflict("Custom Step source changed outside Creator. Restart to load it before editing.");
+    }
+
+    private static Response customStepInUse() {
+        return customStepConflict("This custom Step is still used. Remove all placements and nested calls before deleting it.");
+    }
+
+    /** Requires buildLock and applicationLock; retain immutable artifacts owned by existing builds. */
+    private void publishCustomDocument(final StepCatalog candidate, final String document) throws IOException {
+        persist(projectFile.resolveSibling(CustomSteps.FILE), document);
+        catalog = candidate;
+        customDocumentFingerprint = CustomSteps.fingerprint(document);
+        catalogRevision++;
+        editor = null;
     }
 
     private static CustomStepRequest parseCustomStepRequest(final byte[] body) {
@@ -3647,11 +3741,13 @@ public final class CreatorServer implements AutoCloseable {
 
     private Response compileAndPublishCustomStep(final CustomStepDraft draft) throws IOException {
         synchronized (buildLock) {
+            if (Files.exists(ProjectFiles.journal(projectFile))) return unavailable("editor-recovery-restart-required");
             synchronized (applicationLock) {
                 if (!open.get()) return unavailable("closed");
                 if (visibleEdit != null || deploymentPending) return unavailable("edit-in-progress");
             }
             final String document = CustomSteps.read(projectFile);
+            if (!CustomSteps.fingerprint(document).equals(customDocumentFingerprint)) return customSourceConflict();
             final CustomSteps.Preparation result;
             try {
                 result = CustomSteps.prepare(catalog, projectFile, document, draft.name(), draft.methodSource());
@@ -3662,6 +3758,7 @@ public final class CreatorServer implements AutoCloseable {
             final var prepared = (CustomSteps.Prepared) result;
             synchronized (applicationLock) {
                 if (!open.get()) return unavailable("closed");
+                if (!document.equals(CustomSteps.read(projectFile))) return customSourceConflict();
                 return publishCustomStepLocked(prepared);
             }
         }
@@ -3669,12 +3766,12 @@ public final class CreatorServer implements AutoCloseable {
 
     /** Requires buildLock and applicationLock; disk publication precedes the shared-state update. */
     private Response publishCustomStepLocked(final CustomSteps.Prepared prepared) throws IOException {
-        persist(projectFile.resolveSibling(CustomSteps.FILE), prepared.document());
-        catalog = prepared.catalog();
-        catalogRevision++;
-        editor = null;
-        return json(200, RailixValue.object(Map.of("status", RailixValue.string("compiled"),
-                "definition", definition(prepared.definition()), "catalog", catalog())));
+        publishCustomDocument(prepared.catalog(), prepared.document());
+        final var payload = new LinkedHashMap<>(projectPayloadLocked(false).values());
+        payload.put("status", RailixValue.string("compiled"));
+        payload.put("definition", definition(prepared.definition()));
+        payload.put("catalog", catalog());
+        return json(200, RailixValue.object(payload));
     }
 
     private static Response customStepInputRejected(final String message) {
@@ -3835,7 +3932,8 @@ public final class CreatorServer implements AutoCloseable {
     }
 
     private boolean isMutation(final HttpExchange exchange, final String path) {
-        return ("POST".equals(exchange.getRequestMethod()) || "PATCH".equals(exchange.getRequestMethod()))
+        return ("POST".equals(exchange.getRequestMethod()) || "PATCH".equals(exchange.getRequestMethod())
+                || "DELETE".equals(exchange.getRequestMethod()) && "/api/custom-steps".equals(path))
                 && ("/api/project".equals(path)
                 || "/api/live".equals(path)
                 || "/api/application".equals(path)

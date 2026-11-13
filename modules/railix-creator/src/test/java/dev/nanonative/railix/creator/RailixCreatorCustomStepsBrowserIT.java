@@ -23,6 +23,116 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
     @Test
     @Tag("responsive")
     @Tag("browser-diagnostics")
+    void definitionDeletionRequiresConfirmationAndClearsFlowHistory() throws Exception {
+        openProject(choiceProject());
+        // A confirmed compile already supplies its catalog; unrelated editor reads must not gate it.
+        page.route("**/api/editor**", route -> {
+            if (route.request().method().equals("GET")) route.fulfill(new Route.FulfillOptions()
+                    .setStatus(503).setContentType("application/json").setBody("{\"message\":\"Editor read unavailable\"}"));
+            else route.resume();
+        });
+        try { createCustomStep("Normalize"); }
+        finally { page.unroute("**/api/editor**"); }
+        assertThat(page.locator("#editor-undo")).isDisabled();
+        assertThat(page.locator("#editor-redo")).isDisabled();
+        selectWorldNode("command");
+        clickOverview("#add-next-step");
+        page.locator("#step-search").fill("Normalize");
+        clickAndWaitForCreatorSave(() -> page.locator("[data-add-step='custom.normalize']").click());
+        final String placement = page.locator("#inspector").getAttribute("data-selection");
+        flowHistory("undo");
+        org.assertj.core.api.Assertions.assertThat(Files.readString(directory.resolve("project.json")))
+                .doesNotContain("custom.normalize");
+        flowHistory("redo");
+        selectWorldNode(placement);
+        openCustomStepManager();
+        assertThat(page.locator("#custom-step-list button")).isDisabled();
+        assertThat(page.locator("#custom-step-list")).containsText("In use");
+        final Path screenshots = Files.createDirectories(Path.of("target", "screenshots"));
+        page.screenshot(new Page.ScreenshotOptions().setPath(
+                screenshots.resolve("custom-step-manager-used-" + page.viewportSize().width + ".png")));
+        page.locator("#close-custom-step-manager").click();
+        selectWorldNode(placement);
+        deleteAcceptedStep();
+        flowHistory("undo"); // removing an occurrence remains undoable
+        selectWorldNode(placement);
+        assertThat(page.locator("#inspector")).containsText("Normalize");
+        flowHistory("redo");
+        openCustomStepManager();
+        assertThat(page.locator("#custom-step-list button")).isEnabled();
+        assertThat(page.locator("#custom-step-list button")).hasClass("danger");
+        final Path custom = directory.resolve(CustomSteps.FILE);
+        final String saved = Files.readString(custom);
+        final var history = CreatorServerE2eSupport.object(CreatorServerE2eSupport.request(
+                creator.baseUri(), "GET", "/api/editor", "").body()).values().get("history");
+        final var deletionSent = new AtomicBoolean();
+        page.onRequest(request -> {
+            if (request.url().endsWith("/api/custom-steps") && request.method().equals("DELETE")) deletionSent.set(true);
+        });
+        page.locator("#custom-step-list button").click();
+        assertThat(page.locator("#custom-step-delete-dialog")).isVisible();
+        assertThat(page.locator("#custom-step-delete-dialog")).hasAttribute("role", "alertdialog");
+        assertThat(page.locator("#custom-step-delete-dialog")).containsText("Normalize");
+        assertThat(page.locator("#custom-step-delete-dialog")).containsText("cannot be undone");
+        assertThat(page.locator("#custom-step-delete-dialog")).containsText("clears all flow Undo/Redo history");
+        assertThat(page.locator("#custom-step-delete-dialog")).containsText("across all tabs");
+        assertThat(page.locator("#cancel-custom-step-deletion")).isFocused();
+        assertThat(page.locator("#confirm-custom-step-deletion")).hasClass("danger");
+        org.assertj.core.api.Assertions.assertThat(deletionSent).isFalse();
+        page.screenshot(new Page.ScreenshotOptions().setPath(
+                screenshots.resolve("custom-step-deletion-warning-" + page.viewportSize().width + ".png")));
+        page.locator("#cancel-custom-step-deletion").click();
+        assertThat(page.locator("#custom-step-delete-dialog")).isHidden();
+        assertThat(page.locator("#custom-step-list button")).isFocused();
+        page.locator("#custom-step-list button").click();
+        assertThat(page.locator("#custom-step-delete-dialog")).isVisible();
+        page.locator("#cancel-custom-step-deletion").press("Escape");
+        assertThat(page.locator("#custom-step-delete-dialog")).isHidden();
+        assertThat(page.locator("#custom-step-manager")).isVisible();
+        org.assertj.core.api.Assertions.assertThat(deletionSent).isFalse();
+        org.assertj.core.api.Assertions.assertThat(Files.readString(custom)).isEqualTo(saved);
+        org.assertj.core.api.Assertions.assertThat(CreatorServerE2eSupport.object(CreatorServerE2eSupport.request(
+                creator.baseUri(), "GET", "/api/editor", "").body()).values().get("history")).isEqualTo(history);
+        assertThat(page.locator("#custom-step-list button")).isEnabled();
+        confirmCustomStepDeletion();
+        assertThat(page.locator("#custom-step-manager-status")).containsText("no custom Steps");
+        org.assertj.core.api.Assertions.assertThat(deletionSent).isTrue();
+        assertThat(page.locator("#editor-undo")).isDisabled();
+        assertThat(page.locator("#editor-redo")).isDisabled();
+        page.locator("#close-custom-step-manager").click();
+        createCustomStep("Normalize", CustomStepsE2eTest.METHOD.replace("toLowerCase", "toUpperCase"));
+        assertThat(page.locator("#editor-undo")).isDisabled();
+        assertThat(page.locator("#editor-redo")).isDisabled();
+        org.assertj.core.api.Assertions.assertThat(Files.readString(custom))
+                .contains("toUpperCase").doesNotContain("toLowerCase");
+        org.assertj.core.api.Assertions.assertThat(pageErrors).isEmpty();
+    }
+
+    private void openCustomStepManager() {
+        page.locator("#project-menu").click();
+        page.locator("[data-manage-custom-steps]").click();
+        assertThat(page.locator("#custom-step-manager")).isVisible();
+        assertThat(page.locator("#custom-step-manager-status")).not().containsText("Loading");
+    }
+
+    private void flowHistory(final String action) {
+        final var response = page.waitForResponse(candidate -> candidate.url().endsWith("/api/editor")
+                        && candidate.request().method().equals("POST"), () -> page.locator("#editor-" + action).click());
+        org.assertj.core.api.Assertions.assertThat(response.status()).isEqualTo(200);
+        page.waitForFunction("() => !state.actionPending");
+    }
+
+    private void confirmCustomStepDeletion() {
+        page.locator("#custom-step-list button").click();
+        assertThat(page.locator("#custom-step-delete-dialog")).isVisible();
+        final var response = page.waitForResponse(candidate -> candidate.url().endsWith("/api/custom-steps")
+                        && candidate.request().method().equals("DELETE"), () -> page.locator("#confirm-custom-step-deletion").click());
+        org.assertj.core.api.Assertions.assertThat(response.status()).isEqualTo(200);
+    }
+
+    @Test
+    @Tag("responsive")
+    @Tag("browser-diagnostics")
     void multipleParametersHaveIndependentTypedFieldMappings() throws Exception {
         openProject(choiceProject()
                 .replace("\"name\":\"match\"", "\"id\":\"first-case\",\"name\":\"match\"")
@@ -231,9 +341,10 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
         } finally { page = author; }
     }
 
-    @Test
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
     @Tag("browser-diagnostics")
-    void aLateCatalogResponseCannotReplaceNewerDefinitions() throws Exception {
+    void aLateCatalogResponseCannotReplaceNewerDefinitions(final boolean deleteFirst) throws Exception {
         openProject(choiceProject());
         final Page author = page;
         try (Page observer = context.newPage()) {
@@ -258,12 +369,17 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
             });
             try {
                 page = observer;
-                page.locator("#step-search").fill("Second");
+                page.locator("#step-search").fill(deleteFirst ? "First" : "Second");
                 page.waitForCondition(() -> delayed.get() != null);
                 org.assertj.core.api.Assertions.assertThat(CreatorServerE2eSupport.number(
                         CreatorServerE2eSupport.object(older.get().text()), "revision")).isEqualTo(1);
                 page = author;
-                createCustomStep("Second");
+                if (deleteFirst) {
+                    openCustomStepManager();
+                    confirmCustomStepDeletion();
+                    assertThat(page.locator("#custom-step-manager-status")).containsText("no custom Steps");
+                    page.locator("#close-custom-step-manager").click();
+                } else createCustomStep("Second");
                 page = observer;
                 // Group navigation has its own editor request; the picker's older request stays pending.
                 final var newer = page.waitForResponse(response -> response.url().endsWith("/api/catalog"),
@@ -271,7 +387,8 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
                 newer.finished();
                 org.assertj.core.api.Assertions.assertThat(CreatorServerE2eSupport.number(
                         CreatorServerE2eSupport.object(newer.text()), "revision")).isEqualTo(2);
-                assertThat(page.locator("[data-add-step='custom.second']")).hasCount(1);
+                final String selector = deleteFirst ? "[data-add-step='custom.first']" : "[data-add-step='custom.second']";
+                assertThat(page.locator(selector)).hasCount(deleteFirst ? 0 : 1);
                 assertThat(page.locator("#step-options [role='status']")).hasCount(1);
 
                 final Route pending = delayed.getAndSet(null);
@@ -279,7 +396,7 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
                         () -> pending.fulfill(new Route.FulfillOptions().setResponse(older.get())));
                 late.finished();
                 assertThat(page.locator("#step-options [role='status']")).hasCount(0);
-                assertThat(page.locator("[data-add-step='custom.second']")).hasCount(1);
+                assertThat(page.locator(selector)).hasCount(deleteFirst ? 0 : 1);
                 org.assertj.core.api.Assertions.assertThat(pageErrors).isEmpty();
             } finally {
                 observer.unroute("**/api/catalog");
@@ -287,6 +404,69 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
                 if (pending != null) pending.fulfill(new Route.FulfillOptions().setResponse(older.get()));
                 if (older.get() != null) older.get().dispose();
             }
+        } finally { page = author; }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    @Tag("responsive")
+    @Tag("browser-diagnostics")
+    void anotherTabDeletesASelectedDefinitionWithoutBreakingTheInspectorOrDiscardingDrafts(final boolean unsavedExample) throws Exception {
+        openProject(choiceProject());
+        createCustomStep("Normalize");
+        selectWorldNode("command");
+        clickOverview("#add-next-step");
+        page.locator("#step-search").fill("Normalize");
+        clickAndWaitForCreatorSave(() -> page.locator("[data-add-step='custom.normalize']").click());
+        final String placement = page.locator("#inspector").getAttribute("data-selection");
+        final Page author = page;
+        try (Page observer = context.newPage()) {
+            observer.onPageError(pageErrors::add);
+            observer.navigate(creator.baseUri().toString());
+            page = observer;
+            waitForText("#build-state", "Built");
+            selectWorldNode(placement);
+            assertThat(page.locator("#inspector")).containsText("Normalize");
+            if (unsavedExample) {
+                selectWorldNode("command");
+                chooseExampleIndex(0);
+                page.locator("#edit-example").click();
+                page.locator("#example-payload").fill("[");
+                page.locator("#example-payload").press("Tab");
+                waitForText("#build-state", "Not built");
+            }
+
+            page = author;
+            selectWorldNode(placement);
+            deleteAcceptedStep();
+            openCustomStepManager();
+            confirmCustomStepDeletion();
+            assertThat(page.locator("#custom-step-manager-status")).containsText("no custom Steps");
+            page.locator("#close-custom-step-manager").click();
+            final String savedExamples = Files.readString(directory.resolve("railix.examples.json"));
+
+            page = observer;
+            openCustomStepManager();
+            if (unsavedExample) {
+                assertThat(page.locator("#custom-step-manager-status")).containsText("unsaved changes are retained");
+                page.locator("#close-custom-step-manager").click();
+                assertThat(page.locator("#example-payload")).hasValue("[");
+            } else {
+                assertThat(page.locator("#custom-step-manager-status")).containsText("no custom Steps");
+                page.locator("#close-custom-step-manager").click();
+                assertThat(page.locator("#inspector")).hasAttribute("data-selection", "app");
+                assertThat(page.locator("#editor-undo")).isDisabled();
+                assertThat(page.locator("#editor-redo")).isDisabled();
+                selectWorldNode("command");
+                clickOverview("#add-next-step");
+                page.locator("#step-search").fill("Normalize");
+                assertThat(page.locator("[data-add-step='custom.normalize']")).hasCount(0);
+            }
+            org.assertj.core.api.Assertions.assertThat(Files.readString(directory.resolve("railix.examples.json"))).isEqualTo(savedExamples);
+            org.assertj.core.api.Assertions.assertThat(Files.readString(directory.resolve("project.json"))).doesNotContain("custom.normalize");
+            page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                    .resolve("custom-step-deleted-in-another-tab-" + unsavedExample + "-" + page.viewportSize().width + ".png")));
+            org.assertj.core.api.Assertions.assertThat(pageErrors).isEmpty();
         } finally { page = author; }
     }
 
@@ -313,6 +493,18 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
         assertThat(page.locator("#custom-step-source")).hasValue(broken);
         assertThat(page.locator("[data-add-step='custom.shout']")).hasCount(0);
         assertThat(page.locator("#compile-custom-step")).isEnabled();
+
+        final String reflective = "public static String normalize(String text) {\n    return String.class.getDeclaredMethods()[0].getName();\n}";
+        page.locator("#custom-step-source").fill(reflective);
+        final var denied = page.waitForResponse(response -> response.url().endsWith("/api/custom-steps")
+                && response.request().method().equals("POST"), () -> page.locator("#compile-custom-step").click());
+        org.assertj.core.api.Assertions.assertThat(denied.status()).as(denied.text()).isEqualTo(422);
+        assertThat(page.locator("#custom-step-diagnostics")).containsText("Line 2");
+        assertThat(page.locator("#custom-step-diagnostics")).containsText("Dynamic API");
+        assertThat(page.locator("#custom-step-source")).hasValue(reflective);
+        assertThat(page.locator("[data-add-step='custom.shout']")).hasCount(0);
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("custom-step-dynamic-api-" + page.viewportSize().width + ".png")));
 
         page.locator("#custom-step-source").fill(CustomStepsE2eTest.METHOD.replace("toLowerCase", "toUpperCase"));
         final var compiled = page.waitForResponse(response -> response.url().endsWith("/api/custom-steps")

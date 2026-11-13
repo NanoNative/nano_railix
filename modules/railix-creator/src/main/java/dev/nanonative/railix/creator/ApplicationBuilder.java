@@ -3,6 +3,7 @@ package dev.nanonative.railix.creator;
 import dev.nanonative.railix.core.project.CompileResult;
 import dev.nanonative.railix.core.project.WorkflowRuntime;
 import dev.nanonative.railix.core.step.StepCatalog;
+import dev.nanonative.railix.core.util.Sha256;
 import dev.nanonative.railix.development.ArtifactLease;
 import dev.nanonative.railix.development.DevelopmentRuntime;
 
@@ -28,10 +29,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
 import java.util.Collections;
-import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -123,12 +122,12 @@ final class ApplicationBuilder {
                 : compiled.applicationClass();
         final String sourceIdentity = ProjectFiles.identity(compiled);
         final String baseKey = buildKey(compiled, runtime.entries(), development);
-        final MessageDigest publication = sha256();
+        final MessageDigest publication = Sha256.newDigest();
         update(publication, baseKey);
         update(publication, observation ? "observation-on" : "observation-off");
         projectDocuments.forEach((name, value) -> { update(publication, name); update(publication, value); });
         final String key = projectDocuments.isEmpty() && observation ? baseKey
-                : "sha256-" + HexFormat.of().formatHex(publication.digest());
+                : "sha256-" + Sha256.finishHex(publication);
         final Path root = projectFile.toAbsolutePath().normalize().getParent()
                 .resolve(".railix").resolve("build");
         final Path destination = root.resolve(key);
@@ -199,14 +198,14 @@ final class ApplicationBuilder {
                     putEntry(expected, new MemoryRuntimeEntry(
                             resource.getKey(),
                             bytes.length,
-                            digest(bytes),
+                            Sha256.hexDigest(bytes),
                             bytes
                     ), false);
                 }
             }
             for (final var resource : projectDocuments.entrySet()) {
                 final byte[] bytes = resource.getValue().getBytes(StandardCharsets.UTF_8);
-                putEntry(expected, new MemoryRuntimeEntry(resource.getKey(), bytes.length, digest(bytes), bytes), false);
+                putEntry(expected, new MemoryRuntimeEntry(resource.getKey(), bytes.length, Sha256.hexDigest(bytes), bytes), false);
             }
             final byte[] manifest = manifest(mainClass, sourceIdentity, observation);
             jar(jar, manifest, expected);
@@ -374,7 +373,7 @@ final class ApplicationBuilder {
                 source(directory),
                 directory.resolve("classes"),
                 jar,
-                "sha256:" + digest(jar),
+                "sha256:" + Sha256.hexDigest(jar),
                 Files.getLastModifiedTime(jar).toInstant().toEpochMilli(),
                 reused
         );
@@ -519,7 +518,7 @@ final class ApplicationBuilder {
         }
         verifyClosure(artifacts.values());
         for (final StepCatalog.Artifact artifact : artifacts.values()) {
-            if (!("sha256:" + digest(artifact.path())).equals(artifact.digest())) {
+            if (!("sha256:" + Sha256.hexDigest(artifact.path())).equals(artifact.digest())) {
                 throw new IOException("DEPENDENCY_ARTIFACT_DIGEST_MISMATCH: Locked artifact changed before build: "
                         + artifact.digest() + ".");
             }
@@ -603,7 +602,7 @@ final class ApplicationBuilder {
                         final RuntimeEntry source = sources.get(name);
                         if (source != null) {
                             final byte[] bytes = source.readBounded(Math.toIntExact(StepCatalog.MAX_ARTIFACT_ENTRY_BYTES));
-                            if (bytes.length != source.size() || !digest(bytes).equals(source.digest()))
+                            if (bytes.length != source.size() || !Sha256.hexDigest(bytes).equals(source.digest()))
                                 throw new IOException("DEPENDENCY_ARTIFACT_DIGEST_MISMATCH: Hierarchy class changed during build: " + name + ".");
                             return new java.io.ByteArrayInputStream(bytes);
                         }
@@ -636,7 +635,7 @@ final class ApplicationBuilder {
             final boolean known = originals.containsKey(name);
             final byte[] bytes = known ? originals.get(name)
                     : entry.readBounded(Math.toIntExact(StepCatalog.MAX_ARTIFACT_ENTRY_BYTES));
-            if (!known && (bytes.length != entry.size() || !digest(bytes).equals(entry.digest())))
+            if (!known && (bytes.length != entry.size() || !Sha256.hexDigest(bytes).equals(entry.digest())))
                 throw new IOException("DEPENDENCY_ARTIFACT_DIGEST_MISMATCH: Runtime class changed during build: " + name + ".");
             final RuntimeClassDependencies.Selection selected;
             final java.util.Optional<String> parent;
@@ -656,7 +655,7 @@ final class ApplicationBuilder {
                 throw GeneratedCompilationException.invalidRuntimeClass(name, invalid);
             }
             if (providerClasses.contains(name)) entries.put(name, new MemoryRuntimeEntry(name, selected.bytes().length,
-                    digest(selected.bytes()), selected.bytes()));
+                    Sha256.hexDigest(selected.bytes()), selected.bytes()));
             for (final var method : selected.methods()) {
                 if (!providerClasses.contains(method.owner())) continue;
                 if (methods.computeIfAbsent(method.owner(), ignored -> new java.util.HashSet<>()).add(method)
@@ -713,7 +712,7 @@ final class ApplicationBuilder {
             final var entry = entries.get(name);
             if (entry == null) continue;
             final byte[] bytes = RuntimeClassDependencies.finish(name, entry.readBounded(Math.toIntExact(StepCatalog.MAX_ARTIFACT_ENTRY_BYTES)), available, classFile);
-            entries.put(name, new MemoryRuntimeEntry(name, bytes.length, digest(bytes), bytes));
+            entries.put(name, new MemoryRuntimeEntry(name, bytes.length, Sha256.hexDigest(bytes), bytes));
         }
         return new RuntimeFiles(entries, List.copyOf(locations), modules);
     }
@@ -758,7 +757,7 @@ final class ApplicationBuilder {
             for (final Path file : files.filter(Files::isRegularFile).toList()) {
                 final String name = root.relativize(file).toString().replace(File.separatorChar, '/');
                 if (include.test(name)) {
-                    entries.put(name, new FileRuntimeEntry(name, Files.size(file), digest(file), file));
+                    entries.put(name, new FileRuntimeEntry(name, Files.size(file), Sha256.hexDigest(file), file));
                 }
             }
         }
@@ -885,7 +884,7 @@ final class ApplicationBuilder {
             throw new IOException("DEPENDENCY_ENTRY_CONFLICT: Merged service descriptor exceeds "
                     + SERVICE_DESCRIPTOR_LIMIT + " bytes: " + name + ".");
         }
-        return new MemoryRuntimeEntry(name, merged.length, digest(merged), merged);
+        return new MemoryRuntimeEntry(name, merged.length, Sha256.hexDigest(merged), merged);
     }
 
     private static void addEntries(
@@ -920,7 +919,7 @@ final class ApplicationBuilder {
             final Map<String, RuntimeEntry> runtime,
             final boolean development
     ) {
-        final MessageDigest digest = sha256();
+        final MessageDigest digest = Sha256.newDigest();
         update(digest, "railix-application-v5");
         update(digest, ProjectFiles.identity(compiled));
         update(digest, development ? "development" : "production");
@@ -943,7 +942,7 @@ final class ApplicationBuilder {
             update(digest, Long.toString(entry.size()));
             update(digest, entry.digest());
         });
-        return "sha256-" + HexFormat.of().formatHex(digest.digest());
+        return "sha256-" + Sha256.finishHex(digest);
     }
 
     private static void jar(
@@ -1038,7 +1037,7 @@ final class ApplicationBuilder {
         }
         final Map<String, RuntimeEntry> expected = new TreeMap<>(content);
         expected.put(JarFile.MANIFEST_NAME, new MemoryRuntimeEntry(
-                JarFile.MANIFEST_NAME, manifest.length, digest(manifest), manifest
+                JarFile.MANIFEST_NAME, manifest.length, Sha256.hexDigest(manifest), manifest
         ));
         try (JarFile application = new JarFile(jar.toFile(), true)) {
             final var entries = application.entries();
@@ -1066,26 +1065,12 @@ final class ApplicationBuilder {
         return expected.isEmpty();
     }
 
-    private static String digest(final byte[] bytes) {
-        return HexFormat.of().formatHex(sha256().digest(bytes));
-    }
-
-    private static String digest(final Path file) throws IOException {
-        try (InputStream input = Files.newInputStream(file)) {
-            return fingerprint(input).digest();
-        }
-    }
-
-    private static Fingerprint fingerprint(final InputStream input) throws IOException {
-        return fingerprint(input, Long.MAX_VALUE, "Input exceeds the supported size.");
-    }
-
     private static Fingerprint fingerprint(
             final InputStream input,
             final long limit,
             final String limitMessage
     ) throws IOException {
-        final MessageDigest digest = sha256();
+        final MessageDigest digest = Sha256.newDigest();
         long size = 0;
         final byte[] buffer = new byte[8192];
         for (int read = input.read(buffer); read >= 0; read = input.read(buffer)) {
@@ -1098,7 +1083,7 @@ final class ApplicationBuilder {
                 throw new IOException(limitMessage);
             }
         }
-        return new Fingerprint(size, HexFormat.of().formatHex(digest.digest()));
+        return new Fingerprint(size, Sha256.finishHex(digest));
     }
 
     private static byte[] bounded(final InputStream input, final long size, final int limit) throws IOException {
@@ -1110,14 +1095,6 @@ final class ApplicationBuilder {
             throw new IOException("DEPENDENCY_ENTRY_CONFLICT: Service descriptor exceeds " + limit + " bytes.");
         }
         return bytes;
-    }
-
-    private static MessageDigest sha256() {
-        try {
-            return MessageDigest.getInstance("SHA-256");
-        } catch (final NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is not available.", exception);
-        }
     }
 
     private static void update(final MessageDigest digest, final String value) {

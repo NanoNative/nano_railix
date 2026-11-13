@@ -1,5 +1,6 @@
 package dev.nanonative.railix.core.step;
 
+import dev.nanonative.railix.core.util.Sha256;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 
@@ -10,9 +11,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.DigestInputStream;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HexFormat;
@@ -89,7 +87,7 @@ public final class StepCatalog {
                             address.classEntry(),
                             Ownership.PLATFORM,
                             List.of(),
-                            "sha256:" + digest(StepContractJson.write(definition).getBytes(StandardCharsets.UTF_8)),
+                            "sha256:" + Sha256.hexDigest(StepContractJson.write(definition)),
                             address.jdkModules(), definition.dynamicClasses()
                     )
             ));
@@ -113,7 +111,7 @@ public final class StepCatalog {
         final Map<String, Implementation> providers = new LinkedHashMap<>();
         catalog.definitions.forEach(definition -> providers.put(definition.id(), new Implementation(
                 provider.getCanonicalName(), provider.getName().replace('.', '/') + ".class", Ownership.PLATFORM,
-                List.of(), "sha256:" + digest(StepContractJson.write(definition).getBytes(StandardCharsets.UTF_8)), List.of(), List.of())));
+                List.of(), "sha256:" + Sha256.hexDigest(StepContractJson.write(definition)), List.of(), List.of())));
         return new StepCatalog(catalog.definitions, catalog.implementations, providers);
     }
 
@@ -420,6 +418,23 @@ public final class StepCatalog {
         return Optional.ofNullable(definitionsById.get(id));
     }
 
+    /**
+     * Removes one definition from this immutable authoring selection without modifying its artifacts.
+     * @param id definition to remove
+     * @return a catalog preserving all other definitions and ownership, or this catalog when absent
+     * @throws IllegalArgumentException if the identifier is Java null
+     */
+    public StepCatalog withoutDefinition(final String id) {
+        if (id == null) throw new IllegalArgumentException("Step identifier cannot be Java null.");
+        if (!definitionsById.containsKey(id)) return this;
+        final var remaining = definitions.stream().filter(definition -> !definition.id().equals(id)).toList();
+        final var owners = new LinkedHashMap<>(implementations);
+        final var providers = new LinkedHashMap<>(validationProviders);
+        owners.remove(id);
+        providers.remove(id);
+        return new StepCatalog(remaining, owners, providers);
+    }
+
     /** Returns verified implementation ownership for an executable definition. */
     public Optional<Implementation> implementation(final String id) {
         return Optional.ofNullable(implementations.get(id));
@@ -457,7 +472,7 @@ public final class StepCatalog {
                 throw failure("DEPENDENCY_ARTIFACT_MISSING", "Locked artifact is missing: " + digest + ".");
             }
             try {
-                if (Files.size(file) != size || !digest.equals("sha256:" + digest(file))) {
+                if (Files.size(file) != size || !digest.equals("sha256:" + Sha256.hexDigest(file))) {
                     throw failure("DEPENDENCY_ARTIFACT_DIGEST_MISMATCH", "Locked artifact bytes do not match: "
                             + digest + ".");
                 }
@@ -598,7 +613,7 @@ public final class StepCatalog {
             final String expected = digest(
                     item, "contract_digest", "STEP_DEPENDENCY_MANIFEST_NON_CANONICAL", "manifest.steps[]"
             );
-            final String actual = "sha256:" + digest(RailixJson.write(contract).getBytes(StandardCharsets.UTF_8));
+            final String actual = "sha256:" + Sha256.hexDigest(RailixJson.write(contract));
             if (!expected.equals(actual)) {
                 throw failure("STEP_DEPENDENCY_CONTRACT_MISMATCH", "Bundle Step contract digest does not match.");
             }
@@ -806,28 +821,6 @@ public final class StepCatalog {
         } catch (final IllegalArgumentException exception) {
             throw failure(code, path + " must be a lowercase sha256 digest.", exception);
         }
-    }
-
-    private static String digest(final byte[] bytes) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
-        } catch (final NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is not available.", exception);
-        }
-    }
-
-    private static String digest(final Path file) throws IOException {
-        final MessageDigest digest;
-        try {
-            digest = MessageDigest.getInstance("SHA-256");
-        } catch (final NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is not available.", exception);
-        }
-        try (InputStream input = Files.newInputStream(file);
-             DigestInputStream stream = new DigestInputStream(input, digest)) {
-            stream.transferTo(java.io.OutputStream.nullOutputStream());
-        }
-        return HexFormat.of().formatHex(digest.digest());
     }
 
     private static long limitedSize(final InputStream input, final long limit) throws IOException, DependencyException {

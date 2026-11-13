@@ -73,6 +73,10 @@ final class JavaStepCompilerE2eTest {
         final var repeated = (JavaStepCompiler.Compiled) JavaStepCompiler.compile(
                 definition.id(), definition.displayName(), METHOD, api, directory.resolve("repeat"));
         assertThat(Files.readAllBytes(repeated.artifact())).isEqualTo(original);
+        final var restricted = (JavaStepCompiler.Compiled) JavaStepCompiler.compile(
+                definition.id(), definition.displayName(), METHOD, api, directory.resolve("restricted"),
+                JavaStepCompiler.SourcePolicy.REJECT_DYNAMIC_APIS);
+        assertThat(Files.readAllBytes(restricted.artifact())).isEqualTo(original);
         compileClient(client, api + File.pathSeparator + artifact, "RunStep", """
                 import java.util.Map;
                 import java.math.BigDecimal;
@@ -119,6 +123,95 @@ final class JavaStepCompilerE2eTest {
         try (var files = Files.list(output)) {
             assertThat(files.map(path -> path.getFileName().toString())).containsExactly("keep.txt");
         }
+    }
+
+    @Test
+    void dynamicApiPolicyIsOptInAndRejectsResolvedReflection() throws Exception {
+        final String source = """
+                public static boolean inspect() {
+                    String.class.getDeclaredMethods();
+                    return true;
+                }
+                """;
+        assertThat(JavaStepCompiler.compile("external.reflection", "Reflection", source, runtimeApi(), directory.resolve("general")))
+                .isInstanceOf(JavaStepCompiler.Compiled.class);
+        assertThat(JavaStepCompiler.compile("external.reflection", "Reflection", source, runtimeApi(), directory.resolve("restricted"),
+                JavaStepCompiler.SourcePolicy.REJECT_DYNAMIC_APIS))
+                .isInstanceOfSatisfying(JavaStepCompiler.Rejected.class, rejected ->
+                        assertThat(rejected.diagnostics()).singleElement().satisfies(issue -> {
+                            assertThat(issue.code()).isEqualTo("CUSTOM_STEP_DYNAMIC_API");
+                            assertThat(issue.line()).isEqualTo(2);
+                            assertThat(issue.column()).isPositive();
+                        }));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "java.lang.reflect.Method method = null;",
+            "Class<?> type = String.class; type.getDeclaredMethods();",
+            "String.class.getAnnotatedSuperclass();",
+            "String.class.getTypeParameters();",
+            "String.class.getAnnotation(Deprecated.class);",
+            "try { java.lang.\\u0043lass.forName(\"java.lang.String\"); } catch (ClassNotFoundException ignored) { }",
+            "java.util.function.Supplier<?> lookup = String.class::getDeclaredMethods;",
+            "Runnable action = () -> String.class.getDeclaredMethods();",
+            "class Local { Object inspect() { return String.class.getDeclaredMethods(); } }",
+            "Runnable action = new Runnable() { public void run() { String.class.getDeclaredMethods(); } };",
+            "java.lang.reflect.Proxy.isProxyClass(String.class);",
+            "java.lang.invoke.MethodHandles.lookup();",
+            "new java.lang.ClassLoader() { };",
+            "java.net.URLClassLoader.newInstance(new java.net.URL[0]);",
+            "String.class.getResource(\"/messages.txt\");",
+            "String.class.getResourceAsStream(\"/messages.txt\");",
+            "try { String.class.getModule().getResourceAsStream(\"messages.txt\"); } catch (java.io.IOException ignored) { }",
+            "java.util.ResourceBundle.getBundle(\"messages\");",
+            "java.util.ServiceLoader.load(Runnable.class);",
+            "try { new java.io.ObjectOutputStream(new java.io.ByteArrayOutputStream()); } catch (java.io.IOException ignored) { }",
+            "java.lang.foreign.Arena.ofConfined().close();",
+            "System.loadLibrary(\"custom\");",
+            "Runtime.getRuntime().loadLibrary(\"custom\");",
+            "javax.tools.ToolProvider.getSystemJavaCompiler();",
+            "new javax.script.ScriptEngineManager();",
+            "class Local { native void invoke(); }"
+    })
+    void dynamicApiPolicyRejectsKnownApisWithoutExecutingOrPublishing(final String statement) throws Exception {
+        final Path output = Files.createDirectory(directory.resolve("restricted"));
+        final Path marker = directory.resolve("must-not-exist.txt");
+        Files.writeString(output.resolve("keep.txt"), "caller-owned");
+        final String source = "\npublic static boolean inspect() {\n    " + statement
+                + "\n    try { java.nio.file.Files.writeString(java.nio.file.Path.of(\""
+                + marker.toString().replace("\\", "\\\\") + "\"), \"executed\"); } catch (java.io.IOException ignored) { }"
+                + "\n    return true;\n}\n";
+        final Path api = runtimeApi();
+        assertThat(JavaStepCompiler.compile("external.dynamic", "Dynamic", source, api, directory.resolve("general")))
+                .as("The fixture must be valid Java: %s", statement).isInstanceOf(JavaStepCompiler.Compiled.class);
+        assertThat(JavaStepCompiler.compile("external.dynamic", "Dynamic", source, api, output,
+                JavaStepCompiler.SourcePolicy.REJECT_DYNAMIC_APIS))
+                .isInstanceOfSatisfying(JavaStepCompiler.Rejected.class, rejected ->
+                        assertThat(rejected.diagnostics()).singleElement().satisfies(issue -> {
+                            assertThat(issue.code()).isEqualTo("CUSTOM_STEP_DYNAMIC_API");
+                            assertThat(issue.line()).isEqualTo(3);
+                            assertThat(issue.column()).isPositive();
+                        }));
+        assertThat(marker).doesNotExist();
+        try (var files = Files.list(output)) {
+            assertThat(files.map(path -> path.getFileName().toString())).containsExactly("keep.txt");
+        }
+        assertThat(Files.readString(output.resolve("keep.txt"))).isEqualTo("caller-owned");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "return java.util.stream.Stream.of(text).map(String::trim).map(value -> value + \"!\").findFirst().orElse(\"\");",
+            "/* java.lang.reflect.Method */ return \"java.lang.reflect.Method\" + text;",
+            "class Class { String forName(String value) { return value; } } return new Class().forName(text);",
+            "return text.getClass().getSimpleName() + String.class.getName();",
+            "try { return java.nio.file.Files.readString(java.nio.file.Path.of(text)); } catch (java.io.IOException failed) { return text; }"
+    })
+    void dynamicApiPolicyKeepsOrdinaryJavaAndResolvesActualOwners(final String body) throws Exception {
+        assertThat(JavaStepCompiler.compile("external.ordinary", "Ordinary", "public static String transform(String text) { " + body + " }",
+                runtimeApi(), directory.resolve("restricted"), JavaStepCompiler.SourcePolicy.REJECT_DYNAMIC_APIS))
+                .isInstanceOf(JavaStepCompiler.Compiled.class);
     }
 
     @Test

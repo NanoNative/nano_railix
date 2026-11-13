@@ -1,5 +1,7 @@
 package dev.nanonative.railix.core.step;
 
+import dev.nanonative.railix.core.util.Sha256;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -7,9 +9,6 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.TreeMap;
 import java.util.jar.JarEntry;
@@ -101,12 +100,7 @@ public final class StepBundle {
         Files.createDirectories(root);
         final Path temporary = Files.createTempFile(root, ".provider-", ".jar");
         try {
-            final MessageDigest hash;
-            try {
-                hash = MessageDigest.getInstance("SHA-256");
-            } catch (final NoSuchAlgorithmException unavailable) {
-                throw new IllegalStateException("SHA-256 is required by the Java platform.", unavailable);
-            }
+            final var hash = Sha256.newDigest();
             long bytes = 0;
             final byte[] buffer = new byte[65_536];
             try (var output = Files.newOutputStream(temporary)) {
@@ -118,7 +112,7 @@ public final class StepBundle {
                     output.write(buffer, 0, count);
                 }
             }
-            final Path staged = root.resolve(HexFormat.of().formatHex(hash.digest()) + ".jar");
+            final Path staged = root.resolve(Sha256.finishHex(hash) + ".jar");
             if (Files.exists(staged, LinkOption.NOFOLLOW_LINKS)) {
                 if (!Files.isRegularFile(staged, LinkOption.NOFOLLOW_LINKS) || Files.mismatch(temporary, staged) != -1)
                     throw new IOException("DEPENDENCY_ARTIFACT_DIGEST_MISMATCH: Staged provider bytes do not match their identity.");
