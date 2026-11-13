@@ -177,9 +177,9 @@ the draft has changed, select the matching original project file in the connecti
 Use `build --no-observation` only when a build must have no observation listener. Metrics and Step
 execution remain the same. Discovery currently requires an owner-only POSIX local filesystem.
 
-`./mvnw clean` removes the generated JAR and application image. Railix has no third-party Java runtime
-libraries or graphics framework. Creator renders its factory with native Canvas2D and a CSS-themed HUD;
-Playwright is test-only.
+`./mvnw clean` removes the generated JAR and application image. The core has no third-party Java runtime
+library. The Transform provider bundles TypeMap only into applications that use it. Creator uses no
+graphics framework: native Canvas2D renders the factory with a CSS-themed HUD. Playwright is test-only.
 
 The printed URL contains a random Creator token in its fragment. Every Creator API request requires
 that token and the exact loopback `Host`; the browser client supplies both without storing the token
@@ -222,12 +222,12 @@ provided by this minimal transport.
 - `railix-core`: canonical values, Step contracts, project validation, Java application generation,
   generated-application runtime contracts, stateless workflow execution, and the development
   capabilities packaged only into development artifacts.
-- `railix-stdlib`: App, CLI Trigger, HTTP Trigger, HTTP Client, Field Manipulation, configurable
+- `railix-stdlib`: App, CLI Trigger, HTTP Trigger, HTTP Client, Field Manipulation, Transform, configurable
   Branch, and built-in total or explicitly fallible unary Steps.
 - `railix-creator`: Creator HTTP/UI, project build and rolling child-JVM lifecycle, read-only
   management proxies, launcher, and executable shaded JAR.
 
-The reactor has three production modules and no third-party Java runtime library.
+The reactor has three production modules. Provider dependencies remain outside the core.
 
 ## Pull Requests
 

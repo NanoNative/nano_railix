@@ -1,0 +1,7 @@
+TypeMap 2026.11.2
+Author: Yuna Morgenstern
+Source: https://github.com/YunaBraska/type-map
+Artifact: berlin.yuna:type-map:2026.11.2
+License: Apache License, Version 2.0. See LICENSE in this directory.
+Distributed bytecode is unmodified upstream code except for the ordinary
+application packager's removal of unreachable classes and methods.

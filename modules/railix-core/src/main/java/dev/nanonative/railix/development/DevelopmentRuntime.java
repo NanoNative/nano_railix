@@ -15,6 +15,7 @@ import dev.nanonative.railix.core.step.StepResult;
 import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
+import dev.nanonative.railix.core.value.ValueRefinement;
 
 import java.io.ByteArrayOutputStream;
 import java.io.BufferedOutputStream;
@@ -169,9 +170,22 @@ public final class DevelopmentRuntime {
                     branch.emit(object("type", RailixValue.string("path_start"),
                             "parent_path", RailixValue.number(parent.path), "context", branch.lastContext));
                     final RunResult result = action.apply(execution, outcome);
-                    final Map<String, RailixValue> event = new LinkedHashMap<>(terminal(result).values());
-                    event.put("type", RailixValue.string("path_result"));
-                    branch.emit(RailixValue.object(event));
+                    if (branch.root.recording.get()) {
+                        final RailixValue.ObjectValue resultContext = switch (result) {
+                            case RunResult.Succeeded succeeded -> succeeded.context();
+                            case RunResult.Completed completed -> completed.context();
+                            default -> null;
+                        };
+                        if (resultContext == null && result instanceof RunResult.Succeeded
+                                || resultContext != null && ValueRefinement.canonical().rejection(resultContext).isPresent()) {
+                            branch.emit(traceError("RUN_RESPONSE_INVALID", "Application response is not valid canonical JSON."));
+                            branch.discard();
+                        } else {
+                            final Map<String, RailixValue> event = new LinkedHashMap<>(terminal(result).values());
+                            event.put("type", RailixValue.string("path_result"));
+                            branch.emit(RailixValue.object(event));
+                        }
+                    }
                     branch.complete();
                     return result;
                 } finally {
@@ -200,7 +214,12 @@ public final class DevelopmentRuntime {
                         "context", initialContext
                 ));
                 final RunResult result = execution.get();
-                trace.emit(terminal(result));
+                if (trace.root.recording.get()) {
+                    if (result.contextRejection().isPresent()) {
+                        trace.emit(traceError("RUN_RESPONSE_INVALID", "Application response is not valid canonical JSON."));
+                        trace.discard();
+                    } else trace.emit(terminal(result));
+                }
                 trace.complete();
                 return result;
             } finally {
@@ -368,6 +387,11 @@ public final class DevelopmentRuntime {
                 final String outcome,
                 final RailixValue.ObjectValue context
         ) {
+            if (context != null && ValueRefinement.canonical().rejection(context).isPresent()) {
+                emit(traceError("RUN_RESPONSE_INVALID", "Application response is not valid canonical JSON."));
+                discard();
+                return;
+            }
             final Pending call = calls.poll();
             if (call == null || !call.invocation.equals(invocation)) {
                 throw new IllegalStateException("Trace Step nesting is inconsistent: " + invocation + ".");
@@ -1807,7 +1831,7 @@ public final class DevelopmentRuntime {
 
         @Override
         public boolean write(final RailixValue.ObjectValue event) throws IOException {
-            final Optional<String> json = RailixJson.write(event, MAX_TRACE_EVENT_BYTES);
+            final Optional<String> json = RailixJson.writeDocument(event, MAX_TRACE_EVENT_BYTES);
             if (json.isEmpty()) {
                 writeLine(RailixJson.write(Trace.traceError(
                         "TRACE_EVENT_TOO_LARGE",
@@ -1854,6 +1878,10 @@ public final class DevelopmentRuntime {
     }
 
     private static void sendResult(final HttpExchange exchange, final RunResult result) throws IOException {
+        if (result.contextRejection().isPresent()) {
+            send(exchange, 500, problem("RUN_RESPONSE_INVALID", "Application response is not valid canonical JSON.", ""));
+            return;
+        }
         final ResultResponse response = response(result);
         send(exchange, response.status(), response.value());
     }

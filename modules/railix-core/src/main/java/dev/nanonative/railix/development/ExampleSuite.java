@@ -370,7 +370,7 @@ final class ExampleSuite implements AutoCloseable {
         requireReplayWithin(snapshot.cases, maxReplayBytes);
         final List<RailixValue> values = new ArrayList<>(snapshot.cases.size());
         final RailixValue.ObjectValue empty = stepCasesValue(snapshot.node, snapshot.revision, values);
-        final String emptyJson = RailixJson.write(empty, maxBytes).orElse(null);
+        final String emptyJson = RailixJson.writeDocument(empty, maxBytes).orElse(null);
         if (emptyJson == null) {
             return Optional.empty();
         }
@@ -382,7 +382,7 @@ final class ExampleSuite implements AutoCloseable {
             }
             final int separator = values.isEmpty() ? 0 : 1;
             if (bytes + separator >= maxBytes
-                    || RailixJson.write(
+                    || RailixJson.writeDocument(
                     RailixValue.object(fields),
                     maxBytes - bytes - separator
             ).isEmpty()) {
@@ -410,7 +410,7 @@ final class ExampleSuite implements AutoCloseable {
             }
             final RailixValue.ObjectValue value = RailixValue.object(fields);
             final String json = bytes + separator < maxBytes
-                    ? RailixJson.write(value, maxBytes - bytes - separator).orElse(null)
+                    ? RailixJson.writeDocument(value, maxBytes - bytes - separator).orElse(null)
                     : null;
             if (json == null) {
                 return Optional.empty();
@@ -799,7 +799,7 @@ final class ExampleSuite implements AutoCloseable {
     }
 
     private static RailixValue.ObjectValue event(final String line) throws IOException {
-        final RailixJson.Result parsed = RailixJson.parse(line);
+        final RailixJson.Result parsed = RailixJson.parseDocument(line);
         if (parsed instanceof RailixJson.Parsed value
                 && value.value() instanceof RailixValue.ObjectValue event) {
             return event;
@@ -973,7 +973,7 @@ final class ExampleSuite implements AutoCloseable {
             final OutputStream file,
             final RailixValue.ObjectValue event
     ) throws IOException {
-        final String json = RailixJson.write(event, MAX_TRACE_EVENT_BYTES).orElse(null);
+        final String json = RailixJson.writeDocument(event, MAX_TRACE_EVENT_BYTES).orElse(null);
         if (json == null) {
             synchronized (example) {
                 if (!example.terminal && example.terminalReserved) {
@@ -1079,7 +1079,7 @@ final class ExampleSuite implements AutoCloseable {
             example.terminalReserved = false;
             example.terminal = true;
             example.status = status;
-            if (RailixJson.parse(new String(terminal, StandardCharsets.UTF_8)) instanceof RailixJson.Parsed parsed
+            if (RailixJson.parseDocument(new String(terminal, StandardCharsets.UTF_8)) instanceof RailixJson.Parsed parsed
                     && parsed.value() instanceof RailixValue.ObjectValue event) example.result = errorSummary(event);
         }
     }

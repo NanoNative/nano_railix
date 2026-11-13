@@ -2,6 +2,10 @@ package dev.nanonative.railix.core.runtime;
 
 import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.value.RailixValue;
+import dev.nanonative.railix.core.value.ValueRefinement;
+
+import java.util.ArrayDeque;
+import java.util.Optional;
 
 /** Canonical trigger-independent run result without exception-driven user control flow. */
 public sealed interface RunResult permits
@@ -10,6 +14,35 @@ public sealed interface RunResult permits
         RunResult.Rejected,
         RunResult.Failed,
         RunResult.Cancelled {
+
+    /**
+     * Validates the contexts that a complete result would expose at an observation boundary.
+     * This explicit check does not run on individual Step calls or change execution outcomes.
+     * @return the first canonical-data rejection, or empty when all exposed contexts are valid
+     */
+    default Optional<String> contextRejection() {
+        final var pending = new ArrayDeque<RunResult>();
+        pending.add(this);
+        final ValueRefinement canonical = ValueRefinement.canonical();
+        while (!pending.isEmpty()) {
+            final RunResult current = pending.removeFirst();
+            final RailixValue.ObjectValue context = switch (current) {
+                case Succeeded succeeded -> succeeded.context();
+                case Completed completed -> {
+                    completed.paths().forEach(path -> pending.addLast(path.result()));
+                    yield completed.context();
+                }
+                default -> null;
+            };
+            if (context == null && current instanceof Succeeded) return Optional.of("Run context cannot be Java null.");
+            if (context != null) {
+                final Optional<String> rejection = canonical.rejection(context);
+                if (rejection.isPresent()) return rejection;
+            }
+        }
+        return Optional.empty();
+    }
+
     record Succeeded(RailixValue.ObjectValue context) implements RunResult {
     }
 

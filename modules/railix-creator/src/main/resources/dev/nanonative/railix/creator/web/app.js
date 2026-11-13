@@ -3793,7 +3793,7 @@ function pickerOptions() {
   const matching = candidates
     .filter(definition => definitionMatchesQuery(definition, query));
   const options = matching.filter(definition => state.picker.mode === "trigger"
-      || automaticBindingsAvailable(state.picker.anchor, definition));
+      || automaticBindingsAvailable(state.picker.anchor, definition, state.picker.outcome));
   const catalog = options
     .map(definition => `
       <button type="button" class="catalog-option" data-add-step="${html(definition.id)}" title="${html(definition.id)}">
@@ -3838,12 +3838,14 @@ async function openBeltPicker(id, outcome, arrivals = []) {
   const previous = state.picker;
   if (await loadEditor(id) !== 'loaded' || state.picker !== previous) return;
   const returnFocus=previous?.returnFocus || document.activeElement;
+  clearPreview();
   state.selection={type:definitionFor(node(id)).kind,id};
   state.regionSelection=null;
   openPicker('step',id,outcome);
   state.picker.returnFocus=returnFocus;
   state.picker.arrival={from:id,outcome};
   state.world?.repaint();
+  void requestSelectedTrace();
 }
 
 function closePicker() {
@@ -4017,7 +4019,7 @@ function insertStep(afterId, definition, selectedOutcome = "") {
   if (!insertionAllowed(after, outcome)) {
     return false;
   }
-  const bindings = graphBindings(after, definition);
+  const bindings = graphBindings(after, definition, outcome);
   if (bindings === null) {
     return false;
   }
@@ -4048,12 +4050,12 @@ function insertFlatStep(afterId, definition, id, outcome, bindings) {
   });
 }
 
-function graphBindings(after, definition) {
+function graphBindings(after, definition, outcome = "") {
   if (state.build !== "Built" && definition.receives.length) {
     return null;
   }
   const context = definitionFor(after)?.kind === "trigger" ? "trigger" : "output";
-  const available = availablePaths(after, context)
+  const available = availablePaths(after, context, outcome || primaryOutcome(after))
     .filter(entry => entry.path[1] !== "runtime" && entry.examples === entry.total);
   const receives = {};
   for (const port of definition.receives) {
@@ -4073,9 +4075,9 @@ function graphBindings(after, definition) {
   return { receives, returns };
 }
 
-function automaticBindingsAvailable(afterId, definition) {
+function automaticBindingsAvailable(afterId, definition, outcome) {
   const after = node(afterId);
-  return Boolean(after) && graphBindings(after, definition) !== null;
+  return Boolean(after) && graphBindings(after, definition, outcome) !== null;
 }
 
 function deleteSelection() {
@@ -6484,12 +6486,12 @@ function changedIds() {
   return changed;
 }
 
-function availablePaths(operation, context = state.traceContext) {
+function availablePaths(operation, context = state.traceContext, outcome = "") {
   const trigger = triggerFor(operation.id);
   if (!trigger) {
     return [];
   }
-  const roots = observedRoots(operation, context);
+  const roots = observedRoots(operation, context, outcome);
   const merged = new Map();
   roots.forEach(root => {
     const entries = [];
@@ -6502,10 +6504,10 @@ function availablePaths(operation, context = state.traceContext) {
       merged.set(key, value);
     });
   });
-  const total = Math.max(1, trigger.examples.length);
   const cases = state.traceCases.filter(example => example.trigger === trigger.id);
-  const settled = cases.length === total
+  const settled = cases.length === trigger.examples.length
     && cases.every(example => !["queued", "running"].includes(example.status));
+  const total = Math.max(1, settled ? roots.length : trigger.examples.length);
   const paths = [...merged.values()].map(entry => ({
     path: entry.path,
     shape: settled && entry.shapes.size === 1 ? [...entry.shapes][0] : "mixed",
@@ -6547,14 +6549,20 @@ function observationFor(operation) {
   return null;
 }
 
-function observedRoots(operation, context = state.traceContext) {
+function observedRoots(operation, context = state.traceContext, outcome = "") {
   const trigger = triggerFor(operation.id);
   if (!trigger) {
     return [];
   }
   return state.traceCases
     .filter(example => example.trigger === trigger.id)
+    .filter(example => context !== "output" || !outcome
+      || Number(example.projection?.visits) !== 1
+      || !outcomes(operation).includes(example.projection?.outcome)
+      || example.projection.outcome === outcome)
     .flatMap(example => {
+      // A last-visit snapshot cannot establish field presence on every earlier visit.
+      if (context === "output" && outcome && Number(example.projection?.visits) > 1) return [{ context: {} }];
       const value = context === "trigger"
         ? example.initial_context
         : context === "output"

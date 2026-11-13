@@ -27,6 +27,18 @@ implementation faults and cancellation remain different from business outcomes.
 Generic host composition owns continuation/no-write policy. The standard catalog is
 finite, versioned and machine-readable rather than a mirror of Java classes.
 
+On 2026-11-13 the user accepted a configurable Transform Step with optional fallback and
+JSON-native inputs/results. It uses TypeMap as an ordinary provider dependency, not a replacement
+context model or a core conversion hook. Exact-number checks and explicit JSON operations preserve
+Railix's existing data contract. The [Transform contract](../specs/standard-library.md#transform)
+owns the conversion table, fallback behavior and acceptance evidence. Global JSON-null prohibition
+was suggested but is not decided by this increment.
+
+Boundary testing exposed that enclosing run/trace messages incorrectly consumed the payload's
+depth allowance. The same JSON parser/writer now distinguishes canonical values from enclosing
+documents. Data validation remains unchanged, while fixed host envelopes receive bounded structural
+headroom. [Observation](../specs/observation.md) owns the end-to-end document contract.
+
 The [standard-library specification](../specs/standard-library.md) now owns the
 exact contract, catalog/support matrix and acceptance scenarios. Moved on 2026-09-19;
 no catalog row was implemented or promoted by that documentation change.

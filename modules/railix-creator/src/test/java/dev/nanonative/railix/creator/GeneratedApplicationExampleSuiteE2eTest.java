@@ -48,6 +48,58 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
     private static final int SNAPSHOT_REPLAY_STEPS = 40;
     private static final int SNAPSHOT_GATE_NODE = SNAPSHOT_REPLAY_STEPS + 3;
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void invalidCopiedContextIsFailedExampleEvidenceRatherThanARecordedSuccess(final boolean repairedLater) throws Exception {
+        GeneratedApplicationFixture.installedCatalog(directory, List.of(TransformGeneratedE2eTest.invalidContextDefinition()),
+                thirdparty.conformance.StepRuntimeContractProbe.class);
+        final Path project = directory.resolve("railix.project.json");
+        final String source = TransformGeneratedE2eTest.invalidContextProject();
+        Files.writeString(project, repairedLater ? source.replace("\"id\":\"healthy\"", "\"id\":\"repair\",\"use\":\"railix.field-manipulation\","
+                + "\"inputs\":{\"field\":[\"context\",\"bad\"],\"value\":[{\"option\":\"literal\",\"inputs\":{\"literal\":\"repaired\"}}]}},"
+                + "{\"id\":\"healthy\"")
+                .replace("\"from\":\"bad.next\",\"to\":\"end\"", "\"from\":\"bad.next\",\"to\":\"repair\"")
+                .replace("{\"from\":\"healthy.next\"", "{\"from\":\"repair.next\",\"to\":\"end\"},{\"from\":\"healthy.next\"")
+                : source, StandardCharsets.UTF_8);
+        try (final CreatorServer creator = start(project)) {
+            final var inventory = exampleCase(awaitExamples(creator, 1), "command:0");
+            assertThat(string(inventory, "status")).isEqualTo("failed");
+            final var response = request(creator.baseUri(), "GET", "/api/examples/command:0/view", "");
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            assertThat(response.body()).contains("RUN_RESPONSE_INVALID");
+        }
+    }
+
+    @Test
+    void canonicalBoundaryContextSurvivesTraceStorageAndCreatorProjections() throws Exception {
+        final String nested = "[".repeat(63) + "0" + "]".repeat(63);
+        final String payload = RailixJson.write(RailixValue.array(List.of(RailixValue.string(nested))));
+        final String source = TransformGeneratedE2eTest.cliProject("json_value", "0")
+                .replace("\"payload\":[\"42\"]", "\"payload\":" + payload);
+        final Path project = directory.resolve("railix.project.json");
+        Files.writeString(project, source, StandardCharsets.UTF_8);
+        final RailixValue expected = ((RailixJson.Parsed) RailixJson.parse(nested)).value();
+        try (final CreatorServer creator = start(project)) {
+            final var inventory = exampleCase(awaitExamples(creator, 1), "command:0");
+            assertThat(string(inventory, "status")).isEqualTo("succeeded");
+            for (final String path : List.of("/api/examples/command:0/steps/2", "/api/examples/steps/2")) {
+                final var response = request(creator.baseUri(), "GET", path, "");
+                assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+                final var parsed = RailixJson.parseDocument(response.body());
+                assertThat(parsed).isInstanceOf(RailixJson.Parsed.class);
+                final var document = (RailixValue.ObjectValue) ((RailixJson.Parsed) parsed).value();
+                final var projection = document.values().get("cases") instanceof RailixValue.ArrayValue cases
+                        ? (RailixValue.ObjectValue) ((RailixValue.ObjectValue) cases.values().getFirst()).values().get("projection")
+                        : document;
+                final var context = (RailixValue.ObjectValue) projection.values().get("context");
+                assertThat(context.values().get("result")).isEqualTo(expected);
+            }
+            final var view = request(creator.baseUri(), "GET", "/api/examples/command:0/view", "");
+            assertThat(view.statusCode()).as(view.body()).isEqualTo(200);
+            assertThat(RailixJson.parseDocument(view.body())).isInstanceOf(RailixJson.Parsed.class);
+        }
+    }
+
     @Test
     void longUnicodeFailureHeadersRemainBoundedAndSerializable() throws Exception {
         final String prefix = "Step returned undeclared outcome: ";

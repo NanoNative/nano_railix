@@ -78,6 +78,20 @@ response transport. A concurrent read returns bounded unavailability without all
 case snapshot. The owner rejects the request before replay when its completed source traces exceed
 64 MiB. Exact Step context cannot be reconstructed from compact context changes without replaying
 from each Example's initial context.
+
+Canonical application values retain their depth-64 limit. Run responses, stored trace records and
+selected-Step projections add host-owned JSON containers around those values. They MUST use the
+same JSON codec's document operations end to end, including Creator forwarding and parsing.
+The complete document is bounded to 72 containers: 64 for data plus eight for the shipped
+case/projection/stage/input envelope and its enclosing response. This is not a second format or
+execution path. It does not relax input-data validation, number/Unicode rules or any byte budget.
+The ordinary single-flow run, trace storage/replay and selected-Step inspection MUST preserve a
+valid boundary-depth context unchanged. Nested result trees remain subject to the complete-document
+bound. Excessive document depth and excessive data depth remain separate explicit rejections.
+Trace recording validates each committed graph-Step context before publishing successful evidence,
+so a later repair cannot conceal invalid intermediate data. Disabled tracing adds no per-Step scan.
+There is no user setting for internal envelope depth.
+
 Runtime metrics use fixed-cardinality counters selected at compile time per graph Step. Counts are
 exact, Flow timings are exact, and Step timings sample one execution in 1,024. The shared application
 endpoint serves JSON, Prometheus, and Influx metric formats; Creator displays application, Flow,

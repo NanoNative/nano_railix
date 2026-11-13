@@ -167,12 +167,13 @@ traversal is iterative, performs no recursive call-stack growth or sorted contai
 rejects invalid output before preview capture or workflow-context mutation. Creator applies
 the same constraints to every authored Trigger example and every real built preview case.
 
-[TypeMap](https://github.com/YunaBraska/type-map) was evaluated against this gap. It is
+[TypeMap](https://github.com/YunaBraska/type-map) was evaluated against the JSON codec gap. It is
 reflection-free and has no external runtime dependency, but its conversion and serialization
 APIs do not provide Railix's canonical key order, number domain, maximum depth, output-byte
 limit, or explicit invalid outcome. It may remain useful at a future ingress boundary, but an
 adapter would add another value path without replacing Railix's contract, so no dependency is
-added here.
+added to the core JSON codec. The separately accepted Transform Step below uses TypeMap only
+inside its ordinary provider implementation.
 
 A useful TypeMap contribution would be a separate opt-in strict JSON API, leaving its current
 lenient APIs unchanged. That API would expose explicit success/failure and JSON-null values,
@@ -186,6 +187,59 @@ constructs `RailixValue` directly without an intermediate `Map`/`List` tree, rep
 single current codec path with less production code, does not increase peak memory, regresses
 public-boundary throughput by no more than five percent, and passes `jlink`/`jpackage` smoke
 tests. Until then, one independent Railix codec remains safer than an adapter or fallback.
+
+### Transform
+
+Accepted, implemented and verified on 2026-11-13.
+
+`railix.transform` is an ordinary provider `STEP`, not a compiler intrinsic. It declares a
+readable `source` path, a `convert_to` option and a writable `target` path. Both paths default
+to `context.payload`. The default conversion is `number`. A missing source is distinguishable
+from JSON null. Both produce `invalid` unless an explicit fallback is configured. No value
+is written on `invalid`. The declared `ok` and `invalid` outcomes use normal graph connections.
+
+Each conversion option owns an optional `fallback` configuration value of its result shape.
+Fallbacks must already be valid destination values, not values converted again at runtime.
+Zero, false, empty text, empty arrays and empty objects are usable fallbacks. A valid conversion
+never uses the fallback. Invalid configuration is rejected before execution through the public
+configuration-validation contract. Existing source data remains unchanged unless source and
+target deliberately select the same field. Writes remain ordinary atomic Step writes.
+
+| Option | Result | Accepted conversion |
+| --- | --- | --- |
+| `text` | STRING | Existing text, Boolean text or a canonical plain number without exponent notation. Collections are not silently flattened or serialized. |
+| `number` | NUMBER | Existing exact number, numeric text parsed as `BigDecimal`, or Boolean as 0/1. No `double` intermediate. |
+| `integer` | NUMBER | Number conversion with no fractional component. No silent rounding or Java 32-bit restriction. |
+| `boolean` | BOOLEAN | Existing Boolean, exact numeric 0/1, or exact text `true`, `false`, `0`, `1`. Other values are invalid, not false. |
+| `list` | ARRAY | Preserve an array, otherwise wrap one non-null JSON value as a single element. Text containing JSON remains text. |
+| `object` | OBJECT | Preserve an object. Text is not implicitly parsed. |
+| `timestamp_utc_millis` | NUMBER | Integral signed 64-bit epoch milliseconds, numeric text in that same unit, or an ISO offset date-time. No seconds/milliseconds guessing, machine-local timezone or current-date defaults. |
+| `json_text` | STRING | Explicit bounded canonical JSON serialization through the existing Railix codec. |
+| `json_value` | ANY | Explicit strict JSON parsing through the existing Railix codec. Retain exact numbers and nested JSON types. Root JSON null is invalid. |
+
+TypeMap is a pinned dependency of the provider, not of `railix-core`. The provider bundles its
+dependency and license through ordinary provider packaging. An application which does not use
+Transform must not retain TypeMap runtime classes. No global conversion registration is changed.
+Only JSON-native values enter or leave the Step. Java dates, files, arbitrary objects, non-finite
+numbers and cycles cannot become context data. Integer and timestamp are number constraints,
+not new context types. Canonical value limits also apply after conversion and before a write.
+Container depth includes the target path's containing objects/arrays. A converted value that
+does not fit there uses the explicit fallback only if that value also fits, otherwise `invalid`
+leaves the target unchanged. It must not first mutate the context and fail during serialization.
+
+This increment does not globally forbid JSON null or replace null with empty text. The user raised
+that broader policy on 2026-11-13, but its consequences for external data, optional numeric fields
+and existing Trigger defaults remain undecided. Java null remains forbidden as a public value.
+
+Acceptance must cover real generated requests, all conversion options, absent/null/invalid sources,
+fallback presence and absence, exact large numbers, invalid fallback configuration, repeated use,
+explicit JSON parsing versus list wrapping, ordinary provider import and standalone packaging.
+Creator evidence must include insertion, mixed-type Examples, source/target selection, target changes,
+fallback editing/removal, save/reopen and desktop/narrow layouts. These checks pass locally through
+generated applications, an independently compiled provider and real Creator browser journeys at
+1280 and 320 pixels. `./mvnw clean verify` passes, including packaged-launcher and production tests.
+A separate smoke test built the Transform application with the packaged Creator and executed both
+conversion and fallback using its bundled Java runtime. Final review has no open findings.
 
 ### Matching And Validation
 

@@ -42,7 +42,8 @@ public final class StandardLibrary {
                 http(),
                 httpClient(),
                 fieldManipulation(),
-                branch()
+                branch(),
+                TransformStep.definition()
         ));
         definitions.addAll(PrimitiveSteps.definitions());
         return List.copyOf(definitions);

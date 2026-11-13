@@ -136,7 +136,9 @@ Checkpoints:
 4. **Done:** implement and prove all accepted total conversion, text, boolean, number, list,
    date, matching, and normalization rows.
 5. **In progress:** implement every remaining accepted fallible parse, validation, translation,
-   and collection row. [The standard-library spec](specs/standard-library.md) is the only support matrix.
+   and collection row. The [configurable Transform Step](specs/standard-library.md#transform) is
+   implemented and verified with optional fallback and JSON-native values. It does not complete the
+   remaining unary catalog. [The standard-library spec](specs/standard-library.md) is the only support matrix.
 6. **Planned:** full catalog acceptance gate, docs, coverage/complexity audit, stability proof, and
    milestone screenshot.
 

@@ -2098,7 +2098,7 @@ public final class CreatorServer implements AutoCloseable {
                                         "reason", RailixValue.string(read)
                                 )));
                             }
-                            final RailixJson.Result parsed = RailixJson.parse(utf8(response.body()));
+                            final RailixJson.Result parsed = RailixJson.parseDocument(utf8(response.body()));
                             if (!(parsed instanceof RailixJson.Parsed json)
                                     || !(json.value() instanceof RailixValue.ObjectValue document)
                                     || !RailixValue.number(pid).equals(document.values().get("application_pid"))) {
@@ -2111,7 +2111,7 @@ public final class CreatorServer implements AutoCloseable {
                     forwarding.release();
                 }
                 final RailixValue.ObjectValue observation = projection.response(functionalRevision, pid);
-                final String body = RailixJson.write(observation, MAX_SCENE_BYTES).orElse(null);
+                final String body = RailixJson.writeDocument(observation, MAX_SCENE_BYTES).orElse(null);
                 if (!sceneObservationCurrent(deployed, functionalRevision, presentationRevision)) {
                     return unavailable("application");
                 }
@@ -3323,7 +3323,7 @@ public final class CreatorServer implements AutoCloseable {
             {
                 final var response = deployed.examples(example.value() + "/view", deadline);
                 if (response == null || response.status() != 200) return unavailable("assertion-evidence");
-                final var document = RailixJson.parse(utf8(response.body()));
+                final var document = RailixJson.parseDocument(utf8(response.body()));
                 if (!(document instanceof RailixJson.Parsed valid) || !(valid.value() instanceof RailixValue.ObjectValue summary)
                         || !applicationPid.equals(summary.values().get("application_pid"))
                         || !(summary.values().get("nodes") instanceof RailixValue.ArrayValue nodes))
@@ -3338,7 +3338,7 @@ public final class CreatorServer implements AutoCloseable {
                 if (System.nanoTime() >= deadline) return unavailable("assertion-timeout");
                 final var response = deployed.examples(example.value() + "/steps/" + index.getAsInt(), deadline);
                 if (response == null || response.status() != 200) return unavailable("assertion-evidence");
-                final var document = RailixJson.parse(utf8(response.body()));
+                final var document = RailixJson.parseDocument(utf8(response.body()));
                 if (!(document instanceof RailixJson.Parsed valid) || !(valid.value() instanceof RailixValue.ObjectValue projection)
                         || !applicationPid.equals(projection.values().get("application_pid"))
                         || !step.equals(projection.values().get("id")))
@@ -3360,7 +3360,7 @@ public final class CreatorServer implements AutoCloseable {
             final Map<String, RailixValue> fields = new LinkedHashMap<>(result.values());
             for (final String name : List.of("revision", "application_pid", "example", "step")) fields.put(name, request.values().get(name));
             try {
-                return RailixJson.write(RailixValue.object(fields), MAX_REQUEST_BYTES)
+                return RailixJson.writeDocument(RailixValue.object(fields), MAX_REQUEST_BYTES)
                         .map(value -> new Response(200, "application/json; charset=utf-8", value.getBytes(StandardCharsets.UTF_8)))
                         .orElseGet(() -> json(413, RailixValue.object(Map.of("status", RailixValue.string("assertion-result-too-large")))));
             } catch (final IllegalArgumentException unrepresentable) {
@@ -3448,7 +3448,7 @@ public final class CreatorServer implements AutoCloseable {
             }
             byte[] body = response.body();
             if (response.status() == 200 && resolveProblems) {
-                final var parsed = RailixJson.parse(utf8(body));
+                final var parsed = RailixJson.parseDocument(utf8(body));
                 if (parsed instanceof RailixJson.Parsed json && json.value() instanceof RailixValue.ObjectValue summary) {
                     if (!deployed.snapshot().values().get("pid").equals(summary.values().get("application_pid"))) return unavailable("application");
                     final RailixValue.ObjectValue view;
@@ -3470,7 +3470,7 @@ public final class CreatorServer implements AutoCloseable {
                     } catch (final java.util.NoSuchElementException failure) {
                         return json(404, RailixValue.object(Map.of("status", RailixValue.string("section-not-found"))));
                     }
-                    final String resolved = RailixJson.write(view, DevelopmentApplication.OBSERVATION_RESPONSE_LIMIT).orElse(null);
+                    final String resolved = RailixJson.writeDocument(view, DevelopmentApplication.OBSERVATION_RESPONSE_LIMIT).orElse(null);
                     if (resolved == null) return json(413, RailixValue.object(Map.of("status", RailixValue.string("example-view-too-large"))));
                     body = resolved.getBytes(StandardCharsets.UTF_8);
                 } else return json(502, RailixValue.object(Map.of("status", RailixValue.string("invalid-application-observation"))));
@@ -3860,7 +3860,7 @@ public final class CreatorServer implements AutoCloseable {
         return new Response(
                 status,
                 "application/json; charset=utf-8",
-                RailixJson.write(value).getBytes(StandardCharsets.UTF_8)
+                RailixJson.writeDocument(value).getBytes(StandardCharsets.UTF_8)
         );
     }
 
