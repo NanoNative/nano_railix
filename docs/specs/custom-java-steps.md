@@ -35,15 +35,15 @@ Example payloads or literal JSON containing the same `use` text are not uses.
 Prebuilt provider definitions remain outside this deletion flow. Existing binary
 artifacts remain available to applications that already own them.
 
-The user's clarification on 2026-11-13 supersedes the earlier definition-history
-direction: creating or deleting a custom definition has no Undo/Redo operation.
-Placing, editing and removing its occurrences retains the existing flow Undo/Redo
-behavior while the definition exists. Creation preserves flow history; successful
-definition deletion clears all flow Undo/Redo history in the active Creator
-session, across all tabs, so history cannot restore a placement whose definition
-was deleted. Before submitting deletion, the red Delete button must ask for
-confirmation and warn that deletion cannot be undone and clears all flow history.
-Cancellation and rejected or failed deletion preserve history. Recovery of unused saved
+The user's latest clarification on 2026-11-13 supersedes the earlier policy of
+clearing history after deletion: definition creation and deletion participate in
+the same Undo/Redo history as placement edits. Undo restores a deleted definition
+before earlier actions can restore its placements. Redo removes those placements
+before deleting the definition again. New accepted definition changes clear Redo
+as ordinary editor actions do. The history is shared across tabs and lasts only
+for the active Creator session. Before submitting deletion, the red Delete button
+must ask for confirmation and explain recovery during the current session.
+Cancellation and rejected or failed changes preserve history. Recovery of unused saved
 methods whose Java no longer compiles remains a separate open increment: normal
 Creator startup currently rejects those documents. Runtime verification is
 excluded by the user's no-running constraint; regressions must be reported as
@@ -113,18 +113,20 @@ the name, method source and JSON encoding. Neither limit is a Step execution lim
   catalog and MUST NOT restart the unchanged application. Other open tabs MUST
   refresh removed definitions without resurrecting an older catalog response.
 
-- **CUSTOM-013:** Creating and deleting custom definitions MUST NOT create
-  Undo/Redo entries. Creation MUST preserve existing flow Undo/Redo history.
-  Placement, editing and removal of custom-Step occurrences MUST retain ordinary
-  flow Undo/Redo behavior while their definition exists. Successful definition
-  deletion MUST clear all flow Undo/Redo history in the active Creator session,
-  including unrelated edits and history shared by other tabs. Rejected or failed
-  deletion MUST preserve history. Conflicting outside source edits MUST be preserved.
+- **CUSTOM-013:** Creating and deleting custom definitions MUST each create one
+  entry in the existing shared editor Undo/Redo history. Undo/Redo MUST restore or
+  remove the saved definition source and catalog entry together, preserving its
+  source order and other definitions. Removing a definition through history MUST
+  reject any remaining placement or nested invocation. Definition-only history
+  actions MUST NOT restart the unchanged application. New accepted definition
+  changes MUST clear Redo while retaining earlier Undo entries within the existing
+  history budget. Rejected or failed changes MUST preserve both stacks. Conflicting
+  outside source edits MUST be preserved.
 - **CUSTOM-014:** Clicking a custom definition's red Delete button MUST open a
   Railix-themed confirmation dialog before submitting deletion. The dialog MUST name the definition
-  and warn that deletion cannot be undone and successful deletion clears all flow
-  Undo/Redo history for the session, across all tabs. Cancelling MUST leave source,
-  catalog and history unchanged and MUST NOT submit a deletion request. Cancel MUST
+  and explain that deletion can be undone during the current Creator session,
+  whose history is shared across tabs and lost when Creator closes. Cancelling MUST
+  leave source, catalog and history unchanged and MUST NOT submit a deletion request. Cancel MUST
   receive initial focus; Escape MUST cancel and return to the definition list.
 
 History remains in the active Creator server's memory and does not survive its
@@ -184,8 +186,8 @@ insufficient. Signature/port inspection remains separate from these body checks.
 | CUSTOM-011/012 | Delete an unused custom definition, reopen the project and recreate its name; reject deletion while a placement, linked use or nested invocation remains. Ignore matching text in literal/example data. | API regressions authored; not executed under the no-running constraint. |
 | CUSTOM-012 | Race placement with deletion, deliver an older catalog after deletion, and fail source persistence. | Concurrent placement/deletion, delayed-catalog browser and source-publication failure regressions authored; not executed under the no-running constraint. |
 | CUSTOM-006/012 | Keep a placement selected in one tab, remove it and its definition in another, then open and close Manage custom Steps. Repeat with an unsaved Example draft. | Desktop/narrow browser regression authored: matching project/catalog refresh returns a removed selection to the App; conflicting drafts retain their view and definitions with a reload diagnostic. Not executed under the no-running constraint. |
-| CUSTOM-013 | Create a definition without adding history; undo/redo its placement normally. Create another definition with existing Undo/Redo history and preserve it. Delete an unused definition with both history stacks populated, then recreate its name; earlier placements and definitions cannot be restored. Reject stale, in-use, externally changed and failed-persistence deletion without clearing history. | API and desktop/narrow browser regressions authored; not executed under the no-running constraint. |
-| CUSTOM-014 | Click Delete, inspect the themed warning and initial Cancel focus; cancel by button and Escape, verifying no DELETE request, unchanged definition/history and a usable button. Confirm deletion and verify both history actions become unavailable. | Desktop/narrow browser regression and warning screenshots authored; not executed under the no-running constraint. |
+| CUSTOM-013 | Undo/redo definition creation, placement, removal and definition deletion in order. Preserve unrelated edits and definitions, restore original source/order, recreate the same name with different source, and branch history after Undo. Reject stale, in-use, externally changed and failed-persistence changes without consuming history. Verify definition-only actions retain the application PID and restart drops session history. | API and desktop/narrow browser regressions authored; not executed under the no-running constraint. |
+| CUSTOM-014 | Click Delete, inspect the themed session-history warning and initial Cancel focus; cancel by button and Escape, verifying no DELETE request, unchanged definition/history and a usable button. Confirm deletion, then restore the definition and its placement through Undo and repeat with Redo. | Desktop/narrow browser regression and warning screenshots authored; not executed under the no-running constraint. |
 
 ## Implementation Flow
 
@@ -224,12 +226,15 @@ revision; `DELETE /api/custom-steps` accepts `id` and `catalog_revision`. Provid
 cannot be deleted through this boundary. Usage comes from accepted compiler
 dependencies, including actual nested calls, rather than a search through JSON
 data. The red Delete button opens a Railix-themed confirmation dialog naming the definition and
-warning that deletion cannot be undone and will clear all flow Undo/Redo history
-for this Creator session, across all tabs. Cancellation sends no deletion request.
+explaining that deletion can be undone during this Creator session; history is
+shared across tabs and lost when Creator closes. Cancellation sends no deletion request.
 Publication removes the saved record at the atomic single-file persistence
-boundary, publishes the revised catalog, then clears both flow history stacks.
-Failed deletion preserves history. Neither creation nor deletion records an
-undoable definition change; retained build artifacts are never deleted.
+boundary, publishes the revised catalog, then records the definition change in
+the existing bounded history. History retains the affected definition's source
+and position rather than copies of the entire custom source document. Undo/Redo
+insertion uses the same restricted compiler and source publication as creation;
+removal retains the usage check. Failed changes preserve history. Retained build
+artifacts are never deleted.
 
 Other authoring tools call the same core API with their own identity, classpath
 and output locations. The runtime API may be a directory or JAR; its supplied

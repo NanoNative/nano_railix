@@ -2495,7 +2495,7 @@ public final class CreatorServer implements AutoCloseable {
             final String kind = CreatorChanges.text(command, "kind");
             final boolean undo = kind.equals("undo"), redo = kind.equals("redo");
             final boolean preview = RailixValue.bool(true).equals(request.values().get("preview"));
-            final EditorHistory historical;
+            final EditorHistory entry;
             final CreatorChanges.Edit change;
             synchronized (applicationLock) {
                 if (!open.get()) return unavailable("closed");
@@ -2515,7 +2515,11 @@ public final class CreatorServer implements AutoCloseable {
                 previousExamples = documents.examples();
                 previousExpectations = ProjectFiles.expectations(previousExamples);
                 project = editorLocked().project();
-                historical = undo ? editorUndo.peekLast() : redo ? editorRedo.peekLast() : null;
+                entry = undo ? editorUndo.peekLast() : redo ? editorRedo.peekLast() : null;
+            }
+            if (entry instanceof CustomStepHistory custom) return applyCustomStepHistory(custom, undo, preview);
+            final FlowHistory historical = (FlowHistory) entry;
+            synchronized (applicationLock) {
                 try {
                     if (undo || redo) {
                         if (historical == null) throw new IllegalArgumentException("There is no action to " + kind + ".");
@@ -2623,12 +2627,11 @@ public final class CreatorServer implements AutoCloseable {
                 }
                 Files.delete(journal);
                 synchronized (applicationLock) {
-                    if (undo) { editorUndo.removeLast(); editorRedo.addLast(historical); }
-                    else if (redo) { editorRedo.removeLast(); editorUndo.addLast(historical); }
+                    if (undo || redo) moveHistory(historical, undo);
                     else if (functional || !previousCreator.equals(creatorValue)) {
                         final var acceptedProject = (RailixValue.ObjectValue) ((RailixJson.Parsed) RailixJson.parse(source)).value();
                         final var nextExpectations = ProjectFiles.expectations(ProjectFiles.readText(projectFile.resolveSibling("railix.examples.json")));
-                        recordHistory(new EditorHistory(CreatorChanges.delta(project, acceptedProject),
+                        recordHistory(new FlowHistory(CreatorChanges.delta(project, acceptedProject),
                                 CreatorChanges.delta(acceptedProject, project), CreatorChanges.delta(previousCreator, creatorValue),
                                 CreatorChanges.delta(creatorValue, previousCreator), CreatorChanges.diff(previousExpectations, nextExpectations),
                                 CreatorChanges.diff(nextExpectations, previousExpectations), change.selection()));
@@ -2660,10 +2663,30 @@ public final class CreatorServer implements AutoCloseable {
         historyCreatorRevision = creatorRevision;
     }
 
-    private record EditorHistory(CreatorChanges.Delta projectForward, CreatorChanges.Delta projectBack,
+    private void moveHistory(final EditorHistory entry, final boolean undo) {
+        (undo ? editorUndo : editorRedo).removeLast();
+        (undo ? editorRedo : editorUndo).addLast(entry);
+        historyProjectRevision = sourceRevision;
+        historyCreatorRevision = creatorRevision;
+    }
+
+    private sealed interface EditorHistory permits FlowHistory, CustomStepHistory {
+        long bytes();
+    }
+
+    private record CustomStepHistory(CustomSteps.Saved step, boolean created) implements EditorHistory {
+        @Override public long bytes() {
+            return (long) step.id().getBytes(StandardCharsets.UTF_8).length
+                    + step.name().getBytes(StandardCharsets.UTF_8).length
+                    + step.source().getBytes(StandardCharsets.UTF_8).length + Integer.BYTES + 1;
+        }
+    }
+
+    private record FlowHistory(CreatorChanges.Delta projectForward, CreatorChanges.Delta projectBack,
                                  CreatorChanges.Delta creatorForward, CreatorChanges.Delta creatorBack,
-                                 RailixValue.ObjectValue expectationsForward, RailixValue.ObjectValue expectationsBack, String selection) {
-        private long bytes() {
+                                 RailixValue.ObjectValue expectationsForward, RailixValue.ObjectValue expectationsBack,
+                                 String selection) implements EditorHistory {
+        @Override public long bytes() {
             return List.of(projectForward, projectBack, creatorForward, creatorBack).stream()
                     .mapToLong(delta -> RailixJson.write(delta.changes()).getBytes(StandardCharsets.UTF_8).length
                             + delta.positions().values().stream().mapToLong(Map::size).sum() * 160).sum()
@@ -3273,7 +3296,7 @@ public final class CreatorServer implements AutoCloseable {
                     final var empty = new CreatorChanges.Delta(RailixValue.object(Map.of()), Map.of());
                     final var before = ProjectFiles.expectations(previous);
                     final var after = ProjectFiles.expectations(next);
-                    recordHistory(new EditorHistory(empty, empty, empty, empty,
+                    recordHistory(new FlowHistory(empty, empty, empty, empty,
                             CreatorChanges.diff(before, after), CreatorChanges.diff(after, before), target[1]));
                 }
             }
@@ -3678,17 +3701,62 @@ public final class CreatorServer implements AutoCloseable {
                 final String next = CustomSteps.deletion(document, saved.orElseThrow());
                 if (!document.equals(CustomSteps.read(projectFile))) return customSourceConflict();
                 publishCustomDocument(catalog.withoutDefinition(id), next);
-                // Earlier flow deltas may restore a placement of the permanently deleted definition.
-                editorUndo.clear();
-                editorRedo.clear();
-                historyProjectRevision = sourceRevision;
-                historyCreatorRevision = creatorRevision;
+                recordCustomStepHistory(saved.orElseThrow(), false);
                 final var payload = new LinkedHashMap<>(projectPayloadLocked(false).values());
                 payload.put("status", RailixValue.string("deleted"));
                 payload.put("catalog", catalog());
                 return json(200, RailixValue.object(payload));
             }
         }
+    }
+
+    /** Requires buildLock; only the accepted definition source and catalog are changed. */
+    private Response applyCustomStepHistory(final CustomStepHistory entry, final boolean undo,
+                                           final boolean preview) throws IOException {
+        final String document = CustomSteps.read(projectFile);
+        if (!CustomSteps.fingerprint(document).equals(customDocumentFingerprint)) return customSourceConflict();
+        final StepCatalog candidate;
+        final String next;
+        // Undo creation and Redo deletion both remove the definition.
+        if (entry.created() == undo) {
+            final var saved = CustomSteps.saved(document).stream().filter(step -> step.id().equals(entry.step().id())).findFirst();
+            if (saved.isEmpty() || !saved.orElseThrow().equals(entry.step()))
+                return customStepConflict("The custom Step changed. Restart before changing its history.");
+            synchronized (applicationLock) {
+                if (customStepUsed(entry.step().id())) return customStepInUse();
+                candidate = catalog.withoutDefinition(entry.step().id());
+            }
+            next = CustomSteps.deletion(document, saved.orElseThrow());
+        } else {
+            final var result = CustomSteps.prepareInsertion(catalog, projectFile, document, entry.step());
+            if (result instanceof CustomSteps.Rejected rejected) return customStepCompilationRejected(rejected);
+            final var prepared = (CustomSteps.Prepared) result;
+            candidate = prepared.catalog();
+            next = prepared.document();
+        }
+        synchronized (applicationLock) {
+            if (!open.get()) return unavailable("closed");
+            if (visibleEdit != null || deploymentPending) return unavailable("edit-in-progress");
+            if (!document.equals(CustomSteps.read(projectFile))) return customSourceConflict();
+            if (!ProjectFiles.read(projectFile).source().equals(source))
+                return customStepConflict("Project files changed outside Creator. Restart before changing history.");
+            if (preview) return json(200, RailixValue.object(Map.of(
+                    "selection", RailixValue.string("app"), "project_changes", RailixValue.object(Map.of()),
+                    "creator_changes", RailixValue.object(Map.of()))));
+            publishCustomDocument(candidate, next);
+            moveHistory(entry, undo);
+            final var payload = new LinkedHashMap<>(projectPayloadLocked(false).values());
+            payload.put("selection", RailixValue.string("app"));
+            return json(200, RailixValue.object(payload));
+        }
+    }
+
+    /** Requires applicationLock; source replacement may have invalidated the earlier session history. */
+    private void recordCustomStepHistory(final CustomSteps.Saved step, final boolean created) {
+        if (historyProjectRevision != sourceRevision || historyCreatorRevision != creatorRevision) {
+            editorUndo.clear(); editorRedo.clear();
+        }
+        recordHistory(new CustomStepHistory(step, created));
     }
 
     private static Set<String> implementationClasses(final CompileResult.Compiled compiled) {
@@ -3767,6 +3835,7 @@ public final class CreatorServer implements AutoCloseable {
     /** Requires buildLock and applicationLock; disk publication precedes the shared-state update. */
     private Response publishCustomStepLocked(final CustomSteps.Prepared prepared) throws IOException {
         publishCustomDocument(prepared.catalog(), prepared.document());
+        recordCustomStepHistory(prepared.saved(), true);
         final var payload = new LinkedHashMap<>(projectPayloadLocked(false).values());
         payload.put("status", RailixValue.string("compiled"));
         payload.put("definition", definition(prepared.definition()));

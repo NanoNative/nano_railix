@@ -435,24 +435,45 @@ final class CustomStepsE2eTest extends CreatorServerE2eSupport {
     }
 
     @Test
-    void definitionsHaveNoUndoAndSuccessfulDeletionClearsAllFlowHistory() throws Exception {
+    void definitionsAndPlacementsShareUndoRedoHistory() throws Exception {
         final Path project = directory.resolve("railix.project.json");
         final Path metadata = project.resolveSibling("railix.creator.json");
         Files.writeString(project, emptyFlow());
         try (var creator = start(project)) {
             final URI base = creator.baseUri();
             assertThat(request(base, "POST", "/api/custom-steps", method("Normalize", METHOD)).statusCode()).isEqualTo(200);
-            final String staleDeletion = deletion(base, "custom.normalize");
             final Path custom = project.resolveSibling(CustomSteps.FILE);
-            assertThat(history(base).values()).containsEntry("undo", RailixValue.bool(false)).containsEntry("redo", RailixValue.bool(false));
-            assertThat(action(base, "{\"kind\":\"undo\"}", false).statusCode()).isEqualTo(422);
+            final String saved = Files.readString(custom);
+            final String staleDeletion = deletion(base, "custom.normalize");
+            final var staleEditor = object(request(base, "GET", "/api/editor", "").body());
+            final long initialPid = number(application(base), "pid");
+            final var createdHistory = history(base);
+            assertThat(createdHistory.values()).containsEntry("undo", RailixValue.bool(true)).containsEntry("redo", RailixValue.bool(false));
+            assertThat(action(base, "{\"kind\":\"undo\"}", true).statusCode()).isEqualTo(200);
+            assertThat(Files.readString(custom)).isEqualTo(saved);
+            assertThat(history(base)).isEqualTo(createdHistory);
+            successfulAction(base, "{\"kind\":\"undo\"}");
+            assertThat(Files.readString(custom)).contains("\"steps\":[]");
+            assertThat(request(base, "GET", "/api/catalog", "").body()).doesNotContain("custom.normalize");
+            assertThat(history(base).values()).containsEntry("undo", RailixValue.bool(false)).containsEntry("redo", RailixValue.bool(true));
+            successfulAction(base, "{\"kind\":\"redo\"}");
+            assertThat(Files.readString(custom)).isEqualTo(saved);
+            assertThat(request(base, "GET", "/api/catalog", "").body()).contains("custom.normalize");
+            assertThat(number(application(base), "pid")).isEqualTo(initialPid);
+            final var staleUndo = request(base, "POST", "/api/editor", RailixJson.write(RailixValue.object(Map.of(
+                    "revision", staleEditor.values().get("revision"), "creator_revision", staleEditor.values().get("creator_revision"),
+                    "catalog_revision", staleEditor.values().get("catalog_revision"), "command", object("{\"kind\":\"undo\"}")))));
+            assertThat(staleUndo.statusCode()).isEqualTo(409);
+            assertThat(Files.readString(custom)).isEqualTo(saved);
+            assertThat(history(base)).isEqualTo(createdHistory);
             successfulAction(base, """
                     {"kind":"patch","project":{"nodes":{"normalize":{"id":"normalize","use":"custom.normalize","inputs":{},
                       "receives":{"text":["context","payload","arguments",0]},"returns":{"result":["context","result"]}}},
                      "links":{"command.next":[{"from":"command.next","to":"normalize"}],
                        "normalize.next":[{"from":"normalize.next","to":"end"}]}}}
                     """);
-            successfulAction(base, "{\"kind\":\"undo\"}"); // placement, not definition creation
+            final String placed = Files.readString(project);
+            successfulAction(base, "{\"kind\":\"undo\"}");
             assertThat(Files.readString(project)).doesNotContain("custom.normalize");
             assertThat(request(base, "GET", "/api/catalog", "").body()).contains("custom.normalize");
             successfulAction(base, "{\"kind\":\"redo\"}");
@@ -465,38 +486,51 @@ final class CustomStepsE2eTest extends CreatorServerE2eSupport {
             successfulAction(base, "{\"kind\":\"patch\",\"creator\":{\"steps\":{\"app\":{\"name\":\"First\"}}}}");
             successfulAction(base, "{\"kind\":\"patch\",\"creator\":{\"steps\":{\"app\":{\"name\":\"Second\"}}}}");
             successfulAction(base, "{\"kind\":\"undo\"}");
-            final var beforeCreation = history(base);
-            assertThat(beforeCreation.values()).containsEntry("undo", RailixValue.bool(true)).containsEntry("redo", RailixValue.bool(true));
+            final var beforeDeletion = history(base);
+            assertThat(beforeDeletion.values()).containsEntry("undo", RailixValue.bool(true)).containsEntry("redo", RailixValue.bool(true));
+            assertThat(request(base, "POST", "/api/custom-steps", method("Normalize", METHOD)).statusCode()).isEqualTo(422);
+            assertThat(history(base)).isEqualTo(beforeDeletion);
             assertThat(request(base, "POST", "/api/custom-steps", method("Other", METHOD)).statusCode()).isEqualTo(200);
-            assertThat(history(base)).isEqualTo(beforeCreation);
-            // Creation preserves the actual edits in both stacks, including the existing Redo entry.
+            assertThat(history(base).values()).containsEntry("redo", RailixValue.bool(false));
+            successfulAction(base, "{\"kind\":\"undo\"}");
+            assertThat(Files.readString(custom)).isEqualTo(saved);
+            assertThat(Files.readString(metadata)).contains("\"name\":\"First\"");
             successfulAction(base, "{\"kind\":\"undo\"}");
             assertThat(Files.readString(metadata)).isEqualTo(beforeNaming);
             successfulAction(base, "{\"kind\":\"redo\"}");
             assertThat(Files.readString(metadata)).contains("\"name\":\"First\"");
-            successfulAction(base, "{\"kind\":\"redo\"}");
-            assertThat(Files.readString(metadata)).contains("\"name\":\"Second\"");
-            successfulAction(base, "{\"kind\":\"undo\"}");
-            assertThat(Files.readString(metadata)).contains("\"name\":\"First\"");
-            assertThat(history(base)).isEqualTo(beforeCreation);
             assertThat(request(base, "DELETE", "/api/custom-steps", staleDeletion).statusCode()).isEqualTo(409);
-            assertThat(history(base)).isEqualTo(beforeCreation);
+            assertThat(history(base)).isEqualTo(beforeDeletion);
+            final String currentDeletion = deletion(base, "custom.normalize");
             final long pid = number(application(base), "pid");
-            assertThat(request(base, "DELETE", "/api/custom-steps", deletion(base, "custom.normalize")).statusCode()).isEqualTo(200);
+            assertThat(request(base, "DELETE", "/api/custom-steps", currentDeletion).statusCode()).isEqualTo(200);
             assertThat(request(base, "GET", "/api/catalog", "").body()).doesNotContain("custom.normalize");
-            assertThat(history(base).values()).containsEntry("undo", RailixValue.bool(false)).containsEntry("redo", RailixValue.bool(false));
-            assertThat(action(base, "{\"kind\":\"undo\"}", false).statusCode()).isEqualTo(422);
-            assertThat(action(base, "{\"kind\":\"redo\"}", false).statusCode()).isEqualTo(422);
+            assertThat(history(base).values()).containsEntry("undo", RailixValue.bool(true)).containsEntry("redo", RailixValue.bool(false));
+            successfulAction(base, "{\"kind\":\"undo\"}"); // definition restored first
+            assertThat(Files.readString(custom)).isEqualTo(saved);
+            assertThat(Files.readString(metadata)).contains("\"name\":\"First\"");
+            assertThat(number(application(base), "pid")).isEqualTo(pid);
+            successfulAction(base, "{\"kind\":\"undo\"}"); // unrelated edit remains available
+            assertThat(Files.readString(metadata)).isEqualTo(beforeNaming);
+            successfulAction(base, "{\"kind\":\"undo\"}"); // then restore its removed placement
+            assertThat(Files.readString(project)).isEqualTo(placed);
+            successfulAction(base, "{\"kind\":\"redo\"}"); // remove placement
+            assertThat(Files.readString(project)).doesNotContain("custom.normalize");
+            successfulAction(base, "{\"kind\":\"redo\"}"); // restore unrelated edit
+            assertThat(Files.readString(metadata)).contains("\"name\":\"First\"");
+            successfulAction(base, "{\"kind\":\"redo\"}"); // delete definition
+            assertThat(request(base, "GET", "/api/catalog", "").body()).doesNotContain("custom.normalize");
             final String replacement = METHOD.replace("toLowerCase", "toUpperCase");
             assertThat(request(base, "POST", "/api/custom-steps", method("Normalize", replacement)).statusCode()).isEqualTo(200);
             final String second = Files.readString(custom);
-            assertThat(request(base, "DELETE", "/api/custom-steps", staleDeletion).statusCode()).isEqualTo(409);
+            successfulAction(base, "{\"kind\":\"undo\"}"); // undo the new definition with the reused name
+            assertThat(Files.readString(custom)).contains("\"steps\":[]");
+            successfulAction(base, "{\"kind\":\"undo\"}"); // restore the original definition
+            assertThat(Files.readString(custom)).isEqualTo(saved);
+            successfulAction(base, "{\"kind\":\"redo\"}");
+            successfulAction(base, "{\"kind\":\"redo\"}");
             assertThat(Files.readString(custom)).isEqualTo(second);
-
-            assertThat(action(base, "{\"kind\":\"undo\"}", false).statusCode()).isEqualTo(422);
-            assertThat(action(base, "{\"kind\":\"redo\"}", false).statusCode()).isEqualTo(422);
-            assertThat(number(application(base), "pid")).isEqualTo(pid);
-            assertThat(Files.readString(custom)).isEqualTo(second);
+            assertThat(history(base).values()).containsEntry("redo", RailixValue.bool(false));
             assertThat(Files.readString(project)).doesNotContain("custom.normalize");
         }
         try (var reopened = start(project)) {
@@ -523,7 +557,12 @@ final class CustomStepsE2eTest extends CreatorServerE2eSupport {
             successfulAction(base, "{\"kind\":\"delete\",\"node\":\"" + linked + "\"}");
             assertThat(request(base, "GET", "/api/custom-steps", "").body()).contains("\"in_use\":false");
             assertThat(request(base, "DELETE", "/api/custom-steps", deletion(base, "custom.normalize")).statusCode()).isEqualTo(200);
-            assertThat(action(base, "{\"kind\":\"undo\"}", false).statusCode()).isEqualTo(422);
+            successfulAction(base, "{\"kind\":\"undo\"}"); // restore definition before linked placements
+            assertThat(Files.readString(project.resolveSibling(CustomSteps.FILE))).isEqualTo(saved);
+            successfulAction(base, "{\"kind\":\"undo\"}");
+            assertThat(Files.readString(project)).contains("custom.normalize", linked);
+            successfulAction(base, "{\"kind\":\"redo\"}");
+            successfulAction(base, "{\"kind\":\"redo\"}");
             assertThat(Files.readString(project)).doesNotContain("custom.normalize");
         }
     }
@@ -536,12 +575,19 @@ final class CustomStepsE2eTest extends CreatorServerE2eSupport {
             assertThat(request(base, "POST", "/api/custom-steps", method("Normalize", METHOD)).statusCode()).isEqualTo(200);
             assertThat(request(base, "POST", "/api/custom-steps", method("Other", "public static boolean other() { return true; }")).statusCode()).isEqualTo(200);
             final Path custom = project.resolveSibling(CustomSteps.FILE);
+            final String saved = Files.readString(custom);
             final List<Path> artifacts;
             try (var files = Files.list(directory.resolve(".railix/custom-steps/artifacts"))) {
                 artifacts = files.filter(file -> file.toString().endsWith(".jar")).toList();
             }
             final long pid = number(application(base), "pid");
             assertThat(request(base, "DELETE", "/api/custom-steps", deletion(base, "custom.normalize")).statusCode()).isEqualTo(200);
+            assertThat(Files.readString(custom)).contains("Other").doesNotContain("Normalize");
+            assertThat(number(application(base), "pid")).isEqualTo(pid);
+            successfulAction(base, "{\"kind\":\"undo\"}");
+            assertThat(Files.readString(custom)).isEqualTo(saved); // exact source and definition order
+            assertThat(request(base, "GET", "/api/catalog", "").body()).contains("custom.normalize", "custom.other");
+            successfulAction(base, "{\"kind\":\"redo\"}");
             assertThat(Files.readString(custom)).contains("Other").doesNotContain("Normalize");
             assertThat(number(application(base), "pid")).isEqualTo(pid);
             assertThat(artifacts).isNotEmpty().allSatisfy(file -> assertThat(file).exists());
@@ -679,6 +725,47 @@ final class CustomStepsE2eTest extends CreatorServerE2eSupport {
             } finally { Files.setPosixFilePermissions(directory, permissions); }
             successfulAction(base, "{\"kind\":\"redo\"}");
             successfulAction(base, "{\"kind\":\"undo\"}");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void definitionHistoryConflictsAndPersistenceFailuresPreserveAcceptedState(final boolean undoCreation) throws Exception {
+        assumeTrue(Files.getFileStore(directory).supportsFileAttributeView("posix"), "Requires POSIX directory permissions");
+        final Path project = directory.resolve("railix.project.json");
+        try (var creator = start(project)) {
+            final URI base = creator.baseUri();
+            assertThat(request(base, "POST", "/api/custom-steps", method("Normalize", METHOD)).statusCode()).isEqualTo(200);
+            if (!undoCreation) successfulAction(base, "{\"kind\":\"undo\"}");
+            final String command = undoCreation ? "{\"kind\":\"undo\"}" : "{\"kind\":\"redo\"}";
+            final Path custom = project.resolveSibling(CustomSteps.FILE);
+            final String saved = Files.readString(custom);
+            final String catalog = request(base, "GET", "/api/catalog", "").body();
+            final var before = history(base);
+            final long pid = number(application(base), "pid");
+            final String outside = "{\"format\":1,\"steps\":[" + method("Normalize", METHOD.replace("toLowerCase", "toUpperCase")) + "]}";
+            Files.writeString(custom, outside);
+            assertThat(action(base, command, false).statusCode()).isEqualTo(409);
+            assertThat(Files.readString(custom)).isEqualTo(outside);
+            assertThat(request(base, "GET", "/api/catalog", "").body()).isEqualTo(catalog);
+            assertThat(history(base)).isEqualTo(before);
+            Files.writeString(custom, saved);
+            final var permissions = Files.getPosixFilePermissions(directory);
+            final var readOnly = EnumSet.copyOf(permissions);
+            readOnly.removeAll(List.of(PosixFilePermission.OWNER_WRITE, PosixFilePermission.GROUP_WRITE, PosixFilePermission.OTHERS_WRITE));
+            try {
+                Files.setPosixFilePermissions(directory, readOnly);
+                assumeFalse(Files.isWritable(directory), "This user can bypass directory write permissions");
+                assertThat(action(base, command, false).statusCode()).isEqualTo(500);
+                assertThat(Files.readString(custom)).isEqualTo(saved);
+                assertThat(request(base, "GET", "/api/catalog", "").body()).isEqualTo(catalog);
+                assertThat(history(base)).isEqualTo(before);
+                assertThat(number(application(base), "pid")).isEqualTo(pid);
+            } finally { Files.setPosixFilePermissions(directory, permissions); }
+            successfulAction(base, command);
+            assertThat(number(application(base), "pid")).isEqualTo(pid);
+            if (undoCreation) assertThat(Files.readString(custom)).contains("\"steps\":[]");
+            else assertThat(Files.readString(custom)).contains("toLowerCase").doesNotContain("toUpperCase");
         }
     }
 

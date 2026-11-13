@@ -1,6 +1,7 @@
 package dev.nanonative.railix.creator;
 
 import com.microsoft.playwright.APIResponse;
+import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Route;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -23,7 +24,7 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
     @Test
     @Tag("responsive")
     @Tag("browser-diagnostics")
-    void definitionDeletionRequiresConfirmationAndClearsFlowHistory() throws Exception {
+    void definitionsShareFlowHistoryAndDeletionRequiresConfirmation() throws Exception {
         openProject(choiceProject());
         // A confirmed compile already supplies its catalog; unrelated editor reads must not gate it.
         page.route("**/api/editor**", route -> {
@@ -33,8 +34,14 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
         });
         try { createCustomStep("Normalize"); }
         finally { page.unroute("**/api/editor**"); }
-        assertThat(page.locator("#editor-undo")).isDisabled();
+        assertThat(page.locator("#editor-undo")).isEnabled();
         assertThat(page.locator("#editor-redo")).isDisabled();
+        flowHistory("undo");
+        assertThat(page.locator("#editor-undo")).isDisabled();
+        assertThat(page.locator("#editor-redo")).isEnabled();
+        org.assertj.core.api.Assertions.assertThat(Files.readString(directory.resolve(CustomSteps.FILE)))
+                .contains("\"steps\":[]");
+        flowHistory("redo");
         selectWorldNode("command");
         clickOverview("#add-next-step");
         page.locator("#step-search").fill("Normalize");
@@ -73,8 +80,8 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
         assertThat(page.locator("#custom-step-delete-dialog")).isVisible();
         assertThat(page.locator("#custom-step-delete-dialog")).hasAttribute("role", "alertdialog");
         assertThat(page.locator("#custom-step-delete-dialog")).containsText("Normalize");
-        assertThat(page.locator("#custom-step-delete-dialog")).containsText("cannot be undone");
-        assertThat(page.locator("#custom-step-delete-dialog")).containsText("clears all flow Undo/Redo history");
+        assertThat(page.locator("#custom-step-delete-dialog")).containsText("can undo this deletion");
+        assertThat(page.locator("#custom-step-delete-dialog")).containsText("lost when Creator closes");
         assertThat(page.locator("#custom-step-delete-dialog")).containsText("across all tabs");
         assertThat(page.locator("#cancel-custom-step-deletion")).isFocused();
         assertThat(page.locator("#confirm-custom-step-deletion")).hasClass("danger");
@@ -97,11 +104,19 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
         confirmCustomStepDeletion();
         assertThat(page.locator("#custom-step-manager-status")).containsText("no custom Steps");
         org.assertj.core.api.Assertions.assertThat(deletionSent).isTrue();
-        assertThat(page.locator("#editor-undo")).isDisabled();
+        assertThat(page.locator("#editor-undo")).isEnabled();
         assertThat(page.locator("#editor-redo")).isDisabled();
         page.locator("#close-custom-step-manager").click();
+        flowHistory("undo");
+        org.assertj.core.api.Assertions.assertThat(Files.readString(custom)).isEqualTo(saved);
+        flowHistory("undo");
+        selectWorldNode(placement);
+        assertThat(page.locator("#inspector")).containsText("Normalize");
+        flowHistory("redo");
+        flowHistory("redo");
+        org.assertj.core.api.Assertions.assertThat(Files.readString(custom)).contains("\"steps\":[]");
         createCustomStep("Normalize", CustomStepsE2eTest.METHOD.replace("toLowerCase", "toUpperCase"));
-        assertThat(page.locator("#editor-undo")).isDisabled();
+        assertThat(page.locator("#editor-undo")).isEnabled();
         assertThat(page.locator("#editor-redo")).isDisabled();
         org.assertj.core.api.Assertions.assertThat(Files.readString(custom))
                 .contains("toUpperCase").doesNotContain("toLowerCase");
@@ -109,7 +124,7 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
     }
 
     private void openCustomStepManager() {
-        page.locator("#project-menu").click();
+        openProjectActions();
         page.locator("[data-manage-custom-steps]").click();
         assertThat(page.locator("#custom-step-manager")).isVisible();
         assertThat(page.locator("#custom-step-manager-status")).not().containsText("Loading");
@@ -433,7 +448,8 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
                 page.locator("#edit-example").click();
                 page.locator("#example-payload").fill("[");
                 page.locator("#example-payload").press("Tab");
-                waitForText("#build-state", "Not built");
+                assertThat(page.locator("#inspector-content .issues article")
+                        .filter(new Locator.FilterOptions().setHasText("PROJECT_TRIGGER_EXAMPLE_PAYLOAD_INVALID"))).isVisible();
             }
 
             page = author;
@@ -450,12 +466,13 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
             if (unsavedExample) {
                 assertThat(page.locator("#custom-step-manager-status")).containsText("unsaved changes are retained");
                 page.locator("#close-custom-step-manager").click();
+                openInspectorTab("examples");
                 assertThat(page.locator("#example-payload")).hasValue("[");
             } else {
                 assertThat(page.locator("#custom-step-manager-status")).containsText("no custom Steps");
                 page.locator("#close-custom-step-manager").click();
                 assertThat(page.locator("#inspector")).hasAttribute("data-selection", "app");
-                assertThat(page.locator("#editor-undo")).isDisabled();
+                assertThat(page.locator("#editor-undo")).isEnabled();
                 assertThat(page.locator("#editor-redo")).isDisabled();
                 selectWorldNode("command");
                 clickOverview("#add-next-step");
@@ -618,12 +635,18 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
     }
 
     private void createCustomStep(final String name, final String source) {
-        page.locator("#project-menu").click();
+        openProjectActions();
         page.locator("#project-actions [data-create-custom-step]").click();
         page.locator("#custom-step-name").fill(name);
         page.locator("#custom-step-source").fill(source);
         page.locator("#compile-custom-step").click();
         assertThat(page.locator("#custom-step-status")).containsText("Compiled.");
         page.locator("#close-custom-step").click();
+    }
+
+    private void openProjectActions() {
+        if (page.locator("#inspector").isVisible() && !page.locator("#project-menu").isVisible())
+            page.locator("#close-inspector").click();
+        page.locator("#project-menu").click();
     }
 }

@@ -22,7 +22,7 @@ function initializeCustomSteps({canEdit, submit, onChanged, onClose, load, remov
 
   function confirmDefinitionDeletion(step) {
     document.querySelector('#custom-step-delete-description').textContent =
-      `This permanently removes the definition “${step.name}” from this project and cannot be undone.`;
+      `This removes the definition “${step.name}” from this project.`;
     deleteDialog.returnValue = 'cancel';
     return new Promise(resolve => {
       deleteDialog.addEventListener('close', () => resolve(deleteDialog.returnValue === 'delete'), {once:true});
@@ -59,7 +59,7 @@ function initializeCustomSteps({canEdit, submit, onChanged, onClose, load, remov
     try {
       const payload = await load();
       if (!manager.open || request !== managerRequest) return;
-      managerStatus.textContent = payload.steps.length ? 'Only unused definitions can be deleted. Deletion cannot be undone and clears all flow Undo/Redo history for this session.' : 'This project has no custom Steps.';
+      managerStatus.textContent = payload.steps.length ? 'Only unused definitions can be deleted. Creation and deletion can be undone during this Creator session.' : 'This project has no custom Steps.';
       for (const step of payload.steps) {
         const row = document.createElement('li');
         const detail = document.createElement('div');

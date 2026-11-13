@@ -529,12 +529,13 @@ does not infer whether an unanswered request committed or merge concurrent edits
 Reload remains available when a local JSON or Example draft is invalid.
 Undo/Redo keeps bounded deltas for the current Creator session. History is not persisted.
 Oldest deltas are evicted above the scene-response byte budget, retaining the latest action.
-Custom-Step definition creation and deletion have no Undo/Redo operation.
-Creation preserves existing flow history. Successful unused-definition deletion
-clears all flow Undo/Redo history for the active Creator session, across all tabs,
-including unrelated edits; cancelled, rejected or failed deletion preserves it.
-The red Delete button opens a Railix-themed confirmation dialog warning that deletion
-cannot be undone and clears all flow history. Custom-Step placements retain ordinary flow Undo/Redo.
+Custom-Step definition creation and deletion each add one entry to that history,
+shared across tabs. Undo restores a deleted definition before earlier placement
+edits; Redo removes placements before deleting the definition again. New accepted
+definition changes clear Redo and retain earlier Undo within the existing budget.
+Cancelled, rejected or failed changes preserve history. The red Delete button opens
+a Railix-themed confirmation dialog explaining that Undo is available during this
+Creator session and history is lost when Creator closes.
 See [custom-Step deletion and history](custom-java-steps.md#custom-step-deletion-and-history).
 
 Legacy document writes invalidate history. Revision conflicts preserve accepted work, and

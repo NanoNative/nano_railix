@@ -27,19 +27,19 @@ final class CustomSteps {
     private CustomSteps() { }
 
     sealed interface Preparation permits Prepared, Rejected { }
-    record Prepared(StepCatalog catalog, String document, StepDefinition definition) implements Preparation { }
+    record Prepared(StepCatalog catalog, String document, StepDefinition definition, Saved saved) implements Preparation { }
     record Rejected(List<Diagnostic> diagnostics) implements Preparation {
         Rejected { diagnostics = List.copyOf(diagnostics); }
     }
 
-    record Saved(String id, String name, int position) { }
+    record Saved(String id, String name, String source, int position) { }
 
     static List<Saved> saved(final String document) throws IOException {
         final List<Saved> result = new ArrayList<>();
         for (final RailixValue value : records(document)) {
             final var record = record(value);
             final String name = text(record, "name");
-            result.add(new Saved(identifier(name), name, result.size()));
+            result.add(new Saved(identifier(name), name, text(record, "source"), result.size()));
         }
         return List.copyOf(result);
     }
@@ -105,19 +105,32 @@ final class CustomSteps {
 
     static Preparation prepare(final StepCatalog base, final Path project, final String previous,
                           final String name, final String methodSource) throws IOException {
-        final var result = artifact(base, project, name, methodSource);
+        final List<RailixValue> steps = records(previous);
+        return prepareInsertion(base, project, steps,
+                new Saved(identifier(name), name, methodSource, steps.size()));
+    }
+
+    static Preparation prepareInsertion(final StepCatalog base, final Path project, final String previous,
+                                        final Saved step) throws IOException {
+        return prepareInsertion(base, project, records(previous), step);
+    }
+
+    private static Preparation prepareInsertion(final StepCatalog base, final Path project,
+                                                final List<RailixValue> previous, final Saved step) throws IOException {
+        final var result = artifact(base, project, step.name(), step.source());
         if (result instanceof JavaStepCompiler.Rejected(List<Diagnostic> diagnostics))
             return new Rejected(diagnostics);
         final var bundle = (JavaStepCompiler.Compiled) result;
         final StepCatalog candidate = base.installSource(bundle.lock(), bundle.artifact().getParent());
-        final List<RailixValue> next = new ArrayList<>(records(previous));
-        next.add(RailixValue.object(Map.of("name", RailixValue.string(name), "source", RailixValue.string(methodSource))));
+        final List<RailixValue> next = new ArrayList<>(previous);
+        next.add(Math.min(step.position(), next.size()), RailixValue.object(Map.of(
+                "name", RailixValue.string(step.name()), "source", RailixValue.string(step.source()))));
         final var document = RailixJson.write(RailixValue.object(Map.of("format", RailixValue.number(1),
                 "steps", RailixValue.array(next))), ProjectFiles.MAX_DOCUMENT_BYTES);
         if (document.isEmpty())
             return new Rejected(List.of(new Diagnostic("CUSTOM_STEP_INVALID",
                     "The project's custom Step source exceeds the supported document bounds.", "source", 0, 0)));
-        return new Prepared(candidate, document.orElseThrow(), bundle.definition());
+        return new Prepared(candidate, document.orElseThrow(), bundle.definition(), step);
     }
 
     private static JavaStepCompiler.Result artifact(final StepCatalog base, final Path project,
