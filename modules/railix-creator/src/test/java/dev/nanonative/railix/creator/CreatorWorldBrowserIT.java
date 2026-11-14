@@ -865,6 +865,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                   body:JSON.stringify({format:2,groups:[{id:'payments',name:'Payments'}],steps:{payment:{group:'payments'}}})})).status
                 """)).isEqualTo(200);
         page.reload();
+        awaitScene();
         page.locator("#open-settings").click();
         page.locator("#theme-variant").selectOption(variant);
         page.keyboard().press("Escape");

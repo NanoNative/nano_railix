@@ -47,6 +47,7 @@ final class CreatorScene {
     private final List<Part> indexedNodes;
     private final Map<String, RailixValue> icons;
     private final Map<String, Part> identities = new HashMap<>();
+    private final Set<String> exampleIds = new java.util.HashSet<>();
     private final Map<String, Routing> routingViews = new LinkedHashMap<>();
     private final double[] detailScales;
 
@@ -100,8 +101,14 @@ final class CreatorScene {
                     part.disabled = 1;
                 }
             }
-            part.exampleCount = node.get("examples") instanceof RailixValue.ArrayValue examples
-                    ? examples.values().size() : 0;
+            final List<RailixValue> examples = array((RailixValue.ObjectValue) value, "examples");
+            part.exampleCount = examples.size();
+            if ("trigger".equals(kind)) {
+                for (int index = 0; index < examples.size(); index++) {
+                    final RailixValue exampleId = object(examples.get(index)).get("id");
+                    exampleIds.add(exampleId instanceof RailixValue.StringValue stable ? stable.value() : id + ":" + index);
+                }
+            }
             nodes.put(id, part);
         }
         indexedNodes = List.copyOf(nodes.values());
@@ -505,7 +512,7 @@ final class CreatorScene {
             throw new IllegalArgumentException("Scene observations require the current scene revision.");
         }
         if (parameters.containsKey("example")
-                && !parameters.get("example").matches("[a-z][a-z0-9-]{0,63}:[0-9]{1,10}")) {
+                && !parameters.get("example").matches("[a-z][a-z0-9:-]{0,127}")) {
             throw new IllegalArgumentException("An Example selection requires a compiled Example ID.");
         }
         if (parameters.containsKey("metrics")) {
@@ -650,7 +657,9 @@ final class CreatorScene {
     }
 
     Observation observationView(final Map<String, String> parameters) {
-        if (parameters.containsKey("example")) exampleTrigger(parameters.get("example"));
+        if (parameters.containsKey("example") && !exampleIds.contains(parameters.get("example"))) {
+            throw new NoSuchElementException("Scene Example selection does not identify a compiled Example.");
+        }
         final Map<String, Connection> connections = new LinkedHashMap<>();
         return new Observation(view(viewParameters(parameters), connections), List.copyOf(connections.values()),
                 parameters.get("example"), parameters.containsKey("metrics")
@@ -922,18 +931,6 @@ final class CreatorScene {
         view.keySet().retainAll(VIEW_PARAMETERS);
         return view;
     }
-
-    private Part exampleTrigger(final String example) {
-        final int separator = example.lastIndexOf(':');
-        final Part trigger = identities.get(example.substring(0, separator));
-        final long index = Long.parseLong(example.substring(separator + 1));
-        if (trigger == null || !"trigger".equals(trigger.kind) || index >= trigger.exampleCount
-                || !example.equals(trigger.id + ":" + index)) {
-            throw new NoSuchElementException("Scene Example selection does not identify a compiled Example.");
-        }
-        return trigger;
-    }
-
 
     private static RailixValue.ObjectValue observedObject(final RailixValue value) throws IOException {
         if (!(value instanceof RailixValue.ObjectValue object)) {

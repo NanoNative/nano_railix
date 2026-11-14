@@ -416,6 +416,7 @@ function render() {
     ? [...inspectorElement.querySelectorAll("details[open][id]")].map(detail => detail.id) : [];
   const content = document.querySelector('#inspector-content');
   const context = `${state.regionSelection?.id || state.selection.id}:${state.inspectorMode}`;
+  const scrollTop = content.dataset.context === context ? content.scrollTop : 0;
   const active = content.dataset.context === context && content.contains(document.activeElement)
     && document.activeElement.matches('input:not([type=checkbox]):not([type=radio]):not([type=file]), textarea')
     ? document.activeElement : null;
@@ -424,7 +425,6 @@ function render() {
   const focusedTab = document.activeElement.closest('#inspector-nav [data-inspector-mode]')?.dataset.inspectorMode;
   state.iconController?.abort();
   content.innerHTML = inspector();
-  if (content.dataset.context !== context) content.scrollTop = 0;
   content.dataset.context = context;
   const navigation = document.querySelector("#inspector-content .inspector-tabs");
   const tabs = document.querySelector('#inspector-nav');
@@ -458,6 +458,7 @@ function render() {
   }
   renderWorldStatus();
   syncInspectorLayout();
+  content.scrollTop = scrollTop;
 }
 
 async function showLiveConnections() {
