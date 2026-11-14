@@ -722,7 +722,6 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @ParameterizedTest
-    @Tag("responsive")
     @ValueSource(ints={1280,390})
     void openingAnEnteredGroupsInspectorDoesNotCancelItsPendingEntry(final int width) {
         page.setViewportSize(width,800);
@@ -866,6 +865,7 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
                   body:JSON.stringify({format:2,groups:[{id:'payments',name:'Payments'}],steps:{payment:{group:'payments'}}})})).status
                 """)).isEqualTo(200);
         page.reload();
+        awaitScene();
         page.locator("#open-settings").click();
         page.locator("#theme-variant").selectOption(variant);
         page.keyboard().press("Escape");

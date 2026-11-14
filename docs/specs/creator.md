@@ -566,6 +566,8 @@ does not change automatically.
 The Step/Group insertion chooser keeps search fields stationary when its results change. Result
 rows retain readable labels and scroll independently. Short landscape windows keep the primary
 toolbar accessible while the chooser temporarily covers the lower navigation rows.
+Background Example updates, including Retry completion, refresh the results list without rebuilding
+an active reuse form. Its selected entrance, continuation and keyboard focus remain intact.
 
 ### Editing An Existing Flow
 
@@ -577,6 +579,21 @@ Inserting a Step into one outgoing connection preserves its previous destination
 Step's primary outcome. Additional outcomes initially end the flow. Deleting a linear Step
 reconnects its predecessor to its primary successor; deletion is blocked while a secondary
 outcome still has a connected branch. Other branches and stable Step IDs remain unchanged.
+
+New Step compatibility and automatic input mappings use recorded Example values at the insertion
+point, independently of the Example selected for preview. After a catalog refresh or rebuild,
+Creator reloads current observations as needed; clearing preview selection does not require choosing
+an Example to populate Step choices. For insertion after a particular outcome, only Examples whose
+recorded Step output took that outcome contribute field types and coverage. A required source must
+be present with a compatible type in every contributing Example; Examples on other outcomes do not
+reduce its coverage. An outcome with no recorded output provides no observed source fields.
+When an Example visits the source Step repeatedly, every recorded visit on the selected outcome
+contributes to compatibility. An Example counts as covered for a field only when that field is
+present in all its relevant visits; conflicting visit types remain incompatible with a specific
+typed input. Incomplete visit recordings cannot supply inferred bindings. These aggregate checks
+are separate from the existing selected-Example preview of the last visit.
+Picker filtering and insertion use the same mapping calculation. Step choices must use observations
+matching the current application build, Example revision and insertion point.
 
 These graph edits do not rewrite downstream field mappings. Changing or removing an upstream
 producer can therefore leave a structurally valid flow with a missing or incompatible value.
@@ -803,6 +820,8 @@ A failure jump loads its destination before requesting recorded values. Summary 
 stay within the application's existing concurrent-read budget.
 A failed Step-value read does not discard an independently validated Example result or its reached
 path. The read error remains visible and explicitly retryable, separate from an execution failure.
+A failed Example-summary read likewise retains independently validated Step values for previews
+and compatibility checks while showing the summary read error and its Retry action.
 Example observation status appears once per inspected selection as an accessible visual mark.
 Hover, keyboard, touch and assistive technology expose its meaning. Configure does not repeat loading, unavailable
 or unreached messages under every field, and no Example selection shows no observation status.

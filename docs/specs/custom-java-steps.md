@@ -82,6 +82,8 @@ this denylist nor successful javac compilation proves whole-application support.
   the same implementation MUST restore its compiled status; unrelated catalog
   changes MUST NOT reset it. Creator compares the existing compiler-generated
   implementation identity returned with the definition and catalog.
+  A rejected retry of an unchanged draft MUST retain that identity. Restoring
+  the implementation MUST also clear obsolete compilation diagnostics.
 - **CUSTOM-004:** Published source MUST belong to the project. Reopening, ordinary
   production builds and source-inclusive application restoration MUST reconstruct
   the same Step contract/code through normal build ownership. Generated artifacts

@@ -16,7 +16,6 @@ import static org.assertj.core.api.Assertions.within;
 final class RailixCreatorInspectorJourneysBrowserIT extends RailixCreatorBrowserSupport {
     @ParameterizedTest
     @ValueSource(ints = {320, 390})
-    @Tag("responsive")
     void shortPhoneLayoutSeparatesRadarFromTheTimingScale(final int width) throws Exception {
         page.setViewportSize(width, 360);
         openProject(CreatorEditorBrowserIT.attentionProject());
@@ -56,7 +55,6 @@ final class RailixCreatorInspectorJourneysBrowserIT extends RailixCreatorBrowser
     }
 
     @Test
-    @Tag("responsive")
     void failedExampleAndUnavailableRecordedValuesKeepThePhoneHudInsideItsHeader() throws Exception {
         page.setViewportSize(320, 844);
         openProject(CreatorEditorBrowserIT.attentionProject());
@@ -156,7 +154,6 @@ final class RailixCreatorInspectorJourneysBrowserIT extends RailixCreatorBrowser
 
     @ParameterizedTest
     @ValueSource(ints = {320, 390, 823, 1280})
-    @Tag("responsive")
     void nestedLocationKeepsTheCurrentGroupAndEveryParentReachable(final int width) throws Exception {
         page.setViewportSize(width, 844);
         final var fixture = CreatorWorldBrowserIT.systemStressScene();
@@ -202,7 +199,6 @@ final class RailixCreatorInspectorJourneysBrowserIT extends RailixCreatorBrowser
 
     @ParameterizedTest
     @ValueSource(ints = {320, 390})
-    @Tag("responsive")
     @Tag("browser-diagnostics")
     void failedExampleNamesRemainReadableAlongsideTheirActions(final int width) throws Exception {
         page.setViewportSize(width, 844);
@@ -291,7 +287,6 @@ final class RailixCreatorInspectorJourneysBrowserIT extends RailixCreatorBrowser
     }
 
     @Test
-    @Tag("responsive")
     void exampleEditingKeepsKeyboardNavigationAndItsOwnAccessibleIdentity() {
         page.setViewportSize(390, 844);
         openProject(branchProject("example-editor", "choice", "[]"));
@@ -334,7 +329,6 @@ final class RailixCreatorInspectorJourneysBrowserIT extends RailixCreatorBrowser
     }
 
     @Test
-    @Tag("responsive")
     void groupingOwnsMembershipAndDoesNotRepeatTheCurrentTarget() {
         page.setViewportSize(320, 844);
         openProject(branchProject("group-controls", "choice", "[]"));
@@ -359,7 +353,6 @@ final class RailixCreatorInspectorJourneysBrowserIT extends RailixCreatorBrowser
     }
 
     @Test
-    @Tag("responsive")
     void phoneConnectionAndInsertionReturnToTheirOriginalActions() {
         page.setViewportSize(390, 844);
         openProject(branchProject("phone-connections", "choice", "[]"));
@@ -419,7 +412,6 @@ final class RailixCreatorInspectorJourneysBrowserIT extends RailixCreatorBrowser
     }
 
     @Test
-    @Tag("responsive")
     void phoneEditingUsesTheScreenAndReturnsToTheSameExampleAndCamera() throws Exception {
         page.setViewportSize(320, 844);
         openProject(branchProject("phone-editor", "choice", """

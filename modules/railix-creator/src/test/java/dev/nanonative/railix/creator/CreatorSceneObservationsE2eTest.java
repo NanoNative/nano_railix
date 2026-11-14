@@ -357,20 +357,23 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
 
     @Test
     void selectedExampleDoesNotMarkTheUnvisitedBranch() throws Exception {
+        final String exampleId = "example-6b406e30-4949-4c1d-a144-a8219e02fc70";
         final Path project = directory.resolve("railix.project.json");
-        Files.writeString(project, branchGroupProject());
+        Files.writeString(project, branchGroupProject().replace("\"name\":\"example\"",
+                "\"id\":\"" + exampleId + "\",\"name\":\"example\""));
         try (CreatorServer creator = start(project)) {
-            final HttpResponse<String> summary = awaitExampleView(creator.baseUri(), "command:0");
+            final HttpResponse<String> summary = awaitExampleView(creator.baseUri(), exampleId);
             assertThat(summary.statusCode()).as(summary.body()).isEqualTo(200);
             final Set<Long> reached = ((RailixValue.ArrayValue) object(summary.body()).values().get("nodes"))
                     .values().stream().map(RailixValue.NumberValue.class::cast)
                     .map(value -> value.value().longValueExact()).collect(Collectors.toSet());
 
             final HttpResponse<String> response = observations(creator.baseUri(),
-                    "scale=10", "&example=command%3A0");
+                    "scale=10", "&example=" + exampleId);
 
             assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
             final RailixValue.ObjectValue observed = object(response.body());
+            assertThat(string(observed, "example")).isEqualTo(exampleId);
             assertThat(number(entry(observed, "matched"), "selected_count")).isEqualTo(reached.contains(3L) ? 1 : 0);
             assertThat(number(entry(observed, "otherwise"), "selected_count")).isEqualTo(reached.contains(4L) ? 1 : 0);
             assertThat(reached.contains(3L) ^ reached.contains(4L)).isTrue();
@@ -382,6 +385,8 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
                     assertThat(string(link, "selection")).isEqualTo(reached.contains(4L) ? "reached" : "unreached");
                 }
             }
+            assertThat(observations(creator.baseUri(), "scale=10", "&example=command%3A0").statusCode())
+                    .isEqualTo(404);
         }
     }
 
@@ -598,7 +603,7 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
 
     @ParameterizedTest
     @ValueSource(strings = {
-            "", "revision=broken", "revision=current&example=", "revision=current&example=command:abc",
+            "", "revision=broken", "revision=current&example=", "revision=current&example=command:bad_id",
             "revision=current&mode=build", "revision=current&mode=live", "revision=current&mode=example",
             "revision=current&revision=current", "revision=current&unknown=1",
             "revision=current&x=0", "revision=current&scale=NaN"
@@ -612,10 +617,11 @@ final class CreatorSceneObservationsE2eTest extends CreatorServerE2eSupport {
         assertThat(string(object(response.body()), "status")).isEqualTo("invalid-scene-query");
     }
 
-    @Test
-    void unknownSelectedExampleIsNotReportedAsUnreached() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"missing:0", "example-missing", "command:abc"})
+    void unknownSelectedExampleIsNotReportedAsUnreached(final String exampleId) throws Exception {
         final HttpResponse<String> response = observations(server.baseUri(), "",
-                "&example=missing%3A0");
+                "&example=" + exampleId);
 
         assertThat(response.statusCode()).as(response.body()).isEqualTo(404);
     }

@@ -68,7 +68,6 @@ final class RailixCreatorProjectImportBrowserIT extends RailixCreatorBrowserSupp
     }
 
     @ParameterizedTest
-    @Tag("responsive")
     @ValueSource(ints = {320, 390})
     void projectActionsAndRuntimeControlsRemainSeparateOnNarrowScreens(final int width) {
         page.setViewportSize(width, 844);

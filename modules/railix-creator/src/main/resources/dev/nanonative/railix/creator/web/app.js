@@ -103,7 +103,6 @@ const state = {
   previewCases: [],
   traceCases: [],
   traceCasesKey: "",
-  traceCasesPid: 0,
   traceContext: "",
   traceSummary: null,
   traceSummaryKey: "",
@@ -205,7 +204,6 @@ async function refreshProjectAfterCatalogChange() {
       || Number(project.creator_revision) < Number(state.creatorVersion)) return;
   setCatalog(latest);
   applyProjectSnapshot(project);
-  state.world?.resetScene();
   render();
 }
 
@@ -418,6 +416,7 @@ function render() {
     ? [...inspectorElement.querySelectorAll("details[open][id]")].map(detail => detail.id) : [];
   const content = document.querySelector('#inspector-content');
   const context = `${state.regionSelection?.id || state.selection.id}:${state.inspectorMode}`;
+  const scrollTop = content.dataset.context === context ? content.scrollTop : 0;
   const active = content.dataset.context === context && content.contains(document.activeElement)
     && document.activeElement.matches('input:not([type=checkbox]):not([type=radio]):not([type=file]), textarea')
     ? document.activeElement : null;
@@ -426,7 +425,6 @@ function render() {
   const focusedTab = document.activeElement.closest('#inspector-nav [data-inspector-mode]')?.dataset.inspectorMode;
   state.iconController?.abort();
   content.innerHTML = inspector();
-  if (content.dataset.context !== context) content.scrollTop = 0;
   content.dataset.context = context;
   const navigation = document.querySelector("#inspector-content .inspector-tabs");
   const tabs = document.querySelector('#inspector-nav');
@@ -460,6 +458,7 @@ function render() {
   }
   renderWorldStatus();
   syncInspectorLayout();
+  content.scrollTop = scrollTop;
 }
 
 async function showLiveConnections() {
@@ -1324,7 +1323,7 @@ async function selectWorldNode(id, event, request) {
   render();
   showInspector(true);
   scheduleMetricsPoll(0);
-  if (id !== "app") requestSelectedTrace();
+  if (id !== "app") requestExampleEvidence();
   return true;
 }
 
@@ -1347,8 +1346,8 @@ function selectWorldGroup(group, region) {
   showInspector(true);
   refreshApplicationSelection();
   state.world.repaint();
-  if (group) void loadEditor('app', group).then(() => { renderDock(); state.world.repaint(); void requestSelectedTrace(); });
-  else void requestSelectedTrace();
+  if (group) void loadEditor('app', group).then(() => { renderDock(); state.world.repaint(); void requestExampleEvidence(); });
+  else void requestExampleEvidence();
 }
 
 async function loadEditor(id, group = state.managedGroup, query = state.groupQuery, offset = 0, owner) {
@@ -3775,7 +3774,7 @@ function pathBrowser(input, operation, locator) {
               <button type="button" class="path-choice" data-path-part="${html(pathPart(part))}"
                       data-path-draft-json="${encodeURIComponent(JSON.stringify(entry.path))}">
                 <span><strong>${html(pathPart(part))}</strong><small>${entry.shape}${
-                  entry.examples < entry.total ? ` · observed here in ${entry.examples} of ${entry.total} Examples` : ""
+                  entry.examples < entry.total ? ` · complete coverage in ${entry.examples} of ${entry.total} Examples` : ""
                 }</small></span>${pathChoiceValue(operation, entry.path)}
               </button>`;
           }).join("") || `<small class="path-hint">${
@@ -3910,13 +3909,20 @@ function pickerOptions() {
   const feedback = picker.loading ? '<p role="status">Loading...</p>' : picker.error
     ? `<p role="alert">${html(picker.error)} <button type="button" data-retry-picker>Retry</button></p>` : '';
   if (picker.kind === 'group') return (reusable + feedback || '<p class="empty-options">No group matches.</p>') + pages;
+  const operation = node(picker.anchor);
+  const observation = operation && observationFor(operation);
+  const awaitingObservations = observation && state.traceCasesKey !== stepObservationsKey(operation, observation);
+  const observationFeedback = awaitingObservations && state.traceReadError
+    ? `<p role="alert">${html(state.traceReadError.message)} <button type="button" data-retry-example>Retry</button></p>`
+    : awaitingObservations && (state.traceController || ["queued", "running"].includes(state.application.examples?.state))
+      ? '<p role="status">Loading Example values...</p>' : '';
   const candidates = state.picker.mode === "trigger"
     ? availableTriggers()
     : addableDefinitions();
   const matching = candidates
     .filter(definition => definitionMatchesQuery(definition, query));
   const options = matching.filter(definition => state.picker.mode === "trigger"
-      || automaticBindingsAvailable(state.picker.anchor, definition));
+      || automaticBindingsAvailable(picker.anchor, definition, picker.outcome));
   const catalog = options
     .map(definition => `
       <button type="button" class="catalog-option" data-add-step="${html(definition.id)}" title="${html(definition.id)}">
@@ -3929,7 +3935,7 @@ function pickerOptions() {
   if (picker.mode === 'trigger') return catalog || '<p class="empty-options">No installed Trigger matches.</p>';
   return (catalog ? `<div class="picker-results-label">New Steps</div>${catalog}` : '')
     + (reusable ? `<div class="picker-results-label">Existing Steps</div>${reusable}` : '')
-    + feedback + pages
+    + feedback + observationFeedback + pages
     || '<p class="empty-options">No Step matches.</p>';
 }
 
@@ -3939,7 +3945,10 @@ function openPicker(mode, anchor, outcome = "") {
   state.pathDraft = [];
   render();
   document.querySelector("#step-search")?.focus();
-  if (mode !== 'trigger') void loadReusable();
+  if (mode !== 'trigger') {
+    void loadReusable();
+    void requestExampleEvidence();
+  }
 }
 
 async function openBeltPicker(id, outcome, arrivals = []) {
@@ -3980,9 +3989,9 @@ function closePicker() {
 
 function replacePickerOptions() {
   const slot = document.querySelector('#step-options');
-  if (!slot) return;
+  if (!slot || !state.picker || state.picker.chosen) return;
   const focused = slot.contains(document.activeElement) ? document.activeElement : null;
-  const identity = focused && ['addStep','reuseItem','reusePage','applyReuse','cancelReuse','retryPicker']
+  const identity = focused && ['addStep','reuseItem','reusePage','applyReuse','cancelReuse','retryPicker','retryExample']
     .find(key => Object.hasOwn(focused.dataset,key));
   slot.innerHTML = pickerOptions();
   if (identity) {
@@ -4166,7 +4175,7 @@ function insertStep(afterId, definition, selectedOutcome = "") {
   if (!insertionAllowed(after, outcome)) {
     return false;
   }
-  const bindings = graphBindings(after, definition);
+  const bindings = graphBindings(after, definition, outcome);
   if (bindings === null) {
     return false;
   }
@@ -4197,12 +4206,15 @@ function insertFlatStep(afterId, definition, id, outcome, bindings) {
   });
 }
 
-function graphBindings(after, definition) {
+function graphBindings(after, definition, outcome = "") {
   if (state.build !== "Built" && definition.receives.length) {
     return null;
   }
+  const observation = observationFor(after);
+  if (definition.receives.length && (!observation
+      || state.traceCasesKey !== stepObservationsKey(after, observation))) return null;
   const context = definitionFor(after)?.kind === "trigger" ? "trigger" : "output";
-  const available = availablePaths(after, context)
+  const available = availablePaths(after, context, outcome || primaryOutcome(after))
     .filter(entry => entry.path[1] !== "runtime" && entry.examples === entry.total);
   const receives = {};
   for (const port of definition.receives) {
@@ -4222,9 +4234,9 @@ function graphBindings(after, definition) {
   return { receives, returns };
 }
 
-function automaticBindingsAvailable(afterId, definition) {
+function automaticBindingsAvailable(afterId, definition, outcome) {
   const after = node(afterId);
-  return Boolean(after) && graphBindings(after, definition) !== null;
+  return Boolean(after) && graphBindings(after, definition, outcome) !== null;
 }
 
 function deleteSelection() {
@@ -4335,14 +4347,14 @@ function selectExample(index, trigger = node(state.selection.id), {deferObservat
   render();
   refreshApplicationSelection();
   if (deferObservation) return Promise.resolve();
-  const trace = requestSelectedTrace();
+  const trace = requestExampleEvidence();
   if (sourceChanged && !state.editorController && !state.regionSelection && state.selection.id
       && state.editor.sources?.some(source => source.id === trigger.id)) {
     const selected = state.selection.id;
     void loadEditor(selected).then(result => {
       if (result === 'loaded' && state.selection.id === selected && !state.regionSelection) {
         render();
-        void requestSelectedTrace();
+        void requestExampleEvidence();
       }
     });
   }
@@ -5328,7 +5340,6 @@ function clearPreview(clearSummary = false, clearCases = true) {
   if (clearCases) {
     state.traceCases = [];
     state.traceCasesKey = "";
-    state.traceCasesPid = 0;
     state.traceContext = "";
   }
   if (clearSummary) {
@@ -5465,7 +5476,7 @@ async function refreshApplication() {
         refreshApplicationFacts();
         applyExampleCoverage();
       }
-      await requestSelectedTrace();
+      await requestExampleEvidence();
     } else {
       nextDelay = observationRetryDelay();
     }
@@ -5852,27 +5863,27 @@ function formatPercentPpm(value) {
   return `${(metricNumber(value) / 10_000).toFixed(1)}%`;
 }
 
-async function requestSelectedTrace() {
+async function requestExampleEvidence() {
   if (document.hidden || state.build === "Building" || !state.application.pid || state.jsonDraft || state.exampleDraft
       || state.editorController && state.editorController.node !== state.selection.id) {
     return;
   }
-  const example = selectedTraceCase();
-  if (!example || ["queued", "running"].includes(example.status)) {
-    if (state.traceKey || state.traceSummaryKey) {
-      clearPreview(true);
-      renderPreview();
-      renderRunResult();
-    }
-    return;
+  const selectedExample = selectedTraceCase();
+  const example = selectedExample && !["queued", "running"].includes(selectedExample.status) ? selectedExample : null;
+  if (!example && state.traceSummaryKey) {
+    clearPreview(true, false);
+    renderPreview();
+    renderRunResult();
   }
-  if (state.regionSelection) return requestRegionTrace(example);
-  const summaryKey = exampleSummaryKey(example);
+  if (!example && state.application.examples?.state !== "completed") return;
+  if (state.regionSelection) return example ? requestRegionTrace(example) : undefined;
+  const summaryKey = example ? exampleSummaryKey(example) : "";
   const operation = ["trigger", "step"].includes(state.selection.type)
     ? selectedOperation()
     : null;
   const observation = operation ? observationFor(operation) : null;
   if (!observation) {
+    if (!example) return;
     if (state.traceSummaryKey === summaryKey && state.traceSummary || state.traceKey === summaryKey
         && (state.traceController || state.traceReadError?.key === summaryKey && !state.traceReadError.retry)) return;
     const retrying = state.traceKey === summaryKey && state.traceReadError?.retry === true;
@@ -5880,14 +5891,7 @@ async function requestSelectedTrace() {
     const controller = state.traceController = new AbortController();
     state.traceKey = summaryKey;
     try {
-      const summary = await readExampleProjection(`/api/examples/${encodeURIComponent(example.id)}/view`, controller.signal);
-      if (controller.signal.aborted || state.traceController !== controller || selectedExampleId() !== example.id
-          || exampleSummaryKey(selectedTraceCase() || {}) !== summaryKey) return;
-      if (Number(summary.application_pid) !== Number(state.application.pid) || !Array.isArray(summary.nodes))
-        throw new Error('Example summary is from another application.');
-      summary.nodes = new Set(summary.nodes || []);
-      state.traceSummary = summary;
-      state.traceSummaryKey = summaryKey;
+      if (!await loadExampleSummary(example, summaryKey, controller)) return;
       state.traceReadError = null;
       refreshTraceView();
     } catch (error) {
@@ -5901,19 +5905,10 @@ async function requestSelectedTrace() {
     }
     return;
   }
-  const casesKey = [
-    state.application.fingerprint || "",
-    state.application.pid || 0,
-    state.application.examples?.state === "completed"
-      ? "complete"
-      : `selected:${example.id}:${example.status}:${example.events}`,
-    observation.node,
-    observation.context,
-    operation.id
-  ].join(":");
+  const casesKey = stepObservationsKey(operation, observation);
   const key = summaryKey + ":" + casesKey;
   if (state.traceKey === key && (state.traceController || state.traceReadError?.key === summaryKey && !state.traceReadError.retry
-      || state.traceSummary && state.traceCasesKey === casesKey)) {
+      || (!example || state.traceSummaryKey === summaryKey && state.traceSummary) && state.traceCasesKey === casesKey)) {
     return;
   }
   const retrying = state.traceKey === key && state.traceReadError?.retry === true;
@@ -5921,45 +5916,21 @@ async function requestSelectedTrace() {
   const controller = new AbortController();
   state.traceController = controller;
   state.traceKey = key;
-  const applicationPid = Number(state.application.pid);
   try {
-    const summary = state.traceSummaryKey === summaryKey && state.traceSummary
-      ? state.traceSummary
-      : await readExampleProjection(
-        `/api/examples/${encodeURIComponent(example.id)}/view`,
-        controller.signal
-      );
-    if (controller.signal.aborted || state.traceController !== controller || state.traceKey !== key) return;
-    if (Number(summary.application_pid) !== applicationPid
-        || !(summary.nodes instanceof Set) && !Array.isArray(summary.nodes)) {
-      throw new Error("Example summary is from another application.");
-    }
-    summary.nodes = summary.nodes instanceof Set
-      ? summary.nodes
-      : new Set(summary.nodes.filter(Number.isInteger));
-    state.traceSummary = summary;
-    state.traceSummaryKey = summaryKey;
-    const stepCases = state.traceCasesKey === casesKey
-      ? {
-        application_pid: state.traceCasesPid,
-        node: observation.node,
-        cases: state.traceCases
+    // These projections share a bounded read budget. Keep a successful read if the other fails.
+    let summaryFailure;
+    if (example) {
+      try {
+        if (!await loadExampleSummary(example, summaryKey, controller)) return;
+      } catch (error) {
+        summaryFailure = error;
       }
-      : await readExampleProjection(`/api/examples/steps/${observation.node}`, controller.signal);
-    if (!Array.isArray(stepCases.cases)
-        || Number(stepCases.application_pid) !== applicationPid
-        || Number(stepCases.node) !== observation.node) {
-      throw new Error("Built Example projection is from another application process.");
     }
-    if (controller.signal.aborted || state.traceController !== controller || state.traceKey !== key) {
-      return;
-    }
-    state.traceReadError = null;
-    state.traceCases = stepCases.cases.filter(plainObject);
-    state.traceCasesKey = casesKey;
-    state.traceCasesPid = Number(stepCases.application_pid);
-    state.traceContext = observation.context;
-    const selected = state.traceCases.find(candidate => candidate.id === example.id);
+    if (controller.signal.aborted || state.traceController !== controller || state.traceKey !== key) return;
+    if (!await loadStepObservations(operation, observation, casesKey, controller)) return;
+    state.traceReadError = summaryFailure ? {key:summaryKey, message:summaryFailure.message,
+      retry:!retrying && (summaryFailure.retryable === true || summaryFailure instanceof TypeError)} : null;
+    const selected = example && state.traceCases.find(candidate => candidate.id === example.id);
     const matchesBuilt = JSON.stringify(operation) === JSON.stringify(
       state.builtProject?.nodes.find(candidate => candidate.id === operation.id));
     state.traceStep = state.selection.type === "step"
@@ -5971,15 +5942,13 @@ async function requestSelectedTrace() {
     state.traceChanges = state.traceStep && plainObject(state.traceStep.input_context) && plainObject(state.traceStep.context)
       ? contextChanges(state.traceStep.input_context, state.traceStep.context, state.traceStep.own_changes) : null;
     state.previewCases = matchesBuilt && observation.context === "input"
-      ? state.traceCases.flatMap(candidate => plainObject(candidate.projection)
-      ? [{
-        ...candidate.projection,
-        step: candidate.projection.id,
+      ? state.traceCases.flatMap(candidate => recordedStepVisits(candidate).map(projection => ({
+        ...projection,
+        step: projection.id,
         trigger: candidate.trigger,
         example: candidate.index,
         example_name: candidate.name
-      }]
-      : [])
+      })))
       : [];
     state.traceController = null;
     selectTracePreview(example);
@@ -5991,21 +5960,70 @@ async function requestSelectedTrace() {
     state.traceStep = null;
     state.traceReadError = {key:summaryKey, message:error.message,
       retry:!retrying && (error.retryable === true || error instanceof TypeError)};
-    state.traceCases = [];
-    state.traceCasesKey = "";
-    state.traceCasesPid = 0;
-    state.traceContext = "";
+    if (state.traceCasesKey !== casesKey) {
+      state.traceCases = [];
+      state.traceCasesKey = "";
+      state.traceContext = "";
+    }
     state.previewCases = [];
-    state.preview = {
+    state.preview = example ? {
       step: state.selection.id,
       status: "unavailable",
       inputs: {},
       stages: [],
       message: error instanceof Error ? error.message : "Built example trace is unavailable."
-    };
+    } : null;
     state.runResult = exampleRunResult(example);
     refreshTraceView();
+  } finally {
+    if (state.traceController === controller) state.traceController = null;
   }
+}
+
+async function loadExampleSummary(example, key, controller) {
+  if (state.traceSummaryKey === key && state.traceSummary) return true;
+  const summary = await readExampleProjection(`/api/examples/${encodeURIComponent(example.id)}/view`, controller.signal);
+  if (controller.signal.aborted || state.traceController !== controller
+      || exampleSummaryKey(selectedTraceCase() || {}) !== key) return false;
+  if (Number(summary.application_pid) !== Number(state.application.pid) || !Array.isArray(summary.nodes))
+    throw new Error('Example summary is from another application.');
+  summary.nodes = new Set(summary.nodes.filter(Number.isInteger));
+  state.traceSummary = summary;
+  state.traceSummaryKey = key;
+  return true;
+}
+
+function stepObservationsKey(operation, observation) {
+  return JSON.stringify([state.workspaceEpoch, state.application.fingerprint, state.application.pid,
+    state.application.examples?.revision, state.application.examples?.state,
+    operation.id, observation.node, observation.context]);
+}
+
+async function loadStepObservations(operation, observation, key, controller) {
+  if (state.traceCasesKey === key) return true;
+  const applicationPid = Number(state.application.pid);
+  const revision = state.application.examples?.revision;
+  const projection = await readExampleProjection(`/api/examples/steps/${observation.node}`, controller.signal);
+  if (controller.signal.aborted || state.traceController !== controller
+      || stepObservationsKey(operation, observation) !== key) return false;
+  if (!Array.isArray(projection.cases) || Number(projection.application_pid) !== applicationPid
+      || Number(projection.node) !== observation.node)
+    throw new Error('Built Example projection is from another application process.');
+  if (revision !== undefined && Number(projection.revision) !== Number(revision)) {
+    const error = new Error('Example changed. Retry after the update.');
+    error.retryable = true;
+    throw error;
+  }
+  const cases = projection.cases.filter(plainObject);
+  if (cases.some(example => Number(example.projection?.visits) > 1
+      && (!Array.isArray(example.projection.invocations)
+        || example.projection.invocations.length !== Number(example.projection.visits)
+        || !example.projection.invocations.every(plainObject))))
+    throw new Error('Some Step visits were not recorded. Complete Example values are required for field choices.');
+  state.traceCases = cases;
+  state.traceCasesKey = key;
+  state.traceContext = observation.context;
+  return true;
 }
 
 async function requestRegionTrace(example) {
@@ -6162,7 +6180,7 @@ function refreshTraceView() {
 
 function refreshPickerOptions() {
   const options = document.querySelector("#step-options");
-  if (options && state.picker && observationMayReplace(options)) {
+  if (options && state.picker && !state.picker.chosen && observationMayReplace(options)) {
     options.innerHTML = pickerOptions();
   }
 }
@@ -6480,7 +6498,7 @@ async function drainWrites() {
         state.worldGroups = new Map(state.creator.groups.map(group => [group.id, group]));
         if (state.inspectorMode === "groups") render();
         else applyExampleCoverage();
-        void requestSelectedTrace();
+        void requestExampleEvidence();
       });
     }
   }, 0);
@@ -6633,26 +6651,32 @@ function changedIds() {
   return changed;
 }
 
-function availablePaths(operation, context = state.traceContext) {
+function availablePaths(operation, context = state.traceContext, outcome = "") {
   const trigger = triggerFor(operation.id);
   if (!trigger) {
     return [];
   }
-  const roots = observedRoots(operation, context);
+  const cases = observedRootsByExample(operation, context, outcome);
   const merged = new Map();
-  roots.forEach(root => {
-    const entries = [];
-    collectPaths(root, [], entries);
-    entries.forEach(entry => {
-      const key = JSON.stringify(entry.path);
-      const value = merged.get(key) || { path: entry.path, shapes: new Set(), examples: 0 };
-      value.shapes.add(entry.shape);
-      value.examples++;
-      merged.set(key, value);
+  cases.forEach(roots => {
+    const visitCounts = new Map();
+    roots.forEach(root => {
+      const entries = [];
+      collectPaths(root, [], entries);
+      entries.forEach(entry => {
+        const key = JSON.stringify(entry.path);
+        const value = merged.get(key) || { path: entry.path, shapes: new Set(), examples: 0 };
+        value.shapes.add(entry.shape);
+        merged.set(key, value);
+        visitCounts.set(key, (visitCounts.get(key) || 0) + 1);
+      });
+    });
+    visitCounts.forEach((count, key) => {
+      if (count === roots.length) merged.get(key).examples++;
     });
   });
   // Field coverage belongs to this location; completion still covers all trigger Examples.
-  const coverageTotal = Math.max(1, roots.length);
+  const coverageTotal = Math.max(1, cases.length);
   const triggerCases = state.traceCases.filter(example => example.trigger === trigger.id);
   const allTriggerExamplesFinished = triggerCases.length === Math.max(1, trigger.examples.length)
     && triggerCases.every(example => !["queued", "running"].includes(example.status));
@@ -6697,7 +6721,16 @@ function observationFor(operation) {
   return null;
 }
 
-function observedRoots(operation, context = state.traceContext) {
+function observedRoots(operation, context = state.traceContext, outcome = "") {
+  return observedRootsByExample(operation, context, outcome).flat();
+}
+
+function recordedStepVisits(example) {
+  const projection = example.projection;
+  return plainObject(projection) ? projection.invocations || [projection] : [];
+}
+
+function observedRootsByExample(operation, context = state.traceContext, outcome = "") {
   const trigger = triggerFor(operation.id);
   if (!trigger) {
     return [];
@@ -6705,12 +6738,12 @@ function observedRoots(operation, context = state.traceContext) {
   return state.traceCases
     .filter(example => example.trigger === trigger.id)
     .flatMap(example => {
-      const value = context === "trigger"
-        ? example.initial_context
-        : context === "output"
-          ? example.projection?.context
-          : example.projection?.input_context;
-      return plainObject(value) ? [{ context: value }] : [];
+      const values = context === "trigger" ? [example.initial_context] : recordedStepVisits(example)
+        .filter(projection => context !== "output" || !outcome
+          || (projection.outcomes || [projection.outcome]).includes(outcome))
+        .map(projection => context === "output" ? projection.context : projection.input_context);
+      const roots = values.filter(plainObject).map(value => ({context:value}));
+      return roots.length ? [roots] : [];
     });
 }
 
@@ -7090,7 +7123,7 @@ function selectStep(id) {
   render();
   scheduleMetricsPoll(0);
   if (definitionFor(node(id))?.kind === "step") {
-    requestSelectedTrace();
+    requestExampleEvidence();
   }
 }
 
@@ -7532,7 +7565,15 @@ document.addEventListener("click", event => {
     selectExample(-1, {id:state.exampleTrigger});
     return;
   }
-  if (target.closest('[data-retry-example]')) { clearPreview(true); void requestSelectedTrace(); renderExampleContext(); return; }
+  if (target.closest('[data-retry-example]')) {
+    clearPreview(true);
+    const picker = state.picker;
+    void requestExampleEvidence().then(() => {
+      if (picker && state.picker === picker) replacePickerOptions();
+    });
+    renderExampleContext();
+    return;
+  }
   const evidenceStep = target.closest('[data-evidence-step]');
   if (target.closest('[data-evidence-fields]')) {
     const view = state.evidenceView;

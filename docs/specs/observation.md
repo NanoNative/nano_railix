@@ -238,6 +238,12 @@ requires its per-process bearer token on every route:
 - `GET /v1/examples/steps/{node}` returns every real Example case plus its initial context and,
   when reached, that selected Step projection as one bounded ready-to-display response. It returns
   `413 EXAMPLE_STEP_REPLAY_TOO_LARGE` before replay when completed source traces exceed 64 MiB.
+  When a Step is visited more than once, its projection also includes `invocations`, containing
+  each recorded visit's identity, outcome, input context and output context in trace completion
+  order. The existing projection fields retain the last visit and the total `visits` count.
+  Invocation collection shares the response budget and stops replay when that budget is exceeded;
+  it returns `413 EXAMPLE_STEP_PROJECTION_TOO_LARGE` rather than a truncated list. Single-visit
+  responses omit `invocations`. The individual selected-Step endpoint retains its existing shape.
 - `GET /v1/metrics`, `/v1/metrics/application`, and `/v1/metrics/nodes/{id}` stream JSON metrics.
 - `GET /v1/metrics/catalog` describes metric IDs, labels, units, kinds, scopes, aggregation and sampling.
 - `GET /v1/metrics/prometheus` and `/v1/metrics/influx` stream standard text formats.

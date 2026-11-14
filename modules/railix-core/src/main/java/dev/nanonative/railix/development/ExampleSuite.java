@@ -38,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -399,8 +400,17 @@ final class ExampleSuite implements AutoCloseable {
                     throw new ProjectionUnavailable(closed.get() ? "closed" : "trace", failure);
                 }
                 try {
-                    project(trace, snapshot.node, false)
-                            .ifPresent(projection -> fields.put("projection", projection));
+                    final var visits = new StepVisits(maxBytes - bytes - separator);
+                    final var projection = project(trace, snapshot.node, false, visits::record);
+                    if (visits.exceeded) return Optional.empty();
+                    if (projection.isPresent()) {
+                        final var value = projection.orElseThrow();
+                        final var projected = new LinkedHashMap<>(value.values());
+                        if (integer(value, "visits") > 1) {
+                            projected.put("invocations", RailixValue.array(visits.values));
+                        }
+                        fields.put("projection", RailixValue.object(projected));
+                    }
                 } catch (final IOException failure) {
                     if (closed.get()) {
                         throw new ProjectionUnavailable("closed", failure);
@@ -569,6 +579,15 @@ final class ExampleSuite implements AutoCloseable {
             final int selectedNode,
             final boolean summary
     ) throws IOException {
+        return project(source, selectedNode, summary, ignored -> true);
+    }
+
+    private static Optional<RailixValue.ObjectValue> project(
+            final InputStream source,
+            final int selectedNode,
+            final boolean summary,
+            final Predicate<RailixValue.ObjectValue> recordVisit
+    ) throws IOException {
         final Map<Long, Deque<TraceFrame>> stacks = new HashMap<>();
         final Map<Long, MutableContext> contexts = new HashMap<>();
         final Set<Long> closedPaths = new HashSet<>();
@@ -650,6 +669,7 @@ final class ExampleSuite implements AutoCloseable {
                         context.apply(event);
                         if (!summary && call.node == selectedNode) {
                             selectedResult = stepProjection(call, event, context.snapshot());
+                            if (!recordVisit.test(selectedResult)) return Optional.empty();
                         }
                         if (!summary && call.node < 0) {
                             final TraceFrame owner = calls.stream()
@@ -687,6 +707,7 @@ final class ExampleSuite implements AutoCloseable {
                                 .orElse(null);
                         final var result = selected == null ? selectedResult : failedStepProjection(selected, event, context);
                         if (result == null) return Optional.empty();
+                        if (selected != null && !recordVisit.test(result)) return Optional.empty();
                         final Map<String, RailixValue> projected = new LinkedHashMap<>(result.values());
                         projected.put("visits", RailixValue.number(selectedVisits));
                         return Optional.of(RailixValue.object(projected));
@@ -695,6 +716,35 @@ final class ExampleSuite implements AutoCloseable {
                 }
             }
             return Optional.empty();
+        }
+    }
+
+    /** Retains Step visits within the remaining response budget while replaying once. */
+    private static final class StepVisits {
+        private final List<RailixValue> values = new ArrayList<>();
+        private int remainingBytes;
+        private boolean exceeded;
+
+        private StepVisits(final int maxBytes) {
+            remainingBytes = maxBytes;
+        }
+
+        private boolean record(final RailixValue.ObjectValue projection) {
+            final int separator = values.isEmpty() ? 0 : 1;
+            final String json = remainingBytes > separator
+                    ? RailixJson.write(projection, remainingBytes - separator).orElse(null) : null;
+            if (json == null) {
+                exceeded = true;
+                return false;
+            }
+            final int bytes = json.getBytes(StandardCharsets.UTF_8).length + separator;
+            if (bytes > remainingBytes) {
+                exceeded = true;
+                return false;
+            }
+            remainingBytes -= bytes;
+            values.add(projection);
+            return true;
         }
     }
 
