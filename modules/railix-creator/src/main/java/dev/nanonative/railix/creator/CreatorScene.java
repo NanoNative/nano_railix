@@ -2,6 +2,7 @@ package dev.nanonative.railix.creator;
 
 import dev.nanonative.railix.core.step.StepCatalog;
 import dev.nanonative.railix.core.step.StepDefinition;
+import dev.nanonative.railix.core.util.Sha256;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 
@@ -10,12 +11,10 @@ import java.net.URLDecoder;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -1394,14 +1393,11 @@ final class CreatorScene {
     }
 
     private static String identity(final String source, final String metadata) {
-        try {
-            final MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(source.getBytes(StandardCharsets.UTF_8));
-            digest.update((byte) 0);
-            return HexFormat.of().formatHex(digest.digest(metadata.getBytes(StandardCharsets.UTF_8)));
-        } catch (final NoSuchAlgorithmException failure) {
-            throw new IllegalStateException("The Java runtime does not provide SHA-256.", failure);
-        }
+        final MessageDigest digest = Sha256.newDigest();
+        digest.update(source.getBytes(StandardCharsets.UTF_8));
+        digest.update((byte) 0);
+        digest.update(metadata.getBytes(StandardCharsets.UTF_8));
+        return Sha256.finishHex(digest);
     }
 
     private record Box(double x, double y, double width, double height) {

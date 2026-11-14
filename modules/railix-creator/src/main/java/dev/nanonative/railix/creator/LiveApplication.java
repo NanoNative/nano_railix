@@ -1,6 +1,7 @@
 package dev.nanonative.railix.creator;
 
 import dev.nanonative.railix.core.runtime.ObservationServer;
+import dev.nanonative.railix.core.util.Sha256;
 import dev.nanonative.railix.core.value.RailixData;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -9,11 +10,8 @@ import java.io.IOException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
 import java.time.Duration;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
@@ -51,12 +49,7 @@ final class LiveApplication implements AutoCloseable {
             if (response.status() != 200 || !(RailixJson.parse(new String(response.body(), StandardCharsets.UTF_8)) instanceof RailixJson.Parsed parsed)
                     || !connection.identity().equals(parsed.value()))
                 throw new IOException("LIVE_IDENTITY_MISMATCH: This application is no longer available. Refresh the connection list.");
-            final var digest = MessageDigest.getInstance("SHA-256");
-            try (var input = Files.newInputStream(connection.artifact())) {
-                final byte[] buffer = new byte[65_536];
-                for (int read; (read = input.read(buffer)) >= 0;) digest.update(buffer, 0, read);
-            }
-            if (!connection.fingerprint().equals("sha256-" + HexFormat.of().formatHex(digest.digest())))
+            if (!connection.fingerprint().equals("sha256-" + Sha256.hexDigest(connection.artifact())))
                 throw new IOException("LIVE_ARTIFACT_CHANGED: The running application's original JAR has been replaced.");
             final var project = ProjectFiles.snapshot(connection.artifact(), local, home, connection.revision());
             final var result = new LiveApplication(connection, project, client);
@@ -66,8 +59,6 @@ final class LiveApplication implements AutoCloseable {
         } catch (final InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IOException("Live connection interrupted.", interrupted);
-        } catch (final java.security.NoSuchAlgorithmException unavailable) {
-            throw new IllegalStateException("SHA-256 is required by Java.", unavailable);
         } finally { if (!accepted) client.shutdownNow(); }
     }
 

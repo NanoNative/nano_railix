@@ -111,6 +111,31 @@ final class StepDefinitionContractE2eTest {
     }
 
     @Test
+    void removingADefinitionPreservesTheOriginalCatalogAndOtherImplementationOwnership() {
+        final var definitions = RemovalProvider.definitions();
+        final var first = definitions.getFirst();
+        final var second = definitions.get(1);
+        final var original = StepCatalog.of(RemovalProvider.class, first, second);
+        final var firstProvider = original.validationProvider(first.id());
+        final var secondProvider = original.validationProvider(second.id());
+        assertThat(firstProvider).isPresent();
+        assertThat(secondProvider).isPresent();
+        final var remaining = original.withoutDefinition(first.id());
+        assertThat(remaining.definitions()).containsExactly(second);
+        assertThat(remaining.find(first.id())).isEmpty();
+        assertThat(remaining.implementation(first.id())).isEmpty();
+        assertThat(remaining.validationProvider(first.id())).isEmpty();
+        assertThat(remaining.validationProvider(second.id())).isEqualTo(secondProvider);
+        assertThat(remaining.implementation(second.id())).isEqualTo(original.implementation(second.id()));
+        assertThat(original.definitions()).containsExactly(first, second);
+        assertThat(original.implementation(first.id())).isPresent();
+        assertThat(original.validationProvider(first.id())).isEqualTo(firstProvider);
+        assertThat(original.validationProvider(second.id())).isEqualTo(secondProvider);
+        assertThat(remaining.withoutDefinition("missing")).isSameAs(remaining);
+        assertThatIllegalArgumentException().isThrownBy(() -> remaining.withoutDefinition(null));
+    }
+
+    @Test
     void missingImplementationClassIsRejectedAtTheDeveloperBoundary() {
         assertThatIllegalArgumentException().isThrownBy(() -> StepDefinition.named("example.lambda", "1")
                         .implementation(null))
@@ -738,6 +763,13 @@ final class StepDefinitionContractE2eTest {
 
     private static StepResult next(final dev.nanonative.railix.core.step.StepInput input) {
         return StepResult.outcome(input.primaryOutcome());
+    }
+
+    public static final class RemovalProvider {
+        public static List<StepDefinition> definitions() {
+            return List.of(StepDefinition.named("example.first", "1").implementation(NextHandler.class),
+                    StepDefinition.named("example.second", "1").implementation(NextHandler.class, "java.net.http"));
+        }
     }
 
     private static final class NextHandler {

@@ -1335,7 +1335,7 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
                 assertThat(response.statusCode()).as(path).isEqualTo(200);
                 assertThat(response.headers().firstValue("Content-Security-Policy")).contains(policy);
             }
-            for (final String path : List.of("/app.css", "/themes/railix.css", "/themes/classic.css", "/app.js", "/world.js", "/audio.js", "/api/themes")) {
+            for (final String path : List.of("/app.css", "/themes/railix.css", "/themes/classic.css", "/app.js", "/custom-steps.js", "/world.js", "/audio.js", "/api/themes")) {
                 final HttpResponse<String> response = request(creator.baseUri(), "GET", path, "");
                 assertThat(response.statusCode()).as(path).isEqualTo(200);
                 assertThat(response.headers().firstValue("Content-Security-Policy")).isEmpty();
@@ -3457,6 +3457,16 @@ abstract class CreatorServerE2eSupport {
             Thread.sleep(20);
         } while (System.nanoTime() < deadline);
         throw new AssertionError("Example did not complete: " + state);
+    }
+
+    static RailixValue.ObjectValue successfulExampleView(final URI baseUri, final String id) throws Exception {
+        final var response = awaitExampleView(baseUri, id);
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final var view = object(response.body());
+        assertThat(view.values().get("complete")).isEqualTo(RailixValue.bool(true));
+        final var result = (RailixValue.ObjectValue) view.values().get("result");
+        assertThat(string(result, "status")).isIn("succeeded", "completed");
+        return view;
     }
 
     static RailixValue.ObjectValue object(final String source) {

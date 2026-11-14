@@ -1,0 +1,1 @@
+{"format":1,"steps":[{"name":"CustomLower","source":"public static String normalize(String text) {\n    return text.strip().toLowerCase(java.util.Locale.ROOT);\n}"},{"name":"CustomUpper","source":"public static String normalize(String text) {\n    return text.strip().toUpperCase(java.util.Locale.ROOT);\n}"}]}
