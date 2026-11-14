@@ -105,6 +105,7 @@ function initializeCustomSteps({canEdit, getDefinition, submit, onChanged, onClo
     status.textContent = available
       ? `Compiled. ${current.display_name} is available for compatible inputs in Add Step.`
       : 'Not compiled. This draft is not available in the current project.';
+    if (available) diagnostics.hidden = true;
   }
 
   function setBusy(busy) {
@@ -130,7 +131,6 @@ function initializeCustomSteps({canEdit, getDefinition, submit, onChanged, onClo
     event.preventDefault();
     if (compiling || !canEdit()) return;
     const draft = {name:name.value.trim(), source:source.value};
-    compiledDefinition = null;
     setBusy(true);
     button.textContent = 'Compiling…';
     status.textContent = 'Compiling Java and checking the Step contract…';

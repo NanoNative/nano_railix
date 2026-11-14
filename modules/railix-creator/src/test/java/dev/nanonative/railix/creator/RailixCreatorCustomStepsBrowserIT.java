@@ -285,12 +285,18 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
         assertThat(page.locator("#custom-step-status")).containsText("Not compiled");
         page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
                 .resolve("custom-step-draft-replaced-" + page.viewportSize().width + ".png")));
+        final var rejectedRetry = page.waitForResponse(response -> response.url().endsWith("/api/custom-steps")
+                && response.request().method().equals("POST"), () -> page.locator("#compile-custom-step").click());
+        org.assertj.core.api.Assertions.assertThat(rejectedRetry.status()).as(rejectedRetry.text()).isEqualTo(422);
+        assertThat(page.locator("#custom-step-diagnostics")).containsText("A Step with this name already exists");
+        assertThat(page.locator("#custom-step-source")).hasValue(replacement);
         page.locator("#close-custom-step").click();
         flowHistory("redo");
         flowHistory("redo");
         openCustomStepEditor();
         assertThat(page.locator("#custom-step-status")).containsText("Compiled.");
         assertThat(page.locator("#compile-custom-step")).isDisabled();
+        assertThat(page.locator("#custom-step-diagnostics")).isHidden();
         page.locator("#close-custom-step").click();
 
         final var other = CreatorServerE2eSupport.request(creator.baseUri(), "POST", "/api/custom-steps",
