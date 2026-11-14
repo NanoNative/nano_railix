@@ -9,6 +9,8 @@ import dev.nanonative.railix.core.value.ValueShape;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 import static dev.nanonative.railix.core.step.StepDefinition.PathAccess.READ;
 import static dev.nanonative.railix.core.step.StepDefinition.PathAccess.READ_WRITE;
@@ -41,6 +43,7 @@ public final class StandardLibrary {
                 cli(),
                 http(),
                 httpClient(),
+                database(),
                 fieldManipulation(),
                 branch()
         ));
@@ -126,6 +129,80 @@ public final class StandardLibrary {
                         .defaultOption("private"))
                 .returns("response", ValueShape.OBJECT)
                 .implementation(HttpStepHandlers.Client.class, "java.net.http");
+    }
+
+    private static StepDefinition database() {
+        return StepDefinition.named("railix.database", "1")
+                .displayName("Database")
+                .searchTerms("store", "persist", "collection", "json", "crud", "upsert", "mongodb")
+                .primaryOutcome("ok")
+                .input("collection", Input.json(ValueShape.STRING)
+                        .defaultValue(RailixValue.string("default"))
+                        .validation(String.class, value -> DatabaseStepHandlers.validCollectionName(value)
+                                ? Optional.empty()
+                                : Optional.of("Collection must start and end with a lowercase ASCII letter or digit, "
+                                        + "contain 1 to 64 lowercase ASCII letters, digits, '.', '_', or '-', and "
+                                        + "avoid OS-reserved device names.")))
+                .input("directory", Input.json(ValueShape.STRING)
+                        .defaultValue(RailixValue.string(".railix/data"))
+                        .validation(String.class, value -> DatabaseStepHandlers.validStorageDirectory(value)
+                                ? Optional.empty()
+                                : Optional.of("Directory must be a valid non-blank path up to 512 characters without "
+                                        + "'..' parent traversal.")))
+                .input("key_field", Input.json(ValueShape.STRING)
+                        .defaultValue(RailixValue.string("_id"))
+                        .validation(String.class, value -> DatabaseStepHandlers.validKeyField(value)
+                                ? Optional.empty()
+                                : Optional.of("Key field must be a non-blank UTF-8 string up to 128 bytes.")))
+                .input("unique_fields", databaseFieldListInput())
+                .input("index_fields", databaseFieldListInput())
+                .input("operation", Input.options(
+                        Input.option("upsert")
+                                .input("document", Input.path(READ).defaultPath("context", "payload"))
+                                .input("auto_key", Input.json(ValueShape.BOOLEAN)
+                                        .defaultValue(RailixValue.bool(true)))
+                                .input("fields", databaseFieldListInput()),
+                        Input.option("get")
+                                .input("key", databaseKeyPathInput())
+                                .input("fields", databaseFieldListInput())
+                                .input("defaults", databaseDefaultsInput()),
+                        Input.option("find")
+                                .input("filter", Input.path(READ).defaultPath("context", "payload"))
+                                .input("after", Input.path(READ).optional())
+                                .input("fields", databaseFieldListInput())
+                                .input("defaults", databaseDefaultsInput())
+                                .input("limit", Input.json(ValueShape.NUMBER)
+                                        .defaultValue(RailixValue.number(DatabaseStepHandlers.DEFAULT_FIND_LIMIT))
+                                        .between(RailixValue.number(1),
+                                                RailixValue.number(DatabaseStepHandlers.MAX_FIND_LIMIT))
+                                        .validation(Integer.class, limit ->
+                                                limit >= 1 && limit <= DatabaseStepHandlers.MAX_FIND_LIMIT
+                                                        ? Optional.empty()
+                                                        : Optional.of("Limit must be between 1 and "
+                                                                + DatabaseStepHandlers.MAX_FIND_LIMIT + "."))),
+                        Input.option("delete")
+                                .input("key", databaseKeyPathInput())
+                ).defaultOption("upsert"))
+                .input("target", Input.path(WRITE).defaultPath("context", "result"))
+                .outcome("not_found")
+                .outcome("invalid")
+                .implementation(DatabaseStepHandlers.class);
+    }
+
+    private static StepDefinition.JsonInput databaseFieldListInput() {
+        return Input.json(ValueShape.ARRAY)
+                .defaultValue(RailixValue.array(List.of()))
+                .validation(RailixValue.ArrayValue.class, DatabaseStepHandlers::fieldListRejection);
+    }
+
+    private static StepDefinition.JsonInput databaseDefaultsInput() {
+        return Input.json(ValueShape.OBJECT)
+                .defaultValue(RailixValue.object(Map.of()))
+                .validation(RailixValue.ObjectValue.class, DatabaseStepHandlers::defaultsRejection);
+    }
+
+    private static StepDefinition.PathInput databaseKeyPathInput() {
+        return Input.path(READ).defaultPath("context", "payload", "_id");
     }
 
     private static StepDefinition fieldManipulation() {
