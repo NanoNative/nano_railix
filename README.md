@@ -257,10 +257,12 @@ Explicit viewport matrices run once through the desktop execution. Reserve the `
 for journeys that need an additional run at the configured narrow viewport.
 
 `scripts/coverage.sh` runs that clean verification and prints the advisory aggregate stored at
-`modules/railix-creator/target/site/jacoco-aggregate/index.html`. Its 95% line and 90% branch targets
-cover authored Java production files in the three modules. Generated per-project application
-classes and the Creator browser client are proven through generated-artifact and browser E2Es but
-are not part of the JaCoCo denominator. Exact accepted counts and aggregate coverage are recorded
+`modules/railix-creator/target/site/jacoco-aggregate/index.html`. CI uses the same script, displays
+line and branch percentages in the job summary, and uploads the full report as `coverage-report`.
+Standard-library coverage is underreported because runtime pruning changes provider class bytes.
+The 95% line and 90% branch targets cover authored Java production files in the three modules.
+Generated per-project application classes and the Creator browser client are proven through
+generated-artifact and browser E2Es but are not part of the JaCoCo denominator.
 in [verification history](docs/verification.md), with their original scope and dates.
 
 ## License

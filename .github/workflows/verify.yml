@@ -24,7 +24,14 @@ jobs:
           distribution: zulu
           java-version: '25'
           cache: maven
-      - run: ./mvnw --batch-mode --no-transfer-progress -Drailix.test.forks=2 clean verify
+      - name: Verify and report coverage
+        run: ./scripts/coverage.sh --batch-mode --no-transfer-progress -Drailix.test.forks=2
+      - name: Upload coverage report
+        if: ${{ !cancelled() && hashFiles('modules/railix-creator/target/site/jacoco-aggregate/index.html') != '' }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: coverage-report
+          path: modules/railix-creator/target/site/jacoco-aggregate/
       - name: Preserve test failure evidence
         if: failure()
         uses: actions/upload-artifact@v7.0.2
