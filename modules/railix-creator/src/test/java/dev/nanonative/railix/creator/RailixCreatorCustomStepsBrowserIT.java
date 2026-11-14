@@ -4,6 +4,7 @@ import com.microsoft.playwright.APIResponse;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Route;
+import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -21,6 +22,72 @@ import java.util.stream.IntStream;
 import static com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat;
 
 final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSupport {
+    @Test
+    @Tag("responsive")
+    @Tag("browser-diagnostics")
+    void catalogRefreshReloadsPickerObservationsWithoutSelectingAnExample() throws Exception {
+        openProject(choiceProject());
+        publishCustomStep("Unused", "public static boolean flag() { return true; }");
+        page.reload();
+        awaitScene();
+        selectWorldNode("choice");
+        chooseVisibleExample("command:0");
+        clickOverview("[data-add-outcome='match']");
+        page.locator("#step-search").fill("uppercase");
+        assertThat(page.locator("[data-add-step='text.uppercase']")).hasCount(1);
+        page.locator("[data-close-picker]").click();
+        openCustomStepManager();
+        page.locator("#custom-step-list [aria-label='Delete Unused']").click();
+        final var response = page.waitForResponse(candidate -> candidate.url().endsWith("/api/custom-steps")
+                        && candidate.request().method().equals("DELETE"),
+                () -> page.locator("#confirm-custom-step-deletion").click());
+        org.assertj.core.api.Assertions.assertThat(response.status()).isEqualTo(200);
+        assertThat(page.locator("#custom-step-list [aria-label='Delete Unused']")).hasCount(0);
+        page.locator("#close-custom-step-manager").click();
+        final String observations = "**/api/examples/steps/*";
+        page.route(observations, route -> route.fulfill(new Route.FulfillOptions().setStatus(503)
+                .setContentType("application/json").setBody("{\"message\":\"Observations unavailable\"}")));
+        try {
+            selectWorldNode("choice");
+            assertThat(page.locator("#visible-example")).hasValue("");
+            clickOverview("[data-add-outcome='match']");
+            page.locator("#step-search").fill("uppercase");
+            assertThat(page.locator("#step-options [role='alert']")).containsText("busy");
+            assertThat(page.locator("[data-add-step='text.uppercase']")).hasCount(0);
+            page.waitForFunction("() => state.traceReadError?.retry === false && !state.traceController");
+        } finally {
+            page.unroute(observations);
+        }
+        final var pendingRetry = new AtomicReference<Route>();
+        page.route(observations, pendingRetry::set);
+        try {
+            page.locator("#step-options [data-retry-example]").click();
+            page.waitForCondition(() -> pendingRetry.get() != null);
+            page.locator("#step-search").fill("choice");
+            page.locator("[data-reuse-item='choice']").click();
+            final var continuation = page.locator("[data-reuse-boundary='exits']");
+            continuation.focus();
+            continuation.selectOption("choice.otherwise");
+            pendingRetry.get().resume();
+            page.waitForFunction("() => !state.traceController");
+            assertThat(continuation).hasValue("choice.otherwise");
+            assertThat(continuation).isFocused();
+        } finally {
+            page.unroute(observations);
+        }
+        page.locator("[data-cancel-reuse]").click();
+        page.locator("#step-search").fill("uppercase");
+        assertThat(page.locator("[data-add-step='text.uppercase']")).hasCount(1);
+        assertThat(page.locator("#step-search")).isFocused();
+        assertThat(page.locator("#visible-example")).hasValue("");
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("custom-step-picker-after-refresh-" + page.viewportSize().width + ".png")));
+        clickAndWaitForCreatorSave(() -> page.locator("[data-add-step='text.uppercase']").click());
+        waitForText("#build-state", "Built");
+        CreatorServerE2eSupport.successfulExampleView(creator.baseUri(), "command:0");
+        org.assertj.core.api.Assertions.assertThat(pageErrors).isEmpty();
+    }
+
     @Test
     @Tag("responsive")
     @Tag("browser-diagnostics")
@@ -149,12 +216,27 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
     @Tag("responsive")
     @Tag("browser-diagnostics")
     void deletedDefinitionCanBeRecompiledWithoutEditingItsDraft() throws Exception {
-        openProject(choiceProject());
+        openProject(nestedHttpProject());
+        final String group = createGroup("method", "accepted");
         createCustomStep("Normalize");
+        if (page.locator("#inspector").isVisible()) page.locator("#close-inspector").click();
+        page.locator("[data-region-group='" + group + "']").first().click();
+        awaitScene();
+        page.locator("#zoom-in").click();
+        page.locator("#graph").press("ArrowLeft");
+        awaitScene();
         openCustomStepManager();
+        final Object camera = cameraCenter();
+        final var navigation = (List<?>) page.evaluate("() => state.world.navigation");
+        org.assertj.core.api.Assertions.assertThat(navigation).isNotEmpty();
         confirmCustomStepDeletion();
         assertThat(page.locator("#custom-step-manager-status")).containsText("no custom Steps");
         page.locator("#close-custom-step-manager").click();
+        awaitScene();
+        org.assertj.core.api.Assertions.assertThat(cameraCenter()).isEqualTo(camera);
+        org.assertj.core.api.Assertions.assertThat(page.evaluate("() => state.world.navigation")).isEqualTo(navigation);
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("custom-step-view-after-deletion-" + page.viewportSize().width + ".png")));
 
         openCustomStepEditor();
         assertThat(page.locator("#custom-step-name")).hasValue("Normalize");
@@ -238,11 +320,13 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
                         "{\"payload\":{\"aString\":\"ignore\",\"first\":\"Ada\",\"last\":\"Lovelace\",\"formal\":true,\"value\":\"allow\"}}")
                 .replace("{\"payload\":{\"value\":\"deny\"}}",
                         "{\"payload\":{\"aString\":\"ignore\",\"first\":\"Grace\",\"last\":\"Hopper\",\"formal\":false,\"value\":\"deny\"}}"));
-        createCustomStep("Greeting", """
+        publishCustomStep("Greeting", """
                 public static String greet(String first, String last, boolean formal) {
                     return (formal ? "Hello " : "Hi ") + first + " " + last;
                 }
                 """);
+        page.reload();
+        awaitScene();
         selectWorldNode("command");
         chooseVisibleExample("first-case");
         clickOverview("#add-next-step");
@@ -300,7 +384,9 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
     @Tag("browser-diagnostics")
     void nestedHttpBranchUsesOnlyExamplesThatReachedTheStep() throws Exception {
         openProject(nestedHttpProject());
-        createCustomStep("customLower");
+        publishCustomStep("customLower", CustomStepsE2eTest.METHOD);
+        page.reload();
+        awaitScene();
         selectWorldNode("method");
         chooseVisibleExample("post-one");
         clickOverview("[data-add-outcome='post']");
@@ -710,6 +796,13 @@ final class RailixCreatorCustomStepsBrowserIT extends RailixCreatorBrowserSuppor
                   {"from":"accepted.next","to":"end"},{"from":"fallback.next","to":"end"}
                 ]}
                 """;
+    }
+
+    private void publishCustomStep(final String name, final String source) throws Exception {
+        final var response = CreatorServerE2eSupport.request(creator.baseUri(), "POST", "/api/custom-steps",
+                RailixJson.write(RailixValue.object(Map.of("name", RailixValue.string(name),
+                        "source", RailixValue.string(source)))));
+        org.assertj.core.api.Assertions.assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
     }
 
     private void createCustomStep(final String name) {

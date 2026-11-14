@@ -722,6 +722,78 @@ final class RailixCreatorWorkspaceBrowserIT extends RailixCreatorBrowserSupport 
 
 final class RailixCreatorRoutingBrowserIT extends RailixCreatorBrowserSupport {
     @ParameterizedTest
+    @CsvSource({"single,true", "repeated,true", "both,true", "mixed,false", "missing,false"})
+    @Tag("browser-diagnostics")
+    void insertionUsesOnlyExamplesThatFollowTheChosenOutcome(final String scenario, final boolean compatible) throws Exception {
+        final String firstPayload = switch (scenario) {
+            case "mixed" -> "{\"allowed\":true,\"email\":7}";
+            case "missing" -> "{\"allowed\":true}";
+            default -> "{\"allowed\":true,\"email\":\"alice@example.com\"}";
+        };
+        final String secondPayload = scenario.equals("repeated") ? "{\"allowed\":false,\"email\":7}"
+                : "{\"allowed\":true,\"email\":\"alice@example.com\"}";
+        openProject(scenario.equals("single") ? emailBranchProject()
+                : CreatorServerE2eSupport.repeatedBranchProject("sequential", firstPayload, secondPayload));
+        if (!scenario.equals("single")) {
+            // This converging fixture is shown as an aggregate area. Open its source Inspector.
+            page.evaluate("async () => { await selectWorldNode('credentials'); }");
+            PlaywrightAssertions.assertThat(page.locator("#inspector")).hasAttribute("data-selection", "credentials");
+        } else selectWorldNode("credentials");
+        chooseVisibleExample("command:0");
+        openInspectorTab("overview");
+        PlaywrightAssertions.assertThat(page.locator("[data-observed-outcome]")).isVisible();
+        clickOverview("[data-add-outcome='otherwise']");
+        page.locator("#step-search").fill("uppercase");
+        PlaywrightAssertions.assertThat(page.locator("[data-add-step='text.uppercase']")).hasCount(0);
+        page.locator("[data-close-picker]").click();
+        clickOverview("[data-add-outcome='match']");
+        page.locator("#step-search").fill("uppercase");
+        if (!compatible) {
+            PlaywrightAssertions.assertThat(page.locator("#step-options")).containsText("No Step matches.");
+            PlaywrightAssertions.assertThat(page.locator("[data-add-step='text.uppercase']")).hasCount(0);
+            org.assertj.core.api.Assertions.assertThat(pageErrors).isEmpty();
+            return;
+        }
+        PlaywrightAssertions.assertThat(page.locator("[data-add-step='text.uppercase']")).hasCount(1);
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("step-route-picker-" + scenario + "-" + page.viewportSize().width + ".png")));
+        final var saved = page.waitForResponse(candidate -> candidate.url().endsWith("/api/editor")
+                        && candidate.request().method().equals("POST"),
+                () -> page.locator("[data-add-step='text.uppercase']").click());
+        org.assertj.core.api.Assertions.assertThat(saved.status()).as(saved.text()).isEqualTo(200);
+        waitForText("#build-state", "Built");
+        final var nodes = (RailixValue.ArrayValue) CreatorServerE2eSupport.object(
+                Files.readString(directory.resolve("project.json"))).values().get("nodes");
+        final var placed = nodes.values().stream().map(RailixValue.ObjectValue.class::cast)
+                .filter(value -> RailixValue.string("text.uppercase").equals(value.values().get("use")))
+                .findFirst().orElseThrow();
+        org.assertj.core.api.Assertions.assertThat(placed.values().get("receives"))
+                .isEqualTo(CreatorServerE2eSupport.object("""
+                        {"value":["context","payload","email"]}
+                        """));
+        CreatorServerE2eSupport.successfulExampleView(creator.baseUri(), "command:0");
+        final var response = CreatorServerE2eSupport.request(creator.baseUri(), "GET",
+                "/api/examples/command:0/steps/" + nodes.values().indexOf(placed), "");
+        org.assertj.core.api.Assertions.assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        final var context = (RailixValue.ObjectValue) CreatorServerE2eSupport.object(response.body()).values().get("context");
+        final var payload = (RailixValue.ObjectValue) context.values().get("payload");
+        org.assertj.core.api.Assertions.assertThat(payload.values().get("email"))
+                .isEqualTo(RailixValue.string("ALICE@EXAMPLE.COM"));
+        org.assertj.core.api.Assertions.assertThat(payload.values().get("allowed")).isEqualTo(RailixValue.bool(true));
+        if (scenario.equals("single")) CreatorServerE2eSupport.successfulExampleView(creator.baseUri(), "command:1");
+        org.assertj.core.api.Assertions.assertThat(pageErrors).isEmpty();
+    }
+
+    private static String emailBranchProject() {
+        return branchProject("email-picker", "credentials", """
+                [[{"option":"field","inputs":{"field":["context","payload","allowed"]},
+                   "when":{"transforms":[],"all":[[{"use":"value.equals","inputs":{"expected":true}}]]}}]]
+                """)
+                .replace("\"value\":\"allow\"", "\"allowed\":true,\"email\":\"alice@example.com\"")
+                .replace("\"value\":\"deny\"", "\"allowed\":false");
+    }
+
+    @ParameterizedTest
     @Tag("browser-diagnostics")
     @ValueSource(ints={320,390})
     void choiceSourceIsVisibleWithoutScrollingPastEmptyActionRows(final int width) throws Exception {
@@ -4054,99 +4126,75 @@ final class RailixCreatorStepBrowserIT extends RailixCreatorBrowserSupport {
             final String search,
             final String primitive,
             final String preview,
-            final RailixValue expected
+            final RailixValue expected,
+            final Map<String, String> compatibleChoices
     ) {
-        createPrimitivePreviewAndResult(example, search, primitive, preview);
-
+        preparePrimitiveSearch(example, "");
+        for (final var choice : compatibleChoices.entrySet()) {
+            fillStepSearch("#steps-search", choice.getKey());
+            PlaywrightAssertions.assertThat(page.locator("#steps-options [data-add-nested='" + choice.getValue() + "']"))
+                    .hasCount(1);
+        }
+        fillStepSearch("#steps-search", search);
+        page.locator("#steps-options [data-add-nested='" + primitive + "']").click();
+        waitForText("#build-state", "Built");
+        PlaywrightAssertions.assertThat(page.locator("[data-preview-stage='0']")).hasText(preview);
         assertThat(runResult()).isEqualTo(expected);
     }
 
     static Stream<Arguments> primitivePreviewAndExecutionCases() {
         final String magnitude = "1".repeat(1_024);
+        // Full primitive semantics remain in GeneratedPrimitiveStepsE2eTest. These journeys cover
+        // each input shape, type-changing output, exact-number preview and canonical JSON display.
+        final Map<String, String> numberChoices = Map.of("ceil", "number.ceil", "round", "number.round",
+                "abs", "number.abs", "negate", "number.negate", "sign", "number.sign", "to text", "number.to-text");
+        final Map<String, String> textChoices = Map.of("uppercase", "text.uppercase", "trim", "text.trim",
+                "normalize space", "text.normalize-space", "normalize nfc", "text.normalize-nfc",
+                "length", "text.length", "is empty", "text.is-empty");
         return Stream.of(
-                Arguments.of("numberCeilCanBePreviewedAndExecuted",
-                        "{\"payload\":{\"value\":1.2}}", "ceil", "number.ceil", "2",
-                        RailixValue.number(2)),
                 Arguments.of("numberRoundCanBePreviewedAndExecuted",
                         "{\"payload\":{\"value\":-1.5}}", "round", "number.round", "-2",
-                        RailixValue.number(-2)),
-                Arguments.of("numberAbsoluteValueCanBePreviewedAndExecuted",
-                        "{\"payload\":{\"value\":-12.5}}", "abs", "number.abs", "12.5",
-                        RailixValue.number(new BigDecimal("12.5"))),
-                Arguments.of("numberNegateCanBePreviewedAndExecuted",
-                        "{\"payload\":{\"value\":12.5}}", "negate", "number.negate", "-12.5",
-                        RailixValue.number(new BigDecimal("-12.5"))),
+                        RailixValue.number(-2), numberChoices),
                 Arguments.of("numberNegateMaximumMagnitudeCanBePreviewedAndExecuted",
                         "{\"payload\":{\"value\":" + magnitude + "}}", "negate", "number.negate", "-" + magnitude,
-                        RailixValue.number(new BigDecimal("-" + magnitude))),
-                Arguments.of("numberSignCanBePreviewedAndExecuted",
-                        "{\"payload\":{\"value\":-0.1}}", "sign", "number.sign", "-1",
-                        RailixValue.number(-1)),
+                        RailixValue.number(new BigDecimal("-" + magnitude)), Map.of()),
                 Arguments.of("textUppercaseCanBePreviewedAndExecuted",
                         "{\"payload\":{\"value\":\"stra\\u00dfe\"}}", "uppercase", "text.uppercase", "\"STRASSE\"",
-                        RailixValue.string("STRASSE")),
-                Arguments.of("textTrimCanBePreviewedAndExecuted",
-                        "{\"payload\":{\"value\":\"\\u2003Railix\\u2003\"}}", "trim", "text.trim", "\"Railix\"",
-                        RailixValue.string("Railix")),
-                Arguments.of("textNormalizeSpaceCanBePreviewedAndExecuted",
-                        "{\"payload\":{\"value\":\" railix\\t creator \"}}",
-                        "normalize space", "text.normalize-space", "\"railix creator\"",
-                        RailixValue.string("railix creator")),
-                Arguments.of("textNormalizeNfcCanBePreviewedAndExecuted",
-                        "{\"payload\":{\"value\":\"e\\u0301\"}}", "normalize nfc", "text.normalize-nfc", "\"é\"",
-                        RailixValue.string("é")),
-                Arguments.of("textLengthCanBePreviewedAndExecuted",
-                        "{\"payload\":{\"value\":\"A\\ud83d\\ude80B\"}}", "length", "text.length", "3",
-                        RailixValue.number(3)),
-                Arguments.of("textIsEmptyCanBePreviewedAndExecuted",
-                        "{\"payload\":{\"value\":\"\"}}", "is empty", "text.is-empty", "true",
-                        RailixValue.bool(true)),
-                Arguments.of("listIsEmptyCanBePreviewedAndExecuted",
-                        "{\"payload\":{\"value\":[]}}", "is empty", "list.is-empty", "true",
-                        RailixValue.bool(true)),
+                        RailixValue.string("STRASSE"), textChoices),
                 Arguments.of("booleanToTextCanBePreviewedAndExecuted",
                         "{\"payload\":{\"value\":true}}", "to text", "boolean.to-text", "\"true\"",
-                        RailixValue.string("true")),
-                Arguments.of("booleanToNumberCanBePreviewedAndExecuted",
-                        "{\"payload\":{\"value\":true}}", "to number", "boolean.to-number", "1",
-                        RailixValue.number(1)),
+                        RailixValue.string("true"), Map.of("to text", "boolean.to-text", "to number", "boolean.to-number")),
                 Arguments.of("listReverseCanBePreviewedAndExecuted",
                         "{\"payload\":{\"value\":[1,2]}}", "reverse", "list.reverse", "[2,1]",
-                        RailixValue.array(List.of(RailixValue.number(2), RailixValue.number(1)))),
-                Arguments.of("numberToTextCanBePreviewedAndExecuted",
-                        "{\"payload\":{\"value\":1.2300}}", "to text", "number.to-text", "\"1.23\"",
-                        RailixValue.string("1.23")),
+                        RailixValue.array(List.of(RailixValue.number(2), RailixValue.number(1))), Map.of("is empty", "list.is-empty", "reverse", "list.reverse")),
                 Arguments.of("valueWrapListCanBePreviewedAndExecuted",
                         "{\"payload\":{\"value\":null}}", "wrap list", "value.wrap-list", "[null]",
-                        RailixValue.array(List.of(RailixValue.nullValue()))),
+                        RailixValue.array(List.of(RailixValue.nullValue())), Map.of("wrap list", "value.wrap-list", "to json", "value.to-json")),
                 Arguments.of("valueToJsonCanBePreviewedAndExecuted",
                         "{\"payload\":{\"value\":{\"z\":2,\"a\":1}}}", "to json", "value.to-json",
-                        "\"{\\\"a\\\":1,\\\"z\\\":2}\"", RailixValue.string("{\"a\":1,\"z\":2}"))
+                        "\"{\\\"a\\\":1,\\\"z\\\":2}\"", RailixValue.string("{\"a\":1,\"z\":2}"), Map.of())
         );
     }
 
-    @ParameterizedTest(name = "{0} is hidden for a {1} source")
+    @ParameterizedTest(name = "incompatible Steps are hidden for a {1} source")
     @CsvSource(delimiter = '|', textBlock = """
-            number.greater-than     | string | {"payload":{"value":"6"}}
-            number.greater-or-equal | string | {"payload":{"value":"6"}}
-            number.less-than        | string | {"payload":{"value":"6"}}
-            number.less-or-equal    | string | {"payload":{"value":"6"}}
-            text.starts-with        | number | {"payload":{"value":7}}
-            text.ends-with          | number | {"payload":{"value":7}}
-            list.is-empty           | object | {"payload":{"value":{}}}
-            boolean.to-text         | string | {"payload":{"value":"true"}}
-            boolean.to-number       | string | {"payload":{"value":"true"}}
-            list.reverse            | object | {"payload":{"value":{}}}
-            number.to-text          | string | {"payload":{"value":"1"}}
+            number.greater-than number.greater-or-equal number.less-than number.less-or-equal | string | {"payload":{"value":"6"}}
+            text.starts-with text.ends-with | number | {"payload":{"value":7}}
+            list.is-empty list.reverse | object | {"payload":{"value":{}}}
+            boolean.to-text boolean.to-number | string | {"payload":{"value":"true"}}
+            number.to-text | string | {"payload":{"value":"1"}}
             """)
     void primitiveIsHiddenForIncompatibleSource(
-            final String primitive,
+            final String primitives,
             final String sourceType,
             final String example
     ) {
-        preparePrimitiveSearch(example, primitive);
-
-        assertThat(page.locator("#steps-options [data-add-nested='" + primitive + "']").count()).isZero();
+        preparePrimitiveSearch(example, "");
+        page.locator("#steps-options [data-add-nested='value.to-json']").waitFor();
+        for (final String primitive : primitives.split(" ")) {
+            fillStepSearch("#steps-search", primitive);
+            assertThat(page.locator("#steps-options [data-add-nested='" + primitive + "']").count()).isZero();
+        }
     }
 
     @Test
@@ -6007,19 +6055,6 @@ abstract class RailixCreatorBrowserSupport {
         waitForText("#build-state", "Built");
         selectTrigger();
         page.locator(".run-result").waitFor();
-    }
-
-    void createPrimitivePreviewAndResult(
-            final String example,
-            final String search,
-            final String primitive,
-            final String preview
-    ) {
-        preparePrimitiveSearch(example, search);
-        page.locator("#steps-options [data-add-nested='" + primitive + "']").click();
-        waitForText("#build-state", "Built");
-        page.locator("[data-preview-stage='0']").waitFor();
-        assertThat(page.locator("[data-preview-stage='0']").textContent()).isEqualTo(preview);
     }
 
     RailixValue runResult() {

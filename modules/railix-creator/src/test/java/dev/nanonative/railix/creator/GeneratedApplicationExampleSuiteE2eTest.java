@@ -49,6 +49,67 @@ final class GeneratedApplicationExampleSuiteE2eTest extends CreatorServerE2eSupp
     private static final int SNAPSHOT_GATE_NODE = SNAPSHOT_REPLAY_STEPS + 3;
 
     @Test
+    void aggregateRepeatedVisitsRespectTheProjectionBudget() throws Exception {
+        final var routes = new ArrayList<String>();
+        final var links = new ArrayList<String>();
+        for (int index = 0; index < 16; index++) {
+            routes.add("{\"outcome\":\"route-" + index + "\",\"groups\":[],\"inputs\":{}}");
+            links.add("{\"from\":\"split.route-" + index + "\",\"to\":\"publish\"}");
+        }
+        final Path project = directory.resolve("railix.project.json");
+        Files.writeString(project, """
+                {"format":1,"id":"visit-budget","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"many visits","payload":[],"context":{"payload":{"large":"%s"}}}]},
+                  {"id":"split","use":"railix.branch","inputs":{"selection":{"option":"all","inputs":{}},"routes":[%s]}},
+                  {"id":"publish","use":"railix.field-manipulation","inputs":{}}
+                ],"links":[{"from":"app.start","to":"command"},{"from":"command.next","to":"split"},
+                  {"from":"split.otherwise","to":"end"},{"from":"publish.next","to":"end"},%s]}
+                """.formatted("x".repeat(600_000), String.join(",", routes), String.join(",", links)));
+        try (final var creator = start(project)) {
+            awaitExamples(creator, 1);
+            final var aggregate = request(creator.baseUri(), "GET", "/api/examples/steps/3", "");
+            assertThat(aggregate.statusCode()).as(aggregate.body()).isEqualTo(413);
+            assertThat(aggregate.body()).contains("EXAMPLE_STEP_PROJECTION_TOO_LARGE");
+            final var selected = request(creator.baseUri(), "GET", "/api/examples/command:0/steps/3", "");
+            assertThat(selected.statusCode()).as(selected.body()).isEqualTo(200);
+            assertThat(number(object(selected.body()), "visits")).isEqualTo(16);
+            assertThat(object(selected.body()).values()).doesNotContainKey("invocations");
+            assertThat(string(application(creator.baseUri()), "state")).isEqualTo("running");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"sequential", "parallel"})
+    void aggregateStepProjectionRetainsEveryVisit(final String execution) throws Exception {
+        final Path project = directory.resolve("railix.project.json");
+        Files.writeString(project, repeatedBranchProject(execution,
+                "{\"allowed\":true,\"email\":\"alice@example.com\"}", "{\"allowed\":false,\"email\":7}"));
+        try (final var creator = start(project)) {
+            awaitExamples(creator, 1);
+            final var response = request(creator.baseUri(), "GET", "/api/examples/steps/4", "");
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+            final var example = (RailixValue.ObjectValue) ((RailixValue.ArrayValue) object(response.body()).values().get("cases"))
+                    .values().getFirst();
+            final var projection = (RailixValue.ObjectValue) example.values().get("projection");
+            assertThat(number(projection, "visits")).isEqualTo(2);
+            assertThat(projection.values()).containsKey("invocations");
+            final var invocations = ((RailixValue.ArrayValue) projection.values().get("invocations")).values();
+            assertThat(invocations).hasSize(2);
+            assertThat(invocations).extracting(value -> string((RailixValue.ObjectValue) value, "outcome"))
+                    .containsExactlyInAnyOrder("match", "otherwise");
+            for (final var value : invocations) {
+                final var invocation = (RailixValue.ObjectValue) value;
+                final var context = (RailixValue.ObjectValue) invocation.values().get("context");
+                final var payload = (RailixValue.ObjectValue) context.values().get("payload");
+                assertThat(payload.values().get("email")).isEqualTo(string(invocation, "outcome").equals("match")
+                        ? RailixValue.string("alice@example.com") : RailixValue.number(7));
+            }
+        }
+    }
+
+    @Test
     void longUnicodeFailureHeadersRemainBoundedAndSerializable() throws Exception {
         final String prefix = "Step returned undeclared outcome: ";
         final String outcome = "x".repeat(511 - prefix.length()) + "\uD83D\uDE80tail";

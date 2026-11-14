@@ -253,6 +253,8 @@ successful developer build into a failure.
 Browser E2Es use the system `chrome` channel by default. Set `RAILIX_BROWSER_CHANNEL` to another
 installed Playwright Chromium channel when required by the contributor host. The single GitHub
 Actions workflow runs the same clean verification on every pull request.
+Explicit viewport matrices run once through the desktop execution. Reserve the `responsive` tag
+for journeys that need an additional run at the configured narrow viewport.
 
 `scripts/coverage.sh` runs that clean verification and prints the advisory aggregate stored at
 `modules/railix-creator/target/site/jacoco-aggregate/index.html`. Its 95% line and 90% branch targets

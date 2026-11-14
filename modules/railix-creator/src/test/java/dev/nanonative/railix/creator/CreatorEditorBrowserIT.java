@@ -361,7 +361,6 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @ParameterizedTest
-    @Tag("responsive")
     @ValueSource(ints={1440,390})
     void settingsReuseTheInspectorAndRestoreItsSelection(final int width) throws Exception {
         page.setDefaultTimeout(5000);
@@ -617,7 +616,6 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @ParameterizedTest
-    @Tag("responsive")
     @ValueSource(ints={1280,390})
     void aDelayedSelectionCannotEditThePreviouslySelectedStep(final int width) throws Exception {
         page.setViewportSize(width,800);
@@ -1257,7 +1255,9 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    void anUnavailableRecordedExampleCanBeRetriedWithoutAutomaticReadLoops() {
+    @Tag("responsive")
+    @Tag("browser-diagnostics")
+    void anUnavailableRecordedExampleCanBeRetriedWithoutAutomaticReadLoops() throws Exception {
         openProject(attentionProject());
         final var reads = new ArrayList<String>();
         final var polls = new ArrayList<String>();
@@ -1273,9 +1273,18 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
         final int completedPolls = polls.size();
         page.waitForCondition(() -> polls.size() >= completedPolls + 3);
         assertThat(reads).as("One automatic retry, then no further background reads").hasSize(2);
+        chooseVisibleExample("command:0");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.locator("[data-preview-stage='0']"))
+                .hasText("\"RAILIX\"");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.locator("#example-session .observation-feedback[data-state='unavailable']"))
+                .isVisible();
+        page.screenshot(new Page.ScreenshotOptions().setPath(Files.createDirectories(Path.of("target", "screenshots"))
+                .resolve("summary-unavailable-step-values-" + page.viewportSize().width + ".png")));
         page.unroute("**/api/examples/*/view");
         page.locator("[data-retry-example]").click();
         page.waitForFunction("() => Boolean(state.traceSummary) && !state.traceReadError");
+        com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat(page.locator("[data-preview-stage='0']"))
+                .hasText("\"RAILIX\"");
         assertThat(pageErrors).isEmpty();
     }
 
@@ -1506,7 +1515,6 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @Test
-    @Tag("responsive")
     void aMusicPreferenceConflictRemainsVisibleOutsideTheAppearanceTab() throws Exception {
         page.setViewportSize(390,844);
         page.locator("#open-settings").click();
@@ -2238,7 +2246,6 @@ final class CreatorEditorBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @ParameterizedTest
-    @Tag("responsive")
     @ValueSource(ints={360,720})
     void narrowInspectorTabsKeepTheirCompleteLabels(final int height) {
         page.setViewportSize(320, height);

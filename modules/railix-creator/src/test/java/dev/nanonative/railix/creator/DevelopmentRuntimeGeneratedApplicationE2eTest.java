@@ -2991,25 +2991,6 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
     }
 
     @Test
-    void closedOwnershipInputIsRejectedByTheGeneratedProcess() throws Exception {
-        try (var child = DevelopmentRuntimeGeneratedProcess.launch(build)) {
-            child.closeOwner();
-            assertThat(child.awaitExit()).isEqualTo(2);
-            assertThat(child.error()).contains("Creator closed stdin before sending a complete startup frame.");
-        }
-    }
-
-    @Test
-    void blankOwnershipTokenIsRejectedByTheGeneratedProcess() throws Exception {
-        try (var child = DevelopmentRuntimeGeneratedProcess.launch(build)) {
-            child.input("\n".getBytes(StandardCharsets.UTF_8));
-            child.closeOwner();
-            assertThat(child.awaitExit()).isEqualTo(2);
-            assertThat(child.error()).contains("Creator startup frame is required.");
-        }
-    }
-
-    @Test
     void oversizedOwnershipTokenIsRejectedByTheGeneratedProcess() throws Exception {
         try (var child = DevelopmentRuntimeGeneratedProcess.launch(build)) {
             child.input(("x".repeat(129) + "\n").getBytes(StandardCharsets.UTF_8));

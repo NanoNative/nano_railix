@@ -722,7 +722,6 @@ final class CreatorWorldBrowserIT extends RailixCreatorBrowserSupport {
     }
 
     @ParameterizedTest
-    @Tag("responsive")
     @ValueSource(ints={1280,390})
     void openingAnEnteredGroupsInspectorDoesNotCancelItsPendingEntry(final int width) {
         page.setViewportSize(width,800);

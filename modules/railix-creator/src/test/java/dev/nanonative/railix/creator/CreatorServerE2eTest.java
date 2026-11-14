@@ -3347,6 +3347,30 @@ final class CreatorServerProtocolE2eTest extends CreatorServerE2eSupport {
 }
 
 abstract class CreatorServerE2eSupport {
+    static String repeatedBranchProject(final String execution, final String firstPayload, final String secondPayload) {
+        return """
+                {"format":1,"id":"repeated-branch","nodes":[
+                  {"id":"app","use":"railix.app","inputs":{}},
+                  {"id":"command","use":"railix.trigger.cli","inputs":{},"examples":[
+                    {"name":"one request","payload":[],"context":{"payload":%s}}]},
+                  {"id":"split","use":"railix.branch","inputs":{"selection":{"option":"all","inputs":{}},
+                    "execution":{"option":"%s","inputs":{}},"routes":[
+                      {"outcome":"left","groups":[],"inputs":{"own_context":true}},
+                      {"outcome":"right","groups":[],"inputs":{"own_context":true}}]}},
+                  {"id":"change","use":"railix.field-manipulation","inputs":{"field":["context","payload"],
+                    "value":[{"option":"literal","inputs":{"literal":%s}}]}},
+                  {"id":"credentials","use":"railix.branch","inputs":{"routes":[{"outcome":"match","inputs":{},
+                    "groups":[[{"option":"field","inputs":{"field":["context","payload","allowed"]},
+                      "when":{"transforms":[],"all":[[{"use":"value.equals","inputs":{"expected":true}}]]}}]]}]}}
+                ],"links":[
+                  {"from":"app.start","to":"command"},{"from":"command.next","to":"split"},
+                  {"from":"split.left","to":"credentials"},{"from":"split.right","to":"change"},
+                  {"from":"split.otherwise","to":"end"},{"from":"change.next","to":"credentials"},
+                  {"from":"credentials.match","to":"end"},{"from":"credentials.otherwise","to":"end"}
+                ]}
+                """.formatted(firstPayload, execution, secondPayload);
+    }
+
     static final String CONTEXT = """
             {"payload":{"arguments":["Hello RAILIX"]}}
             """;
