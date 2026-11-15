@@ -964,12 +964,19 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
             awaitExamples(child, uri, 1, Duration.ofSeconds(60));
             Files.delete(runtimeDirectory(candidate, child).resolve("0.ndjson"));
 
-            for (int attempt = 0; attempt < 2; attempt++) {
-                assertThat(request(
-                        child, uri, TOKEN, "GET", "/v1/examples/steps/2", "", null
-                )).extracting(HttpResponse::statusCode, HttpResponse::body)
-                        .containsExactly(503, "{\"reason\":\"trace\",\"status\":\"unavailable\"}");
+            final String path = "/v1/examples/steps/2";
+            assertThat(request(child, uri, TOKEN, "GET", path, "", null))
+                    .extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(503, "{\"reason\":\"trace\",\"status\":\"unavailable\"}");
+            final long deadline = System.nanoTime() + WAIT.toNanos();
+            HttpResponse<String> repeated = request(child, uri, TOKEN, "GET", path, "", null);
+            while (saturated(repeated) && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+                repeated = request(child, uri, TOKEN, "GET", path, "", null);
             }
+            assertThat(repeated)
+                    .extracting(HttpResponse::statusCode, HttpResponse::body)
+                    .containsExactly(503, "{\"reason\":\"trace\",\"status\":\"unavailable\"}");
         }
     }
 
@@ -3743,6 +3750,15 @@ final class DevelopmentRuntimeGeneratedApplicationE2eTest {
             Thread.sleep(10);
         } while (System.nanoTime() < deadline);
         throw new IOException("Application management read remained saturated.");
+    }
+
+    private static boolean saturated(final HttpResponse<String> response) {
+        if (response.statusCode() != 503) {
+            return false;
+        }
+        final RailixValue.ObjectValue body = object(response.body());
+        return "unavailable".equals(string(body, "status"))
+                && "saturated".equals(string(body, "reason"));
     }
 
     private static Socket partialRequestWithAuthorization(
