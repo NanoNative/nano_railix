@@ -217,6 +217,9 @@
                         </goals>
                         <configuration>
                             <includeCurrentProject>true</includeCurrentProject>
+                            <includes>
+                                <include>dev/nanonative/railix/**</include>
+                            </includes>
                             <dataFileIncludes>
                                 <dataFileInclude>**/jacoco-*.exec</dataFileInclude>
                             </dataFileIncludes>
