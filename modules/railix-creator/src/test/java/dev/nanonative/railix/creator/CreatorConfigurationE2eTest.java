@@ -6,7 +6,6 @@ import dev.nanonative.railix.core.step.StepDefinition;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.core.value.ValueShape;
-import dev.nanonative.railix.stdlib.StandardLibrary;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -213,7 +212,7 @@ final class CreatorConfigurationE2eTest extends CreatorServerE2eSupport {
             assertThat(a.run("command", "{}").body()).contains("FIRST");
         }
         final String source = configuredProject("9007199254740993");
-        final var result = ProjectCompiler.compileApplication(source, StandardLibrary.catalog());
+        final var result = ProjectCompiler.compileApplication(source, GeneratedApplicationFixture.catalog());
         assertThat(result).isInstanceOf(CompileResult.Compiled.class);
         final var jar = CreatorFirstExecutionArtifacts.production(directory.resolve("production"), source);
         final var probe = CreatorFirstExecutionArtifacts.compileProductionProbe(directory.resolve("probe"), jar);
