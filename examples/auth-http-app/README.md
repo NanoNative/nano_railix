@@ -9,7 +9,7 @@ App -> HTTP -> Path Branch
                                                     Match -> CustomUpper -> CustomLower -> Fixed login response
                                                     Otherwise -> Unauthorized response
                 /register -> Method Branch -> POST -> Fixed response
-                /order -> OrderValue -> Order quote response
+                /order -> Read configured tax rate -> OrderValue -> Order quote response
                 Otherwise -> Not-found response
 ```
 
@@ -32,11 +32,14 @@ credential check, so they do not make login case-insensitive. The successful
 response uses fixed values for `user` (`alice@example.com`) and `token`
 (`railix-demo-token`).
 
-The `OrderValue` custom Step reads `items`, `discountPercent`, `taxPercent` and
-`express` from `context.payload.request.body`. It validates the items and
-percentages, applies the discount, adds shipping and calculates tax. Its result is
-written to `context.body`, which the HTTP Trigger returns as the response body.
-The `/order` route currently checks only the path and goes directly to this Step.
+The project configuration defines `tax_rate` as `20`. On the `/order` route, a
+Field Manipulation Step copies that build-fixed value to `context.tax_rate` before
+`OrderValue` runs. `OrderValue` reads `items`, `discountPercent` and `express`
+from `context.payload.request.body`, and reads `taxPercent` from
+`context.tax_rate`. It validates the items and percentages, applies the discount,
+adds shipping and calculates tax. Its result is written to `context.body`, which
+the HTTP Trigger returns as the response body. The route currently checks only
+the request path.
 
 The project has three source documents:
 
@@ -128,14 +131,14 @@ curl -i 'http://127.0.0.1:8080/order' \
       {"sku": "ITEM-20", "quantity": 1, "unitPrice": 20.00}
     ],
     "discountPercent": 10,
-    "taxPercent": 18,
     "express": false
   }'
 ```
 
 Curl sends a POST with these order fields as the JSON request body. The HTTP
 Trigger exposes them under `context.payload.request.body` for the Step's input
-mappings. No login credentials are required for this route.
+mappings. Tax is supplied by the project's `tax_rate` configuration instead of
+the request. No login credentials are required for this route.
 
 The response contains `valid: true`, all 20 priced items and
 `shippingMode: "standard"`, with these amounts:
@@ -145,5 +148,5 @@ The response contains `valid: true`, all 20 priced items and
 | `subtotal` | `210.00` |
 | `discount` | `21.00` |
 | `shipping` | `0.00` |
-| `tax` | `34.02` |
-| `total` | `223.02` |
+| `tax` | `37.80` |
+| `total` | `226.80` |
