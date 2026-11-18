@@ -13,24 +13,25 @@ for execution contracts and the [roadmap](docs/roadmap.md) for supported and pla
 
 ## Documentation Map
 
-| Location | Owns |
-| --- | --- |
-| This README | Product introduction, setup and contributor entrypoints. |
+| Location | Owns                                                                                                                             |
+| --- |----------------------------------------------------------------------------------------------------------------------------------|
+| This README | Product introduction, setup and contributor entrypoints.                                                                         |
 | [Why Railix exists](docs/vision.md) | Founding motivation, product and business rationale, tradeoffs and reference-backed discussion; not implementation requirements. |
-| [.agents/skills/](.agents/skills/) | Standalone project workflow skills, including specification, Java and CSS; no global installation required. |
-| [System model](docs/specs/system-model.md) | Functional graph, Step/context and lifecycle contracts, control routing and compilation. |
-| [Portable Step providers](docs/specs/system-model.md#portable-step-providers) | Accepted common provider path, default-provider parity, local-first delivery and later Git acquisition. |
-| [HTTP Trigger](docs/specs/http-trigger.md) / [HTTP Client](docs/specs/http-client.md) | Current HTTP baseline, planned context-driven HTTPS behavior and shared protocol data rules. |
-| [Standard library](docs/specs/standard-library.md) | Primitive semantics, catalog/support matrix and acceptance. |
-| [Observation](docs/specs/observation.md) | Application-owned execution, shared metrics, management APIs and remaining attachment work. |
-| [Creator](docs/specs/creator.md) | Authoring, presentation metadata, factory world and navigation. |
-| [Creator assets](docs/specs/creator-assets.md) | Settings, theme folders, renderer variants and editable sounds/music. |
-| [Examples and validation](docs/specs/examples-and-validation.md) | Separate Example ownership, Creator checks and planned field authoring. |
-| [Environments and security](docs/specs/environments-and-security.md) | Typed project configuration fixed at build time; secret-management goals and open identity, recovery and ingress design. |
-| [Database and data access](docs/specs/database-and-data-access.md) | Planned durable database and permission-controlled Creator data administration; no time-series database. |
-| [docs/roadmap.md](docs/roadmap.md) | Delivery sequence, dependencies, progress and unsupported scope. |
-| [docs/adr/](docs/adr/) | Architectural decisions, rationale, alternatives and consequences. |
-| [Verification history](docs/verification.md) | Earlier checks and performance evidence, not current CI status. |
+| [.agents/skills/](.agents/skills/) | Standalone project workflow skills, including specification, Java and CSS; no global installation required.                      |
+| [System model](docs/specs/system-model.md) | Functional graph, Step/context and lifecycle contracts, control routing and compilation.                                         |
+| [Portable Step providers](docs/specs/system-model.md#portable-step-providers) | Accepted common provider path, default-provider parity, local-first delivery and later Git acquisition.                          |
+| [HTTP Trigger](docs/specs/http-trigger.md) / [HTTP Client](docs/specs/http-client.md) | Current HTTP baseline, planned context-driven HTTPS behavior and shared protocol data rules.                                     |
+| [Standard library](docs/specs/standard-library.md) | Primitive semantics, catalog/support matrix and acceptance.                                                                      |
+| [Observation](docs/specs/observation.md) | Application-owned execution, shared metrics, management APIs and remaining attachment work.                                      |
+| [Creator](docs/specs/creator.md) | Authoring, presentation metadata, factory world and navigation.                                                                  |
+| [Creator assets](docs/specs/creator-assets.md) | Settings, theme folders, renderer variants and editable sounds/music.                                                            |
+| [Examples and validation](docs/specs/examples-and-validation.md) | Separate Example ownership, Creator checks and planned field authoring.                                                          |
+| [Environments and security](docs/specs/environments-and-security.md) | Typed project configuration fixed at build time; secret-management goals and open identity, recovery and ingress design.         |
+| [Database and data access](docs/specs/database-and-data-access.md) | Planned durable database and permission-controlled Creator data administration; no time-series database.                         |
+| [Railix mesh](docs/specs/mesh.md) | Planned first Flow-dispatch, discovery, trust, cross-platform compatibility.                   |
+| [docs/roadmap.md](docs/roadmap.md) | Delivery sequence, dependencies, progress and unsupported scope.                                                                 |
+| [docs/adr/](docs/adr/) | Architectural decisions, rationale, alternatives and consequences.                                                               |
+| [Verification history](docs/verification.md) | Earlier checks and performance evidence, not current CI status.                                                                  |
 
 The vision explains the product's purpose. Specs own behavior and acceptance; ADRs explain
 technical decisions, and the roadmap links to those owners.
