@@ -105,6 +105,11 @@ complete out of order on the same connection.
 | `outcome` | Ends an admitted invocation with its terminal result, preserving applicable Flow outcome and branch semantics. |
 | `cancel` | Requests cancellation of an in-flight invocation. |
 
+For the first intranet prototype, each side applies one internal 5-second join deadline from
+the start of an outbound connection attempt or the acceptance of an inbound socket. The deadline
+covers TCP setup, mutual TLS, `hello` and receipt of the peer's first valid `state`. On expiry,
+close the connection and follow the discovery retry policy.
+
 The first intranet prototype sends `state` heartbeats every 2 seconds. The receiver marks a peer
 stale after 8 seconds without a valid `state` from that peer. Both timings are internal defaults.
 
@@ -147,9 +152,15 @@ A peer is a routing candidate only after mutual TLS and a compatible `hello`, an
 latest authenticated `state` is fresh and reports readiness. The receiving replica measures
 freshness against its monotonic clock. A disconnect removes the peer from routing immediately.
 A stale connection closes and leaves the routing pool.
-Configured bootstrap addresses remain retry targets while the application runs, with capped
-exponential backoff and jitter. Learned addresses expire after bounded attempts. A returning
-replica can rejoin through a seed or be discovered again through fresh peer exchange. A replica
+Configured bootstrap addresses remain retry targets while the application runs. In the intranet
+prototype the first attempt has no retry delay. After a failed join, choose a random delay
+between half the current ceiling and the full ceiling. The first failure uses a 1-second ceiling.
+Each subsequent consecutive failure doubles it up to 30 seconds. A successful join resets it.
+
+For a learned address the prototype tries once immediately and, after a failed join, tries once
+more after a random delay between 0.5 and 1 second. Repeated hints with the same replica
+incarnation and endpoint share that retry budget. A new incarnation or a changed endpoint can
+start a fresh attempt. A returning replica can also join by contacting a configured seed. A replica
 with no reachable peers continues local execution.
 
 Railix does not enumerate an arbitrary LAN, cloud subnet, or IPv6 range. A Mac and Raspberry Pi
@@ -316,6 +327,10 @@ keep the first proof bounded while preserving their required architectural bound
 
 ## Acceptance And Planned Evidence
 
+For the MESH-004 bootstrap reconnection check, start A while its configured bootstrap peer B is
+down. Verify that A retries within the delay bounds, keeps serving local requests and reconnects
+when B returns.
+
 For MESH-009, keep a generated application below its local Flow capacity and stall its only
 peer. Send real Trigger requests and verify that the application keeps returning their normal
 results locally while the peer is stalled, disconnected and reconnecting. This is a planned
@@ -325,9 +340,9 @@ integration check.
 | --- | --- | --- |
 | MESH-001/002 | Build/run an application with mesh excluded and included-but-inactive; inspect listeners, packaged dependencies, local behavior, and retained processes. | Planned packaged-application proof. |
 | MESH-003 | Connect trusted, unknown, expired, wrong-application, and wrong-key peers; verify no unauthorized Flow execution or plaintext fallback. | Planned two-process TLS proof; enrollment/rotation remain open. |
-| MESH-004 | Start replicas across a bounded occupied loopback range. On two hosts, bootstrap B against A and hold back B's first ready `state`. Verify through runtime peer status that B enters routing only after that state arrives and leaves on disconnect. Also verify duplicate connection resolution, bootstrap reconnection and expiry of learned peers. | Planned local and cross-host proof. |
+| MESH-004 | Start replicas across a bounded occupied loopback range. On two hosts, bootstrap B against A and hold back B's first ready `state`. Verify through runtime peer status that B enters routing only after that state arrives and leaves on disconnect. Withhold the first `state` past the join deadline and verify A closes the socket while serving local requests. Also verify duplicate connection resolution, bootstrap reconnection and two dial attempts for an unreachable learned peer repeatedly advertised by B. | Planned local and cross-host proof. |
 | MESH-005/007 | Run the same logical build in macOS and Linux/ARM packages, dispatch an eligible Flow, then attempt a platform-ineligible target and a different logical build. | Planned Mac/Raspberry Pi proof; platform packaging must exist first. |
-| MESH-006/007/012 | Exercise UTF-8, byte, node and depth boundaries, aggregate outcomes and simultaneous slow frames. Verify early rejection, bounded memory and recovery. | Planned protocol/resource tests after aggregate byte and time budgets are selected. |
+| MESH-006/007/012 | Exercise UTF-8, byte, node and depth boundaries, aggregate outcomes and simultaneous slow frames. Verify early rejection, bounded memory and recovery. | `PeerFramesTest` covers length encoding, byte limits and partial reads. `PeerChannelTest` covers malformed frames, whole-frame writes and socket closure after a failure. Mesh JSON and concurrent resource checks are planned. |
 | MESH-008/009 | Saturate A with real source requests. Verify its `invoke` gets only a terminal `outcome` from B and the original source gets one response from A. Saturate B with local and remote work and verify `invoke` gets an immediate `refused`. | Planned generated-application integration test. |
 | MESH-010/011 | Refuse an invocation, disconnect after possible admission, return a late result and drain with one ongoing Flow. Verify bounded attempts, one ingress deadline and no duplicate execution. | Planned controlled failure and shutdown tests. |
 | MESH-013 | Complete concurrent Flow invocations out of order over one peer channel. | Flow evidence planned first. Step evidence belongs to the later milestone. |
@@ -338,9 +353,9 @@ The sections above record the accepted behavior. Remaining decisions are scoped 
 milestone that depends on them.
 
 - **Secure peer membership:** exact startup configuration format and delivery, credential password
-  source, wire field schema and certificate URI syntax. Set peer and concurrent-handshake limits,
-  connection and handshake deadlines, bootstrap backoff and learned-address retry and expiry values.
-  Validate the prototype heartbeat interval and stale timeout under load on the Raspberry Pi.
+  source, wire field schema and certificate URI syntax. Set peer and concurrent-handshake limits
+  and how long to retain learned hints. Validate the prototype join deadline, heartbeat,
+  stale timeout and bootstrap retry timings under load on the Raspberry Pi.
 - **Remote Flow execution:** how the build establishes eligibility for portable providers, the
   source operation time budget and receiver clamp, frame read/write deadlines, and aggregate
   inbound, outbound and retained-value budgets measured under concurrent load.

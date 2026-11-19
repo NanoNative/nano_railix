@@ -260,6 +260,7 @@ for journeys that need an additional run at the configured narrow viewport.
 `scripts/coverage.sh` runs that clean verification and prints the advisory aggregate stored at
 `modules/railix-creator/target/site/jacoco-aggregate/index.html`. CI uses the same script, displays
 line and branch percentages in the job summary, and uploads the full report as `coverage-report`.
+Mesh writes its own report at `modules/railix-mesh/target/site/jacoco/index.html` during `verify`.
 Standard-library coverage is underreported because runtime pruning changes provider class bytes.
 The 95% line and 90% branch targets cover authored Java production files in the three modules.
 Generated per-project application classes and the Creator browser client are proven through

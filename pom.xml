@@ -9,6 +9,7 @@
 
     <modules>
         <module>modules/railix-core</module>
+        <module>modules/railix-mesh</module>
         <module>modules/railix-stdlib</module>
         <module>modules/railix-creator</module>
     </modules>
