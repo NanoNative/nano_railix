@@ -3,7 +3,8 @@
 ## Status
 
 Accepted on 2026-07-27; release distribution clarified on 2026-08-13; launcher ownership clarified
-on 2026-08-28.
+on 2026-08-28. [ADR 0024](0024-optional-mesh-module-and-peer-channel.md) supersedes only the fixed
+three-module claim for the accepted optional mesh module; the remaining boundaries stay in force.
 
 ## Context
 

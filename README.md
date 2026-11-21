@@ -28,6 +28,7 @@ for execution contracts and the [roadmap](docs/roadmap.md) for supported and pla
 | [Examples and validation](docs/specs/examples-and-validation.md) | Separate Example ownership, Creator checks and planned field authoring. |
 | [Environments and security](docs/specs/environments-and-security.md) | Typed project configuration fixed at build time; secret-management goals and open identity, recovery and ingress design. |
 | [Database and data access](docs/specs/database-and-data-access.md) | Planned durable database and permission-controlled Creator data administration; no time-series database. |
+| [Railix mesh](docs/specs/mesh.md) | Planned first Flow-dispatch, discovery, trust, cross-platform compatibility. |
 | [docs/roadmap.md](docs/roadmap.md) | Delivery sequence, dependencies, progress and unsupported scope. |
 | [docs/adr/](docs/adr/) | Architectural decisions, rationale, alternatives and consequences. |
 | [Verification history](docs/verification.md) | Earlier checks and performance evidence, not current CI status. |
@@ -69,7 +70,7 @@ The checked-in wrapper downloads the pinned Maven version on first use. The norm
 For a focused change, select its public-entrypoint suite without rebuilding the native image:
 
 ```sh
-./mvnw -pl modules/railix-creator -am -Dtest=RailixValueNullContractTest,PrimitiveStepsCreatorProjectE2eTest,CreatorEditorE2eTest -Dsurefire.failIfNoSpecifiedTests=false test
+./mvnw -pl modules/railix-creator -am -Dtest=RailixValueNullContractTest,PeerFramesTest,PeerChannelTest,PrimitiveStepsCreatorProjectE2eTest,CreatorEditorE2eTest -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
 For UI work, compile the reactor and run its browser suite directly:
@@ -226,8 +227,10 @@ provided by this minimal transport.
   Branch, and built-in total or explicitly fallible unary Steps.
 - `railix-creator`: Creator HTTP/UI, project build and rolling child-JVM lifecycle, read-only
   management proxies, launcher, and executable shaded JAR.
+- `railix-mesh`: peer framing and channels for the optional mesh capability. Generated application
+  integration is planned in [Roadmap Item 7](docs/roadmap.md#7-decentralised-execution-state-sharding-and-replication).
 
-The reactor has three production modules. Provider dependencies remain outside the core.
+The reactor has four production modules. Provider dependencies remain outside the core.
 
 ## Pull Requests
 
@@ -259,8 +262,10 @@ for journeys that need an additional run at the configured narrow viewport.
 `scripts/coverage.sh` runs that clean verification and prints the advisory aggregate stored at
 `modules/railix-creator/target/site/jacoco-aggregate/index.html`. CI uses the same script, displays
 line and branch percentages in the job summary, and uploads the full report as `coverage-report`.
+Mesh contributes to the aggregate and writes its own report at
+`modules/railix-mesh/target/site/jacoco/index.html` during `verify`.
 Standard-library coverage is underreported because runtime pruning changes provider class bytes.
-The 95% line and 90% branch targets cover authored Java production files in the three modules.
+The 95% line and 90% branch targets cover authored Java production files in the reactor modules.
 Generated per-project application classes and the Creator browser client are proven through
 generated-artifact and browser E2Es but are not part of the JaCoCo denominator.
 in [verification history](docs/verification.md), with their original scope and dates.

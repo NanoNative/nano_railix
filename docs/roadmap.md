@@ -79,7 +79,7 @@ does not block plain certificate configuration. Configurable primitive families 
 | --- | --- | --- | --- |
 | Environment-independent execution and observation | [Shared observation contract](specs/observation.md#development-observation), SYS-002/003/006 | Same generated ordinary executor and metric store with/without Examples; packaged real-ingress/metric HTTP proof; build capability selection, protected standalone attachment and equal-option performance measurements. | In progress following the 2026-11-03 correction. Common metrics, direct dispatch and HTTP handler passed the full clean gate and serial artifact measurements, recorded in [verification](verification.md#shared-runtime-observation). Default local observation, its build opt-out and protected standalone attachment are implemented with focused tests. See [connection evidence](verification.md#readonly-live-connection-and-draft-comparison). Visual assertion authoring and real-traffic value tracing remain open. |
 | Observed version and local work in one Creator | [CR-021 to CR-023](specs/creator.md#live-application-and-local-changes), [source/build identity](specs/observation.md#application-source-and-build-identity) | Prove optional project inclusion and matching local-project loading through the same formats/reader, then observe, edit, compare, restore and run local Examples without mutating the observed instance or mixing evidence. | Source packaging and artifact-referenced local loading are locally verified. Authenticated loopback attachment, separate Draft/Live views, derived changes and local restoration are implemented. See [connection evidence](verification.md#readonly-live-connection-and-draft-comparison). Confirming Live pauses local execution until `Start locally`. No reduced topology format or extra persisted scene state. This is not a remote deployment channel or a full release-readiness claim. |
-| Application and first-mesh boundary | [SYS-001 to SYS-004](specs/system-model.md#accepted-platform-boundaries) | Single-instance execution and minimal packaged capabilities first; mesh compatibility, membership and failure contracts before multi-node tests. | Accepted direction; no new implementation certification. |
+| Application and first-mesh boundary | [SYS-001 to SYS-004](specs/system-model.md#accepted-platform-boundaries), [MESH-001 to MESH-013](specs/mesh.md#behavior) | Single-instance execution and minimal packaged capabilities first; mesh compatibility, membership and failure contracts before multi-node tests. | Accepted direction; no new implementation certification. |
 | Portable provider workflow and default-provider parity | [SYS-032 to SYS-037](specs/system-model.md#portable-step-providers) | Deliver a standalone local provider journey through the public contracts, then package default Steps through that same path and prove extraction to a separate local checkout with offline defaults intact. | API and runtime-packaging increment implemented and verified by the full local clean gate on 2026-11-10. Shared export/import, embedded catalogs, provider-owned App metadata, external compilation, checkout-independent execution and mixed-class pruning pass. See [evidence and the bytecode-coverage limitation](verification.md#portable-provider-packaging). Guided starter and installation UI remain planned. |
 | Provider Git acquisition | [SYS-034](specs/system-model.md#portable-step-providers) | Reuse checked bundles and locks after local parity; settle revision/update, trust/authentication, build-code consent, fetch limits and offline behavior before network acquisition. | Planned, not a runtime plugin system. No remote URL, protocol or automatic source build is selected. |
 | Step native filter metadata | [SYS-036](specs/system-model.md#portable-step-providers) | Derive the default-true Boolean from optional dynamic class declarations through export/import, catalog projection and packaged execution. | Implemented with focused contract and packaged-CLI verification, including JDK classes and missing-class rejection. Generated execution source is unchanged by the classification. No new execution engine, Native Image certification, effect labels or visual filter controls. |
@@ -303,9 +303,9 @@ Status: **Planned**
 Goal: scale one application through a decentralised Railix mesh without turning it into
 microservices or adding a user-managed orchestration layer.
 
-Delivery follows single-instance production readiness, including its packaging work in Item 8.
-The first mesh scope is SYS-004; cross-project execution, host provisioning and process
-supervision are not requirements for that slice. Other projects use explicit application APIs.
+The accepted first mesh scope is [MESH-001 through MESH-013](specs/mesh.md#behavior) under SYS-004;
+host provisioning and process supervision are not requirements for that
+slice.
 
 Scope:
 
@@ -314,8 +314,9 @@ Scope:
 - require a successor to prove identity, compatibility, readiness, ownership transfer, drain, and
   rollback before an existing application yields work;
 - every authorized mesh instance can accept work and participate in balancing and recovery;
-- decide and prove the compiled unit of distribution: eligible Step, Flow, or another boundary.
-  Creator-only Groups, Blueprints, and Templates must never become a production placement model;
+- deliver complete Flow invocation placement first, then add eligible individual Step placement
+  over the same peer-channel and invocation-lifecycle architecture. Creator-only Groups and Templates
+  must never become a production placement model;
 - explicit eligibility and dependency-tree compatibility, never automatic migration from timing
   alone;
 - authenticated remote dispatch with bounded retries, deadlines, backpressure, and observability;
@@ -323,6 +324,16 @@ Scope:
 - explicit local-resource and placement constraints;
 - Step-owned state, partitioning, replication, repair, backup, and recovery;
 - partition, restart, migration, recovery, and soak proof without retained run state or leaks.
+
+Initial delivery sequence:
+
+| Milestone | Outcome | Dependencies | Exit evidence | Status / blocker |
+| --- | --- | --- | --- | --- |
+| Secure peer membership | Connect two replicas through mutual TLS on fixed loopback endpoints. Verify the matching build in v1 `hello` before exchanging `state`. | Single-instance production readiness, including Item 8 packaging. ADR 0024 and MESH-001–006. | Packaged activation cases and [two-process authentication and rejection evidence](specs/mesh.md#acceptance-and-planned-evidence). | Planned. Startup and trust design accepted. Framing and socket channel implemented and component-tested. |
+| Bounded peer discovery | Add bounded local discovery, configured cross-host seeds and learned peers within each logical build. | Secure peer membership and the [discovery measurement gate](specs/mesh.md#delivery-gates). | Reconnection, stale-peer removal, duplicate resolution and Raspberry Pi measurements. | Planned. |
+| Remote Flow execution | Dispatch one complete eligible Flow to a matching build while ingress retains its source transport and the receiver owns final admission. | MESH-005, MESH-007–012 and a canonical core entrypoint. | Equivalent local and remote results, saturation, refusal of a mismatched build and uncertain-completion evidence. | Planned. |
+| Cross-platform proof | Join equivalent logical builds packaged for macOS and Linux/ARM and reject a platform-ineligible target. | Logical-build identity, portable Flow eligibility and platform packages. | Mac/Raspberry Pi public-boundary run with one response and bounded failure cases. | Planned. |
+| Step placement | Add a distinct eligible Step invocation and result-application boundary over the existing peer channel. | MESH-013 plus accepted Step portability, commit and descendant-permit contracts. | Third-party Step parity, out-of-order results, parent/child lifetime and single-instance omission evidence. | Later; intentionally outside the first delivery. |
 
 ## 8. Direct Generation, Distribution, And Certification
 
