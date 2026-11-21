@@ -41,7 +41,7 @@ class DatabaseStepGeneratedApplicationE2eTest {
         final Path withoutDbJar = productionArtifact(withoutDbProject, CreatorProjects.lowercaseCli()).jar();
         try (JarFile jar = new JarFile(withoutDbJar.toFile())) {
             final List<String> entries = jar.stream().map(entry -> entry.getName()).toList();
-            assertThat(entries).noneMatch(entry -> entry.contains("DatabaseStepHandlers"));
+            assertThat(entries).noneMatch(entry -> entry.contains("Database"));
         }
 
         final String withDbSource = databaseCliProject();
@@ -49,7 +49,12 @@ class DatabaseStepGeneratedApplicationE2eTest {
         final Path withDbJar = productionArtifact(withDbProject, withDbSource).jar();
         try (JarFile jar = new JarFile(withDbJar.toFile())) {
             final List<String> entries = jar.stream().map(entry -> entry.getName()).toList();
-            assertThat(entries).contains("dev/nanonative/railix/stdlib/DatabaseStepHandlers.class");
+            assertThat(entries).contains(
+                    "dev/nanonative/railix/stdlib/DatabaseStepHandlers.class",
+                    "dev/nanonative/railix/stdlib/DatabaseKey.class",
+                    "dev/nanonative/railix/stdlib/DatabaseQuery.class",
+                    "dev/nanonative/railix/stdlib/DatabaseJournal.class"
+            );
         }
     }
 
@@ -282,13 +287,7 @@ class DatabaseStepGeneratedApplicationE2eTest {
         final Path project = writeProject(directory.resolve("http-db"), source);
         final Path jar = productionArtifact(project, source).jar();
 
-        final Process server = RailixPackageIT.instrumentJava(new ProcessBuilder(
-                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-                "-Duser.home=" + jar.getParent(),
-                "-jar",
-                jar.toString()
-        )).directory(jar.getParent().toFile()).redirectErrorStream(true).start();
-        server.getOutputStream().close();
+        final Process server = startHttpJar(jar);
         try (HttpClient client = HttpClient.newHttpClient()) {
             final URI baseUri = awaitHttpBaseUri(server);
 
@@ -333,12 +332,138 @@ class DatabaseStepGeneratedApplicationE2eTest {
                     "error", RailixValue.string("not_found")
             )));
         } finally {
-            server.destroy();
-            if (!server.waitFor(5, TimeUnit.SECONDS)) {
-                server.destroyForcibly();
-                server.waitFor(5, TimeUnit.SECONDS);
+            stopProcess(server);
+        }
+    }
+
+    @Test
+    void httpTriggerSupportsExtendedQueryOperatorsDotPathsAndConditionalWritesAcrossRestart() throws Exception {
+        final String source = databaseConditionalOperatorsHttpProject();
+        final Path project = writeProject(directory.resolve("http-db-operators"), source);
+        final Path jar = productionArtifact(project, source).jar();
+
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            final Process firstRun = startHttpJar(jar);
+            try {
+                final URI baseUri = awaitHttpBaseUri(firstRun);
+
+                assertThat(postJson(client, baseUri.resolve("/upsert"), """
+                        {"document":{"_id":1,"total":150,"version":1,"status":"open",
+                         "customer":{"email":"ada@ex.org","tier":"gold"}}}""").statusCode()).isEqualTo(400);
+
+                final String insertOrd1 = """
+                        {"document":{"_id":1,"total":150,"version":1,"status":"open",
+                         "customer":{"email":"ada@ex.org","tier":"gold"}},
+                         "condition":{"_id":{"$exists":false}}}""";
+                assertThat(postJson(client, baseUri.resolve("/upsert"), insertOrd1).statusCode()).isEqualTo(200);
+                assertThat(postJson(client, baseUri.resolve("/upsert"), insertOrd1).statusCode()).isEqualTo(409);
+
+                final String compoundInsertOrd2 = """
+                        {"document":{"_id":2,"total":220,"version":1,"status":"open",
+                         "customer":{"email":"grace@ex.org","tier":"silver"}},
+                         "condition":{"_id":{"$exists":false},"status":{"$ne":"closed"}}}""";
+                assertThat(postJson(client, baseUri.resolve("/upsert"), compoundInsertOrd2).statusCode())
+                        .isEqualTo(200);
+                assertThat(postJson(client, baseUri.resolve("/upsert"), compoundInsertOrd2).statusCode())
+                        .isEqualTo(409);
+                assertThat(postJson(client, baseUri.resolve("/upsert"), """
+                        {"document":{"_id":99,"total":10,"version":1,"status":"open",
+                         "customer":{"email":"none@ex.org","tier":"bronze"}},
+                         "condition":{"_id":{"$exists":false},"version":1}}""").statusCode()).isEqualTo(409);
+                assertThat(postJson(client, baseUri.resolve("/upsert"), """
+                        {"document":{"_id":3,"total":490,"version":1,"status":"closed",
+                         "customer":{"email":"linus@ex.org","tier":"gold"}},
+                         "condition":{"_id":{"$exists":false}}}""").statusCode()).isEqualTo(200);
+                assertThat(postJson(client, baseUri.resolve("/upsert"), """
+                        {"document":{"_id":4,"total":110,"version":1,"status":"open",
+                         "customer":{"email":"ada@ex.org","tier":"gold"}},
+                         "condition":{"_id":{"$exists":false}}}""").statusCode()).isEqualTo(400);
+
+                final String casUpdate = """
+                        {"document":{"_id":1,"total":180,"version":2,"status":"paid",
+                         "customer":{"email":"ada@ex.org","tier":"gold"}},
+                         "condition":{"version":1}}""";
+                assertThat(postJson(client, baseUri.resolve("/upsert"), casUpdate).statusCode()).isEqualTo(200);
+                assertThat(postJson(client, baseUri.resolve("/upsert"), casUpdate).statusCode()).isEqualTo(409);
+            } finally {
+                stopProcess(firstRun);
+            }
+
+            final Process restarted = startHttpJar(jar);
+            try {
+                final URI baseUri = awaitHttpBaseUri(restarted);
+                assertThat(postJson(client, baseUri.resolve("/search"), """
+                        {"filters":{"total":150}}""").statusCode()).isEqualTo(400);
+                assertThat(postJson(client, baseUri.resolve("/search"), """
+                        {"filter":null}""").statusCode()).isEqualTo(400);
+                final HttpResponse<String> allDocs = postJson(client, baseUri.resolve("/search"), """
+                        {"filter":{}}""");
+                assertThat(allDocs.statusCode()).isEqualTo(200);
+                assertThat(((RailixValue.ArrayValue) parseJson(allDocs.body())).values()).hasSize(3);
+
+                final HttpResponse<String> searchPage1 = postJson(client, baseUri.resolve("/search"), """
+                        {"filter":{"total":{"$gte":100,"$lte":300},
+                         "$or":[{"customer.tier":"gold"},{"customer.tier":"silver"}]}}""");
+                assertThat(searchPage1.statusCode()).isEqualTo(200);
+                final List<RailixValue> items = ((RailixValue.ArrayValue) parseJson(searchPage1.body())).values();
+                assertThat(items).hasSize(2);
+                assertThat(((RailixValue.ObjectValue) items.get(0)).values().get("_id"))
+                        .isEqualTo(RailixValue.number(1));
+                assertThat(((RailixValue.ObjectValue) items.get(1)).values().get("_id"))
+                        .isEqualTo(RailixValue.number(2));
+
+                assertThat(postJson(client, baseUri.resolve("/delete"), """
+                        {"key":1,"condition":{"status":"open"}}""").statusCode()).isEqualTo(409);
+                assertThat(postJson(client, baseUri.resolve("/delete"), """
+                        {"key":1,"condition":{"status":"paid","version":{"$gte":2}}}""").statusCode())
+                        .isEqualTo(200);
+
+                final HttpResponse<String> searchAfterDelete = postJson(client, baseUri.resolve("/search"), """
+                        {"filter":{"_id":{"$in":[1,2]}}}""");
+                assertThat(searchAfterDelete.statusCode()).isEqualTo(200);
+                final List<RailixValue> remaining =
+                        ((RailixValue.ArrayValue) parseJson(searchAfterDelete.body())).values();
+                assertThat(remaining).hasSize(1);
+                assertThat(((RailixValue.ObjectValue) remaining.getFirst()).values().get("_id"))
+                        .isEqualTo(RailixValue.number(2));
+            } finally {
+                stopProcess(restarted);
             }
         }
+    }
+
+    private static Process startHttpJar(final Path jar) throws IOException {
+        final Process server = RailixPackageIT.instrumentJava(new ProcessBuilder(
+                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-Duser.home=" + jar.getParent(),
+                "-jar",
+                jar.toString()
+        )).directory(jar.getParent().toFile()).redirectErrorStream(true).start();
+        server.getOutputStream().close();
+        return server;
+    }
+
+    private static void stopProcess(final Process process) throws InterruptedException {
+        process.destroy();
+        if (!process.waitFor(5, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            process.waitFor(5, TimeUnit.SECONDS);
+        }
+    }
+
+    private static HttpResponse<String> postJson(
+            final HttpClient client,
+            final URI uri,
+            final String body
+    ) throws IOException, InterruptedException {
+        return client.send(
+                HttpRequest.newBuilder(uri)
+                        .timeout(Duration.ofSeconds(10))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
     }
 
     private static URI awaitHttpBaseUri(final Process server) throws Exception {
@@ -487,6 +612,156 @@ class DatabaseStepGeneratedApplicationE2eTest {
                     {"from": "read-order.invalid", "to": "status-bad"},
                     {"from": "body-missing.next", "to": "status-missing"},
                     {"from": "status-missing.next", "to": "end"},
+                    {"from": "status-bad.next", "to": "end"}
+                  ]
+                }
+                """;
+    }
+
+    private static String databaseConditionalOperatorsHttpProject() {
+        return """
+                {
+                  "format": 1,
+                  "id": "database-conditional-operators-http-app",
+                  "nodes": [
+                    {"id": "app", "use": "railix.app", "inputs": {}},
+                    {
+                      "id": "http",
+                      "use": "railix.trigger.http",
+                      "inputs": {"host": "127.0.0.1", "port": 0},
+                      "examples": [{
+                        "name": "search-probe",
+                        "payload": {"method": "POST", "path": "/search", "query": "", "headers": {},
+                                    "body": {"filter": {}}}
+                      }]
+                    },
+                    {
+                      "id": "route-path",
+                      "use": "railix.branch",
+                      "inputs": {
+                        "routes": [
+                          {
+                            "outcome": "upsert",
+                            "inputs": {},
+                            "groups": [[{
+                              "option": "field",
+                              "inputs": {"field": ["context", "payload", "request", "path"]},
+                              "when": {
+                                "transforms": [],
+                                "all": [[{"use": "value.equals", "inputs": {"expected": "/upsert"}}]]
+                              }
+                            }]]
+                          },
+                          {
+                            "outcome": "delete",
+                            "inputs": {},
+                            "groups": [[{
+                              "option": "field",
+                              "inputs": {"field": ["context", "payload", "request", "path"]},
+                              "when": {
+                                "transforms": [],
+                                "all": [[{"use": "value.equals", "inputs": {"expected": "/delete"}}]]
+                              }
+                            }]]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "id": "op-upsert",
+                      "use": "railix.database",
+                      "inputs": {
+                        "collection": "conditional-orders",
+                        "unique_fields": ["customer.email"],
+                        "index_fields": ["total", "customer.tier"],
+                        "operation": {
+                          "option": "upsert",
+                          "inputs": {
+                            "document": ["context", "payload", "request", "body", "document"],
+                            "condition": ["context", "payload", "request", "body", "condition"],
+                            "auto_key": false
+                          }
+                        },
+                        "target": ["context", "body"]
+                      }
+                    },
+                    {
+                      "id": "op-search",
+                      "use": "railix.database",
+                      "inputs": {
+                        "collection": "conditional-orders",
+                        "unique_fields": ["customer.email"],
+                        "index_fields": ["total", "customer.tier"],
+                        "operation": {
+                          "option": "find",
+                          "inputs": {
+                            "filter": ["context", "payload", "request", "body", "filter"],
+                            "limit": 10
+                          }
+                        },
+                        "target": ["context", "body"]
+                      }
+                    },
+                    {
+                      "id": "op-delete",
+                      "use": "railix.database",
+                      "inputs": {
+                        "collection": "conditional-orders",
+                        "unique_fields": ["customer.email"],
+                        "index_fields": ["total", "customer.tier"],
+                        "operation": {
+                          "option": "delete",
+                          "inputs": {
+                            "key": ["context", "payload", "request", "body", "key"],
+                            "condition": ["context", "payload", "request", "body", "condition"]
+                          }
+                        },
+                        "target": ["context", "body"]
+                      }
+                    },
+                    {
+                      "id": "status-conflict",
+                      "use": "railix.field-manipulation",
+                      "inputs": {
+                        "field": ["context", "status"],
+                        "value": [{
+                          "option": "literal",
+                          "inputs": {"literal": 409},
+                          "when": {"transforms": [], "all": []}
+                        }],
+                        "steps": []
+                      }
+                    },
+                    {
+                      "id": "status-bad",
+                      "use": "railix.field-manipulation",
+                      "inputs": {
+                        "field": ["context", "status"],
+                        "value": [{
+                          "option": "literal",
+                          "inputs": {"literal": 400},
+                          "when": {"transforms": [], "all": []}
+                        }],
+                        "steps": []
+                      }
+                    }
+                  ],
+                  "links": [
+                    {"from": "app.start", "to": "http"},
+                    {"from": "http.next", "to": "route-path"},
+                    {"from": "route-path.upsert", "to": "op-upsert"},
+                    {"from": "op-upsert.ok", "to": "end"},
+                    {"from": "op-upsert.not_found", "to": "status-conflict"},
+                    {"from": "op-upsert.invalid", "to": "status-bad"},
+                    {"from": "route-path.delete", "to": "op-delete"},
+                    {"from": "op-delete.ok", "to": "end"},
+                    {"from": "op-delete.not_found", "to": "status-conflict"},
+                    {"from": "op-delete.invalid", "to": "status-bad"},
+                    {"from": "route-path.otherwise", "to": "op-search"},
+                    {"from": "op-search.ok", "to": "end"},
+                    {"from": "op-search.not_found", "to": "status-conflict"},
+                    {"from": "op-search.invalid", "to": "status-bad"},
+                    {"from": "status-conflict.next", "to": "end"},
                     {"from": "status-bad.next", "to": "end"}
                   ]
                 }

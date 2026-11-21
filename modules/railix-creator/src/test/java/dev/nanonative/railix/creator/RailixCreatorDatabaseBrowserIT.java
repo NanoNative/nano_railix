@@ -2,11 +2,15 @@ package dev.nanonative.railix.creator;
 
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.assertions.PlaywrightAssertions;
+import dev.nanonative.railix.core.value.RailixJson;
+import dev.nanonative.railix.core.value.RailixValue;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -67,6 +71,87 @@ final class RailixCreatorDatabaseBrowserIT extends RailixCreatorBrowserSupport {
         }
 
         assertThat(pageErrors).isEmpty();
+    }
+
+    @Test
+    void multipleNewAndCopiedDatabaseStepsKeepIndependentOperations() throws Exception {
+        openProject(branchOnlyDatabaseTargetProject());
+
+        final String dbOneId = insertNewDatabaseStepAfterOutcome("route-op", "one");
+        final String dbTwoId = insertNewDatabaseStepAfterOutcome("route-op", "two");
+        final String dbThreeId = insertNewDatabaseStepAfterOutcome("route-op", "otherwise");
+
+        selectWorldNode(dbTwoId);
+        page.locator("#operation-option").selectOption("find");
+        PlaywrightAssertions.assertThat(page.locator("#operation-filter-path")).isVisible();
+        waitForText("#build-state", "Built");
+
+        selectWorldNode(dbThreeId);
+        page.locator("#operation-option").selectOption("delete");
+        PlaywrightAssertions.assertThat(page.locator("#operation-key-path")).isVisible();
+        waitForText("#build-state", "Built");
+
+        selectWorldNode(dbOneId);
+        PlaywrightAssertions.assertThat(page.locator("#operation-option")).hasValue("upsert");
+        selectWorldNode(dbTwoId);
+        PlaywrightAssertions.assertThat(page.locator("#operation-option")).hasValue("find");
+        selectWorldNode(dbThreeId);
+        PlaywrightAssertions.assertThat(page.locator("#operation-option")).hasValue("delete");
+
+        final String savedProject = Files.readString(directory.resolve("project.json"));
+        final RailixValue.ObjectValue projectObject =
+                (RailixValue.ObjectValue) ((RailixJson.Parsed) RailixJson.parse(savedProject)).value();
+        final Map<String, RailixValue.ObjectValue> nodesById =
+                ((RailixValue.ArrayValue) projectObject.values().get("nodes")).values().stream()
+                        .map(RailixValue.ObjectValue.class::cast)
+                        .collect(Collectors.toMap(
+                                node -> ((RailixValue.StringValue) node.values().get("id")).value(),
+                                node -> node
+                        ));
+        assertThat(selectedOperationOf(nodesById.get(dbOneId))).isEqualTo("upsert");
+        assertThat(selectedOperationOf(nodesById.get(dbTwoId))).isEqualTo("find");
+        assertThat(selectedOperationOf(nodesById.get(dbThreeId))).isEqualTo("delete");
+        assertThat(Files.readString(directory.resolve("railix.creator.json"))).doesNotContain("\"reuse\"");
+
+        selectWorldNode(dbOneId);
+        clickOverview("[data-add-outcome='ok']");
+        page.locator("[data-reuse-item='" + dbOneId + "'][data-reuse-type='step']").click();
+        page.locator("[data-apply-reuse='copy']").click();
+        page.waitForFunction("() => !state.actionPending");
+        waitForText("#build-state", "Built");
+        final String copiedId = String.valueOf(page.evaluate("() => state.selection.id"));
+        assertThat(copiedId).isNotEqualTo(dbOneId);
+
+        selectWorldNode(copiedId);
+        page.locator("#operation-option").selectOption("get");
+        PlaywrightAssertions.assertThat(page.locator("#operation-key-path")).isVisible();
+        waitForText("#build-state", "Built");
+
+        selectWorldNode(dbOneId);
+        PlaywrightAssertions.assertThat(page.locator("#operation-option")).hasValue("upsert");
+        selectWorldNode(copiedId);
+        PlaywrightAssertions.assertThat(page.locator("#operation-option")).hasValue("get");
+        assertThat(Files.readString(directory.resolve("railix.creator.json"))).doesNotContain("\"reuse\"");
+
+        assertThat(pageErrors).isEmpty();
+    }
+
+    private String insertNewDatabaseStepAfterOutcome(final String branchId, final String outcome) {
+        selectWorldNode(branchId);
+        clickOverview("[data-add-outcome='" + outcome + "']");
+        page.locator("#step-search").fill("database");
+        page.locator("[data-add-step='railix.database']").click();
+        waitForText("#build-state", "Built");
+        page.waitForFunction("() => state.build === 'Built' && !state.writeActive && !state.pendingProject");
+        final String insertedId = String.valueOf(page.evaluate("() => state.selection.id"));
+        assertThat(insertedId).isNotBlank().isNotEqualTo(branchId);
+        return insertedId;
+    }
+
+    private static String selectedOperationOf(final RailixValue.ObjectValue node) {
+        final RailixValue.ObjectValue inputs = (RailixValue.ObjectValue) node.values().get("inputs");
+        final RailixValue.ObjectValue operation = (RailixValue.ObjectValue) inputs.values().get("operation");
+        return ((RailixValue.StringValue) operation.values().get("option")).value();
     }
 
     private void assertNoHorizontalOverflow() {
@@ -252,6 +337,63 @@ final class RailixCreatorDatabaseBrowserIT extends RailixCreatorBrowserSupport {
                 {"from": "db-delete.ok", "to": "end"},
                 {"from": "db-delete.not_found", "to": "end"},
                 {"from": "db-delete.invalid", "to": "end"}
+              ]
+            }
+            """;
+    }
+
+    private static String branchOnlyDatabaseTargetProject() {
+        return """
+            {
+              "format": 1,
+              "id": "independent-db-steps",
+              "nodes": [
+                {"id": "app", "use": "railix.app", "inputs": {}},
+                {
+                  "id": "command",
+                  "use": "railix.trigger.cli",
+                  "inputs": {},
+                  "examples": [{"name": "one", "payload": ["one"], "context": {"payload": {}}}]
+                },
+                {
+                  "id": "route-op",
+                  "use": "railix.branch",
+                  "inputs": {
+                    "routes": [
+                      {
+                        "outcome": "one",
+                        "inputs": {},
+                        "groups": [[{
+                          "option": "field",
+                          "inputs": {"field": ["context", "payload", "arguments", 0]},
+                          "when": {
+                            "transforms": [],
+                            "all": [[{"use": "value.equals", "inputs": {"expected": "one"}}]]
+                          }
+                        }]]
+                      },
+                      {
+                        "outcome": "two",
+                        "inputs": {},
+                        "groups": [[{
+                          "option": "field",
+                          "inputs": {"field": ["context", "payload", "arguments", 0]},
+                          "when": {
+                            "transforms": [],
+                            "all": [[{"use": "value.equals", "inputs": {"expected": "two"}}]]
+                          }
+                        }]]
+                      }
+                    ]
+                  }
+                }
+              ],
+              "links": [
+                {"from": "app.start", "to": "command"},
+                {"from": "command.next", "to": "route-op"},
+                {"from": "route-op.one", "to": "end"},
+                {"from": "route-op.two", "to": "end"},
+                {"from": "route-op.otherwise", "to": "end"}
               ]
             }
             """;

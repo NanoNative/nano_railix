@@ -154,12 +154,14 @@ public final class StandardLibrary {
                         .defaultValue(RailixValue.string("_id"))
                         .validation(String.class, value -> DatabaseStepHandlers.validKeyField(value)
                                 ? Optional.empty()
-                                : Optional.of("Key field must be a non-blank UTF-8 string up to 128 bytes.")))
-                .input("unique_fields", databaseFieldListInput())
-                .input("index_fields", databaseFieldListInput())
+                                : Optional.of("Key field must be a non-blank top-level field name up to 128 bytes "
+                                        + "without '.' or leading '$'.")))
+                .input("unique_fields", databaseIndexFieldListInput())
+                .input("index_fields", databaseIndexFieldListInput())
                 .input("operation", Input.options(
                         Input.option("upsert")
                                 .input("document", Input.path(READ).defaultPath("context", "payload"))
+                                .input("condition", Input.path(READ).optional())
                                 .input("auto_key", Input.json(ValueShape.BOOLEAN)
                                         .defaultValue(RailixValue.bool(true)))
                                 .input("fields", databaseFieldListInput()),
@@ -183,6 +185,7 @@ public final class StandardLibrary {
                                                                 + DatabaseStepHandlers.MAX_FIND_LIMIT + "."))),
                         Input.option("delete")
                                 .input("key", databaseKeyPathInput())
+                                .input("condition", Input.path(READ).optional())
                 ).defaultOption("upsert"))
                 .input("target", Input.path(WRITE).defaultPath("context", "result"))
                 .outcome("not_found")
@@ -194,6 +197,12 @@ public final class StandardLibrary {
         return Input.json(ValueShape.ARRAY)
                 .defaultValue(RailixValue.array(List.of()))
                 .validation(RailixValue.ArrayValue.class, DatabaseStepHandlers::fieldListRejection);
+    }
+
+    private static StepDefinition.JsonInput databaseIndexFieldListInput() {
+        return Input.json(ValueShape.ARRAY)
+                .defaultValue(RailixValue.array(List.of()))
+                .validation(RailixValue.ArrayValue.class, DatabaseStepHandlers::indexFieldListRejection);
     }
 
     private static StepDefinition.JsonInput databaseDefaultsInput() {
