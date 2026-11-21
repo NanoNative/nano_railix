@@ -2,8 +2,7 @@
 
 ## Human Review
 
-Status: **Accepted first-delivery decisions; implementation and remaining budgets planned**,
-updated on 2026-11-18.
+Status: **Fixed-peer design accepted, implementation in progress**, updated on 2026-11-21.
 
 Owns: discovery of already-running replicas, authenticated peer membership, remote Flow
 placement, distributed admission and invocation lifetime, peer transport, and the boundary that
@@ -13,15 +12,13 @@ ownership of secret delivery, immutable grants, and credential rotation. The
 [roadmap](../roadmap.md#7-decentralised-execution-state-sharding-and-replication) owns delivery
 sequence and status.
 
-The first mesh coordinates replicas of one compiled Railix application. It does not turn Steps
-into separately deployed services or require a broker, central scheduler, registry, or
-user-managed orchestration layer. The initial distributed work unit is one complete Flow
+The first mesh coordinates replicas of one Railix application. The initial distributed work unit is one complete Flow
 invocation. Individual eligible Step placement is a later delivery over the same peer-channel and
 invocation-lifecycle architecture.
 
 The accepted architecture is recorded by
-[ADR 0024](../adr/0024-optional-mesh-module-and-peer-channel.md). The decisions below were agreed
-with Abhiroop Basu in the first-delivery mesh design discussion and describe planned behavior.
+[ADR 0024](../adr/0024-optional-mesh-module-and-peer-channel.md). The decisions below were made
+by Abhiroop Basu.
 
 ### Accepted first-delivery decisions
 
@@ -43,9 +40,8 @@ with Abhiroop Basu in the first-delivery mesh design discussion and describe pla
 - Known non-admission may permit another bounded placement attempt. Once admission may have
   occurred, loss of the connection or result is uncertain completion and MUST NOT cause automatic
   replay.
-- Compatibility uses the same logical application build, not byte-identical operating-system
-  packages. Different supported operating systems or CPU architectures are not blockers when the
-  compiled application semantics and required capabilities are equivalent.
+- Mesh membership, discovery, peer status and Flow placement are scoped to one logical build.
+  Equivalent builds can exchange work across supported operating systems and CPU architectures.
 
 ### First-delivery journey
 
@@ -55,8 +51,8 @@ When a request reaches replica A:
 2. A executes the Flow locally when it can admit it.
 3. When local Flow admission is saturated, A selects a known, authenticated, compatible peer B
    and sends `invoke`.
-4. While handling `invoke`, B rechecks peer authority, protocol, logical build, target eligibility,
-   remaining time and current capacity. If B cannot admit the Flow, it immediately sends `refused`.
+4. While handling `invoke`, B checks peer authority, logical build, target eligibility, remaining
+   time and current capacity. If B cannot admit the Flow, it immediately sends `refused`.
 5. If B admits the Flow, it executes the same compiled continuation that the local path would
    call and returns its terminal `outcome` to A.
 6. A applies the result and completes the original Trigger response. B never writes to A's client
@@ -83,25 +79,35 @@ NOT force local Flow or Step calls through serialization, framing, or a loopback
 
 ## Startup Configuration
 
-Production mesh startup configuration supplies the expected mesh authority ID, the listen and
-advertised endpoints, the bootstrap endpoints, a positive per-replica Flow capacity, and paths
-to the PKCS12 identity and trust stores. The stable replica ID comes from the local identity
-certificate. Its certified mesh authority must match the configured mesh authority.
+For a mesh-capable build, `RAILIX_MESH_CONFIG` points to a startup JSON file. An unset variable
+selects standalone startup. An explicitly supplied path must point to readable, valid configuration
+with usable credentials, or startup fails before the mesh listener opens. The generated app keeps
+passing its ordinary command-line arguments to its sources.
+
+The fixed-endpoint configuration supplies `meshId` (the expected mesh authority ID),
+`listenEndpoint`, `advertisedEndpoint`, `bootstrapEndpoints`, `flowCapacity`, `identityStore` and
+`trustStore`. Each endpoint has `host` and `port`. `bootstrapEndpoints` is a list and `flowCapacity`
+is a positive integer. Each PKCS12 store has a `path` and a `passwordFile`. Relative credential paths
+resolve from the configuration file's directory. Deployment supplies separate password files
+readable only by the application account. Each contains one UTF-8 password line. Store password
+values, private keys and usable credentials outside the JSON, command line, Git and build artifact.
+The stable replica ID comes from the local certificate, whose mesh ID must match `meshId`.
 
 ## Peer Transport And Trust
 
 Version 1 uses a persistent, bidirectional JDK TLS connection for each connected replica pair.
 Each frame starts with a four-byte unsigned big-endian length, followed by that many bytes of
-canonical UTF-8 JSON encoded with `RailixJson`. Peers require an exact Railix protocol-version
-match. Version 1 excludes compression. Invocation messages share an invocation ID and may
-complete out of order on the same connection.
+canonical UTF-8 JSON encoded with `RailixJson`. A session uses the fixed v1 wire format. Its opening
+`hello` has `type` set to `hello.v1`, which identifies the format once during join. An unsupported
+opening message ends the join. Version 1 excludes compression. Invocation messages share an
+invocation ID and may complete out of order on the same connection.
 
 | Message | Purpose and data |
 | --- | --- |
-| `hello` | Exchanges the protocol version, logical build ID, certificate-bound mesh and replica IDs, process-incarnation ID, and advertised endpoint. |
-| `state` | Reports readiness or drain, available execution capacity and bounded peer hints. Periodic state is also the heartbeat. |
+| `hello` | Carries `type` (`hello.v1`), `logicalBuildId`, `meshId`, `replicaId` and `incarnationId`. The dialer supplies `connectionId` for duplicate connection resolution. |
+| `state` | Carries `type` (`state`), `status` (`starting`, `ready` or `draining`), `advertisedEndpoint`, `availableFlowSlots` and `peerHints`. Periodic state is also the heartbeat. The fixed-peer proof uses an empty hints list. |
 | `invoke` | Selects the compiled Flow continuation and carries its canonical input, invocation ID, remaining duration, attempt and trace identity. |
-| `refused` | Ends a placement attempt before admission, with a structured reason such as saturation, drain, ineligibility or expiry. |
+| `refused` | Ends a placement attempt before admission, with a structured reason such as build mismatch, saturation, drain, ineligibility or expiry. |
 | `outcome` | Ends an admitted invocation with its terminal result, preserving applicable Flow outcome and branch semantics. |
 | `cancel` | Requests cancellation of an in-flight invocation. |
 
@@ -116,30 +122,31 @@ stale after 8 seconds without a valid `state` from that peer. Both timings are i
 Each deployed replica receives its own private key and X.509 certificate chain in a PKCS12
 identity store and trusted issuers in a separate PKCS12 trust store. Both peers prove possession
 of their private keys and validate the other's certificate for its TLS role. A URI Subject
-Alternative Name binds the signed certificate to the mesh authority ID and stable replica ID.
-After mutual TLS, both replicas send `hello` and verify the other peer's identity claims against
-its certificate and the configured mesh authority. They also require matching logical build and
-protocol versions before accepting work. Each process generates a separate random incarnation ID
-at startup. Readiness and capacity are communicated through `state`.
+Alternative Name binds the signed certificate to the mesh authority ID and stable replica ID using
+`https://github.com/NanoNative/nano_railix/mesh/v1/<mesh-id>/replicas/<replica-id>`, with both IDs in
+lowercase UUID form. Railix matches the URI locally. After mutual TLS, both replicas send `hello`
+and verify the other peer's identity claims against its certificate and configured mesh authority.
+Each replica also compares `logicalBuildId` with its own. A mismatch closes the connection before
+either side exchanges `state`. Each process generates a separate random incarnation ID at startup.
+The matching build ID is recorded for the lifetime of the session. The first valid `state`
+completes join and reports the advertised endpoint, readiness and capacity.
 
-When mesh activation is requested, missing or invalid required credentials MUST prevent mesh
-readiness rather than silently opening a plaintext listener or downgrading to unauthenticated
-local-only operation. For local development the launcher generates a random temporary mesh ID
-and uses JDK `keytool` to provision a shared temporary trust root with a distinct key and
-certificate per replica. Deployment supplies production credentials at startup. Enrollment and
-rotation remain owned by [Environments and security](environments-and-security.md).
+For local development, the launcher generates a random temporary mesh ID and uses JDK `keytool`
+to provision a shared temporary trust root, a distinct key and certificate per replica, and temporary
+password files. Enrollment and rotation remain owned by
+[Environments and security](environments-and-security.md).
 
 ## Discovery And Peer Knowledge
 
-A replica may choose the first available listener port from a configured bounded local range.
-For local multi-process development it may probe that range on loopback and accept a candidate
-only after successful authentication and compatibility checks.
+The first secure-peer proof runs two local processes with fixed loopback endpoints. Each process
+allows one peer session and one concurrent handshake. The follow-on discovery milestone adds
+selection and probing within a configured bounded loopback port range.
 
 Cross-host startup configuration supplies one fixed listen endpoint, a reachable advertised
 endpoint, and explicit bootstrap endpoints as hostname/IP and port pairs. The listen endpoint binds
-the local socket. Peers dial the advertised endpoint. An authenticated, compatible peer may share
-a bounded set of addresses in `state`. Each hint requires direct authentication and compatibility
-checks before it becomes a placement candidate.
+the local socket. Peers dial the advertised endpoint. A peer that passes `hello` may share a bounded
+set of addresses in `state`. Each hint requires direct authentication and a matching logical build
+before the discovered replica becomes a known peer.
 
 When both replicas dial each other, the connection initiated by the lexicographically smaller
 certificate-bound replica ID wins. Shared connection IDs break ties between duplicate connections
@@ -148,10 +155,9 @@ a ready connection. A restarted process can join with a new incarnation after th
 ends. A peer that sees overlapping incarnations claiming one replica ID reports the conflict and
 retains only one connection for that replica.
 
-A peer is a routing candidate only after mutual TLS and a compatible `hello`, and only while its
-latest authenticated `state` is fresh and reports readiness. The receiving replica measures
-freshness against its monotonic clock. A disconnect removes the peer from routing immediately.
-A stale connection closes and leaves the routing pool.
+A joined peer becomes an offload candidate when its `state` is fresh and reports readiness.
+Each replica measures peer freshness against its monotonic clock. A disconnect removes the peer
+from routing immediately. A stale connection closes and leaves the routing pool.
 Configured bootstrap addresses remain retry targets while the application runs. In the intranet
 prototype the first attempt has no retry delay. After a failed join, choose a random delay
 between half the current ceiling and the full ceiling. The first failure uses a 1-second ceiling.
@@ -192,10 +198,12 @@ capability declarations belong to later Step placement.
 
 The local development launcher supplies Flow capacity for its replicas. Running local Flows and
 admitted remote Flows share one execution pool. The receiver tries to take an execution permit
-while handling `invoke` and retains no admission queue. The sole application-level reply to an
-`invoke` is its terminal `refused` or `outcome`. The ingress replica uses a separate
-pending-invocation pool of the same configured size while placing or waiting for a remote Flow.
-A pending remote invocation holds no local execution permit.
+while handling `invoke` after checking the authenticated session's build ID against its own. A
+build mismatch returns `refused` before the receiver takes a permit. The receiver retains no
+admission queue. The sole application-level reply to `invoke` is its terminal `refused` or
+`outcome`. The ingress replica uses a separate pending-invocation pool of the same configured size
+while placing or waiting for a remote Flow. A pending remote invocation holds no local execution
+permit.
 
 The first delivery allows at most two sequential remote `invoke` attempts per Flow. Another
 peer is eligible only after known non-admission and while the original deadline allows it. The
@@ -248,7 +256,8 @@ later Step placement.
 | Deadline or caller disconnect after dispatch | Request cancellation. The remote Flow may still complete. |
 | Ingress process exits before receiving an outcome | The result loses its owner. Reconnection begins a fresh peer session with no takeover or result recovery. |
 | Network partition | Affected peers leave routing when disconnected or stale. New work uses local execution or other fresh peers. |
-| Authentication or compatibility fails | The peer cannot receive Flow work. |
+| Peer authentication or `hello` validation fails, including a logical build mismatch | Close the connection before exchanging `state`. |
+| The receiver detects a logical build mismatch while handling `invoke` | Return `refused` before admission. |
 
 Use the existing runtime status and metrics boundary for peer readiness and rejection states,
 replica/incarnation IDs, connection and reconnection reasons, active/pending counts, and counts of
@@ -274,9 +283,11 @@ keys, passwords and secrets out of diagnostics and metrics.
   endpoint MUST authenticate independently. Retained peer knowledge and concurrent connection
   attempts MUST be bounded. The retry schedule MUST follow the endpoint's configured or learned
   origin.
-- **MESH-005 — Compatible replicas:** A peer MUST match the required logical application build
-  and protocol before admission. OS or CPU differences alone MUST NOT reject equivalent builds.
-  In the first delivery, remote placement MUST be limited to portable Java Flows.
+- **MESH-005 — Compatible replicas:** Every session MUST use the fixed v1 wire format.
+  Replicas MUST match logical build IDs in `hello` before exchanging discovery and peer status in
+  `state`. The receiver MUST verify the build again while handling `invoke` before taking an
+  execution permit. OS or CPU differences alone MUST NOT reject equivalent builds. In the first
+  delivery, remote placement MUST be limited to portable Java Flows.
 - **MESH-006 — Bounded protocol:** Frame sizes, decode depth and node count, active requests,
   pending writes, retained results, waiting, and read/write time MUST have explicit finite limits.
   Malformed, truncated, oversized, unsupported, or stale messages MUST reject without unbounded
@@ -312,7 +323,7 @@ keys, passwords and secrets out of diagnostics and metrics.
 The first mesh does not include:
 
 - remote execution of individual Steps;
-- mixed-build or rolling-version execution cohorts;
+- peer membership and Flow placement across different logical builds;
 - durable recovery or takeover of an invocation owner;
 - automatic replay after uncertain completion;
 - host provisioning, process supervision, or replacement of an external supervisor;
@@ -338,30 +349,26 @@ integration check.
 
 | Requirements | Public-boundary scenario | Evidence / gap |
 | --- | --- | --- |
-| MESH-001/002 | Build/run an application with mesh excluded and included-but-inactive; inspect listeners, packaged dependencies, local behavior, and retained processes. | Planned packaged-application proof. |
-| MESH-003 | Connect trusted, unknown, expired, wrong-application, and wrong-key peers; verify no unauthorized Flow execution or plaintext fallback. | Planned two-process TLS proof; enrollment/rotation remain open. |
+| MESH-001/002 | Build and run applications with mesh excluded, included but inactive, and active. Inspect listeners, packaged dependencies, local behavior and retained processes. Start an included build with invalid requested configuration and verify startup fails before binding a mesh listener. | Planned packaged-application proof. |
+| MESH-003/005 | Connect two trusted fixed-endpoint replicas and exchange `hello` and `state`. Repeat with unknown or expired credentials, a wrong mesh or replica identity, a wrong key and an unsupported opening message. Verify rejected peers never become ready. | Planned two-process TLS proof. |
 | MESH-004 | Start replicas across a bounded occupied loopback range. On two hosts, bootstrap B against A and hold back B's first ready `state`. Verify through runtime peer status that B enters routing only after that state arrives and leaves on disconnect. Withhold the first `state` past the join deadline and verify A closes the socket while serving local requests. Also verify duplicate connection resolution, bootstrap reconnection and two dial attempts for an unreachable learned peer repeatedly advertised by B. | Planned local and cross-host proof. |
-| MESH-005/007 | Run the same logical build in macOS and Linux/ARM packages, dispatch an eligible Flow, then attempt a platform-ineligible target and a different logical build. | Planned Mac/Raspberry Pi proof; platform packaging must exist first. |
+| MESH-005 | Connect two replicas with trusted certificates and different build IDs. Verify `hello` validation closes the connection before either replica sends `state` or records the other as a joined peer. Separately exercise the admission check with a mismatched build and verify `refused` before any permit or Flow execution. | Planned join and invocation rejection proof. |
+| MESH-005/007 | Run matching builds in macOS and Linux/ARM packages and exercise an eligible Flow and a platform-ineligible target. | Planned Mac/Raspberry Pi proof. |
 | MESH-006/007/012 | Exercise UTF-8, byte, node and depth boundaries, aggregate outcomes and simultaneous slow frames. Verify early rejection, bounded memory and recovery. | `PeerFramesTest` covers length encoding, byte limits and partial reads. `PeerChannelTest` covers malformed frames, whole-frame writes and socket closure after a failure. Mesh JSON and concurrent resource checks are planned. |
 | MESH-008/009 | Saturate A with real source requests. Verify its `invoke` gets only a terminal `outcome` from B and the original source gets one response from A. Saturate B with local and remote work and verify `invoke` gets an immediate `refused`. | Planned generated-application integration test. |
 | MESH-010/011 | Refuse an invocation, disconnect after possible admission, return a late result and drain with one ongoing Flow. Verify bounded attempts, one ingress deadline and no duplicate execution. | Planned controlled failure and shutdown tests. |
 | MESH-013 | Complete concurrent Flow invocations out of order over one peer channel. | Flow evidence planned first. Step evidence belongs to the later milestone. |
 
-## Decisions Before Implementation
+## Delivery Gates
 
-The sections above record the accepted behavior. Remaining decisions are scoped to the first
-milestone that depends on them.
-
-- **Secure peer membership:** exact startup configuration format and delivery, credential password
-  source, wire field schema and certificate URI syntax. Set peer and concurrent-handshake limits
-  and how long to retain learned hints. Validate the prototype join deadline, heartbeat,
-  stale timeout and bootstrap retry timings under load on the Raspberry Pi.
-- **Remote Flow execution:** how the build establishes eligibility for portable providers, the
-  source operation time budget and receiver clamp, frame read/write deadlines, and aggregate
-  inbound, outbound and retained-value budgets measured under concurrent load.
-- **Packaged evidence:** implement and verify the build/module integration from ADR 0024, including
-  excluded, included-but-inactive, and active mesh packages. The acceptance table defines the
-  evidence for each slice.
-
-Independent packaging, canonical-boundary and test-harness work can proceed while the remaining
-decisions are reviewed. Numeric limits require representative workloads and an explicit owner.
+- **Fixed-peer membership:** implement the startup and authentication contract above and exercise
+  the two-process TLS cases in the acceptance table.
+- **Broader discovery:** measure join, heartbeat, stale and bootstrap retry timings under load on the
+  Raspberry Pi. Use that evidence to set finite peer and concurrent-handshake caps and a learned-hint
+  lifetime before enabling learned peers.
+- **Remote Flow execution:** establish build-time eligibility for portable providers. Measure and
+  set the source operation budget, receiver clamp, frame deadlines and aggregate inbound, outbound
+  and retained-value budgets before completing the remote-execution milestone.
+- **Packaged evidence:** verify the build/module integration from ADR 0024 for the three activation
+  cases in the acceptance table. Packaging and canonical invocation work can proceed independently
+  of the fixed-peer test.

@@ -303,7 +303,6 @@ Status: **Planned**
 Goal: scale one application through a decentralised Railix mesh without turning it into
 microservices or adding a user-managed orchestration layer.
 
-Delivery follows single-instance production readiness, including its packaging work in Item 8.
 The accepted first mesh scope is [MESH-001 through MESH-013](specs/mesh.md#behavior) under SYS-004;
 host provisioning and process supervision are not requirements for that
 slice.
@@ -330,9 +329,9 @@ Initial delivery sequence:
 
 | Milestone | Outcome | Dependencies | Exit evidence | Status / blocker |
 | --- | --- | --- | --- | --- |
-| Mesh contract readiness | Resolve each slice's [remaining mesh decisions](specs/mesh.md#decisions-before-implementation). | Single-instance contracts and ADR 0024. | Reviewed requirements and budgets. | Planned. |
-| Secure peer membership | Add the optional module, mutual-TLS channel, bounded localhost discovery and explicit cross-host seeds without changing local execution. | MESH-001–006. | Packaged mesh omission/inclusion plus authenticated two-process discovery and rejection scenarios. | Planned. |
-| Remote Flow execution | Dispatch one complete eligible Flow while the ingress replica retains its source transport and the receiver owns final admission. | MESH-007–012 and a canonical core entrypoint. | Equivalent local/remote generated-application journey, saturation, refusal and uncertain-completion evidence. | Planned. |
+| Secure peer membership | Connect two replicas through mutual TLS on fixed loopback endpoints. Verify the matching build in v1 `hello` before exchanging `state`. | Single-instance production readiness, including Item 8 packaging. ADR 0024 and MESH-001–006. | Packaged activation cases and [two-process authentication and rejection evidence](specs/mesh.md#acceptance-and-planned-evidence). | Planned. Startup and trust design accepted. Framing and socket channel implemented and component-tested. |
+| Bounded peer discovery | Add bounded local discovery, configured cross-host seeds and learned peers within each logical build. | Secure peer membership and the [discovery measurement gate](specs/mesh.md#delivery-gates). | Reconnection, stale-peer removal, duplicate resolution and Raspberry Pi measurements. | Planned. |
+| Remote Flow execution | Dispatch one complete eligible Flow to a matching build while ingress retains its source transport and the receiver owns final admission. | MESH-005, MESH-007–012 and a canonical core entrypoint. | Equivalent local and remote results, saturation, refusal of a mismatched build and uncertain-completion evidence. | Planned. |
 | Cross-platform proof | Join equivalent logical builds packaged for macOS and Linux/ARM and reject a platform-ineligible target. | Logical-build identity, portable Flow eligibility and platform packages. | Mac/Raspberry Pi public-boundary run with one response and bounded failure cases. | Planned. |
 | Step placement | Add a distinct eligible Step invocation and result-application boundary over the existing peer channel. | MESH-013 plus accepted Step portability, commit and descendant-permit contracts. | Third-party Step parity, out-of-order results, parent/child lifetime and single-instance omission evidence. | Later; intentionally outside the first delivery. |
 

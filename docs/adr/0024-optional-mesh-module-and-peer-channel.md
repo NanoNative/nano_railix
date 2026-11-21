@@ -2,16 +2,13 @@
 
 ## Status
 
-Accepted on 2026-11-18. The behavior and remaining implementation blockers are owned by the
-[mesh specification](../specs/mesh.md). No mesh implementation or verification is claimed by this
-decision.
+Accepted on 2026-11-18. The 2026-11-21 follow-up clarifies the build checks at join and admission.
+The [mesh specification](../specs/mesh.md) owns the behavior and acceptance evidence.
 
 ## Context
 
-ADR 0013 established a deliberately small three-module product while distributed execution was
-speculative. The mesh now has an accepted first delivery: already-running replicas of one logical
-application build exchange complete Flow invocations, with later Step placement using the same
-peer-channel architecture.
+The first planned delivery lets already-running replicas of one logical application build
+exchange complete Flow invocations. Later Step placement uses the same peer-channel architecture.
 
 Putting TLS, discovery, routing, remote admission, and peer lifecycle into `railix-core` would
 make standalone execution depend on distributed concerns and would give core several unrelated
@@ -54,9 +51,10 @@ admission, and lifetime boundary must accommodate a later distinct Step-invocati
 handler without replacing the peer channel. This does not authorize implementing Step dispatch in
 the first delivery.
 
-Logical application-build compatibility is independent of platform packaging. Equivalent macOS
-and Linux/ARM packages may join when their compiled application semantics match. The first
-delivery places only portable Java Flows, as defined in the
+Mesh membership uses mutual TLS and a fixed v1 opening exchange that checks for a matching logical
+build before peers share discovery and status. The receiving replica verifies the build again when
+admitting offloaded work. Equivalent macOS and Linux/ARM packages can exchange work across
+platforms. The first delivery places only portable Java Flows, as defined in the
 [mesh specification](../specs/mesh.md#logical-build-and-host-compatibility).
 
 ## Consequences
@@ -71,7 +69,7 @@ delivery places only portable Java Flows, as defined in the
 - Mutual TLS needs deployment-provided credentials and a separate local-development provisioning
   workflow.
 - Build identity must separate execution semantics from OS-specific launchers and runtime images.
-  Placement checks restrict remote execution to eligible Flows.
+  During a rollout, discovery, status and placement stay within each matching build.
 
 ## Rejected Alternatives
 

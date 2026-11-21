@@ -33,8 +33,9 @@ accepts measurable performance gates; workload sizes and numeric budgets remain 
   mandatory JSON serialization/reparse between Steps. JSON is an interchange representation,
   not a second internal execution engine.
 - **SYS-004:** The first mesh MUST coordinate already-running instances of the same project.
-  It MUST NOT treat unrelated projects as interchangeable execution members. Rolling versions
-  require an explicit compatibility decision; matching project identity alone is insufficient.
+  It MUST NOT treat unrelated projects as interchangeable execution members. The
+  [mesh specification](mesh.md#behavior) defines logical build compatibility for peer membership
+  and remote Flow dispatch.
   Starting/replacing host processes and provisioning machines are outside this first mesh.
 - **SYS-005:** Expected rejection, invalid user input, absence and ordinary execution failure
   MUST be represented by explicit results or declared Step outcomes at the owning boundary.
@@ -54,7 +55,7 @@ accepts measurable performance gates; workload sizes and numeric budgets remain 
 The product is a system in one deployable application, usable standalone or later in a mesh.
 Kubernetes is inspiration for operational behavior, not a required dependency or an equivalence
 claim. Single-instance production readiness precedes mesh delivery; the mesh remains planned.
-Dispatch boundaries, compatibility negotiation, state ownership and partition behavior are open.
+Distributed state ownership and recovery after partitions belong to later mesh work.
 Creator group reuse is owned by [Creator](creator.md#planned-group-copy-and-sharing);
 the compiler continues to receive only fully materialized Steps and links.
 
@@ -65,7 +66,7 @@ the compiler continues to receive only fully materialized Steps and links.
 | SYS-001 | Start a built application with Creator closed and execute its ingress. | Existing CLI journey below; broader production lifecycle remains planned. |
 | SYS-002 | Exclude a capability, inspect/run the artifact, then request that absent capability. | Current whole-development-runtime omission only; independent selection and refusal need packaged tests. |
 | SYS-003 | Pass canonical values through a generated chain and verify results and allocations. | Existing generated execution; no new performance certification from this decision. |
-| SYS-004 | Join compatible instances of one project; reject another project or incompatible build; stop one member. | Planned integration and failure tests after membership/compatibility contracts are agreed. |
+| SYS-004 | Join instances of the same logical build, reject an incompatible build or project, and stop one member. | Planned [mesh integration and failure tests](mesh.md#acceptance-and-planned-evidence). |
 | SYS-005 | Supply invalid data to parsing and a nested Step, exercise cancellation and an I/O failure; verify explicit outcomes and preserved diagnostics. | Existing public result types; internal exception removal and success/rejection allocation measurements remain planned. |
 | SYS-006 | Compare the same representative project through compilation, packaged execution and Creator navigation, including sustained load and resource exhaustion. | Measurement gate accepted; workload, target hardware and thresholds remain open. |
 

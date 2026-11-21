@@ -221,7 +221,7 @@
                                 <include>dev/nanonative/railix/**</include>
                             </includes>
                             <dataFileIncludes>
-                                <dataFileInclude>**/jacoco-*.exec</dataFileInclude>
+                                <dataFileInclude>**/jacoco*.exec</dataFileInclude>
                             </dataFileIncludes>
                         </configuration>
                     </execution>
@@ -235,6 +235,12 @@
             <groupId>dev.nanonative.railix</groupId>
             <artifactId>railix-core</artifactId>
             <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.nanonative.railix</groupId>
+            <artifactId>railix-mesh</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>dev.nanonative.railix</groupId>
