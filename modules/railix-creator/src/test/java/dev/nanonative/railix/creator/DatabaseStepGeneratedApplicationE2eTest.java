@@ -41,7 +41,7 @@ class DatabaseStepGeneratedApplicationE2eTest {
         final Path withoutDbJar = productionArtifact(withoutDbProject, CreatorProjects.lowercaseCli()).jar();
         try (JarFile jar = new JarFile(withoutDbJar.toFile())) {
             final List<String> entries = jar.stream().map(entry -> entry.getName()).toList();
-            assertThat(entries).noneMatch(entry -> entry.contains("DatabaseStepHandlers"));
+            assertThat(entries).noneMatch(entry -> entry.contains("Database"));
         }
 
         final String withDbSource = databaseCliProject();
@@ -49,7 +49,12 @@ class DatabaseStepGeneratedApplicationE2eTest {
         final Path withDbJar = productionArtifact(withDbProject, withDbSource).jar();
         try (JarFile jar = new JarFile(withDbJar.toFile())) {
             final List<String> entries = jar.stream().map(entry -> entry.getName()).toList();
-            assertThat(entries).contains("dev/nanonative/railix/stdlib/DatabaseStepHandlers.class");
+            assertThat(entries).contains(
+                    "dev/nanonative/railix/stdlib/DatabaseStepHandlers.class",
+                    "dev/nanonative/railix/stdlib/DatabaseKey.class",
+                    "dev/nanonative/railix/stdlib/DatabaseQuery.class",
+                    "dev/nanonative/railix/stdlib/DatabaseJournal.class"
+            );
         }
     }
 
@@ -353,10 +358,18 @@ class DatabaseStepGeneratedApplicationE2eTest {
                 assertThat(postJson(client, baseUri.resolve("/upsert"), insertOrd1).statusCode()).isEqualTo(200);
                 assertThat(postJson(client, baseUri.resolve("/upsert"), insertOrd1).statusCode()).isEqualTo(409);
 
-                assertThat(postJson(client, baseUri.resolve("/upsert"), """
+                final String compoundInsertOrd2 = """
                         {"document":{"_id":2,"total":220,"version":1,"status":"open",
                          "customer":{"email":"grace@ex.org","tier":"silver"}},
-                         "condition":{"_id":{"$exists":false}}}""").statusCode()).isEqualTo(200);
+                         "condition":{"_id":{"$exists":false},"status":{"$ne":"closed"}}}""";
+                assertThat(postJson(client, baseUri.resolve("/upsert"), compoundInsertOrd2).statusCode())
+                        .isEqualTo(200);
+                assertThat(postJson(client, baseUri.resolve("/upsert"), compoundInsertOrd2).statusCode())
+                        .isEqualTo(409);
+                assertThat(postJson(client, baseUri.resolve("/upsert"), """
+                        {"document":{"_id":99,"total":10,"version":1,"status":"open",
+                         "customer":{"email":"none@ex.org","tier":"bronze"}},
+                         "condition":{"_id":{"$exists":false},"version":1}}""").statusCode()).isEqualTo(409);
                 assertThat(postJson(client, baseUri.resolve("/upsert"), """
                         {"document":{"_id":3,"total":490,"version":1,"status":"closed",
                          "customer":{"email":"linus@ex.org","tier":"gold"}},
@@ -379,6 +392,15 @@ class DatabaseStepGeneratedApplicationE2eTest {
             final Process restarted = startHttpJar(jar);
             try {
                 final URI baseUri = awaitHttpBaseUri(restarted);
+                assertThat(postJson(client, baseUri.resolve("/search"), """
+                        {"filters":{"total":150}}""").statusCode()).isEqualTo(400);
+                assertThat(postJson(client, baseUri.resolve("/search"), """
+                        {"filter":null}""").statusCode()).isEqualTo(400);
+                final HttpResponse<String> allDocs = postJson(client, baseUri.resolve("/search"), """
+                        {"filter":{}}""");
+                assertThat(allDocs.statusCode()).isEqualTo(200);
+                assertThat(((RailixValue.ArrayValue) parseJson(allDocs.body())).values()).hasSize(3);
+
                 final HttpResponse<String> searchPage1 = postJson(client, baseUri.resolve("/search"), """
                         {"filter":{"total":{"$gte":100,"$lte":300},
                          "$or":[{"customer.tier":"gold"},{"customer.tier":"silver"}]}}""");

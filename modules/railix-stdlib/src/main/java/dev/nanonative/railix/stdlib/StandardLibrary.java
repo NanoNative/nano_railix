@@ -154,7 +154,8 @@ public final class StandardLibrary {
                         .defaultValue(RailixValue.string("_id"))
                         .validation(String.class, value -> DatabaseStepHandlers.validKeyField(value)
                                 ? Optional.empty()
-                                : Optional.of("Key field must be a non-blank UTF-8 string up to 128 bytes.")))
+                                : Optional.of("Key field must be a non-blank top-level field name up to 128 bytes "
+                                        + "without '.' or leading '$'.")))
                 .input("unique_fields", databaseIndexFieldListInput())
                 .input("index_fields", databaseIndexFieldListInput())
                 .input("operation", Input.options(

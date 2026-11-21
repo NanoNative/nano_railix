@@ -118,27 +118,35 @@ not carry `DatabaseStepHandlers` into the built application.
   - A collection name is 1 to 64 characters, starts and ends with a lowercase letter or digit, and
     otherwise uses only `a-z`, `0-9`, `.`, `_` and `-`. It cannot contain `..` or start with a
     Windows device name such as `con`, `nul`, `com1` or `lpt1`.
-  - A `directory` cannot contain control characters, `<`, `>`, `"`, `|`, `?`, `*`, a `:` outside a drive
-    letter, `.` or `..` segments, or segments ending in a dot or space.
+  - A `directory` must name at least one directory segment and cannot contain control characters,
+    `<`, `>`, `"`, `|`, `?`, `*`, a `:` outside a drive root (`C:/` or `C:\`), `.` or `..`
+    segments, segments ending in a dot or space, or OS-reserved device names.
   - A relative `directory` resolves against `-Drailix.data.dir`, then `RAILIX_DATA_DIR`, then the
     project root (when started from `.railix/build/<entry>/application.jar`), then the working directory.
   - `collection.lock` records the collection that owns the folder (`DATABASE_COLLECTION_COLLISION`).
-    Placements that share one collection must agree on `key_field` (`DATABASE_KEY_FIELD_MISMATCH`).
+    Placements that share one collection must agree on `key_field` (`DATABASE_KEY_FIELD_MISMATCH`),
+    which must be a valid non-blank top-level field name up to 128 bytes without `.` or leading `$`.
   - The string key `"42"` and the number key `42` are different keys. `42` and `42.00` are the same
     key, and numbers are never converted through `double`. A missing or `null` key either becomes a
     generated UUID (`auto_key: true`) or routes to `invalid`.
 
 ### Operations And Queries
 
-- **`upsert`** takes one object or a non-empty array of objects in `document`, plus optional `fields`
-  and `condition`. A batch is all-or-nothing: an invalid document, a unique-field clash or an
+- **`upsert`** takes one object or an array of objects in `document` (an empty array returns `ok`
+  with `[]`), plus optional `fields` and `condition`. It replaces the stored record for each key:
+  when `fields` is empty (`[]`), the whole document is stored; when `fields` lists field names,
+  only `key_field` and those top-level fields are kept and stored, and any unlisted fields from the
+  input are dropped. A batch is all-or-nothing: an invalid document, a unique-field clash or an
   oversized batch routes to `invalid` and writes nothing.
 - **`get`** and **`delete`** need a valid scalar `key`. A missing record routes to `not_found` and an
-  unusable key routes to `invalid`. `get` applies `fields` and `defaults`. `delete` only removes the
-  record when the optional `condition` also matches; otherwise it routes to `not_found`.
-- **`find`** takes an optional `filter`, an optional `after` cursor (a key value), `fields`, `defaults`
-  and a `limit` from 1 to 1,000 (default 100). Results come back in key order: numbers by value, then
-  strings by UTF-16 order.
+  unusable key routes to `invalid`. `get` applies `fields` and `defaults` only to the returned view,
+  leaving stored records unchanged. `delete` removes the record when the optional `condition` also
+  matches; otherwise it routes to `not_found`.
+- **`find`** requires `filter` to resolve to a JSON object at run time (a missing path or `null`
+  routes to `invalid`; pass `{}` to match all documents). It also takes an optional `after` cursor
+  (a key value), `fields` and `defaults` (applied only to the returned view), and a `limit` from 1
+  to 1,000 (default 100). Results come back in key order: numbers by value, then strings by UTF-16
+  order, and scans check thread interruption cooperatively between records.
 - **DATA-004 filters and conditions** follow MongoDB where it fits:
   - Field operators: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$exists`.
     Logical operators: `$and` and `$or`, each with a non-empty list of sub-filters.
@@ -153,9 +161,10 @@ not carry `DatabaseStepHandlers` into the built application.
     `$in`/`$nin` values, more than 16 nested levels or more than 128 clauses route to `invalid`.
   - Conditional writes: when a `condition` is authored on `upsert` or `delete`, a missing or `null`
     value at run time routes to `invalid` instead of silently writing unconditionally. An empty
-    condition `{}` needs an existing record. To insert only when absent, use
-    `{"<key_field>": {"$exists": false}}`; to create or update by revision, combine it with a version
-    check using `$or`.
+    condition `{}` needs an existing record. To insert only when absent, include
+    `{"<key_field>": {"$exists": false}}` (alone or combined with other predicates that also hold
+    on an absent document, such as `{"<key_field>": {"$exists": false}, "status": {"$ne": "closed"}}`).
+    To create or update by revision, combine that check with an existing-record check using `$or`.
 
 ### Durability, Concurrency And Limits
 
