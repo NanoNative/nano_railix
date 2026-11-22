@@ -155,10 +155,10 @@ final class ApplicationBuilder {
         final String productionMain = mesh ? MESH_MAIN : compiled.applicationClass();
         final String mainClass = development ? compiled.developmentLauncherClass() : productionMain;
         final byte[] meshJar = mesh ? bundledMesh() : new byte[0];
-        final String meshLauncher = mesh
-                ? MESH_LAUNCHER.formatted(compiled.logicalBuildId(coreRuntimeDigest(runtime))) : "";
         final String sourceIdentity = ProjectFiles.identity(compiled);
-        final String baseKey = buildKey(compiled, runtime.entries(), development);
+        final String meshLauncher = mesh
+                ? MESH_LAUNCHER.formatted(compiled.logicalBuildId(sourceIdentity, coreRuntimeDigest(runtime))) : "";
+        final String baseKey = buildKey(compiled, sourceIdentity, runtime.entries(), development);
         final MessageDigest publication = Sha256.newDigest();
         update(publication, baseKey);
         update(publication, observation ? "observation-on" : "observation-off");
@@ -329,11 +329,12 @@ final class ApplicationBuilder {
     }
 
     static String key(final CompileResult.Compiled compiled) throws IOException {
-        return buildKey(compiled, runtime(
+        final var runtime = runtime(
                 compiled.applicationDependencies(),
                 true,
                 compiled.developmentResources().keySet()
-        ).entries(), true);
+        );
+        return buildKey(compiled, ProjectFiles.identity(compiled), runtime.entries(), true);
     }
 
     static DevelopmentBuild reserve(final Artifact artifact) throws IOException {
@@ -994,12 +995,13 @@ final class ApplicationBuilder {
 
     private static String buildKey(
             final CompileResult.Compiled compiled,
+            final String sourceIdentity,
             final Map<String, RuntimeEntry> runtime,
             final boolean development
     ) {
         final MessageDigest digest = Sha256.newDigest();
         update(digest, "railix-application-v5");
-        update(digest, ProjectFiles.identity(compiled));
+        update(digest, sourceIdentity);
         update(digest, development ? "development" : "production");
         update(digest, Runtime.version().toString());
         update(digest, System.getProperty("java.vendor"));

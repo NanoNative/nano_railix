@@ -28,14 +28,14 @@ public final class PeerSession {
     private final UUID meshId;
     private final String build;
     private final UUID incarnation = UUID.randomUUID();
-    private final RailixValue.ObjectValue localState;
+    private final byte[] localStateBody;
 
     private PeerSession(final PeerTls tls, final UUID meshId, final String build,
-                        final RailixValue.ObjectValue localState) {
+                        final byte[] localStateBody) {
         this.tls = tls;
         this.meshId = meshId;
         this.build = build;
-        this.localState = localState;
+        this.localStateBody = localStateBody;
     }
 
     /**
@@ -69,7 +69,7 @@ public final class PeerSession {
      * Owns an accepted TCP socket until authentication fails or the peer disconnects.
      * @param transport accepted TCP socket
      * @param deadline absolute join deadline on the {@link System#nanoTime()} clock
-     * @param onJoined receives the peer's observed state when it joins and on subsequent updates
+     * @param onJoined receives the peer's observed state on join and when its contents change
      * @param onRejected receives the rejection reason if the peer cannot join
      * @return whether the peer joined before the connection ended
      * @throws InterruptedException if the caller is interrupted during the message exchange
@@ -89,7 +89,7 @@ public final class PeerSession {
      * Connects to one resolved peer address and runs the session until it disconnects.
      * @param address resolved peer address
      * @param deadline absolute join deadline on the {@link System#nanoTime()} clock
-     * @param onJoined receives the peer's observed state when it joins and on subsequent updates
+     * @param onJoined receives the peer's observed state on join and when its contents change
      * @param onRejected receives the rejection reason if the peer cannot join
      * @return whether the peer joined before the connection ended
      * @throws InterruptedException if the caller is interrupted during the message exchange
@@ -135,7 +135,7 @@ public final class PeerSession {
                 return false;
             }
 
-            PeerProtocol.write(channel, localState);
+            PeerProtocol.write(channel, localStateBody);
             var peerState = PeerProtocol.read(channel).filter(PeerProtocol::validState);
             if (peerState.isEmpty()) {
                 onRejected.accept(MeshErrors.INVALID_STATE);
@@ -150,11 +150,14 @@ public final class PeerSession {
             final var replica = connection.replicaId();
             final var peerIncarnation = peerHello.values().get("incarnationId");
             final Thread heartbeat = Thread.ofVirtual().name("railix-mesh-peer-heartbeat")
-                    .start(() -> heartbeat(connection, localState));
+                    .start(() -> heartbeat(connection, localStateBody));
             try {
+                var publishedState = Optional.<RailixValue.ObjectValue>empty();
                 do {
-                    final var peer = observedPeer(replica, peerIncarnation, peerState.get());
-                    onJoined.accept(peer);
+                    if (!peerState.equals(publishedState)) {
+                        onJoined.accept(observedPeer(replica, peerIncarnation, peerState.get()));
+                        publishedState = peerState;
+                    }
                     peerState = PeerProtocol.read(channel).filter(PeerProtocol::validState);
                 } while (peerState.isPresent() && refresh(expires) && !Thread.currentThread().isInterrupted());
             } finally {
@@ -182,11 +185,11 @@ public final class PeerSession {
         ));
     }
 
-    private static void heartbeat(final PeerTlsConnection connection, final RailixValue.ObjectValue state) {
+    private static void heartbeat(final PeerTlsConnection connection, final byte[] stateBody) {
         try {
             while (!Thread.currentThread().isInterrupted()) {
                 Thread.sleep(HEARTBEAT);
-                PeerProtocol.write(connection.channel(), state);
+                PeerProtocol.write(connection.channel(), stateBody);
             }
         } catch (final IOException failure) {
             abort(connection);

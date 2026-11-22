@@ -103,38 +103,38 @@ final class LiveApplication implements AutoCloseable {
         }
     }
 
-    RailixValue.ObjectValue runtimeSnapshot(final long deadline) throws IOException {
-        final var base = snapshot();
-        if (!runtimeDetailsAvailable || !alive()) {
-            return base;
+    RailixValue readMeshStatus(final long deadline) throws IOException {
+        if (!runtimeDetailsAvailable) {
+            return RailixValue.nullValue();
         }
         final var response = read(STATUS_PATH, null, deadline);
         if (response.status() == 404) {
             runtimeDetailsAvailable = false;
         }
         if (response.status() != 200) {
-            return base;
+            return RailixValue.nullValue();
         }
         final var document = RailixJson.parse(new String(response.body(), StandardCharsets.UTF_8));
-        if (!(document instanceof RailixJson.Parsed(RailixValue.ObjectValue status))) {
-            return base;
+        if (document instanceof RailixJson.Parsed(RailixValue.ObjectValue status)
+                && status.values().get("mesh") instanceof RailixValue.ObjectValue mesh) {
+            return mesh;
         }
-        if (!(status.values().get("mesh") instanceof RailixValue.ObjectValue mesh)) {
-            return base;
-        }
-        final var fields = new LinkedHashMap<>(base.values());
-        fields.put("mesh", mesh);
-        return RailixValue.object(fields);
+        return RailixValue.nullValue();
     }
 
     RailixValue.ObjectValue snapshot() {
+        return snapshot(RailixValue.nullValue());
+    }
+
+    RailixValue.ObjectValue snapshot(final RailixValue mesh) {
+        final boolean running = alive();
         final var fields = new LinkedHashMap<>(connection.identity().values());
         fields.put("pid", RailixValue.number(connection.pid()));
-        fields.put("state", RailixValue.string(alive() ? "running" : "stopped"));
+        fields.put("state", RailixValue.string(running ? "running" : "stopped"));
         fields.put("fingerprint", RailixValue.string(connection.instance() + "/" + connection.fingerprint()));
         fields.put("readonly", RailixValue.bool(true));
         fields.put("build_path", RailixValue.string(connection.artifact().toString()));
-        fields.put("mesh", RailixValue.nullValue());
+        fields.put("mesh", running ? mesh : RailixValue.nullValue());
         return RailixValue.object(fields);
     }
 

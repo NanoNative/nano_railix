@@ -32,8 +32,8 @@ final class PeerProtocol {
     private PeerProtocol() {
     }
 
-    static RailixValue.ObjectValue hello(final String build, final UUID mesh, final UUID replica, final UUID incarnation,
-                                         final Optional<UUID> connectionId) {
+    static byte[] hello(final String build, final UUID mesh, final UUID replica, final UUID incarnation,
+                        final Optional<UUID> connectionId) {
         final Map<String, RailixValue> fields = new LinkedHashMap<>(Map.of(
                 "type", RailixValue.string("hello.v1"),
                 "logicalBuildId", RailixValue.string(build),
@@ -41,7 +41,7 @@ final class PeerProtocol {
                 "replicaId", RailixValue.string(replica.toString()),
                 "incarnationId", RailixValue.string(incarnation.toString())));
         connectionId.ifPresent(id -> fields.put("connectionId", RailixValue.string(id.toString())));
-        return RailixValue.object(fields);
+        return encode(RailixValue.object(fields));
     }
 
     static Optional<String> rejectHello(final RailixValue.ObjectValue hello, final String build, final UUID mesh,
@@ -63,14 +63,14 @@ final class PeerProtocol {
         return Optional.empty();
     }
 
-    static RailixValue.ObjectValue state(final PeerEndpoint advertised, final int flowCapacity) {
-        return RailixValue.object(Map.of(
+    static byte[] state(final PeerEndpoint advertised, final int flowCapacity) {
+        return encode(RailixValue.object(Map.of(
                 "type", RailixValue.string("state"),
                 "status", RailixValue.string("ready"),
                 "advertisedEndpoint", advertised.value(),
                 "availableFlowSlots", RailixValue.number(flowCapacity),
                 "peerHints", RailixValue.array(List.of())
-        ));
+        )));
     }
 
     static boolean validState(final RailixValue.ObjectValue state) {
@@ -96,9 +96,12 @@ final class PeerProtocol {
         return Optional.empty();
     }
 
-    static void write(final PeerChannel channel, final RailixValue.ObjectValue frame)
-            throws IOException, InterruptedException {
-        if (!channel.write(RailixJson.write(frame).getBytes(StandardCharsets.UTF_8), LIMIT)) {
+    private static byte[] encode(final RailixValue.ObjectValue frame) {
+        return RailixJson.write(frame).getBytes(StandardCharsets.UTF_8);
+    }
+
+    static void write(final PeerChannel channel, final byte[] body) throws IOException, InterruptedException {
+        if (!channel.write(body, LIMIT)) {
             throw new IOException(MeshErrors.CONTROL_FRAME_TOO_LARGE);
         }
     }

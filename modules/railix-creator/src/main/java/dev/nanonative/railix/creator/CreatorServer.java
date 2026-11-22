@@ -2317,12 +2317,12 @@ public final class CreatorServer implements AutoCloseable {
                 captured.project.catalog().definitions().stream()
                         .<RailixValue>map(step -> definition(step, captured.project.catalog())).toList()))));
         if (path.equals("/api/live/application")) {
-            final var snapshot = captured.runtimeSnapshot(System.nanoTime() + TimeUnit.SECONDS.toNanos(2));
+            final var mesh = captured.readMeshStatus(System.nanoTime() + TimeUnit.SECONDS.toNanos(2));
             synchronized (applicationLock) {
                 if (live != captured) {
                     return unavailable("application");
                 }
-                return json(200, captured.alive() ? snapshot : captured.snapshot());
+                return json(200, captured.snapshot(mesh));
             }
         }
         if (path.equals("/api/live/editor")) {

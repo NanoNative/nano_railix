@@ -55,7 +55,7 @@ final class LiveApplicationE2eTest {
                     GeneratedApplicationFixture.catalog());
             try (var live = new LiveApplication(connection, project, HttpClient.newHttpClient())) {
                 final long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
-                final var status = threads.submit(() -> live.runtimeSnapshot(deadline));
+                final var status = threads.submit(() -> live.readMeshStatus(deadline));
                 try {
                     assertThat(statusEntered.await(5, TimeUnit.SECONDS)).isTrue();
                     final var first = threads.submit(() -> live.read("/v1/metrics/application", null, deadline));
@@ -64,7 +64,7 @@ final class LiveApplicationE2eTest {
                     release.countDown();
                     assertThat(first.get(5, TimeUnit.SECONDS).status()).isEqualTo(200);
                     assertThat(second.get(5, TimeUnit.SECONDS).status()).isEqualTo(200);
-                    assertThat(status.get(5, TimeUnit.SECONDS).values().get("mesh")).isInstanceOf(RailixValue.ObjectValue.class);
+                    assertThat(status.get(5, TimeUnit.SECONDS)).isInstanceOf(RailixValue.ObjectValue.class);
                 } finally {
                     release.countDown();
                 }
