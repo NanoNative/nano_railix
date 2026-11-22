@@ -1,5 +1,6 @@
 package dev.nanonative.railix.core.runtime;
 
+import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -26,6 +27,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
+import java.util.function.Supplier;
 import java.util.jar.JarFile;
 
 /** Owns a standalone application's authenticated loopback observation and ephemeral discovery. */
@@ -55,6 +57,18 @@ public final class ObservationServer implements AutoCloseable {
      * @return the listener owner, or empty for disabled, unpackaged or unavailable observation
      */
     public static Optional<ObservationServer> open(final Class<?> applicationClass, final RuntimeMetrics measurements) {
+        return open(applicationClass, measurements, Map::of);
+    }
+
+    /**
+     * Opens the same authenticated observation with optional read-only runtime details.
+     * @param applicationClass generated application class used to locate the artifact
+     * @param measurements application metric store
+     * @param details immutable, non-secret details captured per request
+     * @return the listener owner, or empty when observation is unavailable or disabled
+     */
+    public static Optional<ObservationServer> open(final Class<?> applicationClass, final RuntimeMetrics measurements,
+            final Supplier<Map<String, RailixValue>> details) {
         HttpServer server = null;
         ExecutorService executor = null;
         MetricsEndpoint endpoint = null;
@@ -96,21 +110,13 @@ public final class ObservationServer implements AutoCloseable {
             final RailixValue.ObjectValue identity = connection.identity();
             final Semaphore identityAdmission = new Semaphore(2);
             final Semaphore bodies = new Semaphore(4);
-            server.createContext("/v1/application", exchange -> {
-                try (exchange) {
-                    if (!ManagementHttp.authorized(exchange, authorization)) {
-                        if (ManagementHttp.admittedBody(exchange, bodies).isPresent())
-                            ManagementHttp.send(exchange, 401, RailixValue.object(Map.of("status", RailixValue.string("unauthorized"))));
-                    } else if (!exchange.getRequestURI().getPath().equals("/v1/application")) {
-                        ManagementHttp.send(exchange, 404, RailixValue.object(Map.of("status", RailixValue.string("not-found"))));
-                    } else if (!exchange.getRequestMethod().equals("GET")) {
-                        ManagementHttp.send(exchange, 405, RailixValue.object(Map.of("status", RailixValue.string("method-not-allowed"))));
-                    } else if (identityAdmission.tryAcquire()) {
-                        try { ManagementHttp.send(exchange, 200, identity); }
-                        finally { identityAdmission.release(); }
-                    } else exchange.close();
-                }
-            });
+            server.createContext("/v1/application", exchange -> statusRead(exchange, "/v1/application",
+                    authorization, identityAdmission, bodies, () -> identity));
+            if (!details.get().isEmpty()) {
+                final Semaphore statusAdmission = new Semaphore(1);
+                server.createContext("/v1/status", exchange -> statusRead(exchange, "/v1/status",
+                        authorization, statusAdmission, bodies, () -> RailixValue.object(details.get())));
+            }
             server.createContext("/v1/metrics", endpoint);
             server.setExecutor(executor);
             server.start();
@@ -134,6 +140,28 @@ public final class ObservationServer implements AutoCloseable {
             }
             System.err.println("Local observation unavailable. Application execution is unchanged.");
             return Optional.empty();
+        }
+    }
+
+    private static void statusRead(final HttpExchange exchange, final String path,
+            final byte[] authorization, final Semaphore admission, final Semaphore bodies,
+            final Supplier<RailixValue.ObjectValue> payload) throws IOException {
+        try (exchange) {
+            if (!ManagementHttp.authorized(exchange, authorization)) {
+                if (ManagementHttp.admittedBody(exchange, bodies).isPresent()) {
+                    ManagementHttp.send(exchange, 401, RailixValue.object(Map.of("status", RailixValue.string("unauthorized"))));
+                }
+            } else if (!exchange.getRequestURI().getPath().equals(path)) {
+                ManagementHttp.send(exchange, 404, RailixValue.object(Map.of("status", RailixValue.string("not-found"))));
+            } else if (!exchange.getRequestMethod().equals("GET")) {
+                ManagementHttp.send(exchange, 405, RailixValue.object(Map.of("status", RailixValue.string("method-not-allowed"))));
+            } else if (admission.tryAcquire()) {
+                try {
+                    ManagementHttp.send(exchange, 200, payload.get());
+                } finally {
+                    admission.release();
+                }
+            }
         }
     }
 

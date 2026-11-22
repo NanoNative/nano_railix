@@ -1,4 +1,4 @@
-package dev.nanonative.railix.mesh;
+package dev.nanonative.railix.mesh.peer;
 
 /** Stream outcomes that did not produce a complete frame. */
 enum FrameReadStatus implements FrameRead {

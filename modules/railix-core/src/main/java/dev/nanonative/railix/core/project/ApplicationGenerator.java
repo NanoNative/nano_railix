@@ -382,37 +382,70 @@ final class ApplicationGenerator {
                         ? "ObservedApplication"
                         : "DevelopmentRuntime.Application")
                 .append(" runtime() {\n        return APPLICATION;\n    }\n\n")
-                .append("    public static void main(final String[] arguments) {\n");
-        source.append("        final var observation = dev.nanonative.railix.core.runtime.ObservationServer.open(RailixApplication.class, METRICS);\n")
-                .append("        final Thread shutdown = new Thread(() -> {\n")
-                .append("            try {\n")
-                .append("                final RunResult stopped = APPLICATION.stop();\n")
-                .append("                if (!(stopped instanceof RunResult.Succeeded)) {\n")
-                .append("                    reportLifecycleFailure(stopped);\n")
-                .append("                    observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close);\n")
-                .append("                    Runtime.getRuntime().halt(1);\n                }\n")
-                .append("            } catch (final RuntimeException | Error failure) {\n")
-                .append("                failure.printStackTrace(System.err);\n")
-                .append("                observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close);\n")
-                .append("                Runtime.getRuntime().halt(1);\n")
-                .append("            } finally { observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close); }\n")
-                .append("        }, \"railix-shutdown\");\n")
-                .append("        Runtime.getRuntime().addShutdownHook(shutdown);\n")
-                .append("        try {\n")
-                .append("        final RunResult launched = APPLICATION.launch(List.of(arguments));\n")
-                .append("        if (!(launched instanceof RunResult.Succeeded)) {\n")
-                .append("            reportLifecycleFailure(launched);\n")
-                .append("            System.exit(1);\n            return;\n        }\n")
-                .append("        final int status = APPLICATION.lifecycle.awaitSources();\n");
-        source.append("        final RunResult stopped = APPLICATION.stop();\n")
-                .append("        try {\n")
-                .append("            Runtime.getRuntime().removeShutdownHook(shutdown);\n")
-                .append("        } catch (final IllegalStateException shutdownInProgress) {\n")
-                .append("            return; // The JVM shutdown hook already owns termination.\n        }\n")
-                .append("        if (!(stopped instanceof RunResult.Succeeded)) reportLifecycleFailure(stopped);\n")
-                .append("        if (status != 0 || !(stopped instanceof RunResult.Succeeded)) {\n")
-                .append("            System.exit(status == 0 ? 1 : status);\n        }\n")
-                .append("        } finally { observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close); }\n    }\n\n")
+                .append("""
+                    public static void main(final String[] arguments) {
+                        run(arguments, () -> {}, () -> {}, Map::of);
+                    }
+
+                    static void run(final String[] arguments, final Runnable ready, final Runnable close,
+                                    final java.util.function.Supplier<Map<String, RailixValue>> details) {
+                        final var observation = dev.nanonative.railix.core.runtime.ObservationServer.open(
+                                RailixApplication.class, METRICS, details);
+                        final Thread shutdown = new Thread(() -> {
+                            try {
+                                close.run();
+                                final RunResult stopped = APPLICATION.stop();
+                                if (!(stopped instanceof RunResult.Succeeded)) {
+                                    reportLifecycleFailure(stopped);
+                                    observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close);
+                                    Runtime.getRuntime().halt(1);
+                                }
+                            } catch (final RuntimeException | Error failure) {
+                                failure.printStackTrace(System.err);
+                                observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close);
+                                Runtime.getRuntime().halt(1);
+                            } finally {
+                                observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close);
+                            }
+                        }, "railix-shutdown");
+                        Runtime.getRuntime().addShutdownHook(shutdown);
+
+                        int exitCode;
+                        try {
+                            final RunResult launched = APPLICATION.launch(List.of(arguments));
+                            if (!(launched instanceof RunResult.Succeeded)) {
+                                reportLifecycleFailure(launched);
+                                System.exit(1);
+                                return;
+                            }
+                            ready.run();
+                            exitCode = APPLICATION.lifecycle.awaitSources();
+                            final RunResult stopped = APPLICATION.stop();
+                            try {
+                                Runtime.getRuntime().removeShutdownHook(shutdown);
+                            } catch (final IllegalStateException shutdownInProgress) {
+                                // The JVM shutdown hook already owns termination.
+                                return;
+                            }
+                            if (!(stopped instanceof RunResult.Succeeded)) {
+                                reportLifecycleFailure(stopped);
+                                if (exitCode == 0) {
+                                    exitCode = 1;
+                                }
+                            }
+                        } finally {
+                            try {
+                                close.run();
+                            } finally {
+                                observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close);
+                            }
+                        }
+                        if (exitCode != 0) {
+                            System.exit(exitCode);
+                        }
+                    }
+
+                """)
                 .append("    @Override\n")
                 .append("    public String projectId() {\n        return PROJECT_ID;\n    }\n\n");
             source.append("    @Override\n")

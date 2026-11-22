@@ -42,6 +42,9 @@ Mesh capability is a build selection. A generated application that excludes it h
 or listener. A mesh-capable application activates it through valid startup configuration; absence
 of activation preserves ordinary single-instance execution.
 
+Creator carries the matching mesh JAR as an offline build resource. Build selection controls its
+inclusion in the generated application and the generation of the startup hook.
+
 The initial transport is a persistent, multiplexed, bounded Railix protocol over mutual TLS and
 TCP using JDK security and socket APIs. Protocol messages carry canonical data and approved compiled target
 identity.

@@ -1,6 +1,9 @@
 package dev.nanonative.railix.creator;
 
 import com.google.gson.JsonParser;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import dev.nanonative.railix.core.value.RailixValue;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -8,15 +11,21 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import dev.nanonative.railix.core.runtime.ObservationServer;
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -24,6 +33,61 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(120)
 final class LiveApplicationE2eTest {
     @TempDir Path directory;
+
+    @Test
+    void meshStatusLeavesBothLiveMetricReadSlotsAvailable() throws Exception {
+        final var statusEntered = new CountDownLatch(1);
+        final var metricsEntered = new CountDownLatch(2);
+        final var release = new CountDownLatch(1);
+        final var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        try (var threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            server.setExecutor(threads);
+            server.createContext("/v1/status", exchange -> heldResponse(exchange, statusEntered, release,
+                    "{\"mesh\":{\"status\":\"waiting\"}}"));
+            server.createContext("/v1/metrics/application",
+                    exchange -> heldResponse(exchange, metricsEntered, release, "{}"));
+            server.start();
+            final var process = ProcessHandle.current();
+            final var connection = new ObservationServer.Connection("live", process.pid(),
+                    process.info().startInstant().orElseThrow(), server.getAddress().getPort(), "test-token",
+                    "revision", "digest", directory.resolve("application.jar"));
+            final var project = new ProjectFiles.Snapshot(CreatorProjects.grouping(), RailixValue.object(Map.of()),
+                    GeneratedApplicationFixture.catalog());
+            try (var live = new LiveApplication(connection, project, HttpClient.newHttpClient())) {
+                final long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
+                final var status = threads.submit(() -> live.runtimeSnapshot(deadline));
+                try {
+                    assertThat(statusEntered.await(5, TimeUnit.SECONDS)).isTrue();
+                    final var first = threads.submit(() -> live.read("/v1/metrics/application", null, deadline));
+                    final var second = threads.submit(() -> live.read("/v1/metrics/application", null, deadline));
+                    assertThat(metricsEntered.await(5, TimeUnit.SECONDS)).isTrue();
+                    release.countDown();
+                    assertThat(first.get(5, TimeUnit.SECONDS).status()).isEqualTo(200);
+                    assertThat(second.get(5, TimeUnit.SECONDS).status()).isEqualTo(200);
+                    assertThat(status.get(5, TimeUnit.SECONDS).values().get("mesh")).isInstanceOf(RailixValue.ObjectValue.class);
+                } finally {
+                    release.countDown();
+                }
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private static void heldResponse(final HttpExchange exchange, final CountDownLatch entered,
+                                     final CountDownLatch release, final String body) throws IOException {
+        try (exchange) {
+            entered.countDown();
+            if (!release.await(15, TimeUnit.SECONDS)) {
+                return;
+            }
+            final byte[] response = body.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
 
     @Test
     void ordinaryJarPublishesOnlyAuthenticatedReadAccessAndRemovesDiscoveryOnExit() throws Exception {

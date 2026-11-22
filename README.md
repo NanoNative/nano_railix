@@ -186,6 +186,33 @@ The printed URL contains a random Creator token in its fragment. Every Creator A
 that token and the exact loopback `Host`; the browser client supplies both without storing the token
 in project files. Treat the complete local URL as a credential while Creator is running.
 
+### Run A Fixed-Peer Mesh
+
+Run [run-mesh.sh](run-mesh.sh) from the repository root on macOS or Linux. The demo uses Bash,
+JDK 25 and `uuidgen`.
+
+```sh
+./run-mesh.sh auth-http-app
+```
+
+The script builds the selected example once and starts two loopback replicas with temporary
+credentials. Omit the name for `auth-http-app`, or pass another example directory name such as
+`text-normalization-http-app`. Choose an example with a long-running source such as HTTP.
+To inspect either replica, run the printed Creator command in a second terminal and choose
+**Project actions > Connect live app**. Use `Ctrl-C` in the demo terminal to stop both replicas.
+Set `RAILIX_CLI_JAR` to an existing packaged CLI to reuse it.
+
+To deploy your own project, build once with JDK 25 and copy the printed application JAR and
+`run-mesh.sh` to each host. The `deploy` command uses Bash, Java 25 and `unzip`.
+Give each replica its own [mesh configuration and provisioned credentials](docs/specs/mesh.md#startup-configuration).
+
+```sh
+PROJECT_FILE=path/to/railix.project.json ./run-mesh.sh build
+
+APPLICATION_JAR=/path/to/application.jar RAILIX_MESH_CONFIG=/path/to/mesh.json \
+  ./run-mesh.sh deploy
+```
+
 ## Create The First Flow
 
 1. Select the Application, then **Data > Add Trigger** in the Inspector.

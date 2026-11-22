@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -18,7 +19,8 @@ import java.util.concurrent.TimeUnit;
 public final class RailixMain {
     private static final int DEFAULT_PORT = 0;
     private static final String CREATOR_USAGE = "Usage: railix creator [project-file] [port] [--application application.jar]";
-    private static final String BUILD_USAGE = "       railix build [project-file] [--include-project] [--no-observation]";
+    private static final String BUILD_USAGE = "       railix build [project-file] [--include-project] [--no-observation] [--mesh]";
+    private static final Set<String> BUILD_FLAGS = Set.of("--include-project", "--no-observation", "--mesh");
     private static final String USAGE = CREATOR_USAGE + "\n"
             + "       railix run [arguments...]\n" + BUILD_USAGE;
 
@@ -80,21 +82,27 @@ public final class RailixMain {
     }
 
     static int build(final List<String> arguments) {
-        final List<String> files = arguments.stream().filter(argument -> !Set.of("--include-project", "--no-observation").contains(argument)).toList();
-        if (files.size() > 1 || files.stream().anyMatch(argument -> argument.startsWith("--"))
-                || arguments.stream().filter("--include-project"::equals).count() > 1
-                || arguments.stream().filter("--no-observation"::equals).count() > 1)
+        final List<String> files = arguments.stream()
+                .filter(argument -> !BUILD_FLAGS.contains(argument))
+                .toList();
+        if (files.size() > 1
+                || files.stream().anyMatch(argument -> argument.startsWith("--"))
+                || BUILD_FLAGS.stream().anyMatch(flag -> Collections.frequency(arguments, flag) > 1)) {
             return reject(BUILD_USAGE.strip());
+        }
         final Path project = Path.of(files.isEmpty() ? "railix.project.json" : files.getFirst()).toAbsolutePath().normalize();
         try {
-            if (!Files.isRegularFile(project)) return reject("PROJECT_SOURCE_REQUIRED: Select an existing project file: " + project);
+            if (!Files.isRegularFile(project)) {
+                return reject("PROJECT_SOURCE_REQUIRED: Select an existing project file: " + project);
+            }
             final boolean includeProject = arguments.contains("--include-project");
             final var source = ProjectFiles.build(project, Path.of(System.getProperty("user.home"), ".railix"), includeProject);
             if (source.result() instanceof CompileResult.Rejected rejected) {
                 final Diagnostic diagnostic = rejected.diagnostics().getFirst();
                 return reject(diagnostic.code() + " " + diagnostic.path() + " " + diagnostic.message());
             }
-            final var artifact = ApplicationBuilder.buildProduction(project, source, !arguments.contains("--no-observation"));
+            final var artifact = ApplicationBuilder.buildProduction(project, source,
+                    !arguments.contains("--no-observation"), arguments.contains("--mesh"));
             System.out.println(artifact.jar());
             return 0;
         } catch (final IOException | IllegalArgumentException exception) {

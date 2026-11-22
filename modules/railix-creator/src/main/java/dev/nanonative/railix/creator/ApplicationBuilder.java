@@ -58,6 +58,34 @@ final class ApplicationBuilder {
             "dev/nanonative/railix/core/value/"
     );
     private static final String DEVELOPMENT_PREFIX = "dev/nanonative/railix/development/";
+    private static final String MESH_PREFIX = "dev/nanonative/railix/mesh/";
+    private static final String MESH_MAIN = "dev.nanonative.railix.core.project.RailixMeshApplication";
+    private static final String MESH_LAUNCHER = """
+            package dev.nanonative.railix.core.project;
+
+            import dev.nanonative.railix.mesh.MeshRuntime;
+            import java.io.IOException;
+            import java.util.Map;
+
+            public final class RailixMeshApplication {
+                public static void main(final String[] arguments) {
+                    final java.util.Optional<MeshRuntime> configured;
+                    try {
+                        configured = MeshRuntime.open(System.getenv("RAILIX_MESH_CONFIG"), "%s");
+                    } catch (final IOException failure) {
+                        System.err.println(failure.getMessage());
+                        System.exit(1);
+                        return;
+                    }
+                    if (configured.isEmpty()) {
+                        RailixApplication.main(arguments);
+                        return;
+                    }
+                    final MeshRuntime mesh = configured.get();
+                    RailixApplication.run(arguments, mesh::start, mesh::close, () -> Map.of("mesh", mesh.status()));
+                }
+            }
+            """;
 
     private ApplicationBuilder() {
     }
@@ -76,14 +104,14 @@ final class ApplicationBuilder {
             final Path projectFile,
             final CompileResult.Compiled compiled
     ) throws IOException {
-        return (DevelopmentBuild) build(projectFile, compiled, true, Map.of(), true);
+        return (DevelopmentBuild) build(projectFile, compiled, true, Map.of(), true, false);
     }
 
     static Artifact buildProduction(
             final Path projectFile,
             final CompileResult.Compiled compiled
     ) throws IOException {
-        return (Artifact) build(projectFile, compiled, false, Map.of(), true);
+        return (Artifact) build(projectFile, compiled, false, Map.of(), true, false);
     }
 
     static Artifact buildProduction(
@@ -95,9 +123,15 @@ final class ApplicationBuilder {
 
     static Artifact buildProduction(final Path projectFile, final ProjectFiles.Build source,
                                     final boolean observation) throws IOException {
-        if (!(source.result() instanceof CompileResult.Compiled compiled))
+        return buildProduction(projectFile, source, observation, false);
+    }
+
+    static Artifact buildProduction(final Path projectFile, final ProjectFiles.Build source,
+                                    final boolean observation, final boolean mesh) throws IOException {
+        if (!(source.result() instanceof CompileResult.Compiled compiled)) {
             throw new IllegalArgumentException("Cannot package a rejected project.");
-        return (Artifact) build(projectFile, compiled, false, source.documents(), observation);
+        }
+        return (Artifact) build(projectFile, compiled, false, source.documents(), observation, mesh);
     }
 
     private static Published build(
@@ -105,7 +139,8 @@ final class ApplicationBuilder {
             final CompileResult.Compiled compiled,
             final boolean development,
             final Map<String, String> projectDocuments,
-            final boolean observation
+            final boolean observation,
+            final boolean mesh
     ) throws IOException {
         final Set<String> reserved = new java.util.HashSet<>(compiled.developmentResources().keySet());
         reserved.addAll(projectDocuments.keySet());
@@ -117,16 +152,26 @@ final class ApplicationBuilder {
         final String applicationSource = development
                 ? compiled.developmentApplicationSource()
                 : compiled.productionApplicationSource();
-        final String mainClass = development
-                ? compiled.developmentLauncherClass()
-                : compiled.applicationClass();
+        final String productionMain = mesh ? MESH_MAIN : compiled.applicationClass();
+        final String mainClass = development ? compiled.developmentLauncherClass() : productionMain;
+        final byte[] meshJar = mesh ? bundledMesh() : new byte[0];
+        final String meshLauncher = mesh
+                ? MESH_LAUNCHER.formatted(compiled.logicalBuildId(coreRuntimeDigest(runtime))) : "";
         final String sourceIdentity = ProjectFiles.identity(compiled);
         final String baseKey = buildKey(compiled, runtime.entries(), development);
         final MessageDigest publication = Sha256.newDigest();
         update(publication, baseKey);
         update(publication, observation ? "observation-on" : "observation-off");
-        projectDocuments.forEach((name, value) -> { update(publication, name); update(publication, value); });
-        final String key = projectDocuments.isEmpty() && observation ? baseKey
+        if (mesh) {
+            update(publication, Sha256.hexDigest(meshJar));
+            update(publication, meshLauncher);
+        }
+        projectDocuments.forEach((name, value) -> {
+            update(publication, name);
+            update(publication, value);
+        });
+        final boolean useBaseKey = projectDocuments.isEmpty() && observation && !mesh;
+        final String key = useBaseKey ? baseKey
                 : "sha256-" + Sha256.finishHex(publication);
         final Path root = projectFile.toAbsolutePath().normalize().getParent()
                 .resolve(".railix").resolve("build");
@@ -167,7 +212,18 @@ final class ApplicationBuilder {
                     StandardOpenOption.CREATE_NEW
             );
             final List<Path> sources = new ArrayList<>();
+            final List<Path> dependencies = new ArrayList<>(runtime.locations());
+            final Map<String, RuntimeEntry> expected = new TreeMap<>(runtime.entries());
+            final Path meshBundle = staging.resolve("railix-mesh.jar");
             sources.add(source);
+            if (mesh) {
+                Files.write(meshBundle, meshJar);
+                final Path launcher = Files.writeString(source.resolveSibling("RailixMeshApplication.java"), meshLauncher);
+                dependencies.add(meshBundle);
+                sources.add(launcher);
+                addEntries(expected, inventoryJar(meshBundle, name -> name.startsWith(MESH_PREFIX)
+                        && name.endsWith(".class")), false);
+            }
             if (development) {
                 Files.writeString(
                         developmentSource,
@@ -183,14 +239,13 @@ final class ApplicationBuilder {
                     applicationSource,
                     compiled.applicationDependencies(),
                     classes,
-                    runtime.locations(),
+                    dependencies,
                     runtime.jdkModules()
             );
             final Map<String, RuntimeEntry> generated = inventoryDirectory(classes, name -> name.endsWith(".class"));
             if (!generated.containsKey(GENERATED_CLASS)) {
                 throw new IOException("Generated application class is missing after Java compilation.");
             }
-            final Map<String, RuntimeEntry> expected = new TreeMap<>(runtime.entries());
             addEntries(expected, generated, false);
             if (development) {
                 for (final Map.Entry<String, String> resource : compiled.developmentResources().entrySet()) {
@@ -211,6 +266,9 @@ final class ApplicationBuilder {
             jar(jar, manifest, expected);
             if (!matches(jar, manifest, expected)) {
                 throw new IOException("Generated application JAR does not match its expected content inventory.");
+            }
+            if (mesh) {
+                Files.delete(meshBundle);
             }
             synchronized (ApplicationBuilder.class) {
                 try (FileChannel channel = FileChannel.open(
@@ -258,6 +316,15 @@ final class ApplicationBuilder {
         } catch (final IOException | RuntimeException | Error failure) {
             cleanup(staging, failure);
             throw failure;
+        }
+    }
+
+    private static byte[] bundledMesh() throws IOException {
+        try (InputStream resource = ApplicationBuilder.class.getResourceAsStream("/META-INF/railix/railix-mesh.jar")) {
+            if (resource == null) {
+                throw new IOException("MESH_BUILD_RESOURCE_MISSING: Build with the packaged Railix CLI.");
+            }
+            return resource.readAllBytes();
         }
     }
 
@@ -912,6 +979,17 @@ final class ApplicationBuilder {
         }
         final String prefix = dependency ? "DEPENDENCY_ENTRY_CONFLICT: " : "Application runtime conflict: ";
         throw new IOException(prefix + "Entry has different bytes: " + entry.name() + ".");
+    }
+
+    private static String coreRuntimeDigest(final RuntimeFiles runtime) {
+        final MessageDigest digest = Sha256.newDigest();
+        runtime.entries().forEach((name, entry) -> {
+            if (runtimeEntry(name, false)) {
+                update(digest, name);
+                update(digest, entry.digest());
+            }
+        });
+        return Sha256.finishHex(digest);
     }
 
     private static String buildKey(

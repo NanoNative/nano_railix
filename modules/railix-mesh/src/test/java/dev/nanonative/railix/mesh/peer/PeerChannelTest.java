@@ -1,4 +1,4 @@
-package dev.nanonative.railix.mesh;
+package dev.nanonative.railix.mesh.peer;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;

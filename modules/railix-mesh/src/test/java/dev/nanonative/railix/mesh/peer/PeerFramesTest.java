@@ -1,4 +1,4 @@
-package dev.nanonative.railix.mesh;
+package dev.nanonative.railix.mesh.peer;
 
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;

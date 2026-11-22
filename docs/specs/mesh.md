@@ -2,7 +2,7 @@
 
 ## Human Review
 
-Status: **Fixed-peer design accepted, implementation in progress**, updated on 2026-11-21.
+Status: **Fixed-peer membership verified**, updated on 2026-11-21.
 
 Owns: discovery of already-running replicas, authenticated peer membership, remote Flow
 placement, distributed admission and invocation lifetime, peer transport, and the boundary that
@@ -77,12 +77,20 @@ mutable local state and is not a wire contract.
 The ordinary local path continues to call compiled Java directly. Enabling mesh capability MUST
 NOT force local Flow or Step calls through serialization, framing, or a loopback network request.
 
+## Build Selection
+
+`railix build --mesh` selects mesh for a generated executable JAR. Creator supplies the matching
+`railix-mesh` JAR as a build resource, so the application builder can resolve it offline. The
+generated JAR includes the mesh classes and startup hook only when the flag is selected. Mesh
+selection is independent of project-source inclusion and observation selection.
+
 ## Startup Configuration
 
 For a mesh-capable build, `RAILIX_MESH_CONFIG` points to a startup JSON file. An unset variable
 selects standalone startup. An explicitly supplied path must point to readable, valid configuration
 with usable credentials, or startup fails before the mesh listener opens. The generated app keeps
 passing its ordinary command-line arguments to its sources.
+Listen hostname resolution has a five-second startup limit.
 
 The fixed-endpoint configuration supplies `meshId` (the expected mesh authority ID),
 `listenEndpoint`, `advertisedEndpoint`, `bootstrapEndpoints`, `flowCapacity`, `identityStore` and
@@ -92,6 +100,29 @@ resolve from the configuration file's directory. Deployment supplies separate pa
 readable only by the application account. Each contains one UTF-8 password line. Store password
 values, private keys and usable credentials outside the JSON, command line, Git and build artifact.
 The stable replica ID comes from the local certificate, whose mesh ID must match `meshId`.
+
+Configuration, stores and password paths must resolve to regular files.
+
+### Run Two Fixed Peers
+
+Build once with `railix build railix.project.json --mesh --include-project`. Take the application
+JAR path from the command output. Use the same JAR for both replicas.
+
+Give the seed and the joining replica distinct loopback listen and advertised ports, for example
+7401 and 7402. Leave the seed's `bootstrapEndpoints` empty. In the joining replica's config, list
+`{"host":"127.0.0.1","port":7401}` as its bootstrap endpoint. Use the same mesh ID and trust issuer
+and a distinct certificate for each replica. Configure the application's ordinary source listeners
+so that both processes can start, for example by assigning HTTP triggers an ephemeral port.
+
+```sh
+# In separate terminals
+RAILIX_MESH_CONFIG="$PWD/mesh-seed.json" java -jar "$APP"
+RAILIX_MESH_CONFIG="$PWD/mesh-peer.json" java -jar "$APP"
+```
+
+In Creator, choose **Connect live app**, select a replica, and open the build and runtime details.
+The Mesh row shows when that replica has joined. The Peer row reports the authenticated peer's
+readiness. If the builds differ, the Rejection row shows **Build mismatch**.
 
 ## Peer Transport And Trust
 
@@ -113,8 +144,11 @@ invocation ID and may complete out of order on the same connection.
 
 For the first intranet prototype, each side applies one internal 5-second join deadline from
 the start of an outbound connection attempt or the acceptance of an inbound socket. The deadline
-covers TCP setup, mutual TLS, `hello` and receipt of the peer's first valid `state`. On expiry,
-close the connection and follow the discovery retry policy.
+covers bootstrap hostname resolution, TCP setup, mutual TLS, `hello` and receipt of the peer's first
+valid `state`. Bootstrap hostname resolution leaves the peer slot available for inbound joins. On
+expiry, close any opened connection and follow the discovery retry policy.
+When a bootstrap hostname resolves to multiple addresses, try them in resolver order. Divide the
+remaining join time among untried addresses and carry unused time forward.
 
 The first intranet prototype sends `state` heartbeats every 2 seconds. The receiver marks a peer
 stale after 8 seconds without a valid `state` from that peer. Both timings are internal defaults.
@@ -129,7 +163,11 @@ and verify the other peer's identity claims against its certificate and configur
 Each replica also compares `logicalBuildId` with its own. A mismatch closes the connection before
 either side exchanges `state`. Each process generates a separate random incarnation ID at startup.
 The matching build ID is recorded for the lifetime of the session. The first valid `state`
-completes join and reports the advertised endpoint, readiness and capacity.
+completes join and reports the advertised endpoint, readiness and capacity. The fixed-peer
+checkpoint advertises configured capacity. Flow admission adds live slot accounting.
+
+Startup requires at least one currently valid trust anchor. New handshakes use the anchors valid at
+the time of the join.
 
 For local development, the launcher generates a random temporary mesh ID and uses JDK `keytool`
 to provision a shared temporary trust root, a distinct key and certificate per replica, and temporary
@@ -259,10 +297,14 @@ later Step placement.
 | Peer authentication or `hello` validation fails, including a logical build mismatch | Close the connection before exchanging `state`. |
 | The receiver detects a logical build mismatch while handling `invoke` | Return `refused` before admission. |
 
+Through the [local standalone connection](observation.md#local-standalone-connection), the first
+milestone exposes the selected replica's join state and most recent join rejection reason in
+Creator's Live view. The observed application owns the status.
+
 Use the existing runtime status and metrics boundary for peer readiness and rejection states,
 replica/incarnation IDs, connection and reconnection reasons, active/pending counts, and counts of
 admissions, outcomes and rejections. Structured diagnostics correlate invocation ID, peer, attempt
-and classification.
+and classification. Extend these signals as discovery and dispatch are implemented.
 Report ignored late or duplicate outcomes and frame or payload rejections. Keep payloads, private
 keys, passwords and secrets out of diagnostics and metrics.
 
@@ -338,6 +380,11 @@ keep the first proof bounded while preserving their required architectural bound
 
 ## Acceptance And Planned Evidence
 
+Use an installed compatible Java runtime for the first membership proof. Verify standalone behavior
+with the generated executable JAR, then launch the same mesh-enabled JAR as two independent
+processes. Each process receives its own mesh config and credentials. The native distribution
+proof uses self-contained application images from [Roadmap Item 8](../roadmap.md#8-direct-generation-distribution-and-certification).
+
 For the MESH-004 bootstrap reconnection check, start A while its configured bootstrap peer B is
 down. Verify that A retries within the delay bounds, keeps serving local requests and reconnects
 when B returns.
@@ -349,10 +396,10 @@ integration check.
 
 | Requirements | Public-boundary scenario | Evidence / gap |
 | --- | --- | --- |
-| MESH-001/002 | Build and run applications with mesh excluded, included but inactive, and active. Inspect listeners, packaged dependencies, local behavior and retained processes. Start an included build with invalid requested configuration and verify startup fails before binding a mesh listener. | Planned packaged-application proof. |
-| MESH-003/005 | Connect two trusted fixed-endpoint replicas and exchange `hello` and `state`. Repeat with unknown or expired credentials, a wrong mesh or replica identity, a wrong key and an unsupported opening message. Verify rejected peers never become ready. | Planned two-process TLS proof. |
+| MESH-001/002 | Build offline and run executable JARs with mesh excluded, included but inactive, and active. Inspect listeners, JAR entries, local behavior and retained processes. Start an included build with invalid requested configuration and verify startup fails before binding a mesh listener. | `RailixMeshPackageIT` verifies class inclusion, inactive startup, and invalid configuration rejection. The packaged CLI also built and ran a mesh-capable command-line project in a network-restricted environment. |
+| MESH-003/005 | Connect two trusted fixed-endpoint replicas and exchange `hello` and `state`. Repeat with unknown or expired credentials, a wrong mesh or replica identity, a wrong key and an unsupported opening message. Verify rejected peers never become ready. In Creator, attach to running replicas in turn and verify that Live shows the selected process's join status or rejection reason. | `PeerTlsTest` verifies mutual TLS, credential rejection and handshake timeout. `RailixMeshPackageIT` verifies two JVMs join and Creator reads the selected peer. The Creator browser check showed readiness and build rejection. |
 | MESH-004 | Start replicas across a bounded occupied loopback range. On two hosts, bootstrap B against A and hold back B's first ready `state`. Verify through runtime peer status that B enters routing only after that state arrives and leaves on disconnect. Withhold the first `state` past the join deadline and verify A closes the socket while serving local requests. Also verify duplicate connection resolution, bootstrap reconnection and two dial attempts for an unreachable learned peer repeatedly advertised by B. | Planned local and cross-host proof. |
-| MESH-005 | Connect two replicas with trusted certificates and different build IDs. Verify `hello` validation closes the connection before either replica sends `state` or records the other as a joined peer. Separately exercise the admission check with a mismatched build and verify `refused` before any permit or Flow execution. | Planned join and invocation rejection proof. |
+| MESH-005 | Connect two replicas with trusted certificates and different build IDs. Verify `hello` validation closes the connection before either replica sends `state` or records the other as a joined peer. Separately exercise the admission check with a mismatched build and verify `refused` before any permit or Flow execution. | `PeerTlsTest` verifies the connection closes before `state`. `RailixMeshPackageIT` verifies both JVMs reject the join. Invocation rejection remains part of Flow admission. |
 | MESH-005/007 | Run matching builds in macOS and Linux/ARM packages and exercise an eligible Flow and a platform-ineligible target. | Planned Mac/Raspberry Pi proof. |
 | MESH-006/007/012 | Exercise UTF-8, byte, node and depth boundaries, aggregate outcomes and simultaneous slow frames. Verify early rejection, bounded memory and recovery. | `PeerFramesTest` covers length encoding, byte limits and partial reads. `PeerChannelTest` covers malformed frames, whole-frame writes and socket closure after a failure. Mesh JSON and concurrent resource checks are planned. |
 | MESH-008/009 | Saturate A with real source requests. Verify its `invoke` gets only a terminal `outcome` from B and the original source gets one response from A. Saturate B with local and remote work and verify `invoke` gets an immediate `refused`. | Planned generated-application integration test. |
@@ -361,14 +408,14 @@ integration check.
 
 ## Delivery Gates
 
-- **Fixed-peer membership:** implement the startup and authentication contract above and exercise
-  the two-process TLS cases in the acceptance table.
+- **Fixed-peer membership:** extend the executable JAR build to select mesh, validate startup
+  configuration, and require mutual TLS, matching `hello` and valid `state` before recording the
+  session. Exercise the standalone, two-process and Live attachment cases in the acceptance table.
 - **Broader discovery:** measure join, heartbeat, stale and bootstrap retry timings under load on the
   Raspberry Pi. Use that evidence to set finite peer and concurrent-handshake caps and a learned-hint
   lifetime before enabling learned peers.
 - **Remote Flow execution:** establish build-time eligibility for portable providers. Measure and
   set the source operation budget, receiver clamp, frame deadlines and aggregate inbound, outbound
   and retained-value budgets before completing the remote-execution milestone.
-- **Packaged evidence:** verify the build/module integration from ADR 0024 for the three activation
-  cases in the acceptance table. Packaging and canonical invocation work can proceed independently
-  of the fixed-peer test.
+- **Native distribution:** repeat the packaged activation and peer checks with the self-contained
+  distributions provided by Roadmap Item 8.

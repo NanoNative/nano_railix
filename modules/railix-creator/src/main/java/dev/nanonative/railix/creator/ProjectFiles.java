@@ -4,7 +4,6 @@ import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.project.CompileResult;
 import dev.nanonative.railix.core.project.ProjectCompiler;
 import dev.nanonative.railix.core.step.StepCatalog;
-import dev.nanonative.railix.core.util.Sha256;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 
@@ -47,24 +46,7 @@ final class ProjectFiles {
 
     /** Identifies the compiled source and locked implementations, not Examples or presentation. */
     static String identity(final CompileResult.Compiled compiled) {
-        try {
-            final var hash = Sha256.newDigest();
-            hash.update(split(compiled.source(), EMPTY_EXAMPLES).project().getBytes(StandardCharsets.UTF_8));
-            hash.update((byte) 0);
-            compiled.applicationDependencies().stream().sorted(java.util.Comparator.comparing(StepCatalog.Implementation::className))
-                    .forEach(implementation -> {
-                        hash.update((byte) 0);
-                        hash.update(implementation.className().getBytes(StandardCharsets.UTF_8));
-                        hash.update((byte) 0);
-                        hash.update(implementation.contractDigest().getBytes(StandardCharsets.UTF_8));
-                        implementation.artifacts().stream().map(StepCatalog.Artifact::digest).sorted().forEach(digest -> {
-                            hash.update((byte) 0); hash.update(digest.getBytes(StandardCharsets.UTF_8));
-                        });
-                    });
-            return "sha256-" + Sha256.finishHex(hash);
-        } catch (final IOException invalidCompiledSource) {
-            throw new IllegalArgumentException("Compiled project source is invalid.", invalidCompiledSource);
-        }
+        return compiled.functionalIdentity();
     }
 
     /** Compiles and optionally packages one captured set of ordinary source documents. */

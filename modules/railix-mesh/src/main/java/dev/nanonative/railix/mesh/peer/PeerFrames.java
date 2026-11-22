@@ -1,4 +1,6 @@
-package dev.nanonative.railix.mesh;
+package dev.nanonative.railix.mesh.peer;
+
+import dev.nanonative.railix.mesh.MeshErrors;
 
 import java.io.DataOutput;
 import java.io.IOException;
@@ -40,7 +42,7 @@ final class PeerFrames {
         }
         final byte[] body = reservation.orElseThrow();
         if (body.length != size) {
-            throw new IllegalArgumentException("Reserved peer frame buffer must match the validated body length.");
+            throw new IllegalArgumentException(MeshErrors.INVALID_RESERVED_BUFFER);
         }
         return input.readNBytes(body, 0, size) == size ? new FrameBody(body) : FrameReadStatus.TRUNCATED_BODY;
     }
@@ -64,7 +66,7 @@ final class PeerFrames {
 
     static int checkedBodyLimit(final int bytes) {
         if (bytes < 1 || bytes > MAX_DATA_BODY_BYTES) {
-            throw new IllegalArgumentException("Peer frame body limit must be between 1 and " + MAX_DATA_BODY_BYTES + " bytes.");
+            throw new IllegalArgumentException(MeshErrors.INVALID_FRAME_LIMIT.formatted(MAX_DATA_BODY_BYTES));
         }
         return bytes;
     }

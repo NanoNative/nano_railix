@@ -1,4 +1,6 @@
-package dev.nanonative.railix.mesh;
+package dev.nanonative.railix.mesh.peer;
+
+import dev.nanonative.railix.mesh.MeshErrors;
 
 import java.io.Closeable;
 import java.io.DataOutputStream;
@@ -36,12 +38,12 @@ final class PeerChannel implements Closeable {
     PeerChannel(final Socket socket) throws IOException {
         this.socket = Objects.requireNonNull(socket, "socket");
         if (!CLAIMED_SOCKETS.add(socket)) {
-            throw new IllegalStateException("Socket already has a peer channel.");
+            throw new IllegalStateException(MeshErrors.SOCKET_ALREADY_CLAIMED);
         }
         boolean opened = false;
         try {
             if (socket.isClosed()) {
-                throw new SocketException("Peer socket is closed.");
+                throw new SocketException(MeshErrors.SOCKET_CLOSED);
             }
             input = socket.getInputStream();
             output = new DataOutputStream(socket.getOutputStream());
