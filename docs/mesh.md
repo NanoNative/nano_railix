@@ -6,25 +6,68 @@ joins two replicas at fixed addresses. Multi-peer discovery and Flow offload are
 
 ## How It Works
 
-A **seed** is an address a replica tries when joining. In the planned multi-peer mesh, a replica
-can learn other peer addresses after joining and authenticate those peers directly. The original
-seed can leave once the remaining replicas are connected and new replicas have another reachable
-bootstrap address.
+### Join And Track Peers
 
-An event goes to one replica's Trigger. That replica runs the Flow locally when it has a free Flow
-slot. When it is full, it can ask an eligible peer to execute the Flow. The replica that received
-the original request sends the response. The diagram shows this planned offload path.
+A **seed** is a configured address a replica tries when joining. Here, B joins through A.
+
+```mermaid
+sequenceDiagram
+    participant A as Replica A (seed)
+    participant B as Replica B (joining)
+    B->>A: Connect to seed address
+    Note over A,B: Authenticate each other with mutual TLS
+    B->>A: hello.v1
+    A->>B: hello.v1
+    Note over A,B: Check replica identity, mesh, and logical build ID
+    B->>A: Initial state
+    A->>B: Initial state
+    Note over A,B: First valid state completes join
+    loop While connected
+        B->>A: State heartbeat
+        A->>B: State heartbeat
+    end
+```
+
+State carries readiness and the advertised mesh address. An identity or build mismatch closes
+the connection before state is exchanged. A disconnect or heartbeat timeout removes the peer.
+Failed attempts to a configured seed are retried with backoff.
+
+The original seed can leave once the remaining replicas are connected and new replicas have
+another reachable bootstrap address. With planned automatic discovery, replicas can learn more
+peer addresses and authenticate each one directly.
+
+### Run A Flow (Planned)
+
+The replica whose Trigger receives the event owns the original request and sends the response.
+It runs the Flow locally when it has a free slot. When full, it can ask a ready, eligible peer.
 
 ```mermaid
 sequenceDiagram
     participant Client as HTTP caller
     participant A as Replica A
     participant B as Replica B
-    Client->>A: HTTP request arrives at Trigger
-    A->>B: A is full. Execute Flow
-    B-->>A: Flow result
-    A-->>Client: HTTP response
+    Client->>A: HTTP request reaches Trigger
+    A->>A: Prepare Flow input and keep the HTTP request
+    alt A has a free Flow slot
+        A->>A: Run the Flow locally
+    else A is full and B is eligible
+        A->>B: Invoke Flow with input and time remaining
+        B->>B: Check build, eligibility, deadline, and capacity
+        alt B admits the Flow
+            B->>B: Reserve a slot and run the Flow
+            B-->>A: Flow outcome
+        else B refuses admission
+            B-->>A: Refusal
+        end
+    else A is full and no eligible peer is available
+        A->>A: End with an admission failure
+    end
+    A-->>Client: Complete the original HTTP request
 ```
+
+After a refusal, A can try another eligible peer within the original deadline and attempt limit.
+If B may already have admitted the Flow and the connection drops, A reports uncertain completion
+and stops retrying.
 
 The first offload test will send an HTTP request directly to a replica. For a stable public URL
 across replica changes, deployment can put an HTTP reverse proxy in front of ready replicas.
