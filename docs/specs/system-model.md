@@ -53,8 +53,8 @@ accepts measurable performance gates; workload sizes and numeric budgets remain 
   the generated application. No universal superiority over human-written code is assumed.
 
 The product is a system in one deployable application, usable standalone or later in a mesh.
-Kubernetes is inspiration for operational behavior, not a required dependency or an equivalence
-claim. Single-instance production readiness precedes mesh delivery; the mesh remains planned.
+Hazelcast inspires the operational model. Single-instance production readiness precedes full
+mesh delivery.
 Distributed state ownership and recovery after partitions belong to later mesh work.
 Creator group reuse is owned by [Creator](creator.md#planned-group-copy-and-sharing);
 the compiler continues to receive only fully materialized Steps and links.
@@ -66,7 +66,7 @@ the compiler continues to receive only fully materialized Steps and links.
 | SYS-001 | Start a built application with Creator closed and execute its ingress. | Existing CLI journey below; broader production lifecycle remains planned. |
 | SYS-002 | Exclude a capability, inspect/run the artifact, then request that absent capability. | Current whole-development-runtime omission only; independent selection and refusal need packaged tests. |
 | SYS-003 | Pass canonical values through a generated chain and verify results and allocations. | Existing generated execution; no new performance certification from this decision. |
-| SYS-004 | Join instances of the same logical build, reject an incompatible build or project, and stop one member. | Planned [mesh integration and failure tests](mesh.md#acceptance-and-planned-evidence). |
+| SYS-004 | Join instances of the same logical build, reject an incompatible build or project, and stop one member. | [Fixed-peer joins and build rejection verified](../verification.md#fixed-peer-mesh-membership). See [mesh acceptance](mesh.md#acceptance) for the remaining checks. |
 | SYS-005 | Supply invalid data to parsing and a nested Step, exercise cancellation and an I/O failure; verify explicit outcomes and preserved diagnostics. | Existing public result types; internal exception removal and success/rejection allocation measurements remain planned. |
 | SYS-006 | Compare the same representative project through compilation, packaged execution and Creator navigation, including sustained load and resource exhaustion. | Measurement gate accepted; workload, target hardware and thresholds remain open. |
 

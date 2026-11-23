@@ -1787,3 +1787,20 @@ Raw regressions, review outputs, performance probes and results are retained und
 ended. Grype is unavailable on this host. Local checks do not establish public CI or release
 evidence. Public CI must validate the published commit before merging. No production,
 cross-platform or Native Image certification follows from these local checks.
+
+## Fixed-Peer Mesh Membership
+
+Recorded on 2026-11-21 for two independent JVMs on fixed loopback endpoints.
+
+- `RailixMeshPackageIT` checked mesh class inclusion, inactive startup, invalid configuration
+  rejection, and two authenticated replicas. It checked that Creator reads the selected replica's
+  peer and that different logical builds reject the join without publishing peer state.
+- `PeerTlsTest` exercised mutual TLS, credential rejection, the join timeout, and build rejection
+  before the first state exchange. `PeerFramesTest` covered frame lengths, byte bounds, and partial
+  reads. `PeerChannelTest` covered malformed frames, whole-frame writes, and socket closure after
+  failure.
+- The packaged CLI built and ran a mesh-capable command-line project with network access restricted.
+  The Creator browser check showed peer readiness and build rejection.
+
+The [mesh acceptance scenarios](specs/mesh.md#acceptance) cover the remaining discovery, remote
+Flow, and cross-platform proofs.

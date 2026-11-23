@@ -28,7 +28,8 @@ for execution contracts and the [roadmap](docs/roadmap.md) for supported and pla
 | [Examples and validation](docs/specs/examples-and-validation.md) | Separate Example ownership, Creator checks and planned field authoring. |
 | [Environments and security](docs/specs/environments-and-security.md) | Typed project configuration fixed at build time; secret-management goals and open identity, recovery and ingress design. |
 | [Database and data access](docs/specs/database-and-data-access.md) | Planned durable database and permission-controlled Creator data administration; no time-series database. |
-| [Railix mesh](docs/specs/mesh.md) | Planned first Flow-dispatch, discovery, trust, cross-platform compatibility. |
+| [Mesh guide](docs/mesh.md) | How replicas connect, how Flow offload will work, and how to run the two-replica demo. |
+| [Mesh specification](docs/specs/mesh.md) | Peer discovery, build compatibility, trust, and Flow execution contracts. |
 | [docs/roadmap.md](docs/roadmap.md) | Delivery sequence, dependencies, progress and unsupported scope. |
 | [docs/adr/](docs/adr/) | Architectural decisions, rationale, alternatives and consequences. |
 | [Verification history](docs/verification.md) | Earlier checks and performance evidence, not current CI status. |
@@ -196,22 +197,8 @@ JDK 25 and `uuidgen`.
 ```
 
 The script builds the selected example once and starts two loopback replicas with temporary
-credentials. Omit the name for `auth-http-app`, or pass another example directory name such as
-`text-normalization-http-app`. Choose an example with a long-running source such as HTTP.
-To inspect either replica, run the printed Creator command in a second terminal and choose
-**Project actions > Connect live app**. Use `Ctrl-C` in the demo terminal to stop both replicas.
-Set `RAILIX_CLI_JAR` to an existing packaged CLI to reuse it.
-
-To deploy your own project, build once with JDK 25 and copy the printed application JAR and
-`run-mesh.sh` to each host. The `deploy` command uses Bash, Java 25 and `unzip`.
-Give each replica its own [mesh configuration and provisioned credentials](docs/specs/mesh.md#startup-configuration).
-
-```sh
-PROJECT_FILE=path/to/railix.project.json ./run-mesh.sh build
-
-APPLICATION_JAR=/path/to/application.jar RAILIX_MESH_CONFIG=/path/to/mesh.json \
-  ./run-mesh.sh deploy
-```
+credentials. See the [mesh guide](docs/mesh.md) for inspecting them in Creator or deploying
+your own application.
 
 ## Create The First Flow
 
