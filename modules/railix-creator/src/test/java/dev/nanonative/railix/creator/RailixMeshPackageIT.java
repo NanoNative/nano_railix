@@ -1,5 +1,6 @@
 package dev.nanonative.railix.creator;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.nanonative.railix.core.runtime.ObservationServer;
@@ -10,6 +11,7 @@ import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.InputStream;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassTransform;
 import java.lang.constant.ConstantDescs;
@@ -64,7 +66,7 @@ final class RailixMeshPackageIT {
         final Path standalone = build(project, "--include-project");
         final Path mesh = build(project, "--include-project", "--mesh");
         assertThat(mesh).isNotEqualTo(standalone);
-        try (var ordinary = new JarFile(standalone.toFile()); var enabled = new JarFile(mesh.toFile())) {
+        try (JarFile ordinary = new JarFile(standalone.toFile()); JarFile enabled = new JarFile(mesh.toFile())) {
             assertThat(ordinary.stream().map(entry -> entry.getName()))
                     .noneMatch(name -> name.startsWith("dev/nanonative/railix/mesh/"));
             assertThat(enabled.getEntry("dev/nanonative/railix/mesh/MeshRuntime.class")).isNotNull();
@@ -74,22 +76,24 @@ final class RailixMeshPackageIT {
 
         final List<Path> configurations = configurations();
         final Process seed = launch(mesh, "seed", configurations.getFirst());
-        try (var client = HttpClient.newHttpClient()) {
-            final var seedConnection = connection(seed, "seed");
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            final ObservationServer.Connection seedConnection = connection(seed, "seed");
             final Process peer = launch(mesh, "peer", configurations.getLast());
             try {
-                final var peerConnection = connection(peer, "peer");
-                final var unauthorized = client.send(HttpRequest.newBuilder(seedConnection.origin().resolve("/v1/status"))
-                        .timeout(Duration.ofSeconds(2)).GET().build(), HttpResponse.BodyHandlers.ofString());
+                final ObservationServer.Connection peerConnection = connection(peer, "peer");
+                final HttpResponse<String> unauthorized = client.send(
+                        HttpRequest.newBuilder(seedConnection.origin().resolve("/v1/status"))
+                                .timeout(Duration.ofSeconds(2)).GET().build(), HttpResponse.BodyHandlers.ofString());
                 assertThat(unauthorized.statusCode()).isEqualTo(401);
                 awaitPeersJoined(client, seedConnection, peerConnection);
-                try (var creator = CreatorServer.start(0, project, home().resolve(".railix"))) {
+                try (CreatorServer creator = CreatorServer.start(0, project, home().resolve(".railix"))) {
                     final URI uri = creator.baseUri();
                     final String select = "{\"instance\":\"" + seedConnection.instance() + "\"}";
                     final String confirm = "{\"instance\":\"" + seedConnection.instance() + "\",\"confirm\":true}";
                     assertThat(CreatorServerE2eSupport.request(uri, "POST", "/api/live", select).statusCode()).isEqualTo(200);
                     assertThat(CreatorServerE2eSupport.request(uri, "POST", "/api/live", confirm).statusCode()).isEqualTo(200);
-                    final var selected = LiveApplicationE2eTest.readLive(uri, "/api/live/application", seedConnection.instance());
+                    final HttpResponse<String> selected = LiveApplicationE2eTest.readLive(
+                            uri, "/api/live/application", seedConnection.instance());
                     assertThat(selected.statusCode()).isEqualTo(200);
                     assertReady(json(selected.body()).getAsJsonObject("mesh"), PEER);
                 }
@@ -104,12 +108,70 @@ final class RailixMeshPackageIT {
     }
 
     @Test
+    void configuredReplicasStayConnectedAfterTheOriginalSeedLeaves() throws Exception {
+        final Path jar = build(project("configured-peers"), "--mesh");
+        final List<String> names = List.of("seed", "peer", "third", "fourth");
+        final List<UUID> replicas = List.of(SEED, PEER, UUID.randomUUID(), UUID.randomUUID());
+        for (int index = 2; index < names.size(); index++) {
+            final String name = names.get(index);
+            Files.writeString(credentials.resolve(name + ".password"), UUID.randomUUID() + "\n");
+            issue(name, replicas.get(index));
+        }
+
+        final List<Path> configurations;
+        try (ServerSocket seed = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             ServerSocket peer = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             ServerSocket third = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             ServerSocket fourth = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            final String first = endpoint(seed.getLocalPort());
+            final String second = endpoint(peer.getLocalPort());
+            final String thirdEndpoint = endpoint(third.getLocalPort());
+            configurations = List.of(
+                    config("seed", seed.getLocalPort(), ""),
+                    config("peer", peer.getLocalPort(), String.join(",", first, thirdEndpoint)),
+                    config("third", third.getLocalPort(), String.join(",", first, second)),
+                    config("fourth", fourth.getLocalPort(), String.join(",", first, second, thirdEndpoint))
+            );
+        }
+
+        final List<Process> processes = new ArrayList<>();
+        final List<ObservationServer.Connection> observations = new ArrayList<>();
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            for (int index = 0; index < names.size(); index++) {
+                final String name = names.get(index);
+                final Process process = launch(jar, name, configurations.get(index));
+                processes.add(process);
+                observations.add(connection(process, name));
+            }
+            await(() -> assertPeerGroup(client, observations, replicas));
+            stop(processes.getFirst());
+            final List<ObservationServer.Connection> survivors = observations.subList(1, observations.size());
+            final List<UUID> survivorIds = replicas.subList(1, replicas.size());
+            await(() -> assertPeerGroup(client, survivors, survivorIds));
+
+            stop(processes.getLast());
+            processes.removeLast();
+            survivors.removeLast();
+            await(() -> assertPeerGroup(client, survivors, survivorIds.subList(0, survivorIds.size() - 1)));
+
+            final Process rejoined = launch(jar, "fourth-rejoined", configurations.getLast());
+            processes.add(rejoined);
+            survivors.add(connection(rejoined, "fourth-rejoined"));
+            await(() -> assertPeerGroup(client, survivors, survivorIds));
+        } finally {
+            for (final Process process : processes.reversed()) {
+                stop(process);
+            }
+        }
+    }
+
+    @Test
     void startsWithMeshInactiveWhenConfigurationIsAbsent() throws Exception {
         final Path jar = build(project("activation"), "--mesh");
         final Process disabled = launch(jar, "disabled", null);
-        try (var client = HttpClient.newHttpClient()) {
-            final var app = connection(disabled, "disabled");
-            final var response = client.send(HttpRequest.newBuilder(app.origin().resolve("/v1/status"))
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            final ObservationServer.Connection app = connection(disabled, "disabled");
+            final HttpResponse<String> response = client.send(HttpRequest.newBuilder(app.origin().resolve("/v1/status"))
                     .header("Authorization", "Bearer " + app.token()).timeout(Duration.ofSeconds(2)).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
             assertThat(response.statusCode()).isEqualTo(404);
@@ -128,7 +190,7 @@ final class RailixMeshPackageIT {
     void rejectsAUrlAsAnAdvertisedHost() throws Exception {
         final Path jar = build(project("invalid-advertised-host"), "--mesh");
         final Path config = configurations().getFirst();
-        final var settings = json(Files.readString(config));
+        final JsonObject settings = json(Files.readString(config));
         settings.getAsJsonObject("advertisedEndpoint").addProperty("host", "https://127.0.0.1:7401/");
         Files.writeString(config, settings.toString());
         assertInvalidStartup(jar, config, "advertisedEndpoint requires a host");
@@ -146,12 +208,12 @@ final class RailixMeshPackageIT {
     void timesOutAnUnresponsiveListenHostLookupBeforeStartup() throws Exception {
         final Path jar = build(project("blocked-listen"), "--mesh");
         final Path seedConfig = configurations().getFirst();
-        final var document = json(Files.readString(seedConfig));
+        final JsonObject document = json(Files.readString(seedConfig));
         document.getAsJsonObject("listenEndpoint").addProperty("host", "listen.railix.test");
         Files.writeString(seedConfig, document.toString());
 
         final Path hosts = fifo("hosts");
-        try (var heldOpen = FileChannel.open(hosts, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+        try (FileChannel heldOpen = FileChannel.open(hosts, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
             assertInvalidStartup(jar, seedConfig, "Mesh hostname lookup exceeded its deadline.", "-Djdk.net.hosts.file=" + hosts);
         }
     }
@@ -160,20 +222,26 @@ final class RailixMeshPackageIT {
     @EnabledOnOs({OS.LINUX, OS.MAC})
     void boundsABlockedBootstrapLookupAndStillAcceptsAnInboundPeer() throws Exception {
         final Path jar = build(project("blocked-lookup"), "--mesh");
-        final var configurations = configurations();
+        final List<Path> configurations = configurations();
         final Path seedConfig = configurations.getFirst();
-        final var document = json(Files.readString(seedConfig));
-        document.getAsJsonArray("bootstrapEndpoints").add(json("{\"host\":\"bootstrap.railix.test\",\"port\":7401}"));
+        final JsonObject document = json(Files.readString(seedConfig));
+        final JsonArray bootstrap = document.getAsJsonArray("bootstrapEndpoints");
+        bootstrap.add(json("{\"host\":\"first.railix.test\",\"port\":7401}"));
+        bootstrap.add(json("{\"host\":\"second.railix.test\",\"port\":7401}"));
         Files.writeString(seedConfig, document.toString());
 
         final Path hosts = fifo("hosts");
         // Keep the resolver's input open without delivering any data or EOF.
-        try (var heldOpen = FileChannel.open(hosts, StandardOpenOption.READ, StandardOpenOption.WRITE);
-             var client = HttpClient.newHttpClient()) {
+        try (FileChannel heldOpen = FileChannel.open(hosts, StandardOpenOption.READ, StandardOpenOption.WRITE);
+             HttpClient client = HttpClient.newHttpClient()) {
+            final long launchedAt = System.nanoTime();
             final Process seed = launch(jar, "seed", seedConfig, "-Djdk.net.hosts.file=" + hosts);
             try {
-                final var seedConnection = connection(seed, "seed");
+                final ObservationServer.Connection seedConnection = connection(seed, "seed");
                 await(() -> assertThat(status(client, seedConnection).get("rejection").getAsString()).isEqualTo("join-timeout"));
+                final Duration elapsed = Duration.ofNanos(System.nanoTime() - launchedAt);
+                assertThat(elapsed).as("Time from launch to the first reported join timeout")
+                        .isGreaterThanOrEqualTo(Duration.ofSeconds(5));
                 final Process peer = launch(jar, "peer", configurations.getLast());
                 try {
                     awaitPeersJoined(client, seedConnection, connection(peer, "peer"));
@@ -189,18 +257,18 @@ final class RailixMeshPackageIT {
     @Test
     void joinsThroughTheSecondAddressOfABootstrapHostname() throws Exception {
         final Path jar = build(project("bootstrap-address-fallback"), "--mesh");
-        final var configurations = configurations();
+        final List<Path> configurations = configurations();
         final Path peerConfig = configurations.getLast();
         final String host = "fallback.railix.test";
-        final var document = json(Files.readString(peerConfig));
+        final JsonObject document = json(Files.readString(peerConfig));
         document.getAsJsonArray("bootstrapEndpoints").get(0).getAsJsonObject().addProperty("host", host);
         Files.writeString(peerConfig, document.toString());
         final Path hosts = Files.writeString(directory.resolve("hosts"),
                 "127.0.0.2 " + host + "\n127.0.0.1 " + host + "\n");
 
         final Process seed = launch(jar, "seed", configurations.getFirst());
-        try (var client = HttpClient.newHttpClient()) {
-            final var seedConnection = connection(seed, "seed");
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            final ObservationServer.Connection seedConnection = connection(seed, "seed");
             final Process peer = launch(jar, "peer", peerConfig, "-Djdk.net.hosts.file=" + hosts);
             try {
                 awaitPeersJoined(client, seedConnection, connection(peer, "peer"));
@@ -214,8 +282,8 @@ final class RailixMeshPackageIT {
 
     @Test
     void rejectsDifferentBuildsWithoutPublishingEitherPeersState() throws Exception {
-        final var firstJar = build(project("first"), "--mesh");
-        final var secondJar = build(project("second"), "--mesh");
+        final Path firstJar = build(project("first"), "--mesh");
+        final Path secondJar = build(project("second"), "--mesh");
         assertBuildMismatch(firstJar, secondJar);
     }
 
@@ -228,18 +296,18 @@ final class RailixMeshPackageIT {
     }
 
     private void assertBuildMismatch(final Path firstJar, final Path secondJar) throws Exception {
-        final var configurations = configurations();
+        final List<Path> configurations = configurations();
         final Process seed = launch(firstJar, "seed", configurations.getFirst());
         try {
             final Process peer = launch(secondJar, "peer", configurations.getLast());
-            try (var client = HttpClient.newHttpClient()) {
-                final var seedConnection = connection(seed, "seed");
-                final var peerConnection = connection(peer, "peer");
+            try (HttpClient client = HttpClient.newHttpClient()) {
+                final ObservationServer.Connection seedConnection = connection(seed, "seed");
+                final ObservationServer.Connection peerConnection = connection(peer, "peer");
                 await(() -> {
-                    final var seedStatus = status(client, seedConnection);
-                    final var peerStatus = status(client, peerConnection);
+                    final JsonObject seedStatus = status(client, seedConnection);
+                    final JsonObject peerStatus = status(client, peerConnection);
                     assertThat(seedStatus.get("logicalBuildId")).isNotEqualTo(peerStatus.get("logicalBuildId"));
-                    for (final var view : List.of(seedStatus, peerStatus)) {
+                    for (final JsonObject view : List.of(seedStatus, peerStatus)) {
                         assertThat(view.get("rejection").getAsString()).isEqualTo("build-mismatch");
                         assertThat(view.get("peer").isJsonNull()).isTrue();
                     }
@@ -300,7 +368,7 @@ final class RailixMeshPackageIT {
     }
 
     private Path build(final Path cli, final Path project, final String... flags) throws Exception {
-        final var command = new ArrayList<>(List.of(BIN.resolve("java").toString(), "-Duser.home=" + home(),
+        final ArrayList<String> command = new ArrayList<>(List.of(BIN.resolve("java").toString(), "-Duser.home=" + home(),
                 "-jar", cli.toString(), "build", project.toString()));
         command.addAll(List.of(flags));
         String output = run(command, directory, directory.resolve("build.log"));
@@ -313,8 +381,8 @@ final class RailixMeshPackageIT {
         final Path classes = directory.resolve("classes");
         final Path runtimeClass = classes.resolve(entry);
         Files.createDirectories(runtimeClass.getParent());
-        try (var jar = new JarFile(cli.toFile()); var input = jar.getInputStream(jar.getJarEntry(entry))) {
-            final var classFile = ClassFile.of();
+        try (JarFile jar = new JarFile(cli.toFile()); InputStream input = jar.getInputStream(jar.getJarEntry(entry))) {
+            final ClassFile classFile = ClassFile.of();
             final byte[] changed = classFile.transformClass(classFile.parse(input.readAllBytes()),
                     ClassTransform.endHandler(builder -> builder.withField("MESH_BUILD_TEST_MARKER",
                             ConstantDescs.CD_int, ClassFile.ACC_PRIVATE | ClassFile.ACC_STATIC)));
@@ -326,8 +394,8 @@ final class RailixMeshPackageIT {
     }
 
     private List<Path> configurations() throws Exception {
-        try (var seed = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
-             var peer = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+        try (ServerSocket seed = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             ServerSocket peer = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             final String target = endpoint(seed.getLocalPort());
             return List.of(config("seed", seed.getLocalPort(), ""), config("peer", peer.getLocalPort(), target));
         }
@@ -361,10 +429,10 @@ final class RailixMeshPackageIT {
     }
 
     private Process launch(final Path jar, final String name, final Path config, final String... jvmOptions) throws Exception {
-        final var command = new ArrayList<>(List.of(BIN.resolve("java").toString(), "-Duser.home=" + home()));
+        final ArrayList<String> command = new ArrayList<>(List.of(BIN.resolve("java").toString(), "-Duser.home=" + home()));
         command.addAll(List.of(jvmOptions));
         command.addAll(List.of("-jar", jar.toString()));
-        final var builder = new ProcessBuilder(command).redirectErrorStream(true)
+        final ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true)
                 .redirectOutput(directory.resolve(name + ".log").toFile());
         builder.environment().remove("RAILIX_MESH_CONFIG");
         if (config != null) builder.environment().put("RAILIX_MESH_CONFIG", config.toString());
@@ -385,7 +453,7 @@ final class RailixMeshPackageIT {
     }
 
     private static JsonObject status(final HttpClient client, final ObservationServer.Connection connection) throws Exception {
-        final var response = client.send(HttpRequest.newBuilder(connection.origin().resolve("/v1/status"))
+        final HttpResponse<String> response = client.send(HttpRequest.newBuilder(connection.origin().resolve("/v1/status"))
                 .header("Authorization", "Bearer " + connection.token()).timeout(Duration.ofSeconds(2)).GET().build(),
                 HttpResponse.BodyHandlers.ofString());
         assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
@@ -407,7 +475,7 @@ final class RailixMeshPackageIT {
     }
 
     private static void keytool(final String store, final String... arguments) throws Exception {
-        final var command = new ArrayList<>(List.of(BIN.resolve("keytool").toString(), "-storetype", "PKCS12",
+        final ArrayList<String> command = new ArrayList<>(List.of(BIN.resolve("keytool").toString(), "-storetype", "PKCS12",
                 "-keystore", store + ".p12", "-storepass:file", store + ".password"));
         command.addAll(List.of(arguments));
         run(command, credentials, credentials.resolve("keytool.log"));
@@ -423,6 +491,27 @@ final class RailixMeshPackageIT {
             return output;
         } finally {
             if (process.isAlive()) stop(process);
+        }
+    }
+
+    private static void assertPeerGroup(final HttpClient client, final List<ObservationServer.Connection> observations,
+                                        final List<UUID> replicas) throws Exception {
+        final List<JsonObject> statuses = new ArrayList<>();
+        for (final ObservationServer.Connection observation : observations) {
+            final JsonObject mesh = status(client, observation);
+            assertThat(mesh.get("status").getAsString()).isEqualTo("joined");
+            statuses.add(mesh);
+        }
+        for (int index = 0; index < replicas.size(); index++) {
+            final UUID local = replicas.get(index);
+            final List<String> expected = replicas.stream().filter(replica -> !replica.equals(local))
+                .map(UUID::toString).toList();
+            final JsonArray peers = statuses.get(index).getAsJsonArray("peers");
+            assertThat(peers).as("peers of %s", local).isNotNull();
+            final List<JsonObject> reported = peers.asList().stream().map(value -> value.getAsJsonObject()).toList();
+            assertThat(reported).allSatisfy(peer -> assertThat(peer.get("status").getAsString()).isEqualTo("ready"));
+            assertThat(reported).extracting(peer -> peer.get("replicaId").getAsString())
+                .containsExactlyInAnyOrderElementsOf(expected);
         }
     }
 }

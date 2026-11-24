@@ -114,21 +114,29 @@ Keep the authenticated build ID for the session. The first valid `state` complet
 
 ## Discovery And Peer Knowledge
 
-The fixed-peer checkpoint uses two processes, one session and one handshake per replica, empty
-`peerHints`, and configured Flow capacity. Bounded discovery adds multiple sessions and learned
-hints. Remote admission adds live slot accounting.
+### Configured Membership
 
-- Provide a fixed listen endpoint, a reachable advertised endpoint, and seed endpoints on
-  cross-host deployments. Authenticate a hinted address directly and match its build before
-  treating it as a known peer. Discovery and reconnection run independently of source requests.
+- Use fixed listen endpoints and reachable advertised endpoints. Cross-host joins use explicit
+  seed endpoints. Run joins and retries independently of source requests.
+- Retain one connection per replica ID, up to 12 peers. Allow one inbound and one outbound
+  handshake concurrently per replica.
+- Publish all connected peers in `peers`. Publish one entry in `peer` for Creator's summary, or
+  `null` when empty. Advertise configured Flow capacity and empty `peerHints` in `state`.
 - For simultaneous dials, keep the connection initiated by the lexicographically smaller
   certificate-bound replica ID. Use shared connection IDs to break same-direction ties.
-  Authenticate a replacement and wait for readiness before retiring a ready connection.
-  Retain one connection per replica ID. Report overlapping incarnations. A restarted replica
-  can rejoin after the previous connection ends.
-- Try configured seeds immediately. After failure, retry with random delay in the range from
-  half the ceiling to the ceiling. Start at a 1-second ceiling, double after consecutive
-  failures up to 30 seconds, and reset on successful join.
+  Authenticate a replacement and require readiness before retiring a ready connection.
+  Reject overlapping incarnations. Allow a restart to join after the previous connection ends.
+- Hostname lookups wait for one resolver slot within the join deadline.
+- Try configured seeds immediately. Seeds that resolve to the same socket address share one
+  attempt and retry history. After failure, retry after a random delay from half the ceiling to
+  the ceiling. Start at a 1-second ceiling and double it after each consecutive failure, up to
+  30 seconds. Reset after a follow-up heartbeat. A disconnect before that heartbeat counts as a
+  failed join. If another connection to the replica is retained, wait for it to end before redialing.
+
+### Automatic Discovery (Planned)
+
+- Probe only the configured loopback range. Authenticate each hinted endpoint and match its
+  logical build before adding it as a peer.
 - Try a learned endpoint immediately, then once more after a random delay of 0.5 to 1 second.
   Repeated hints for the same incarnation and endpoint share that budget. A new incarnation
   or endpoint can start a fresh attempt. A returning replica can contact a configured seed.
@@ -182,6 +190,7 @@ bytes before encoding or queuing. Bound retained decoded data separately from bu
 | Network partitions | Remove disconnected or stale peers. Continue locally or use other eligible peers. |
 
 Expose join state and the latest rejection through [local standalone observation](observation.md#local-standalone-connection).
+Retain the latest rejection across membership changes.
 Creator reads status owned by the selected process. Extend existing runtime status and metrics
 with readiness, replica and incarnation IDs, connection and reconnection reasons, active and
 pending counts, admissions, outcomes, and rejections. Correlate diagnostics by invocation, peer,
@@ -204,7 +213,9 @@ reach replicas directly or through a deployment-provided reverse proxy.
 | MESH-001/002 | Build offline. Run executable JARs with mesh omitted, inactive, active, and invalid configuration. Inspect the JAR, listeners, normal source execution, and process cleanup. Invalid requested configuration fails before binding. |
 | MESH-003/005 | Run two fixed-peer JVMs with separate credentials. Verify mutual TLS, matching `hello`, first valid `state`, and selected-process status in Creator. Exercise unknown or expired credentials, wrong mesh, replica, or key, and unsupported opening. Different logical builds close before either side publishes `state`. At dispatch, a mismatched invocation is refused before execution or permit acquisition. |
 | MESH-004 | Send a valid `starting` state. Verify the peer joins and stays ineligible for offload until it reports `ready`. In a separate run, complete TLS and `hello` and withhold the first `state` past the join deadline. Verify the session times out while the replica keeps serving local requests. |
-| MESH-004 | Exercise occupied loopback ports and a two-host bootstrap. Start with the seed down and verify bounded retries, normal local responses, and reconnection. Prove duplicate resolution, immediate disconnect removal, stale expiry, and two attempts for a repeatedly hinted unreachable address. Join four replicas. Remove the original seed and verify survivors stay connected and a replica can join through a survivor. |
+| MESH-004 | Join four configured replicas. Stop the original seed. Verify the survivors stay connected and a restarted replica joins through a survivor. Exercise a two-host bootstrap. |
+| MESH-004 | Start with the seed down. Verify bounded retries, local responses, and reconnection. Verify that aliases share backoff, DNS contention respects the join deadline, and stale or disconnected peers are removed. |
+| MESH-004 | Exercise occupied ports during loopback probing. Verify two attempts for a repeatedly hinted unreachable address. |
 | MESH-005 | Package the same project with the fixed-peer contract that requires empty hints and the incompatible discovery contract that sends nonempty hints. Verify distinct logical build IDs. Connect with trusted credentials and verify both sides reject at `hello` before either sends `state`. |
 | MESH-005/007 | Join equivalent macOS and Linux/ARM packages. Execute an eligible Flow and exercise an ineligible host-specific target. |
 | MESH-006/007/012 | Exercise UTF-8, byte, node, and depth limits, aggregate outcomes, and simultaneous slow frames. Verify early rejection, bounded memory, and recovery. |

@@ -17,6 +17,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 
 /** Runs authenticated peer connections for one mesh replica. */
@@ -69,16 +70,17 @@ public final class PeerSession {
      * Owns an accepted TCP socket until authentication fails or the peer disconnects.
      * @param transport accepted TCP socket
      * @param deadline absolute join deadline on the {@link System#nanoTime()} clock
-     * @param onJoined receives the peer's observed state on join and when its contents change
+     * @param onState accepts or declines the connection on join and on observed state changes
      * @param onRejected receives the rejection reason if the peer cannot join
-     * @return whether the peer joined before the connection ended
+     * @return whether the peer sent a follow-up heartbeat after the join
      * @throws InterruptedException if the caller is interrupted during the message exchange
      */
     public boolean accept(final Socket transport, final long deadline,
-                          final Consumer<RailixValue.ObjectValue> onJoined, final Consumer<String> onRejected)
+                          final BiPredicate<PeerConnection, RailixValue.ObjectValue> onState,
+                          final Consumer<String> onRejected)
             throws InterruptedException {
         try {
-            return join(tls.accept(transport, deadline), false, deadline, onJoined, onRejected);
+            return join(tls.accept(transport, deadline), false, deadline, onState, onRejected);
         } catch (final IOException failure) {
             onRejected.accept(transportFailure(failure));
             return false;
@@ -89,16 +91,17 @@ public final class PeerSession {
      * Connects to one resolved peer address and runs the session until it disconnects.
      * @param address resolved peer address
      * @param deadline absolute join deadline on the {@link System#nanoTime()} clock
-     * @param onJoined receives the peer's observed state on join and when its contents change
+     * @param onState accepts or declines the connection on join and on observed state changes
      * @param onRejected receives the rejection reason if the peer cannot join
-     * @return whether the peer joined before the connection ended
+     * @return whether the peer sent a follow-up heartbeat after the join
      * @throws InterruptedException if the caller is interrupted during the message exchange
      */
     public boolean dial(final InetSocketAddress address, final long deadline,
-                        final Consumer<RailixValue.ObjectValue> onJoined, final Consumer<String> onRejected)
+                        final BiPredicate<PeerConnection, RailixValue.ObjectValue> onState,
+                        final Consumer<String> onRejected)
             throws InterruptedException {
         try {
-            return join(tls.dial(address, deadline), true, deadline, onJoined, onRejected);
+            return join(tls.dial(address, deadline), true, deadline, onState, onRejected);
         } catch (final IOException failure) {
             onRejected.accept(transportFailure(failure));
             return false;
@@ -106,25 +109,27 @@ public final class PeerSession {
     }
 
     private boolean join(final PeerTlsConnection connection, final boolean outbound, final long deadline,
-                         final Consumer<RailixValue.ObjectValue> onJoined, final Consumer<String> onRejected)
+                         final BiPredicate<PeerConnection, RailixValue.ObjectValue> onState,
+                         final Consumer<String> onRejected)
             throws InterruptedException {
-        final var expires = new AtomicLong(deadline);
+        final AtomicLong expires = new AtomicLong(deadline);
         final Thread deadlineGuard = Thread.ofVirtual().name("railix-mesh-peer-deadline")
                 .start(() -> expire(connection, expires));
         boolean joined = false;
+        boolean heartbeatReceived = false;
         try (connection) {
-            final var channel = connection.channel();
+            final PeerChannel channel = connection.channel();
             final Optional<UUID> connectionId = outbound ? Optional.of(UUID.randomUUID()) : Optional.empty();
-            final var localHello = PeerProtocol.hello(build, meshId, tls.replicaId(), incarnation, connectionId);
+            final byte[] localHello = PeerProtocol.hello(build, meshId, tls.replicaId(), incarnation, connectionId);
             PeerProtocol.write(channel, localHello);
 
-            final var opening = PeerProtocol.read(channel);
+            final Optional<RailixValue.ObjectValue> opening = PeerProtocol.read(channel);
             if (opening.isEmpty()) {
                 onRejected.accept(MeshErrors.INVALID_HELLO);
                 return false;
             }
-            final var peerHello = opening.get();
-            final var rejected = PeerProtocol.rejectHello(peerHello, build, meshId, connection.replicaId(),
+            final RailixValue.ObjectValue peerHello = opening.get();
+            final Optional<String> rejected = PeerProtocol.rejectHello(peerHello, build, meshId, connection.replicaId(),
                     tls.replicaId(), !outbound);
             if (rejected.isPresent()) {
                 onRejected.accept(rejected.get());
@@ -136,7 +141,8 @@ public final class PeerSession {
             }
 
             PeerProtocol.write(channel, localStateBody);
-            var peerState = PeerProtocol.read(channel).filter(PeerProtocol::validState);
+            final Optional<RailixValue.ObjectValue> peerState = PeerProtocol.read(channel)
+                    .filter(PeerProtocol::validState);
             if (peerState.isEmpty()) {
                 onRejected.accept(MeshErrors.INVALID_STATE);
                 return false;
@@ -146,23 +152,19 @@ public final class PeerSession {
                 return false;
             }
 
-            joined = true;
-            final var replica = connection.replicaId();
-            final var peerIncarnation = peerHello.values().get("incarnationId");
-            final Thread heartbeat = Thread.ofVirtual().name("railix-mesh-peer-heartbeat")
-                    .start(() -> heartbeat(connection, localStateBody));
-            try {
-                var publishedState = Optional.<RailixValue.ObjectValue>empty();
-                do {
-                    if (!peerState.equals(publishedState)) {
-                        onJoined.accept(observedPeer(replica, peerIncarnation, peerState.get()));
-                        publishedState = peerState;
-                    }
-                    peerState = PeerProtocol.read(channel).filter(PeerProtocol::validState);
-                } while (peerState.isPresent() && refresh(expires) && !Thread.currentThread().isInterrupted());
-            } finally {
-                heartbeat.interrupt();
+            final UUID replica = connection.replicaId();
+            final UUID peerIncarnation = UUID.fromString(PeerProtocol.text(peerHello.values().get("incarnationId")));
+            final UUID initiator = outbound ? tls.replicaId() : replica;
+            final UUID id = connectionId.orElseGet(() ->
+                    UUID.fromString(PeerProtocol.text(peerHello.values().get("connectionId"))));
+            final PeerConnection peer = new PeerConnection(replica, peerIncarnation, initiator, id,
+                    () -> abort(connection));
+            final RailixValue.ObjectValue initialState = peerState.orElseThrow();
+            joined = onState.test(peer, observedPeer(peer, initialState));
+            if (!joined) {
+                return false;
             }
+            heartbeatReceived = exchangeHeartbeats(connection, peer, initialState, expires, onState);
         } catch (final IOException failure) {
             if (!joined) {
                 onRejected.accept(expires.get() == 0 ? MeshErrors.JOIN_TIMEOUT : MeshErrors.PEER_UNAVAILABLE);
@@ -170,15 +172,53 @@ public final class PeerSession {
         } finally {
             deadlineGuard.interrupt();
         }
-        return joined;
+        // Initial state can arrive before the remote side has admitted the connection.
+        return heartbeatReceived;
     }
 
-    private static RailixValue.ObjectValue observedPeer(final UUID replica, final RailixValue peerIncarnation,
-                                                       final RailixValue.ObjectValue state) {
-        final var fields = state.values();
+    private boolean exchangeHeartbeats(final PeerTlsConnection connection, final PeerConnection peer,
+                                       final RailixValue.ObjectValue initialState, final AtomicLong expires,
+                                       final BiPredicate<PeerConnection, RailixValue.ObjectValue> onState)
+            throws InterruptedException {
+        final Thread heartbeat = Thread.ofVirtual().name("railix-mesh-peer-heartbeat")
+                .start(() -> heartbeat(connection, localStateBody));
+        boolean heartbeatReceived = false;
+        try {
+            RailixValue.ObjectValue publishedState = initialState;
+            while (!Thread.currentThread().isInterrupted()) {
+                final Optional<RailixValue.ObjectValue> next = PeerProtocol.read(connection.channel());
+                if (next.isEmpty()) {
+                    break;
+                }
+                final RailixValue.ObjectValue state = next.orElseThrow();
+                final boolean changed = !state.equals(publishedState);
+                if (changed && !PeerProtocol.validState(state)) {
+                    break;
+                }
+                if (!refresh(expires)) {
+                    break;
+                }
+                heartbeatReceived = true;
+                if (changed) {
+                    if (!onState.test(peer, observedPeer(peer, state))) {
+                        break;
+                    }
+                    publishedState = state;
+                }
+            }
+        } catch (final IOException disconnected) {
+            // The session ended. An earlier heartbeat still counts for retry backoff.
+        } finally {
+            heartbeat.interrupt();
+        }
+        return heartbeatReceived;
+    }
+
+    private static RailixValue.ObjectValue observedPeer(final PeerConnection peer, final RailixValue.ObjectValue state) {
+        final Map<String, RailixValue> fields = state.values();
         return RailixValue.object(Map.of(
-                "replicaId", RailixValue.string(replica.toString()),
-                "incarnationId", peerIncarnation,
+                "replicaId", RailixValue.string(peer.replicaId().toString()),
+                "incarnationId", RailixValue.string(peer.incarnationId().toString()),
                 "status", fields.get("status"),
                 "advertisedEndpoint", fields.get("advertisedEndpoint"),
                 "availableFlowSlots", fields.get("availableFlowSlots")

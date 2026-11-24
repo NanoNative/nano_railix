@@ -187,7 +187,7 @@ The printed URL contains a random Creator token in its fragment. Every Creator A
 that token and the exact loopback `Host`; the browser client supplies both without storing the token
 in project files. Treat the complete local URL as a credential while Creator is running.
 
-### Run A Fixed-Peer Mesh
+### Run A Local Mesh
 
 Run [run-mesh.sh](run-mesh.sh) from the repository root on macOS or Linux. The demo uses Bash,
 JDK 25 and `uuidgen`.
@@ -197,8 +197,8 @@ JDK 25 and `uuidgen`.
 ```
 
 The script builds the selected example once and starts two loopback replicas with temporary
-credentials. See the [mesh guide](docs/mesh.md) for inspecting them in Creator or deploying
-your own application.
+credentials. It prints a command to start another replica on the same mesh. See the
+[mesh guide](docs/mesh.md) for inspecting them in Creator or deploying your own application.
 
 ## Create The First Flow
 

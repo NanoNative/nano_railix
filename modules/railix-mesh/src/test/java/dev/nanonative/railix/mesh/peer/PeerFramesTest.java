@@ -27,8 +27,8 @@ class PeerFramesTest {
     void roundTripsConsecutiveMessagesUsingBigEndianUtf8ByteLengths() throws IOException {
         final byte[] first = json("é".repeat(125));
         final byte[] second = json("ready");
-        final var output = new ByteArrayOutputStream();
-        final var frames = new DataOutputStream(output);
+        final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        final DataOutputStream frames = new DataOutputStream(output);
         final int limit = first.length;
 
         assertTrue(PeerFrames.write(frames, first, limit));
@@ -38,22 +38,22 @@ class PeerFramesTest {
 
         final int headerSplit = 2;
         final int bodySplit = Integer.BYTES + 3;
-        try (var input = new SequenceInputStream(Collections.enumeration(List.of(
+        try (SequenceInputStream input = new SequenceInputStream(Collections.enumeration(List.of(
                 new ByteArrayInputStream(wire, 0, headerSplit),
                 new ByteArrayInputStream(wire, headerSplit, bodySplit - headerSplit),
                 new ByteArrayInputStream(wire, bodySplit, wire.length - bodySplit)
         )))) {
-            final var firstRead = PeerFrames.read(input, limit, size -> Optional.of(new byte[size]));
+            final FrameRead firstRead = PeerFrames.read(input, limit, size -> Optional.of(new byte[size]));
             assertArrayEquals(first, assertInstanceOf(FrameBody.class, firstRead).bytes());
-            final var secondRead = PeerFrames.read(input, limit, size -> Optional.of(new byte[size]));
+            final FrameRead secondRead = PeerFrames.read(input, limit, size -> Optional.of(new byte[size]));
             assertArrayEquals(second, assertInstanceOf(FrameBody.class, secondRead).bytes());
         }
     }
 
     @Test
     void refusesToWriteAnEmptyOrOversizedBody() throws IOException {
-        final var output = new ByteArrayOutputStream();
-        final var frames = new DataOutputStream(output);
+        final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        final DataOutputStream frames = new DataOutputStream(output);
         final int limit = PeerFrames.MAX_CONTROL_BODY_BYTES;
         assertFalse(PeerFrames.write(frames, new byte[0], limit));
         assertFalse(PeerFrames.write(frames, new byte[limit + 1], limit));

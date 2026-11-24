@@ -1,7 +1,9 @@
 package dev.nanonative.railix.mesh.peer;
 
+import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.mesh.MeshRuntime;
+import dev.nanonative.railix.mesh.PeerEndpoint;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -11,6 +13,8 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -28,15 +32,18 @@ import java.security.cert.CertificateExpiredException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
@@ -89,9 +96,9 @@ class PeerTlsTest {
         assertEquals(SERVER_ID, server.replicaId());
         assertEquals(CLIENT_ID, client.replicaId());
 
-        try (var listener = listener(); var threads = Executors.newVirtualThreadPerTaskExecutor()) {
-            final var incoming = threads.submit(() -> {
-                try (var connection = accept(server, listener)) {
+        try (ServerSocket listener = listener(); ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            final Future<Object> incoming = threads.submit(() -> {
+                try (PeerTlsConnection connection = accept(server, listener)) {
                     assertEquals(CLIENT_ID, connection.replicaId());
                     assertArrayEquals(new byte[]{1, 2, 3}, read(connection.channel()));
                     assertTrue(connection.channel().write(new byte[]{4, 5}, 64));
@@ -99,8 +106,8 @@ class PeerTlsTest {
                 return null;
             });
 
-            final var outgoing = threads.submit(() -> {
-                try (var connection = client.dial(endpoint(listener), deadline())) {
+            final Future<Object> outgoing = threads.submit(() -> {
+                try (PeerTlsConnection connection = client.dial(endpoint(listener), deadline())) {
                     assertEquals(SERVER_ID, connection.replicaId());
                     assertTrue(connection.channel().write(new byte[]{1, 2, 3}, 64));
                     assertArrayEquals(new byte[]{4, 5}, read(connection.channel()));
@@ -120,25 +127,17 @@ class PeerTlsTest {
     @Test
     void mismatchedBuildClosesBeforeSendingState() throws Exception {
         final InetSocketAddress endpoint;
-        try (var port = listener()) {
+        try (ServerSocket port = listener()) {
             endpoint = endpoint(port);
         }
-        final Path config = Files.createTempFile(credentials, "mesh-", ".json");
-        Files.writeString(config, """
-                {"meshId":"%s",
-                 "listenEndpoint":{"host":"127.0.0.1","port":%d},
-                 "advertisedEndpoint":{"host":"127.0.0.1","port":%d},
-                 "bootstrapEndpoints":[],"flowCapacity":2,
-                 "identityStore":{"path":"server.p12","passwordFile":"identity-password"},
-                 "trustStore":{"path":"trust.p12","passwordFile":"trust-password"}}
-                """.formatted(MESH_ID, endpoint.getPort(), endpoint.getPort()));
-        try (var runtime = MeshRuntime.open(config.toString(), "sha256-" + "a".repeat(64)).orElseThrow()) {
+        final Path config = meshConfig(endpoint.getPort(), "server", List.of());
+        try (MeshRuntime runtime = MeshRuntime.open(config.toString(), "sha256-" + "a".repeat(64)).orElseThrow()) {
             runtime.start();
-            try (var peer = tls("client").dial(endpoint, deadline())) {
-                final var channel = peer.channel();
-                final var opening = PeerProtocol.read(channel).orElseThrow();
+            try (PeerTlsConnection peer = tls("client").dial(endpoint, deadline())) {
+                final PeerChannel channel = peer.channel();
+                final RailixValue.ObjectValue opening = PeerProtocol.read(channel).orElseThrow();
                 assertEquals(RailixValue.string("hello.v1"), opening.values().get("type"));
-                final var differentBuild = PeerProtocol.hello("sha256-" + "b".repeat(64), MESH_ID,
+                final byte[] differentBuild = PeerProtocol.hello("sha256-" + "b".repeat(64), MESH_ID,
                         CLIENT_ID, UUID.randomUUID(), Optional.of(UUID.randomUUID()));
                 PeerProtocol.write(channel, differentBuild);
                 assertEquals(FrameReadStatus.END_OF_STREAM,
@@ -148,22 +147,96 @@ class PeerTlsTest {
         }
     }
 
+    @Test
+    void seedAliasesShareBackoffWhenSeedClosesBeforeHeartbeat() throws Exception {
+        final int localPort;
+        try (ServerSocket port = listener()) {
+            localPort = port.getLocalPort();
+        }
+        final String build = "sha256-" + "a".repeat(64);
+        final PeerTls seed = tls("server");
+        try (ServerSocket seedListener = listener()) {
+            final int seedPort = seedListener.getLocalPort();
+            final PeerEndpoint seedEndpoint = new PeerEndpoint("127.0.0.1", seedPort);
+            final PeerEndpoint seedAlias = new PeerEndpoint("::ffff:127.0.0.1", seedPort);
+            final List<RailixValue> bootstrap = List.of(seedEndpoint.value(), seedAlias.value());
+            final Path config = meshConfig(localPort, "client", bootstrap);
+            try (MeshRuntime runtime = MeshRuntime.open(config.toString(), build).orElseThrow()) {
+                runtime.start();
+                final long initialStateSent;
+                try (PeerTlsConnection connection = accept(seed, seedListener)) {
+                    final PeerChannel channel = connection.channel();
+                    assertTrue(PeerProtocol.read(channel).isPresent());
+                    PeerProtocol.write(channel, PeerProtocol.hello(build, MESH_ID,
+                            SERVER_ID, UUID.randomUUID(), Optional.empty()));
+                    assertTrue(PeerProtocol.read(channel).filter(PeerProtocol::validState).isPresent());
+                    PeerProtocol.write(channel, PeerProtocol.state(seedEndpoint, 2));
+                    initialStateSent = System.nanoTime();
+                }
+                try (Socket retry = seedListener.accept()) {
+                    final Duration delay = Duration.ofNanos(System.nanoTime() - initialStateSent);
+                    assertTrue(delay.compareTo(Duration.ofMillis(500)) >= 0,
+                            () -> "Seed was retried after only " + delay);
+                }
+            }
+        }
+    }
+
+    @Test
+    void healthyPeerDisconnectPreservesTheLatestRejection() throws Exception {
+        final InetSocketAddress address;
+        try (ServerSocket port = listener()) {
+            address = endpoint(port);
+        }
+        final String build = "sha256-" + "a".repeat(64);
+        final Path config = meshConfig(address.getPort(), "server", List.of());
+        try (MeshRuntime runtime = MeshRuntime.open(config.toString(), build).orElseThrow()) {
+            runtime.start();
+            try (PeerTlsConnection healthy = tls("client").dial(address, deadline())) {
+                final PeerChannel channel = healthy.channel();
+                assertTrue(PeerProtocol.read(channel).isPresent());
+                PeerProtocol.write(channel, PeerProtocol.hello(build, MESH_ID, CLIENT_ID,
+                        UUID.randomUUID(), Optional.of(UUID.randomUUID())));
+                final PeerEndpoint advertised = new PeerEndpoint("127.0.0.1", healthy.transport().getLocalPort());
+                PeerProtocol.write(channel, PeerProtocol.state(advertised, 2));
+                assertTrue(PeerProtocol.read(channel).filter(PeerProtocol::validState).isPresent());
+                assertTrue(PeerProtocol.read(channel).filter(PeerProtocol::validState).isPresent());
+
+                try (PeerTlsConnection wrongIdentity = tls("server").dial(address, deadline())) {
+                    assertTrue(PeerProtocol.read(wrongIdentity.channel()).isPresent());
+                    PeerProtocol.write(wrongIdentity.channel(), PeerProtocol.hello(build, MESH_ID, SERVER_ID,
+                            UUID.randomUUID(), Optional.of(UUID.randomUUID())));
+                    assertTrue(PeerProtocol.read(wrongIdentity.channel()).isEmpty());
+                }
+                assertEquals(RailixValue.string("identity-mismatch"), runtime.status().values().get("rejection"));
+            }
+            final RailixValue.StringValue waiting = RailixValue.string("waiting");
+            final long deadline = deadline();
+            while (!waiting.equals(runtime.status().values().get("status")) && deadline - System.nanoTime() > 0) {
+                Thread.sleep(Duration.ofMillis(10));
+            }
+            final Map<String, RailixValue> status = runtime.status().values();
+            assertEquals(waiting, status.get("status"));
+            assertEquals(RailixValue.string("identity-mismatch"), status.get("rejection"));
+        }
+    }
+
     @ParameterizedTest
     @EnumSource(RejectedClient.class)
     void inboundRejectsInvalidPeerBeforeOpeningAChannel(final RejectedClient credentials) throws Exception {
         final PeerTls server = tls("server");
         final SSLContext client = clientContext(credentials.identity);
 
-        try (var listener = listener(); var threads = Executors.newVirtualThreadPerTaskExecutor()) {
-            final var incoming = threads.submit(() -> {
-                try (var transport = listener.accept()) {
-                    final var failure = assertThrows(SSLHandshakeException.class,
+        try (ServerSocket listener = listener(); ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            final Future<String> incoming = threads.submit(() -> {
+                try (Socket transport = listener.accept()) {
+                    final SSLHandshakeException failure = assertThrows(SSLHandshakeException.class,
                             () -> server.accept(transport, deadline()));
                     assertTrue(transport.isClosed());
                     return failure.getMessage();
                 }
             });
-            try (var socket = (SSLSocket) client.getSocketFactory().createSocket()) {
+            try (SSLSocket socket = (SSLSocket) client.getSocketFactory().createSocket()) {
                 socket.connect(endpoint(listener), 5_000);
                 socket.setSoTimeout(5_000);
                 try {
@@ -184,10 +257,10 @@ class PeerTlsTest {
     void outboundRejectsAnUntrustedServer() throws Exception {
         final PeerTls client = tls("client");
         final SSLContext untrusted = clientContext(Optional.of("untrusted"));
-        try (var listener = listener(); var threads = Executors.newVirtualThreadPerTaskExecutor()) {
-            final var incoming = threads.submit(() -> {
-                try (var tcp = listener.accept();
-                     var socket = (SSLSocket) untrusted.getSocketFactory().createSocket(tcp, null, true)) {
+        try (ServerSocket listener = listener(); ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            final Future<Object> incoming = threads.submit(() -> {
+                try (Socket tcp = listener.accept();
+                     SSLSocket socket = (SSLSocket) untrusted.getSocketFactory().createSocket(tcp, null, true)) {
                     socket.setSoTimeout(5_000);
                     socket.startHandshake();
                 }
@@ -202,12 +275,12 @@ class PeerTlsTest {
     @Test
     void closesAnAcceptedSocketWhenTheJoinBudgetExpires() throws Exception {
         final PeerTls server = tls("server");
-        try (var listener = listener(); var remote = new Socket();
-             var threads = Executors.newVirtualThreadPerTaskExecutor()) {
-            final var incoming = threads.submit(() -> {
-                try (var transport = listener.accept()) {
+        try (ServerSocket listener = listener(); Socket remote = new Socket();
+             ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            final Future<Object> incoming = threads.submit(() -> {
+                try (Socket transport = listener.accept()) {
                     final long deadline = System.nanoTime() + Duration.ofSeconds(1).toNanos();
-                    final var timeout = assertThrows(SocketTimeoutException.class, () -> server.accept(transport, deadline));
+                    final SocketTimeoutException timeout = assertThrows(SocketTimeoutException.class, () -> server.accept(transport, deadline));
                     assertInstanceOf(IOException.class, timeout.getCause());
                     assertTrue(transport.isClosed());
                 }
@@ -224,28 +297,28 @@ class PeerTlsTest {
 
     @Test
     void rejectsALocalIdentityForAnotherMesh() {
-        final var failure = assertThrows(CertificateException.class, () -> tls("other-mesh"));
+        final CertificateException failure = assertThrows(CertificateException.class, () -> tls("other-mesh"));
         assertEquals("Mesh certificate belongs to a different mesh.", failure.getMessage());
     }
 
     @Test
     void rejectsAnIdentityStoreWithoutAPrivateKey() {
-        final var failure = assertThrows(CertificateException.class, () -> tls("trust"));
+        final CertificateException failure = assertThrows(CertificateException.class, () -> tls("trust"));
         assertEquals("Mesh identity store is missing its private-key identity.", failure.getMessage());
     }
 
     @Test
     void rejectsAPrivateKeyEntryInTheTrustStore() {
-        final var failure = assertThrows(CertificateException.class, () ->
+        final CertificateException failure = assertThrows(CertificateException.class, () ->
                 PeerTls.load(MESH_ID, store("server"), passwordFile("server"), store("server"), passwordFile("server")));
         assertEquals("Mesh trust store must contain only trusted CA certificates.", failure.getMessage());
     }
 
     @Test
     void rejectsStartupWithoutACurrentTrustAnchor() throws Exception {
-        final var root = (X509Certificate) readCertificate("root.cer");
-        final var expired = InstantSource.fixed(root.getNotAfter().toInstant().plusSeconds(1));
-        final var failure = assertThrows(CertificateException.class, () ->
+        final X509Certificate root = (X509Certificate) readCertificate("root.cer");
+        final InstantSource expired = InstantSource.fixed(root.getNotAfter().toInstant().plusSeconds(1));
+        final CertificateException failure = assertThrows(CertificateException.class, () ->
                 PeerTls.load(MESH_ID, store("server"), passwordFile("server"),
                         store("trust"), passwordFile("trust"), expired));
         assertEquals("Mesh trust store has no currently valid CA certificate.", failure.getMessage());
@@ -263,18 +336,18 @@ class PeerTlsTest {
         issue("replacement-client", MESH_ID, replacementReplica, "eku=serverAuth,clientAuth",
                 "replacement-issuer", "replacement.cer");
 
-        final var root = (X509Certificate) readCertificate("root.cer");
-        final var now = new AtomicReference<>(InstantSource.system().instant());
-        final var server = PeerTls.load(MESH_ID, store("server"), passwordFile("server"),
+        final X509Certificate root = (X509Certificate) readCertificate("root.cer");
+        final AtomicReference<Instant> now = new AtomicReference<>(InstantSource.system().instant());
+        final PeerTls server = PeerTls.load(MESH_ID, store("server"), passwordFile("server"),
                 store("rotating-trust"), passwordFile("rotating-trust"), now::get);
-        final var client = tls("client");
-        final var replacement = tls("replacement-client");
-        try (var listener = listener(); var threads = Executors.newVirtualThreadPerTaskExecutor()) {
+        final PeerTls client = tls("client");
+        final PeerTls replacement = tls("replacement-client");
+        try (ServerSocket listener = listener(); ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor()) {
             assertAuthenticated(server, client, listener, threads);
 
             now.set(root.getNotAfter().toInstant().plusSeconds(1));
-            final var rejected = threads.submit(() -> assertThrows(SSLHandshakeException.class, () -> {
-                try (var unexpected = accept(server, listener)) { }
+            final Future<SSLHandshakeException> rejected = threads.submit(() -> assertThrows(SSLHandshakeException.class, () -> {
+                try (PeerTlsConnection unexpected = accept(server, listener)) { }
             }));
             // An outbound TLS 1.3 handshake can complete before the server's rejection arrives.
             try {
@@ -289,8 +362,9 @@ class PeerTlsTest {
 
     private static void assertAuthenticated(final PeerTls server, final PeerTls client, final ServerSocket listener,
                                             final ExecutorService threads) throws Exception {
-        final var accepted = threads.submit(() -> accept(server, listener));
-        try (var outgoing = client.dial(endpoint(listener), deadline()); var incoming = accepted.get(5, SECONDS)) {
+        final Future<PeerTlsConnection> accepted = threads.submit(() -> accept(server, listener));
+        try (PeerTlsConnection outgoing = client.dial(endpoint(listener), deadline());
+             PeerTlsConnection incoming = accepted.get(5, SECONDS)) {
             assertEquals(server.replicaId(), outgoing.replicaId());
             assertEquals(client.replicaId(), incoming.replicaId());
         }
@@ -309,8 +383,8 @@ class PeerTlsTest {
     void rejectsLocalPrivateKeyThatDoesNotMatchCertificate() throws Exception {
         final char[] password = PASSWORD.toCharArray();
         try {
-            final var privateKey = readStore("client", password).getKey("peer", password);
-            final var certificateChain = readStore("server", password).getCertificateChain("peer");
+            final Key privateKey = readStore("client", password).getKey("peer", password);
+            final Certificate[] certificateChain = readStore("server", password).getCertificateChain("peer");
             writeIdentity("mismatched-key", privateKey, password, certificateChain);
         } finally {
             Arrays.fill(password, '\0');
@@ -344,7 +418,7 @@ class PeerTlsTest {
             Arrays.fill(password, '\0');
         }
 
-        final var failure = assertThrows(CertPathValidatorException.class, () -> tls("expired-chain"));
+        final CertPathValidatorException failure = assertThrows(CertPathValidatorException.class, () -> tls("expired-chain"));
         assertEquals(CertPathValidatorException.BasicReason.EXPIRED, failure.getReason());
         assertThrows(CertificateExpiredException.class, () -> tls("expired-chain-without-root"));
     }
@@ -358,7 +432,7 @@ class PeerTlsTest {
     }
 
     private static ServerSocket listener() throws IOException {
-        final var listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+        final ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
         listener.setSoTimeout(5_000);
         return listener;
     }
@@ -371,6 +445,19 @@ class PeerTlsTest {
         return System.nanoTime() + Duration.ofSeconds(5).toNanos();
     }
 
+    private static Path meshConfig(final int port, final String identity, final List<RailixValue> bootstrap)
+            throws IOException {
+        final Path config = Files.createTempFile(credentials, "mesh-", ".json");
+        return Files.writeString(config, """
+                {"meshId":"%s",
+                 "listenEndpoint":{"host":"127.0.0.1","port":%d},
+                 "advertisedEndpoint":{"host":"127.0.0.1","port":%d},
+                 "bootstrapEndpoints":%s,"flowCapacity":2,
+                 "identityStore":{"path":"%s.p12","passwordFile":"identity-password"},
+                 "trustStore":{"path":"trust.p12","passwordFile":"trust-password"}}
+                """.formatted(MESH_ID, port, port, RailixJson.write(RailixValue.array(bootstrap)), identity));
+    }
+
     private static PeerTls tls(final String alias) throws Exception {
         return PeerTls.load(MESH_ID, store(alias), passwordFile(alias), store("trust"), passwordFile("trust"));
     }
@@ -381,13 +468,13 @@ class PeerTlsTest {
         try {
             final Optional<KeyManager[]> keys;
             if (identity.isPresent()) {
-                final var manager = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+                final KeyManagerFactory manager = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
                 manager.init(readStore(identity.orElseThrow(), password), password);
                 keys = Optional.of(manager.getKeyManagers());
             } else {
                 keys = Optional.empty();
             }
-            final var trust = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            final TrustManagerFactory trust = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
             trust.init(readStore("trust", trustSecret));
             final SSLContext context = SSLContext.getInstance("TLS");
             context.init(keys.orElseGet(() -> new KeyManager[0]), trust.getTrustManagers(), null);
@@ -400,14 +487,14 @@ class PeerTlsTest {
 
     private static KeyStore readStore(final String alias, final char[] password) throws Exception {
         final KeyStore keys = KeyStore.getInstance("PKCS12");
-        try (var input = Files.newInputStream(store(alias))) {
+        try (InputStream input = Files.newInputStream(store(alias))) {
             keys.load(input, password);
         }
         return keys;
     }
 
     private static Certificate readCertificate(final String name) throws Exception {
-        try (var input = Files.newInputStream(credentials.resolve(name))) {
+        try (InputStream input = Files.newInputStream(credentials.resolve(name))) {
             return CertificateFactory.getInstance("X.509").generateCertificate(input);
         }
     }
@@ -417,7 +504,7 @@ class PeerTlsTest {
         final KeyStore keys = KeyStore.getInstance("PKCS12");
         keys.load(null, password);
         keys.setKeyEntry("peer", key, password, chain);
-        try (var output = Files.newOutputStream(store(alias))) {
+        try (OutputStream output = Files.newOutputStream(store(alias))) {
             keys.store(output, password);
         }
     }
@@ -446,7 +533,7 @@ class PeerTlsTest {
     }
 
     private static void keytool(final String alias, final String... arguments) throws Exception {
-        final var command = new ArrayList<>(List.of(Path.of(System.getProperty("java.home"), "bin", "keytool").toString(),
+        final ArrayList<String> command = new ArrayList<>(List.of(Path.of(System.getProperty("java.home"), "bin", "keytool").toString(),
                 "-storetype", "PKCS12", "-keystore", store(alias).toString(),
                 "-storepass:file", passwordFile(alias).toString()));
         command.addAll(List.of(arguments));

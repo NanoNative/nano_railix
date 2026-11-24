@@ -36,7 +36,7 @@ final class PeerFrames {
             return FrameReadStatus.INVALID_LENGTH;
         }
         final int size = (int) length;
-        final var reservation = reserveBody.apply(size);
+        final Optional<byte[]> reservation = reserveBody.apply(size);
         if (reservation.isEmpty()) {
             return FrameReadStatus.BODY_UNAVAILABLE;
         }

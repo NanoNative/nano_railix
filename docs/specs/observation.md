@@ -135,7 +135,7 @@ client. Closing Creator never stops an independently started process. This first
 same-user, POSIX-filesystem and loopback only, not a remote access or deployment contract.
 
 For replicas with mesh and observation active, `GET /v1/status` includes read-only mesh join status
-or a join rejection reason from the [selected replica](../mesh.md#run-two-fixed-peers).
+or a join rejection reason from the [selected replica](../mesh.md#run-a-local-mesh).
 Creator admits one status read per connection independently of metric reads.
 Creator's Live view uses the existing instance selection and authentication.
 

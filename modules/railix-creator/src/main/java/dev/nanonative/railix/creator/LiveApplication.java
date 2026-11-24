@@ -107,14 +107,14 @@ final class LiveApplication implements AutoCloseable {
         if (!runtimeDetailsAvailable) {
             return RailixValue.nullValue();
         }
-        final var response = read(STATUS_PATH, null, deadline);
+        final DevelopmentApplication.ObservationResponse response = read(STATUS_PATH, null, deadline);
         if (response.status() == 404) {
             runtimeDetailsAvailable = false;
         }
         if (response.status() != 200) {
             return RailixValue.nullValue();
         }
-        final var document = RailixJson.parse(new String(response.body(), StandardCharsets.UTF_8));
+        final RailixJson.Result document = RailixJson.parse(new String(response.body(), StandardCharsets.UTF_8));
         if (document instanceof RailixJson.Parsed(RailixValue.ObjectValue status)
                 && status.values().get("mesh") instanceof RailixValue.ObjectValue mesh) {
             return mesh;
@@ -128,7 +128,7 @@ final class LiveApplication implements AutoCloseable {
 
     RailixValue.ObjectValue snapshot(final RailixValue mesh) {
         final boolean running = alive();
-        final var fields = new LinkedHashMap<>(connection.identity().values());
+        final LinkedHashMap<String, RailixValue> fields = new LinkedHashMap<>(connection.identity().values());
         fields.put("pid", RailixValue.number(connection.pid()));
         fields.put("state", RailixValue.string(running ? "running" : "stopped"));
         fields.put("fingerprint", RailixValue.string(connection.instance() + "/" + connection.fingerprint()));

@@ -2317,7 +2317,7 @@ public final class CreatorServer implements AutoCloseable {
                 captured.project.catalog().definitions().stream()
                         .<RailixValue>map(step -> definition(step, captured.project.catalog())).toList()))));
         if (path.equals("/api/live/application")) {
-            final var mesh = captured.readMeshStatus(System.nanoTime() + TimeUnit.SECONDS.toNanos(2));
+            final RailixValue mesh = captured.readMeshStatus(System.nanoTime() + TimeUnit.SECONDS.toNanos(2));
             synchronized (applicationLock) {
                 if (live != captured) {
                     return unavailable("application");

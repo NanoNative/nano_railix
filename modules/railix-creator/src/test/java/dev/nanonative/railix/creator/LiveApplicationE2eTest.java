@@ -25,7 +25,9 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,30 +38,32 @@ final class LiveApplicationE2eTest {
 
     @Test
     void meshStatusLeavesBothLiveMetricReadSlotsAvailable() throws Exception {
-        final var statusEntered = new CountDownLatch(1);
-        final var metricsEntered = new CountDownLatch(2);
-        final var release = new CountDownLatch(1);
-        final var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        try (var threads = Executors.newVirtualThreadPerTaskExecutor()) {
+        final CountDownLatch statusEntered = new CountDownLatch(1);
+        final CountDownLatch metricsEntered = new CountDownLatch(2);
+        final CountDownLatch release = new CountDownLatch(1);
+        final HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        try (ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor()) {
             server.setExecutor(threads);
             server.createContext("/v1/status", exchange -> heldResponse(exchange, statusEntered, release,
                     "{\"mesh\":{\"status\":\"waiting\"}}"));
             server.createContext("/v1/metrics/application",
                     exchange -> heldResponse(exchange, metricsEntered, release, "{}"));
             server.start();
-            final var process = ProcessHandle.current();
-            final var connection = new ObservationServer.Connection("live", process.pid(),
+            final ProcessHandle process = ProcessHandle.current();
+            final ObservationServer.Connection connection = new ObservationServer.Connection("live", process.pid(),
                     process.info().startInstant().orElseThrow(), server.getAddress().getPort(), "test-token",
                     "revision", "digest", directory.resolve("application.jar"));
-            final var project = new ProjectFiles.Snapshot(CreatorProjects.grouping(), RailixValue.object(Map.of()),
+            final ProjectFiles.Snapshot project = new ProjectFiles.Snapshot(CreatorProjects.grouping(), RailixValue.object(Map.of()),
                     GeneratedApplicationFixture.catalog());
-            try (var live = new LiveApplication(connection, project, HttpClient.newHttpClient())) {
+            try (LiveApplication live = new LiveApplication(connection, project, HttpClient.newHttpClient())) {
                 final long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
-                final var status = threads.submit(() -> live.readMeshStatus(deadline));
+                final Future<RailixValue> status = threads.submit(() -> live.readMeshStatus(deadline));
                 try {
                     assertThat(statusEntered.await(5, TimeUnit.SECONDS)).isTrue();
-                    final var first = threads.submit(() -> live.read("/v1/metrics/application", null, deadline));
-                    final var second = threads.submit(() -> live.read("/v1/metrics/application", null, deadline));
+                    final Future<DevelopmentApplication.ObservationResponse> first =
+                            threads.submit(() -> live.read("/v1/metrics/application", null, deadline));
+                    final Future<DevelopmentApplication.ObservationResponse> second =
+                            threads.submit(() -> live.read("/v1/metrics/application", null, deadline));
                     assertThat(metricsEntered.await(5, TimeUnit.SECONDS)).isTrue();
                     release.countDown();
                     assertThat(first.get(5, TimeUnit.SECONDS).status()).isEqualTo(200);

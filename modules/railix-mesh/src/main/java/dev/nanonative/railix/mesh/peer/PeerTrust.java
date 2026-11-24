@@ -13,6 +13,7 @@ import java.security.cert.X509Certificate;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.Enumeration;
 import java.util.List;
 
 /** Supplies JSSE with the currently valid trust anchors for new peer connections. */
@@ -27,8 +28,8 @@ final class PeerTrust {
             throws GeneralSecurityException {
         this.identities = identities;
         this.time = time;
-        final var certificates = new ArrayList<X509Certificate>();
-        final var aliases = issuers.aliases();
+        final ArrayList<X509Certificate> certificates = new ArrayList<>();
+        final Enumeration<String> aliases = issuers.aliases();
         while (aliases.hasMoreElements()) {
             final String alias = aliases.nextElement();
             if (!issuers.isCertificateEntry(alias) || !(issuers.getCertificate(alias) instanceof X509Certificate certificate)
@@ -43,7 +44,7 @@ final class PeerTrust {
     synchronized SSLContext context() throws IOException, GeneralSecurityException {
         // JSSE validates the chain up to the anchor, whose validity dates are our policy.
         final Date now = Date.from(time.instant());
-        final var valid = configured.stream()
+        final List<X509Certificate> valid = configured.stream()
                 .filter(certificate -> !now.before(certificate.getNotBefore()) && !now.after(certificate.getNotAfter()))
                 .toList();
         if (!valid.equals(active)) {
@@ -63,7 +64,7 @@ final class PeerTrust {
         for (int index = 0; index < valid.size(); index++) {
             trusted.setCertificateEntry("issuer-" + index, valid.get(index));
         }
-        final var managers = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        final TrustManagerFactory managers = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
         managers.init(trusted);
         final SSLContext updated = SSLContext.getInstance("TLS");
         updated.init(identities, managers.getTrustManagers(), null);

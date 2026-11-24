@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Set PROJECT_FILE for a build or a local run without an example name.
+# Set PROJECT_FILE for a local run without an example name.
 # Paths may be absolute or relative to this repository.
 # Set RAILIX_CLI_JAR to skip building the CLI. Use JDK 25 for builds.
 PROJECT_FILE=${PROJECT_FILE:-examples/auth-http-app/railix.project.json}
@@ -9,7 +9,7 @@ RAILIX_CLI_JAR=${RAILIX_CLI_JAR:-}
 JAVA=${JAVA_HOME:+$JAVA_HOME/bin/}java
 KEYTOOL=${JAVA_HOME:+$JAVA_HOME/bin/}keytool
 
-# Local demo settings. Give the two copies distinct application listener ports
+# Local demo settings. Give the replicas distinct application listener ports
 # through the project's settings. auth-http-app uses HTTP next-free-port fallback.
 DEMO_MESH_HOST=127.0.0.1
 DEMO_SEED_PORT=${DEMO_SEED_PORT:-7401}
@@ -34,12 +34,12 @@ usage() {
     cat <<'USAGE'
 Usage
   ./run-mesh.sh [example-name]
-  PROJECT_FILE=path/to/railix.project.json ./run-mesh.sh build
+  ./run-mesh.sh join /path/to/run-directory mesh-port
   APPLICATION_JAR=/path/to/application.jar RAILIX_MESH_CONFIG=/path/to/mesh.json ./run-mesh.sh deploy
 
 example-name  Start two loopback replicas of an app under examples/ with temporary certificates.
               Defaults to auth-http-app. Select an app with a long-running source.
-build         Print the path to one mesh-enabled application JAR. Accepts build flags.
+join          Start one more replica in a running local demo on the given free mesh port.
 deploy        Check the JAR with unzip and start one replica with provisioned credentials.
               Accepts application arguments.
 
@@ -64,21 +64,154 @@ require_mesh_jar() {
     fi
 }
 
+valid_port() {
+    [[ $1 =~ ^[1-9][0-9]{0,4}$ ]] && (($1 <= 65535))
+}
+
+uuid() {
+    uuidgen | tr '[:upper:]' '[:lower:]'
+}
+
+mesh_keytool() (
+    local directory=$1 store=$2
+    shift 2
+    cd "$directory"
+    "$KEYTOOL" -storetype PKCS12 -keystore "$store.p12" -storepass:file "$store.password" "$@"
+)
+
+issue_replica() {
+    local directory=$1
+    local mesh_id=$2
+    local port=$3
+    local name=$4
+    local store="$port/identity"
+    local uri="https://github.com/NanoNative/nano_railix/mesh/v1/$mesh_id/replicas/$(uuid)"
+    printf '%s\n' "$(uuid)" > "$directory/$store.password"
+    mesh_keytool "$directory" "$store" -genkeypair -alias peer -dname "CN=Railix local $name" -keyalg EC
+    mesh_keytool "$directory" "$store" -certreq -alias peer -file "$store.csr"
+    mesh_keytool "$directory" issuer -gencert -alias root -infile "$store.csr" -outfile "$store.cer" \
+        -validity 7 -ext "san=uri:$uri" -ext 'ku=digitalSignature' -ext 'eku=serverAuth,clientAuth'
+    mesh_keytool "$directory" "$store" -importcert -noprompt -alias root -file root.cer
+    mesh_keytool "$directory" "$store" -importcert -noprompt -alias peer -file "$store.cer"
+}
+
+bootstrap_endpoints() {
+    local mesh_dir=$1 own_port=$2
+    local directory port separator=
+    printf '['
+    for directory in "$mesh_dir"/*/; do
+        [[ -d $directory ]] || continue
+        directory=${directory%/}
+        port=${directory##*/}
+        if [[ $port != "$own_port" ]] && valid_port "$port"; then
+            printf '%s{"host":"%s","port":%s}' "$separator" "$DEMO_MESH_HOST" "$port"
+            separator=,
+        fi
+    done
+    printf ']'
+}
+
+write_config() {
+    local config=$1
+    local mesh_id=$2
+    local port=$3
+    local bootstrap=$4
+    local flow_capacity=$5
+    cat > "$config" <<JSON
+{
+  "meshId": "$mesh_id",
+  "listenEndpoint": {"host": "$DEMO_MESH_HOST", "port": $port},
+  "advertisedEndpoint": {"host": "$DEMO_MESH_HOST", "port": $port},
+  "bootstrapEndpoints": $bootstrap,
+  "flowCapacity": $flow_capacity,
+  "identityStore": {"path": "identity.p12", "passwordFile": "identity.password"},
+  "trustStore": {"path": "../trust.p12", "passwordFile": "../trust.password"}
+}
+JSON
+}
+
+# Store one value per line so paths can contain spaces and are read as data.
+write_demo_settings() {
+    local settings=$1
+    local mesh_id=$2
+    local home=$3
+    local jar=$4
+    local flow_capacity=$5
+    printf '%s\n' "$mesh_id" "$home" "$jar" "$flow_capacity" > "$settings"
+}
+
+read_demo_settings() {
+    {
+        IFS= read -r mesh_id &&
+        IFS= read -r demo_home &&
+        IFS= read -r app &&
+        IFS= read -r DEMO_FLOW_CAPACITY
+    } < "$1"
+}
+
+# Run in a background job so exec makes $! the JVM's PID.
+run_replica() {
+    local config=$1
+    local jar=$2
+    local home=$3
+    RAILIX_MESH_CONFIG="$config" exec "$JAVA" "-Duser.home=$home" -jar "$jar"
+}
+
+join_demo() {
+    [[ $# -eq 2 ]] || fail 'Pass the demo run directory and a free mesh port to join.'
+    valid_port "$2" || fail 'Use a mesh port from 1 to 65535.'
+    run_dir=$(CDPATH= cd -- "$1" && pwd) || fail "Cannot read demo run directory $1."
+    mesh_dir="$run_dir/mesh"
+    port=$2
+    [[ -f $mesh_dir/demo && -f $mesh_dir/issuer.p12 ]] || fail "No running local mesh in $run_dir."
+    read_demo_settings "$mesh_dir/demo" || fail "Cannot read demo settings in $run_dir."
+
+    umask 077
+    replica_dir="$mesh_dir/$port"
+    mkdir "$replica_dir" 2>/dev/null || fail "Cannot reserve mesh port $port in this demo. Choose another free port."
+    # This join owns its port directory and has a PID once its JVM starts.
+    replica_pid=
+    cleanup_join() {
+        if [[ -n $replica_pid ]]; then
+            kill "$replica_pid" 2>/dev/null || true
+            wait "$replica_pid" || true
+        fi
+        rm -rf -- "$replica_dir"
+    }
+    trap cleanup_join EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    issue_replica "$mesh_dir" "$mesh_id" "$port" "$port"
+    replica_config="$replica_dir/mesh.json"
+    bootstrap=$(bootstrap_endpoints "$mesh_dir" "$port")
+    write_config "$replica_config" "$mesh_id" "$port" "$bootstrap" "$DEMO_FLOW_CAPACITY"
+    printf 'Starting mesh replica on %s:%s. Ctrl+C stops this replica.\n' "$DEMO_MESH_HOST" "$port"
+    run_replica "$replica_config" "$app" "$demo_home" &
+    replica_pid=$!
+    wait "$replica_pid"
+}
+
 mode=${1:-}
 if [[ $# -gt 0 ]]; then
     shift
 fi
 case "$mode" in
+    join)
+        join_demo "$@"
+        exit
+        ;;
     deploy)
         [[ -n $APPLICATION_JAR && -f $APPLICATION_JAR && -r $APPLICATION_JAR ]] ||
-            fail 'Set APPLICATION_JAR to a readable JAR produced by run-mesh.sh build.'
+            fail 'Set APPLICATION_JAR to a readable JAR produced by railix build --mesh.'
         [[ -n $RAILIX_MESH_CONFIG && -f $RAILIX_MESH_CONFIG && -r $RAILIX_MESH_CONFIG ]] ||
             fail 'Set RAILIX_MESH_CONFIG to the readable mesh JSON file for this replica.'
         require_mesh_jar "$APPLICATION_JAR"
         export RAILIX_MESH_CONFIG
         exec "$JAVA" -jar "$APPLICATION_JAR" "$@"
         ;;
-    build|'')
+    '')
         ;;
     -h|--help)
         usage
@@ -99,17 +232,13 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$root"
 [[ -f $PROJECT_FILE && -r $PROJECT_FILE ]] || fail "Cannot read project file $PROJECT_FILE."
 project_dir=$(CDPATH= cd -- "$(dirname -- "$PROJECT_FILE")" && pwd)
-project_file="$project_dir/$(basename -- "$PROJECT_FILE")"
 
-if [[ $mode != build ]]; then
-    [[ $# -eq 0 ]] || fail 'Pass one example name to start a local mesh.'
-    for port in "$DEMO_SEED_PORT" "$DEMO_PEER_PORT"; do
-        [[ $port =~ ^[1-9][0-9]{0,4}$ ]] && ((port <= 65535)) ||
-            fail 'Use mesh ports from 1 to 65535.'
-    done
-    [[ $DEMO_SEED_PORT != "$DEMO_PEER_PORT" ]] || fail 'The seed and peer need distinct mesh ports.'
-    [[ $DEMO_FLOW_CAPACITY =~ ^[1-9][0-9]*$ ]] || fail 'DEMO_FLOW_CAPACITY must be a positive integer.'
-fi
+[[ $# -eq 0 ]] || fail 'Pass one example name to start a local mesh.'
+for port in "$DEMO_SEED_PORT" "$DEMO_PEER_PORT"; do
+    valid_port "$port" || fail 'Use mesh ports from 1 to 65535.'
+done
+[[ $DEMO_SEED_PORT != "$DEMO_PEER_PORT" ]] || fail 'The seed and peer need distinct mesh ports.'
+[[ $DEMO_FLOW_CAPACITY =~ ^[1-9][0-9]*$ ]] || fail 'DEMO_FLOW_CAPACITY must be a positive integer.'
 
 if [[ -z $RAILIX_CLI_JAR ]]; then
     ./mvnw -pl modules/railix-creator -am -DskipTests package >&2
@@ -119,17 +248,15 @@ elif [[ $RAILIX_CLI_JAR != /* ]]; then
 fi
 [[ -f $RAILIX_CLI_JAR && -r $RAILIX_CLI_JAR ]] || fail "Cannot read Railix CLI JAR $RAILIX_CLI_JAR."
 
-if [[ $mode == build ]]; then
-    exec "$JAVA" -jar "$RAILIX_CLI_JAR" build "$project_file" --mesh "$@"
-fi
-
 umask 077
 run_dir=$(mktemp -d "${TMPDIR:-/tmp}/railix-local-mesh.XXXXXX")
 mesh_dir="$run_dir/mesh"
+# The demo launcher owns its two JVMs, the log follower, and the shared credentials.
+# A PID stays empty until its job starts so cleanup can handle a partial launch.
 seed_pid=
 peer_pid=
 logs_pid=
-cleanup() {
+cleanup_demo() {
     for pid in "$seed_pid" "$peer_pid" "$logs_pid"; do
         if [[ -n $pid ]]; then
             kill "$pid" 2>/dev/null || true
@@ -138,7 +265,7 @@ cleanup() {
     wait || true
     rm -rf -- "$mesh_dir"
 }
-trap cleanup EXIT
+trap cleanup_demo EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -148,81 +275,63 @@ mkdir -p "$mesh_dir" "$demo_home"
 demo_home=$(CDPATH= cd -- "$demo_home" && pwd)
 demo_project="$run_dir/railix.project.json"
 
-cp "$project_file" "$demo_project"
+cp -- "$PROJECT_FILE" "$demo_project"
 for document in railix.creator.json railix.examples.json railix.custom-steps.json railix.dependencies.lock.json; do
     if [[ -f $project_dir/$document ]]; then
         cp "$project_dir/$document" "$run_dir/"
     fi
 done
 
-uuid() {
-    uuidgen | tr '[:upper:]' '[:lower:]'
-}
-
-mesh_keytool() (
-    cd "$mesh_dir"
-    store=$1
-    shift
-    "$KEYTOOL" -storetype PKCS12 -keystore "$store.p12" -storepass:file "$store.password" "$@"
-)
-
 mesh_id=$(uuid)
-for store in issuer trust seed peer; do
+for store in issuer trust; do
     printf '%s\n' "$(uuid)" > "$mesh_dir/$store.password"
 done
-mesh_keytool issuer -genkeypair -alias root -dname 'CN=Railix local mesh CA' \
+mesh_keytool "$mesh_dir" issuer -genkeypair -alias root -dname 'CN=Railix local mesh CA' \
     -keyalg EC -validity 14 -ext 'bc:c=ca:true' -ext 'ku:c=keyCertSign,cRLSign'
-mesh_keytool issuer -exportcert -alias root -file root.cer
-mesh_keytool trust -importcert -noprompt -alias root -file root.cer
+mesh_keytool "$mesh_dir" issuer -exportcert -alias root -file root.cer
+mesh_keytool "$mesh_dir" trust -importcert -noprompt -alias root -file root.cer
 
-for replica in seed peer; do
-    uri="https://github.com/NanoNative/nano_railix/mesh/v1/$mesh_id/replicas/$(uuid)"
-    mesh_keytool "$replica" -genkeypair -alias peer -dname "CN=Railix local $replica" -keyalg EC
-    mesh_keytool "$replica" -certreq -alias peer -file "$replica.csr"
-    mesh_keytool issuer -gencert -alias root -infile "$replica.csr" -outfile "$replica.cer" \
-        -validity 7 -ext "san=uri:$uri" -ext 'ku=digitalSignature' -ext 'eku=serverAuth,clientAuth'
-    mesh_keytool "$replica" -importcert -noprompt -alias root -file root.cer
-    mesh_keytool "$replica" -importcert -noprompt -alias peer -file "$replica.cer"
-done
-rm -f -- "$mesh_dir/issuer.p12" "$mesh_dir/issuer.password"
-
-write_config() {
-    local name=$1 port=$2 bootstrap=$3
-    cat > "$mesh_dir/$name.json" <<JSON
-{
-  "meshId": "$mesh_id",
-  "listenEndpoint": {"host": "$DEMO_MESH_HOST", "port": $port},
-  "advertisedEndpoint": {"host": "$DEMO_MESH_HOST", "port": $port},
-  "bootstrapEndpoints": $bootstrap,
-  "flowCapacity": $DEMO_FLOW_CAPACITY,
-  "identityStore": {"path": "$name.p12", "passwordFile": "$name.password"},
-  "trustStore": {"path": "trust.p12", "passwordFile": "trust.password"}
-}
-JSON
-}
-
-write_config seed "$DEMO_SEED_PORT" '[]'
-write_config peer "$DEMO_PEER_PORT" "[{\"host\":\"$DEMO_MESH_HOST\",\"port\":$DEMO_SEED_PORT}]"
+mkdir "$mesh_dir/$DEMO_SEED_PORT" "$mesh_dir/$DEMO_PEER_PORT"
+issue_replica "$mesh_dir" "$mesh_id" "$DEMO_SEED_PORT" seed
+issue_replica "$mesh_dir" "$mesh_id" "$DEMO_PEER_PORT" peer
+seed_config="$mesh_dir/$DEMO_SEED_PORT/mesh.json"
+peer_config="$mesh_dir/$DEMO_PEER_PORT/mesh.json"
+peer_bootstrap=$(bootstrap_endpoints "$mesh_dir" "$DEMO_PEER_PORT")
+write_config "$seed_config" "$mesh_id" "$DEMO_SEED_PORT" '[]' "$DEMO_FLOW_CAPACITY"
+write_config "$peer_config" "$mesh_id" "$DEMO_PEER_PORT" "$peer_bootstrap" "$DEMO_FLOW_CAPACITY"
 app=$("$JAVA" "-Duser.home=$demo_home" -jar "$RAILIX_CLI_JAR" build "$demo_project" --mesh)
+write_demo_settings "$mesh_dir/demo" "$mesh_id" "$demo_home" "$app" "$DEMO_FLOW_CAPACITY"
 
 touch "$run_dir/seed.log" "$run_dir/peer.log"
-RAILIX_MESH_CONFIG="$mesh_dir/seed.json" \
-    "$JAVA" "-Duser.home=$demo_home" -jar "$app" > "$run_dir/seed.log" 2>&1 &
+run_replica "$seed_config" "$app" "$demo_home" > "$run_dir/seed.log" 2>&1 &
 seed_pid=$!
-RAILIX_MESH_CONFIG="$mesh_dir/peer.json" \
-    "$JAVA" "-Duser.home=$demo_home" -jar "$app" > "$run_dir/peer.log" 2>&1 &
+run_replica "$peer_config" "$app" "$demo_home" > "$run_dir/peer.log" 2>&1 &
 peer_pid=$!
 
+join_port=7403
+while [[ $join_port == "$DEMO_SEED_PORT" || $join_port == "$DEMO_PEER_PORT" ]]; do
+    join_port=$((join_port + 1))
+done
 printf '\nRun directory %s\nSeed PID %s | Peer PID %s\n' "$run_dir" "$seed_pid" "$peer_pid"
-printf 'To open Creator, paste this command into a second terminal\n'
+printf 'To start another replica, paste this command into another terminal\n'
+printf '%q join %q %q\n' "$root/run-mesh.sh" "$run_dir" "$join_port"
+printf 'Use a different free mesh port for each replica.\n\n'
+printf 'To open Creator, paste this command into another terminal\n'
 printf '%q %q -jar %q creator %q\n' "$JAVA" "-Duser.home=$demo_home" "$RAILIX_CLI_JAR" "$demo_project"
-printf 'Choose Project actions > Connect live app, select either PID,\n'
-printf 'and look for Mesh joined in the runtime details. Ctrl+C stops both replicas.\n\n'
+printf 'Choose Project actions > Connect live app, select a replica,\n'
+printf 'and look for Mesh joined in the runtime details. Ctrl+C stops the replicas started here.\n\n'
 
 tail -n +1 -f "$run_dir/seed.log" "$run_dir/peer.log" &
 logs_pid=$!
-while kill -0 "$seed_pid" 2>/dev/null && kill -0 "$peer_pid" 2>/dev/null; do
+while [[ -n $seed_pid || -n $peer_pid ]]; do
     sleep 1
+    if [[ -n $seed_pid ]] && ! kill -0 "$seed_pid" 2>/dev/null; then
+        seed_pid=
+        rm -rf -- "$mesh_dir/$DEMO_SEED_PORT"
+    fi
+    if [[ -n $peer_pid ]] && ! kill -0 "$peer_pid" 2>/dev/null; then
+        peer_pid=
+        rm -rf -- "$mesh_dir/$DEMO_PEER_PORT"
+    fi
 done
-cat "$run_dir/seed.log" "$run_dir/peer.log" >&2
-fail "A demo replica stopped. Logs are in $run_dir."
+fail "Both initial demo replicas stopped. Logs are in $run_dir."

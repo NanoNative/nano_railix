@@ -25,7 +25,6 @@ public final class MeshErrors {
 
     // Hostname resolution.
     public static final String LISTEN_LOOKUP_INTERRUPTED = "Listen endpoint lookup was interrupted.";
-    public static final String HOST_LOOKUP_IN_PROGRESS = "A mesh hostname lookup is still running.";
     public static final String HOST_LOOKUP_TIMED_OUT = "Mesh hostname lookup exceeded its deadline.";
     public static final String HOST_LOOKUP_FAILED = "Mesh hostname lookup failed.";
 
@@ -71,4 +70,6 @@ public final class MeshErrors {
     public static final String INVALID_STATE = "invalid-state";
     public static final String IDENTITY_MISMATCH = "identity-mismatch";
     public static final String BUILD_MISMATCH = "build-mismatch";
+    public static final String PEER_LIMIT_REACHED = "peer-limit-reached";
+    public static final String REPLICA_ALREADY_CONNECTED = "replica-already-connected";
 }

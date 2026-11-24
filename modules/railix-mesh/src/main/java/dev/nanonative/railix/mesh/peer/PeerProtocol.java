@@ -46,7 +46,7 @@ final class PeerProtocol {
 
     static Optional<String> rejectHello(final RailixValue.ObjectValue hello, final String build, final UUID mesh,
                                         final UUID peer, final UUID local, final boolean dialer) {
-        final var fields = hello.values();
+        final Map<String, RailixValue> fields = hello.values();
         if (!fields.keySet().equals(dialer ? DIALER_HELLO : ACCEPTOR_HELLO)
                 || !"hello.v1".equals(text(fields.get("type")))
                 || !uuid(fields.get("incarnationId"))
@@ -74,21 +74,22 @@ final class PeerProtocol {
     }
 
     static boolean validState(final RailixValue.ObjectValue state) {
-        final var fields = state.values();
+        final Map<String, RailixValue> fields = state.values();
         return fields.keySet().equals(STATE_FIELDS)
                 && "state".equals(text(fields.get("type")))
                 && PEER_STATUSES.contains(text(fields.get("status")))
-                && PeerEndpoint.read(fields.get("advertisedEndpoint")).isPresent()
+                && PeerEndpoint.isValid(fields.get("advertisedEndpoint"))
                 && validFlowSlots(fields.get("availableFlowSlots"))
-                && RailixValue.array(List.of()).equals(fields.get("peerHints"));
+                && fields.get("peerHints") instanceof RailixValue.ArrayValue hints
+                && hints.values().isEmpty();
     }
 
     static Optional<RailixValue.ObjectValue> read(final PeerChannel channel) throws IOException, InterruptedException {
-        final var frame = channel.read(LIMIT, size -> Optional.of(new byte[size]));
+        final FrameRead frame = channel.read(LIMIT, size -> Optional.of(new byte[size]));
         if (!(frame instanceof FrameBody body)) {
             return Optional.empty();
         }
-        final var document = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(body.bytes())).toString();
+        final String document = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(body.bytes())).toString();
         if (RailixJson.parseDocument(document) instanceof RailixJson.Parsed parsed
                 && parsed.value() instanceof RailixValue.ObjectValue object) {
             return Optional.of(object);
@@ -106,7 +107,7 @@ final class PeerProtocol {
         }
     }
 
-    private static String text(final RailixValue value) {
+    static String text(final RailixValue value) {
         return value instanceof RailixValue.StringValue string ? string.value() : "";
     }
 

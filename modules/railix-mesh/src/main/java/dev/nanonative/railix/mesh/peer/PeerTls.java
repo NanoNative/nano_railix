@@ -2,8 +2,10 @@ package dev.nanonative.railix.mesh.peer;
 
 import dev.nanonative.railix.mesh.MeshErrors;
 
+import java.io.BufferedReader;
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
@@ -16,6 +18,7 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Signature;
+import java.security.cert.CertPath;
 import java.security.cert.CertPathValidator;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
@@ -23,12 +26,15 @@ import java.security.cert.CertificateFactory;
 import java.security.cert.PKIXParameters;
 import java.security.cert.TrustAnchor;
 import java.security.cert.X509Certificate;
+import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PSSParameterSpec;
 import java.time.Duration;
 import java.time.InstantSource;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Enumeration;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -66,7 +72,7 @@ final class PeerTls {
     static PeerTls load(final UUID meshId, final Path identity, final Path identityPassword,
                         final Path trust, final Path trustPassword, final InstantSource time)
             throws IOException, GeneralSecurityException {
-        final var keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        final KeyManagerFactory keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         final char[] password = readPassword(identityPassword);
         final UUID replica;
         try {
@@ -95,29 +101,26 @@ final class PeerTls {
 
     /** Uses the caller's monotonic join deadline for TCP setup and the TLS handshake. */
     PeerTlsConnection dial(final InetSocketAddress endpoint, final long deadlineNanos) throws IOException {
-        final Socket transport = new Socket();
-        try {
-            final long remaining = remainingNanos(deadlineNanos);
-            final long timeoutMillis = TimeUnit.NANOSECONDS.toMillis(remaining - 1) + 1;
-            transport.connect(endpoint, (int) Math.min(timeoutMillis, Integer.MAX_VALUE));
-        } catch (final IOException | RuntimeException failure) {
-            closeAfterFailure(transport, failure);
-            throw failure;
-        }
-        return authenticate(transport, true, deadlineNanos);
+        final Optional<InetSocketAddress> target = Optional.of(endpoint);
+        return establish(new Socket(), target, deadlineNanos);
     }
 
     /** Takes ownership of an accepted TCP socket, including when authentication fails. */
     PeerTlsConnection accept(final Socket transport, final long deadlineNanos) throws IOException {
-        return authenticate(transport, false, deadlineNanos);
+        return establish(transport, Optional.empty(), deadlineNanos);
     }
 
-    private PeerTlsConnection authenticate(final Socket transport, final boolean client, final long deadlineNanos)
+    private PeerTlsConnection establish(final Socket transport, final Optional<InetSocketAddress> target,
+                                        final long deadlineNanos)
             throws IOException {
+        final boolean client = target.isPresent();
         final AtomicBoolean handshaking = new AtomicBoolean(true);
         SSLSocket tls = null;
         Thread timeout = null;
         try {
+            if (client) {
+                connect(transport, target.orElseThrow(), deadlineNanos);
+            }
             remainingNanos(deadlineNanos);
             timeout = Thread.ofVirtual().name("railix-peer-tls-deadline").start(() ->
                     closeAtDeadline(transport, handshaking, deadlineNanos));
@@ -139,14 +142,16 @@ final class PeerTls {
             remainingNanos(deadlineNanos);
             return new PeerTlsConnection(peer, new PeerChannel(tls), transport);
         } catch (final IOException | RuntimeException failure) {
-            final boolean timedOut = failure instanceof IOException && !(failure instanceof SocketTimeoutException)
+            // The TLS watchdog can turn an expired handshake into a socket I/O failure.
+            final boolean timedOut = timeout != null
+                    && failure instanceof IOException && !(failure instanceof SocketTimeoutException)
                     && deadlineNanos - System.nanoTime() <= 0;
             closeAfterFailure(transport, failure);
             if (tls != null) {
                 closeAfterFailure(tls, failure);
             }
             if (timedOut) {
-                final var rejection = deadlineExpired();
+                final SocketTimeoutException rejection = deadlineExpired();
                 rejection.initCause(failure);
                 throw rejection;
             }
@@ -159,6 +164,13 @@ final class PeerTls {
         }
     }
 
+    private static void connect(final Socket transport, final InetSocketAddress endpoint, final long deadlineNanos)
+            throws IOException {
+        final long remaining = remainingNanos(deadlineNanos);
+        final long timeoutMillis = TimeUnit.NANOSECONDS.toMillis(remaining - 1) + 1;
+        transport.connect(endpoint, (int) Math.min(timeoutMillis, Integer.MAX_VALUE));
+    }
+
     private SSLContext trustedContext() throws SSLHandshakeException {
         try {
             return trust.context();
@@ -169,7 +181,7 @@ final class PeerTls {
 
     private UUID authenticatedReplica(final SSLSocket tls) throws IOException {
         try {
-            final var certificate = tls.getSession().getPeerCertificates()[0];
+            final Certificate certificate = tls.getSession().getPeerCertificates()[0];
             if (!(certificate instanceof X509Certificate peer)) {
                 throw new CertificateException(MeshErrors.PEER_CERTIFICATE_REQUIRED);
             }
@@ -181,7 +193,7 @@ final class PeerTls {
 
     private static UUID replicaId(final X509Certificate certificate, final UUID meshId) throws CertificateException {
         certificate.checkValidity();
-        final var identities = Optional.ofNullable(certificate.getSubjectAlternativeNames()).stream()
+        final List<String> identities = Optional.ofNullable(certificate.getSubjectAlternativeNames()).stream()
                 .flatMap(Collection::stream)
                 .filter(name -> Integer.valueOf(URI_SAN).equals(name.getFirst()))
                 .map(name -> name.get(1))
@@ -219,7 +231,7 @@ final class PeerTls {
     private static UUID localReplicaId(final KeyStore keys, final char[] password, final UUID meshId)
             throws GeneralSecurityException {
         UUID identity = null;
-        final var aliases = keys.aliases();
+        final Enumeration<String> aliases = keys.aliases();
         while (aliases.hasMoreElements()) {
             final String alias = aliases.nextElement();
             if (!keys.isKeyEntry(alias)) {
@@ -252,8 +264,8 @@ final class PeerTls {
         issuer.checkValidity();
 
         // Preflight the supplied chain locally. Peers authenticate it using their own trust stores.
-        final var path = CertificateFactory.getInstance("X.509").generateCertPath(Arrays.asList(chain).subList(0, end));
-        final var parameters = new PKIXParameters(Set.of(new TrustAnchor(issuer, null)));
+        final CertPath path = CertificateFactory.getInstance("X.509").generateCertPath(Arrays.asList(chain).subList(0, end));
+        final PKIXParameters parameters = new PKIXParameters(Set.of(new TrustAnchor(issuer, null)));
         parameters.setRevocationEnabled(false);
         CertPathValidator.getInstance("PKIX").validate(path, parameters);
     }
@@ -263,7 +275,7 @@ final class PeerTls {
         if (keyUsage != null && !keyUsage[0]) {
             throw new CertificateException(MeshErrors.IDENTITY_DIGITAL_SIGNATURE_REQUIRED);
         }
-        final var extended = certificate.getExtendedKeyUsage();
+        final List<String> extended = certificate.getExtendedKeyUsage();
         if (extended == null || extended.contains(ANY_EXTENDED_KEY_USAGE)) {
             return;
         }
@@ -302,7 +314,7 @@ final class PeerTls {
         };
         final Signature proof = Signature.getInstance(algorithm);
         if (algorithm.equals("RSASSA-PSS")) {
-            final var parameters = key.getParams();
+            final AlgorithmParameterSpec parameters = key.getParams();
             proof.setParameter(parameters == null
                     ? new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1) : parameters);
         }
@@ -312,14 +324,14 @@ final class PeerTls {
     private static KeyStore readStore(final Path path, final char[] password)
             throws IOException, GeneralSecurityException {
         final KeyStore store = KeyStore.getInstance("PKCS12");
-        try (var input = Files.newInputStream(regularFile(path))) {
+        try (InputStream input = Files.newInputStream(regularFile(path))) {
             store.load(input, password);
         }
         return store;
     }
 
     private static char[] readPassword(final Path path) throws IOException {
-        try (var input = Files.newBufferedReader(regularFile(path))) {
+        try (BufferedReader input = Files.newBufferedReader(regularFile(path))) {
             final String value = input.readLine();
             if (value == null || input.readLine() != null) {
                 throw new IOException(MeshErrors.INVALID_PASSWORD_FILE);

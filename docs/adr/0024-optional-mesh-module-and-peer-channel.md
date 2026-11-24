@@ -96,17 +96,20 @@ has room. A capacity advertisement can be stale by the time work arrives. A rece
 defer the admission decision and retain another copy of the work. The receiver checks its actual
 resources and refuses immediately when it cannot admit the Flow.
 
-### The ingress replica owns completion
+### Single-member ingress and future Smart clients
 
-The replica that accepts the event owns the original transport and completes its response. An
-execution peer returns the Flow outcome to that replica. The first HTTP proof calls a replica
-directly. Deployments can add a reverse proxy for a stable URL. A future Smart client can choose
-a reachable Trigger endpoint before sending the same event.
+Use single-member mode for the first Flow offload delivery. The caller uses one ingress address.
+The first HTTP proof calls a replica's Trigger endpoint directly. Deployments can put a reverse
+proxy in front of ready replicas for a stable URL. A dedicated Railix gateway would concentrate
+public request handling in one process.
 
-A dedicated Railix gateway would concentrate public request handling in one process. A reply sent
-directly by the execution peer would require transferring the source transport or arranging a new
-client request. Keeping completion at ingress preserves the existing Trigger contract in either
-client routing mode.
+The ingress replica owns the original transport and completes the response. An execution peer
+returns the Flow outcome to ingress. Keeping completion at ingress preserves the Trigger
+contract and avoids transferring the source transport.
+
+A future Smart client can learn reachable Trigger endpoints and select a replica before
+sending the event. Both modes use the same Flow placement, receiver admission, and response
+path after the event reaches ingress.
 
 ### One deadline and bounded retries
 
@@ -125,7 +128,7 @@ during drain gives accepted work time to complete.
 
 Use the application's existing read-only status boundary for Creator attachment. The selected
 replica owns its status. Deployment starts and supervises replicas while the mesh coordinates
-those running processes.
+those running processes. The pilot limits each replica's peer list to fit the existing status response.
 
 A separate mesh administration service would add another runtime dependency for reading peer
 state. Making mesh membership responsible for provisioning or restarting processes would couple

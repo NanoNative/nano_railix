@@ -1,14 +1,15 @@
 # Railix Mesh
 
-A replica is a running copy of a built Railix application. Replicas of the same logical build can
-authenticate each other over mutual TLS and report their connection in Creator. The current demo
-joins two replicas at fixed addresses. Multi-peer discovery and Flow offload are planned.
+A replica is a running copy of a built Railix application. Today you can connect several replicas
+of the same build using configured seed addresses and inspect their status in Creator. Each
+replica runs the requests it receives. Automatic peer discovery and Flow offload are planned.
 
 ## How It Works
 
 ### Join And Track Peers
 
-A **seed** is a configured address a replica tries when joining. Here, B joins through A.
+A **seed** is a running replica that another replica contacts to join. Give the joining replica
+the seed's mesh address. In this example, B contacts A.
 
 ```mermaid
 sequenceDiagram
@@ -32,9 +33,9 @@ State carries readiness and the advertised mesh address. An identity or build mi
 the connection before state is exchanged. A disconnect or heartbeat timeout removes the peer.
 Failed attempts to a configured seed are retried with backoff.
 
-The original seed can leave once the remaining replicas are connected and new replicas have
-another reachable bootstrap address. With planned automatic discovery, replicas can learn more
-peer addresses and authenticate each one directly.
+If a third replica, C, has both addresses, it connects directly to A and B. B and C can stay
+connected if A leaves, and new replicas can join through either survivor. With automatic
+discovery, replicas will be able to learn addresses from peers.
 
 ### Run A Flow (Planned)
 
@@ -76,7 +77,7 @@ The proxy routes HTTP requests. Railix tracks its peers and places offloaded Flo
 Later, a mesh-aware client could discover reachable application endpoints and choose a replica
 directly. The event would still enter through the same Trigger and follow the same Flow rules.
 
-## Run Two Fixed Peers
+## Run A Local Mesh
 
 From the repository root on macOS or Linux, run the demo with Bash, JDK 25, and `uuidgen`.
 
@@ -89,27 +90,33 @@ The script builds the application once and starts two loopback replicas with tem
 long-running Trigger, such as `text-normalization-http-app`. Set `RAILIX_CLI_JAR` to reuse an
 existing packaged CLI.
 
+While the launcher is running, paste the printed `join` command into another terminal. The script
+reuses the same JAR, issues a certificate for the new replica, and gives it the addresses of the
+other demo replicas. Use a different free mesh port as the last argument each time. The signing
+key stays in the private demo directory until the launcher exits.
+
 Run the printed Creator command in another terminal. Choose **Project actions > Connect live app**
-and select either process. In the runtime details, **Mesh** shows the connection state and **Peer**
-shows the authenticated peer's readiness. A mismatched build shows **Build mismatch** in the
-rejection details. Stop both demo replicas with `Ctrl-C` in the first terminal.
+and select a replica. In the runtime details, **Mesh** shows the connection state and **Peer**
+summarizes one authenticated connection. A mismatched build shows **Build mismatch** in the
+rejection details. Stop added replicas with `Ctrl-C` in their own terminals. Then stop the initial
+launcher with `Ctrl-C` to stop its two replicas and remove the demo credentials.
 
 ## Deploy An Application
 
-Build once with JDK 25. Copy the printed JAR and [run-mesh.sh](../run-mesh.sh) to each host.
+Build once with the Railix CLI and JDK 25. Copy the printed JAR and [run-mesh.sh](../run-mesh.sh)
+to each host.
 Use Bash, Java 25, and `unzip` to start each replica with its own mesh configuration.
 
 ```sh
-PROJECT_FILE=path/to/railix.project.json ./run-mesh.sh build
+railix build path/to/railix.project.json --mesh
 
 APPLICATION_JAR=/path/to/application.jar RAILIX_MESH_CONFIG=/path/to/mesh.json \
   ./run-mesh.sh deploy
 ```
 
-You can also build with `railix build railix.project.json --mesh --include-project`. The
-`--include-project` option embeds the project documents for Creator attachment. Use the same
-JAR for both replicas. Set `APP` to the path printed by the build or to the path of the copied
-JAR on the host where you start it.
+Add `--include-project` to embed the project documents for Creator attachment. Use the same JAR
+for each replica. Set `APP` to the path printed by the build or to the copied JAR on the host
+where you start it.
 
 ```sh
 APP=/path/to/application.jar
@@ -118,7 +125,7 @@ RAILIX_MESH_CONFIG=/path/to/mesh.json java -jar "$APP"
 
 ### Startup Configuration
 
-Use the same `meshId` and trust issuer on both replicas. Give each replica its own certificate and
+Use the same `meshId` and trust issuer across replicas. Give each replica its own certificate and
 private key. The certificate identifies the replica and its mesh. The configuration also sets the
 listen and advertised mesh endpoints, bootstrap addresses, Flow capacity, and the paths to the
 identity store, trust store, and password files. See the [configuration reference](specs/mesh.md#startup-configuration)

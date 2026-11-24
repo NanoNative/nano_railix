@@ -1,6 +1,7 @@
 package dev.nanonative.railix.mesh;
 
 import dev.nanonative.railix.core.value.RailixValue;
+import dev.nanonative.railix.mesh.peer.PeerConnection;
 import dev.nanonative.railix.mesh.peer.PeerSession;
 
 import java.io.IOException;
@@ -11,28 +12,45 @@ import java.net.SocketTimeoutException;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.time.Duration;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 
-/** Owns the fixed-peer mesh listener and session for one generated application's lifetime. */
+/** Owns the mesh listener and configured peer sessions for a generated application. */
 public final class MeshRuntime implements AutoCloseable {
     private static final long LISTEN_LOOKUP_NANOS = Duration.ofSeconds(5).toNanos();
     private static final long JOIN_NANOS = Duration.ofSeconds(5).toNanos();
+    // Leave room in the 16 KiB observation response for multibyte hostnames and status metadata.
+    private static final int MAX_CONNECTED_PEERS = 12;
     private static final RailixValue ABSENT = RailixValue.nullValue();
+    private static final RailixValue READY = RailixValue.string("ready");
+    // Both replicas use the lexicographic order of the same UUIDs to pick a connection.
+    private static final Comparator<PeerConnection> CONNECTION_ORDER = Comparator
+            .comparing((final PeerConnection connection) -> connection.initiator().toString())
+            .thenComparing(connection -> connection.connectionId().toString());
 
     private final MeshConfig config;
     private final PeerSession peerSession;
     private final String build;
-    private final Semaphore sessionSlot = new Semaphore(1);
+    private final Semaphore inboundJoin = new Semaphore(1);
+    private final Semaphore outboundJoin = new Semaphore(1, true);
+    private final BootstrapRetries bootstrap = new BootstrapRetries();
+    private final Map<UUID, ConnectionAttempt> peers = new TreeMap<>();
+    private final ExecutorService connections = Executors.newThreadPerTaskExecutor(
+            Thread.ofVirtual().name("railix-mesh-connection-", 0).factory());
     private final PeerAddressResolver resolver;
     private final ServerSocket listener;
     private final Thread acceptor;
-    private final Thread dialer;
     private volatile boolean closed;
     private volatile RailixValue.ObjectValue status;
+    private RailixValue lastRejection = ABSENT;
 
     private MeshRuntime(final MeshConfig config, final PeerSession peerSession, final String build,
                         final ServerSocket listener, final PeerAddressResolver resolver) {
@@ -42,8 +60,7 @@ public final class MeshRuntime implements AutoCloseable {
         this.listener = listener;
         this.resolver = resolver;
         acceptor = Thread.ofVirtual().name("railix-mesh-listener").unstarted(this::accept);
-        dialer = Thread.ofVirtual().name("railix-mesh-bootstrap").unstarted(this::dial);
-        publish("starting", ABSENT, ABSENT);
+        publish("starting");
     }
 
     /**
@@ -61,25 +78,7 @@ public final class MeshRuntime implements AutoCloseable {
             throw new IOException(MeshErrors.STARTUP_FAILED_PREFIX + MeshErrors.CONFIG_PATH_REQUIRED);
         }
         try {
-            final MeshConfig config = MeshConfig.load(Path.of(configurationPath));
-            final PeerSession peerSession = PeerSession.open(config.meshId(), logicalBuildId,
-                    config.advertised(), config.flowCapacity(), config.identity().path(), config.identity().passwordFile(),
-                    config.trust().path(), config.trust().passwordFile());
-            final var resolver = new PeerAddressResolver();
-            final var listen = resolver.resolve(config.listen(), System.nanoTime() + LISTEN_LOOKUP_NANOS).getFirst();
-            final ServerSocket listener = new ServerSocket();
-            try {
-                listener.setReuseAddress(true);
-                listener.bind(listen, 1);
-                return Optional.of(new MeshRuntime(config, peerSession, logicalBuildId, listener, resolver));
-            } catch (final IOException | RuntimeException failure) {
-                try {
-                    listener.close();
-                } catch (final IOException closing) {
-                    failure.addSuppressed(closing);
-                }
-                throw failure;
-            }
+            return Optional.of(openConfigured(Path.of(configurationPath), logicalBuildId));
         } catch (final InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IOException(MeshErrors.STARTUP_FAILED_PREFIX + MeshErrors.LISTEN_LOOKUP_INTERRUPTED, interrupted);
@@ -88,15 +87,39 @@ public final class MeshRuntime implements AutoCloseable {
         }
     }
 
+    private static MeshRuntime openConfigured(final Path configurationPath, final String logicalBuildId)
+            throws IOException, GeneralSecurityException, InterruptedException {
+        final MeshConfig config = MeshConfig.load(configurationPath);
+        final PeerSession peerSession = PeerSession.open(config.meshId(), logicalBuildId,
+                config.advertised(), config.flowCapacity(), config.identity().path(), config.identity().passwordFile(),
+                config.trust().path(), config.trust().passwordFile());
+        final PeerAddressResolver resolver = new PeerAddressResolver();
+        final InetSocketAddress listen = resolver.resolve(config.listen(), System.nanoTime() + LISTEN_LOOKUP_NANOS)
+                .getFirst();
+        final ServerSocket listener = new ServerSocket();
+        try {
+            listener.setReuseAddress(true);
+            listener.bind(listen, 1);
+            return new MeshRuntime(config, peerSession, logicalBuildId, listener, resolver);
+        } catch (final IOException | RuntimeException failure) {
+            try {
+                listener.close();
+            } catch (final IOException closing) {
+                failure.addSuppressed(closing);
+            }
+            throw failure;
+        }
+    }
+
     /** Starts peer processing after the application's local sources launch successfully. */
     public synchronized void start() {
         if (closed || acceptor.getState() != Thread.State.NEW) {
             return;
         }
-        publish("waiting", ABSENT, ABSENT);
+        publish("waiting");
         acceptor.start();
-        if (!config.bootstrap().isEmpty()) {
-            dialer.start();
+        for (final PeerEndpoint seed : config.bootstrap()) {
+            connections.execute(() -> dial(seed));
         }
     }
 
@@ -107,14 +130,21 @@ public final class MeshRuntime implements AutoCloseable {
 
     /** Releases the listener and interrupts peer I/O and bootstrap waits on application shutdown. */
     @Override
-    public synchronized void close() {
-        if (closed) {
-            return;
+    public void close() {
+        final List<PeerConnection> active;
+        synchronized (this) {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            active = peers.values().stream().map(attempt -> attempt.peer).toList();
+            peers.clear();
+            publish("draining");
+            notifyAll();
         }
-        closed = true;
-        publish("draining", ABSENT, ABSENT);
         acceptor.interrupt();
-        dialer.interrupt();
+        connections.shutdownNow();
+        active.forEach(PeerConnection::close);
         try {
             listener.close();
         } catch (final IOException ignored) {
@@ -125,119 +155,233 @@ public final class MeshRuntime implements AutoCloseable {
     private void accept() {
         try {
             while (!closed) {
-                try (Socket transport = listener.accept()) {
-                    final long deadline = System.nanoTime() + JOIN_NANOS;
-                    if (!sessionSlot.tryAcquire()) {
-                        continue;
-                    }
-                    try {
-                        if (peerSession.accept(transport, deadline, this::joined, this::reject)) {
-                            publish("waiting", ABSENT, ABSENT);
-                        }
-                    } finally {
-                        sessionSlot.release();
-                    }
+                final Socket transport = listener.accept();
+                if (!accept(transport, System.nanoTime() + JOIN_NANOS)) {
+                    transport.close();
                 }
             }
         } catch (final IOException failure) {
             rejectWhileIdle(MeshErrors.LISTENER_UNAVAILABLE);
-        } catch (final InterruptedException stopped) {
-            Thread.currentThread().interrupt();
         }
     }
 
-    private void dial() {
-        final var endpoints = config.bootstrap();
-        int next = 0;
-        int ceiling = 1_000;
+    private synchronized boolean accept(final Socket transport, final long deadline) {
+        if (closed || !inboundJoin.tryAcquire()) {
+            return false;
+        }
+        connections.execute(() -> {
+            try (ConnectionAttempt attempt = new ConnectionAttempt(inboundJoin)) {
+                peerSession.accept(transport, deadline, attempt::update, this::reject);
+            } catch (final InterruptedException stopped) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        return true;
+    }
+
+    private void dial(final PeerEndpoint seed) {
+        final BootstrapRetries.Backoff lookupBackoff = new BootstrapRetries.Backoff();
+        List<BootstrapRetries.Target> targets = List.of();
         try {
             while (!closed) {
-                // Wait out an active peer without reserving the slot during hostname resolution.
-                sessionSlot.acquire();
-                sessionSlot.release();
-                if (closed) {
-                    return;
+                final long deadline = System.nanoTime() + JOIN_NANOS;
+                final List<InetSocketAddress> addresses = resolveSeed(seed, deadline);
+                if (addresses.isEmpty()) {
+                    Thread.sleep(lookupBackoff.nextDelayMillis());
+                    continue;
                 }
-                final boolean joined = dial(endpoints.get(next));
-                next = (next + 1) % endpoints.size();
-                if (joined) {
-                    ceiling = 1_000;
-                } else {
-                    Thread.sleep(ThreadLocalRandom.current().nextInt(ceiling / 2, ceiling + 1));
-                    ceiling = Math.min(ceiling * 2, 30_000);
+                lookupBackoff.reset();
+                targets = bootstrap.replace(targets, addresses);
+                connect(targets, deadline);
+                if (!closed) {
+                    bootstrap.awaitRetry(targets);
                 }
             }
         } catch (final InterruptedException stopped) {
             Thread.currentThread().interrupt();
+        } finally {
+            bootstrap.replace(targets, List.of());
         }
     }
 
-    private boolean dial(final PeerEndpoint seed) throws InterruptedException {
-        final long deadline = System.nanoTime() + JOIN_NANOS;
-        final List<InetSocketAddress> addresses;
+    private List<InetSocketAddress> resolveSeed(final PeerEndpoint seed, final long deadline) throws InterruptedException {
         try {
-            addresses = resolver.resolve(seed, deadline);
+            return resolver.resolve(seed, deadline);
         } catch (final SocketTimeoutException expired) {
             rejectWhileIdle(MeshErrors.JOIN_TIMEOUT);
-            return false;
         } catch (final IOException failure) {
             rejectWhileIdle(MeshErrors.PEER_UNAVAILABLE);
+        }
+        return List.of();
+    }
+
+    private void connect(final List<BootstrapRetries.Target> targets, final long deadline) throws InterruptedException {
+        for (int index = 0; index < targets.size() && !closed; index++) {
+            final BootstrapRetries.Target target = targets.get(index);
+            final int addressesLeft = targets.size() - index;
+            if (tryAddress(target, deadline, addressesLeft)) {
+                return;
+            }
+        }
+    }
+
+    /** @return whether the dial outcome or join deadline ends this address scan */
+    private boolean tryAddress(final BootstrapRetries.Target target, final long deadline, final int addressesLeft)
+            throws InterruptedException {
+        if (!bootstrap.tryStart(target)) {
             return false;
         }
-        if (!sessionSlot.tryAcquire()) {
-            return false;
-        }
+        boolean heartbeatReceived = false;
         try {
-            for (int index = 0; index < addresses.size() && !closed; index++) {
-                final long now = System.nanoTime();
-                final long remaining = deadline - now;
-                if (remaining <= 0) {
-                    reject(MeshErrors.JOIN_TIMEOUT);
-                    return false;
-                }
+            final long remaining = deadline - System.nanoTime();
+            if (remaining <= 0 || !outboundJoin.tryAcquire(remaining, TimeUnit.NANOSECONDS)) {
+                rejectWhileIdle(MeshErrors.JOIN_TIMEOUT);
+                return true;
+            }
+            final ConnectionAttempt attempt = new ConnectionAttempt(outboundJoin);
+            try (attempt) {
                 // Leave time for the other addresses and carry unused time forward.
-                final int untriedAddresses = addresses.size() - index;
-                final long attemptDeadline = now + Math.max(1, remaining / untriedAddresses);
-                if (peerSession.dial(addresses.get(index), attemptDeadline, this::joined, this::reject)) {
-                    publish("waiting", ABSENT, ABSENT);
+                final long started = System.nanoTime();
+                final long budget = deadline - started;
+                if (budget <= 0) {
+                    rejectWhileIdle(MeshErrors.JOIN_TIMEOUT);
                     return true;
                 }
+                final long attemptDeadline = started + Math.max(1, budget / addressesLeft);
+                heartbeatReceived = peerSession.dial(
+                        target.address(), attemptDeadline, attempt::update, this::reject);
             }
-            return false;
+            if (attempt.peer == null) {
+                return false;
+            }
+
+            // A simultaneous dial can leave another connection to this replica in use.
+            final boolean retainedConnection = awaitDisconnection(attempt.peer.replicaId());
+            return retainedConnection || heartbeatReceived;
         } finally {
-            sessionSlot.release();
+            bootstrap.finish(target, heartbeatReceived);
         }
     }
 
-    private void joined(final RailixValue.ObjectValue peer) {
-        publish("joined", peer, ABSENT);
-    }
-
-    private void reject(final String reason) {
-        publish("rejected", ABSENT, RailixValue.string(reason));
-    }
-
-    private void rejectWhileIdle(final String reason) {
-        if (!sessionSlot.tryAcquire()) {
-            return;
+    private synchronized boolean awaitDisconnection(final UUID replica) throws InterruptedException {
+        final boolean connected = peers.containsKey(replica);
+        while (!closed && peers.containsKey(replica)) {
+            wait();
         }
-        try {
+        return connected;
+    }
+
+    private synchronized void reject(final String reason) {
+        if (!closed) {
+            lastRejection = RailixValue.string(reason);
+            publish(peers.isEmpty() ? "rejected" : "joined");
+        }
+    }
+
+    private synchronized void rejectWhileIdle(final String reason) {
+        if (peers.isEmpty()) {
             reject(reason);
-        } finally {
-            sessionSlot.release();
         }
     }
 
-    private synchronized void publish(final String phase, final RailixValue peer, final RailixValue rejection) {
-        if (closed && !"draining".equals(phase)) {
-            return;
-        }
+    private void publish(final String phase) {
+        final List<RailixValue> observed = peers.values().stream().<RailixValue>map(attempt -> attempt.state).toList();
         status = RailixValue.object(Map.of(
                 "status", RailixValue.string(phase),
                 "logicalBuildId", RailixValue.string(build),
                 "replicaId", RailixValue.string(peerSession.replicaId().toString()),
-                "peer", peer,
-                "rejection", rejection
+                "peer", observed.isEmpty() ? ABSENT : observed.getFirst(),
+                "peers", RailixValue.array(observed),
+                "rejection", lastRejection
         ));
+    }
+
+    private final class ConnectionAttempt implements AutoCloseable {
+        private final Semaphore permit;
+        private PeerConnection peer;
+        private RailixValue.ObjectValue state;
+        private boolean joining = true;
+
+        private ConnectionAttempt(final Semaphore permit) {
+            this.permit = permit;
+        }
+
+        private boolean update(final PeerConnection connection, final RailixValue.ObjectValue advertised) {
+            final ConnectionAttempt current;
+            synchronized (MeshRuntime.this) {
+                if (closed) {
+                    return false;
+                }
+                current = peers.get(connection.replicaId());
+                if (!joining) {
+                    return updateRegisteredPeer(current, advertised);
+                }
+
+                // The dialer needs the authenticated identity even when another connection wins.
+                peer = connection;
+                if (!register(current, advertised)) {
+                    return false;
+                }
+            }
+            if (current != null) {
+                current.peer.close();
+            }
+            return true;
+        }
+
+        private boolean updateRegisteredPeer(final ConnectionAttempt current, final RailixValue.ObjectValue advertised) {
+            if (current != this) {
+                return false;
+            }
+            state = advertised;
+            publish("joined");
+            return true;
+        }
+
+        private boolean register(final ConnectionAttempt current, final RailixValue.ObjectValue advertised) {
+            if (current != null) {
+                if (!peer.incarnationId().equals(current.peer.incarnationId())) {
+                    reject(MeshErrors.REPLICA_ALREADY_CONNECTED);
+                    return false;
+                }
+                if (!canReplace(current, advertised)) {
+                    return false;
+                }
+            } else if (peers.size() == MAX_CONNECTED_PEERS) {
+                reject(MeshErrors.PEER_LIMIT_REACHED);
+                return false;
+            }
+            state = advertised;
+            peers.put(peer.replicaId(), this);
+            joining = false;
+            // The permit covers the handshake. An admitted peer keeps its session without it.
+            permit.release();
+            publish("joined");
+            return true;
+        }
+
+        private boolean canReplace(final ConnectionAttempt current, final RailixValue.ObjectValue advertised) {
+            final boolean currentReady = READY.equals(current.state.values().get("status"));
+            final boolean incomingReady = READY.equals(advertised.values().get("status"));
+            if (currentReady && !incomingReady) {
+                return false;
+            }
+            return CONNECTION_ORDER.compare(peer, current.peer) < 0;
+        }
+
+        @Override
+        public void close() {
+            synchronized (MeshRuntime.this) {
+                if (joining) {
+                    permit.release();
+                    return;
+                }
+                // The old session can exit after its replacement has registered.
+                if (peers.remove(peer.replicaId(), this)) {
+                    publish(peers.isEmpty() ? "waiting" : "joined");
+                    MeshRuntime.this.notifyAll();
+                }
+            }
+        }
     }
 }

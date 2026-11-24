@@ -18,7 +18,9 @@ import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Stream;
 
@@ -35,9 +37,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class PeerChannelTest {
     @Test
     void onlyOneChannelCanClaimTheSameSocket() throws Exception {
-        final var start = new CyclicBarrier(2);
-        try (var socket = new PeerStreamSocket(InputStream.nullInputStream(), OutputStream.nullOutputStream());
-             var tasks = Executors.newVirtualThreadPerTaskExecutor()) {
+        final CyclicBarrier start = new CyclicBarrier(2);
+        try (PeerStreamSocket socket = new PeerStreamSocket(
+                InputStream.nullInputStream(), OutputStream.nullOutputStream());
+             ExecutorService tasks = Executors.newVirtualThreadPerTaskExecutor()) {
             final Callable<Optional<PeerChannel>> claim = () -> {
                 start.await(2, SECONDS);
                 try {
@@ -46,9 +49,9 @@ class PeerChannelTest {
                     return Optional.empty();
                 }
             };
-            final var first = tasks.submit(claim);
-            final var second = tasks.submit(claim);
-            final var channels = Stream.of(first.get(2, SECONDS), second.get(2, SECONDS))
+            final Future<Optional<PeerChannel>> first = tasks.submit(claim);
+            final Future<Optional<PeerChannel>> second = tasks.submit(claim);
+            final List<PeerChannel> channels = Stream.of(first.get(2, SECONDS), second.get(2, SECONDS))
                     .flatMap(Optional::stream).toList();
             assertEquals(1, channels.size());
             assertFalse(socket.isClosed());
@@ -60,7 +63,7 @@ class PeerChannelTest {
 
     @Test
     void failedConstructionLeavesTheSocketWithItsCaller() throws Exception {
-        try (var socket = new Socket()) {
+        try (Socket socket = new Socket()) {
             assertThrows(IOException.class, () -> new PeerChannel(socket));
             assertThrows(IOException.class, () -> new PeerChannel(socket));
             assertFalse(socket.isClosed());
@@ -69,21 +72,21 @@ class PeerChannelTest {
 
     @Test
     void overlappingWritesKeepWholeFramesAndAllowAnIndependentRead() throws Exception {
-        final var output = new FrameWriteGate();
-        final var input = new ByteArrayInputStream(wire("000000012a"));
-        try (var channel = new PeerChannel(new PeerStreamSocket(input, output));
-             var tasks = Executors.newVirtualThreadPerTaskExecutor()) {
-            final var first = tasks.submit(() -> channel.write(new byte[]{1, 2}, 3));
+        final FrameWriteGate output = new FrameWriteGate();
+        final ByteArrayInputStream input = new ByteArrayInputStream(wire("000000012a"));
+        try (PeerChannel channel = new PeerChannel(new PeerStreamSocket(input, output));
+             ExecutorService tasks = Executors.newVirtualThreadPerTaskExecutor()) {
+            final Future<Boolean> first = tasks.submit(() -> channel.write(new byte[]{1, 2}, 3));
             try {
                 assertTrue(output.headerWritten.await(2, SECONDS));
-                final var secondStarted = new CountDownLatch(1);
-                final var second = tasks.submit(() -> {
+                final CountDownLatch secondStarted = new CountDownLatch(1);
+                final Future<Boolean> second = tasks.submit(() -> {
                     secondStarted.countDown();
                     return channel.write(new byte[]{3, 4, 5}, 3);
                 });
                 assertTrue(secondStarted.await(2, SECONDS));
 
-                final var read = tasks.submit(() -> channel.read(1, size -> Optional.of(new byte[size])));
+                final Future<FrameRead> read = tasks.submit(() -> channel.read(1, size -> Optional.of(new byte[size])));
                 assertArrayEquals(new byte[]{42}, assertInstanceOf(FrameBody.class, read.get(2, SECONDS)).bytes());
                 assertThrows(TimeoutException.class, () -> second.get(100, MILLISECONDS));
 
@@ -108,10 +111,10 @@ class PeerChannelTest {
     })
     void closesOnTerminalFrameReads(final String bytes, final FrameReadStatus reason,
                                     final Integer requestedBytes, final int unreadBytes) throws Exception {
-        final var input = new ByteArrayInputStream(wire(bytes));
-        final var socket = new PeerStreamSocket(input, OutputStream.nullOutputStream());
-        final var requests = new ArrayList<Integer>();
-        try (var channel = new PeerChannel(socket)) {
+        final ByteArrayInputStream input = new ByteArrayInputStream(wire(bytes));
+        final PeerStreamSocket socket = new PeerStreamSocket(input, OutputStream.nullOutputStream());
+        final ArrayList<Integer> requests = new ArrayList<Integer>();
+        try (PeerChannel channel = new PeerChannel(socket)) {
             assertEquals(reason, channel.read(PeerFrames.MAX_CONTROL_BODY_BYTES, size -> {
                 requests.add(size);
                 return Optional.of(new byte[size]);
@@ -124,9 +127,9 @@ class PeerChannelTest {
 
     @Test
     void closesWithoutReadingTheBodyWhenCapacityIsUnavailable() throws Exception {
-        final var input = new ByteArrayInputStream(wire("00000002aabb"));
-        final var socket = new PeerStreamSocket(input, OutputStream.nullOutputStream());
-        try (var channel = new PeerChannel(socket)) {
+        final ByteArrayInputStream input = new ByteArrayInputStream(wire("00000002aabb"));
+        final PeerStreamSocket socket = new PeerStreamSocket(input, OutputStream.nullOutputStream());
+        try (PeerChannel channel = new PeerChannel(socket)) {
             assertEquals(FrameReadStatus.BODY_UNAVAILABLE, channel.read(2, size -> {
                 assertEquals(2, size);
                 return Optional.empty();
@@ -138,9 +141,9 @@ class PeerChannelTest {
 
     @Test
     void closesSocketAfterAPartialWrite() throws Exception {
-        final var output = new HeaderOnlyOutputStream();
-        final var socket = new PeerStreamSocket(InputStream.nullInputStream(), output);
-        try (var channel = new PeerChannel(socket)) {
+        final HeaderOnlyOutputStream output = new HeaderOnlyOutputStream();
+        final PeerStreamSocket socket = new PeerStreamSocket(InputStream.nullInputStream(), output);
+        try (PeerChannel channel = new PeerChannel(socket)) {
             assertSame(output.failure, assertThrows(IOException.class, () -> channel.write(new byte[]{42}, 1)));
             assertArrayEquals(wire("00000001"), output.bytes.toByteArray());
             assertTrue(socket.isClosed());
