@@ -95,6 +95,9 @@ final class RailixPackageIT {
     }
 
     @Test
+    // Sixteen packaged processes start concurrently. A cold hosted runner can need
+    // longer than the class default while still making normal forward progress.
+    @Timeout(90)
     void concurrentPackagedRunsShareOneAtomicApplicationBuild() throws Exception {
         Files.writeString(
                 directory.resolve("railix.project.json"),
