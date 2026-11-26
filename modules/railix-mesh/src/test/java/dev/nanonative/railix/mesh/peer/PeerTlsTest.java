@@ -180,7 +180,7 @@ class PeerTlsTest {
                     try (PeerTlsConnection duplicate = client.dial(address, deadline())) {
                         exchangeClientHello(duplicate.channel(), build, incarnation);
                         assertEquals(FrameReadStatus.END_OF_STREAM, duplicate.channel().read(
-                                PeerFrames.MAX_CONTROL_BODY_BYTES, size -> Optional.of(new byte[size])));
+                                PeerFrames.MAX_CONTROL_BODY_BYTES, byte[]::new));
                     }
                     final String id = PeerProtocol.text(invocation.values().get("id"));
                     PeerProtocol.write(original.channel(), FlowWire.encodeOutcome(id, completed));
@@ -231,7 +231,7 @@ class PeerTlsTest {
                     try (PeerTlsConnection crossed = client.dial(address, deadline())) {
                         exchangeClientHello(crossed.channel(), build, incarnation);
                         assertEquals(FrameReadStatus.END_OF_STREAM, crossed.channel().read(
-                                PeerFrames.MAX_CONTROL_BODY_BYTES, size -> Optional.of(new byte[size])));
+                                PeerFrames.MAX_CONTROL_BODY_BYTES, byte[]::new));
                     }
                 }
 
@@ -350,7 +350,7 @@ class PeerTlsTest {
                         CLIENT_ID, UUID.randomUUID());
                 PeerProtocol.write(channel, differentBuild);
                 assertEquals(FrameReadStatus.END_OF_STREAM,
-                        channel.read(PeerFrames.MAX_CONTROL_BODY_BYTES, size -> Optional.of(new byte[size])));
+                        channel.read(PeerFrames.MAX_CONTROL_BODY_BYTES, byte[]::new));
                 assertEquals(RailixValue.string("build-mismatch"), runtime.status().values().get("rejection"));
             }
         }

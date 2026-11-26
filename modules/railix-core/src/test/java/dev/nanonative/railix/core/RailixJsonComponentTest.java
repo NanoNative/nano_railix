@@ -58,7 +58,7 @@ class RailixJsonComponentTest {
                 "items", RailixValue.array(List.of(RailixValue.bool(true), RailixValue.nullValue()))));
         final String document = "{\"items\":[true,null]}";
 
-        assertThat(RailixJson.writeTransferDocument(message, 100, 5)).contains(document);
+        assertThat(RailixJson.writeTransferDocument(message, 100, 5)).isEqualTo(document);
         assertThat(RailixJson.writeTransferDocument(message, 100, 4)).isEmpty();
         assertThat(RailixJson.parseDocument(document, 5)).isEqualTo(new RailixJson.Parsed(message));
         assertThat(RailixJson.parseDocument(document, 4)).isInstanceOfSatisfying(
@@ -82,7 +82,7 @@ class RailixJsonComponentTest {
         final RailixValue.ObjectValue message = RailixValue.object(Map.of("data", RailixValue.object(fields)));
         final String expected = "{\"data\":{\"z\":1.00,\"a\":1.2E+3}}";
 
-        assertThat(RailixJson.writeTransferDocument(message, expected.length(), 7)).contains(expected);
+        assertThat(RailixJson.writeTransferDocument(message, expected.length(), 7)).isEqualTo(expected);
         assertThat(RailixJson.parseDocument(expected, 7)).isEqualTo(new RailixJson.Parsed(message));
     }
 
@@ -91,7 +91,7 @@ class RailixJsonComponentTest {
         final RailixValue.NumberValue value = RailixValue.number(new BigDecimal("1." + "0".repeat(1_024)));
 
         assertThat(RailixJson.fitsUtf8(value, 1)).isTrue();
-        assertThat(RailixJson.measureTransfer(value, 2_048, 1, 1)).isEmpty();
+        assertThat(RailixJson.measureTransfer(value, 2_048, 1, 1).exceeded()).isTrue();
         assertThat(RailixJson.writeTransferDocument(value, 2_048, 1)).isEmpty();
     }
 
@@ -166,9 +166,11 @@ class RailixJsonComponentTest {
 
         assertThat(RailixJson.write(value, bytes - 1)).isEmpty();
         assertThat(RailixJson.write(value, bytes)).contains(expected);
-        assertThat(RailixJson.measureTransfer(value, source.length() - 1, 1, 1)).isEmpty();
-        assertThat(RailixJson.measureTransfer(value, source.length(), 1, 1))
-                .contains(new RailixJson.Size(source.length(), 1));
+        assertThat(RailixJson.measureTransfer(value, source.length() - 1, 1, 1).exceeded()).isTrue();
+        final RailixJson.TransferMeasurement exact = RailixJson.measureTransfer(value, source.length(), 1, 1);
+        assertThat(exact.exceeded()).isFalse();
+        assertThat(exact.remainingBytes()).isZero();
+        assertThat(exact.remainingNodes()).isZero();
     }
 
     static Stream<Arguments> signedNumbers() {

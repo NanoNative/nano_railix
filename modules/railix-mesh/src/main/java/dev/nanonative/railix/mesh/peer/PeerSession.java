@@ -260,7 +260,7 @@ public final class PeerSession implements AutoCloseable {
 
     private static Optional<RailixValue.ObjectValue> readInitialState(final PeerChannel channel, final AtomicLong expires,
             final Consumer<String> onRejected) throws IOException, InterruptedException {
-        final FrameRead frame = channel.read(PeerFrames.MAX_CONTROL_BODY_BYTES, size -> Optional.of(new byte[size]));
+        final FrameRead frame = channel.read(PeerFrames.MAX_CONTROL_BODY_BYTES, byte[]::new);
         if (expires.get() == 0) {
             onRejected.accept(MeshErrors.JOIN_TIMEOUT);
             return Optional.empty();
@@ -292,11 +292,9 @@ public final class PeerSession implements AutoCloseable {
         try {
             RailixValue.ObjectValue publishedState = initialState;
             while (!Thread.currentThread().isInterrupted()) {
-                final Optional<PeerMessage> next = flows.read();
-                if (next.isEmpty()) {
+                if (!(flows.read() instanceof PeerMessage message)) {
                     break;
                 }
-                final PeerMessage message = next.orElseThrow();
                 final RailixValue.ObjectValue state = message.value();
                 if (!"state".equals(PeerProtocol.text(state.values().get("type")))) {
                     if (!flows.receive(message)) {

@@ -14,7 +14,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -43,9 +42,9 @@ class PeerFramesTest {
                 new ByteArrayInputStream(wire, headerSplit, bodySplit - headerSplit),
                 new ByteArrayInputStream(wire, bodySplit, wire.length - bodySplit)
         )))) {
-            final FrameRead firstRead = PeerFrames.read(input, limit, size -> Optional.of(new byte[size]));
+            final FrameRead firstRead = PeerFrames.read(input, limit, byte[]::new);
             assertArrayEquals(first, assertInstanceOf(FrameBody.class, firstRead).bytes());
-            final FrameRead secondRead = PeerFrames.read(input, limit, size -> Optional.of(new byte[size]));
+            final FrameRead secondRead = PeerFrames.read(input, limit, byte[]::new);
             assertArrayEquals(second, assertInstanceOf(FrameBody.class, secondRead).bytes());
         }
     }

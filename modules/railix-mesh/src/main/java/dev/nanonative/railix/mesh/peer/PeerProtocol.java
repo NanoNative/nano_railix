@@ -88,17 +88,21 @@ final class PeerProtocol {
     }
 
     static Optional<RailixValue.ObjectValue> read(final PeerChannel channel) throws IOException, InterruptedException {
-        final FrameRead frame = channel.read(LIMIT, size -> Optional.of(new byte[size]));
+        final FrameRead frame = channel.read(LIMIT, byte[]::new);
         return frame instanceof FrameBody body ? decode(body) : Optional.empty();
     }
 
     static Optional<RailixValue.ObjectValue> decode(final FrameBody body) throws IOException {
-        final String document = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(body.bytes())).toString();
-        if (RailixJson.parseDocument(document, MAX_NODES) instanceof RailixJson.Parsed parsed
+        if (parse(body) instanceof RailixJson.Parsed parsed
                 && parsed.value() instanceof RailixValue.ObjectValue object) {
             return Optional.of(object);
         }
         return Optional.empty();
+    }
+
+    static RailixJson.Result parse(final FrameBody body) throws IOException {
+        final String document = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(body.bytes())).toString();
+        return RailixJson.parseDocument(document, MAX_NODES);
     }
 
     private static byte[] encode(final RailixValue.ObjectValue frame) {

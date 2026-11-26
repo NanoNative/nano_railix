@@ -119,11 +119,11 @@ public final class RailixJson {
      * @param value message to transfer
      * @param maxBytes maximum complete UTF-8 bytes
      * @param maxNodes maximum field names, containers and primitives
-     * @return complete JSON, or empty when a transfer limit is exceeded
+     * @return complete JSON, or the empty string when a transfer limit is exceeded
      */
-    public static Optional<String> writeTransferDocument(final RailixValue value, final int maxBytes, final int maxNodes) {
+    public static String writeTransferDocument(final RailixValue value, final int maxBytes, final int maxNodes) {
         final JsonOutput json = bounded(value, maxBytes, true, MAX_DOCUMENT_DEPTH, maxNodes, true);
-        return json.exceeded() ? Optional.empty() : Optional.of(json.value());
+        return json.exceeded() ? "" : json.value();
     }
 
     /**
@@ -151,8 +151,17 @@ public final class RailixJson {
         return !bounded(value, maxBytes, false, RailixData.DEFAULT_MAX_DEPTH).exceeded();
     }
 
-    /** JSON size, including object field names in the node count. */
-    public record Size(int bytes, int nodes) { }
+    /** Read-only result of measuring a transfer against a byte and node budget. */
+    public sealed interface TransferMeasurement permits JsonOutput {
+        /** @return whether a transfer limit prevented a complete measurement */
+        boolean exceeded();
+
+        /** @return remaining UTF-8 bytes after a successful measurement */
+        int remainingBytes();
+
+        /** @return remaining field names, containers and primitives after a successful measurement */
+        int remainingNodes();
+    }
 
     /**
      * Measures the same representation written by {@link #writeTransferDocument}.
@@ -160,16 +169,15 @@ public final class RailixJson {
      * @param maxBytes remaining UTF-8 bytes
      * @param maxNodes remaining field names, containers and primitives
      * @param maxDepth remaining container depth
-     * @return its transfer size, or empty when a transfer limit is exceeded
+     * @return the remaining budget, with {@link TransferMeasurement#exceeded()} indicating an incomplete measurement
      * @throws IllegalArgumentException for an invalid value, depth or budget
      */
-    public static Optional<Size> measureTransfer(final RailixValue value, final int maxBytes, final int maxNodes,
-                                                 final int maxDepth) {
+    public static TransferMeasurement measureTransfer(final RailixValue value, final int maxBytes, final int maxNodes,
+                                                      final int maxDepth) {
         if (maxDepth < 1 || maxDepth > MAX_DOCUMENT_DEPTH) {
             throw new IllegalArgumentException("Maximum JSON depth must be between 1 and " + MAX_DOCUMENT_DEPTH + ".");
         }
-        final JsonOutput json = bounded(value, maxBytes, false, maxDepth, maxNodes, true);
-        return json.exceeded() ? Optional.empty() : Optional.of(new Size(json.bytes, maxNodes - json.remainingNodes));
+        return bounded(value, maxBytes, false, maxDepth, maxNodes, true);
     }
 
     private static JsonOutput bounded(final RailixValue value, final int maxBytes,
@@ -308,10 +316,9 @@ public final class RailixJson {
         json.append('"');
     }
 
-    private static final class JsonOutput {
-        private final StringBuilder value = new StringBuilder();
+    private static final class JsonOutput implements TransferMeasurement {
+        private final StringBuilder value;
         private final int maxBytes;
-        private final boolean capture;
         private final int maxDepth;
         private final boolean preserveValues;
         private int bytes;
@@ -329,7 +336,7 @@ public final class RailixJson {
         private JsonOutput(final int maxBytes, final boolean capture, final int maxDepth, final int maxNodes,
                            final boolean preserveValues) {
             this.maxBytes = maxBytes;
-            this.capture = capture;
+            this.value = capture ? new StringBuilder() : null;
             this.maxDepth = maxDepth;
             this.remainingNodes = maxNodes;
             this.preserveValues = preserveValues;
@@ -366,14 +373,25 @@ public final class RailixJson {
                 exceeded = true;
                 return;
             }
-            if (capture) {
+            if (value != null) {
                 value.appendCodePoint(codePoint);
             }
             bytes += added;
         }
 
-        private boolean exceeded() {
+        @Override
+        public boolean exceeded() {
             return exceeded;
+        }
+
+        @Override
+        public int remainingBytes() {
+            return maxBytes - bytes;
+        }
+
+        @Override
+        public int remainingNodes() {
+            return remainingNodes;
         }
 
         private String value() {

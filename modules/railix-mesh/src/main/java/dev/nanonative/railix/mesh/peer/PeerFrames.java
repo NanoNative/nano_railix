@@ -6,24 +6,25 @@ import java.io.DataOutput;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
-import java.util.Optional;
 import java.util.function.IntFunction;
 
 /** Length framing for encoded mesh messages on a caller-owned stream. */
 final class PeerFrames {
     static final int MAX_CONTROL_BODY_BYTES = 64 * 1024;
     static final int MAX_DATA_BODY_BYTES = 1024 * 1024 + MAX_CONTROL_BODY_BYTES;
+    static final byte[] NO_BODY = new byte[0];
 
     private PeerFrames() {
     }
 
     /**
      * Requests an exact-size body buffer only after validating the length prefix.
-     * An empty reservation leaves the body unread. The caller owns the reservation's lifetime.
+     * A zero-length buffer declines the reservation and leaves the body unread.
+     * The caller owns the reservation's lifetime.
      * The connection owner supplies a checked body limit, handles terminal outcomes and enforces the read deadline.
      */
     static FrameRead read(final InputStream input, final int bodyLimit,
-                          final IntFunction<Optional<byte[]>> reserveBody) throws IOException {
+                          final IntFunction<byte[]> reserveBody) throws IOException {
         final byte[] header = input.readNBytes(Integer.BYTES);
         if (header.length == 0) {
             return FrameReadStatus.END_OF_STREAM;
@@ -37,11 +38,10 @@ final class PeerFrames {
         }
         final int size = (int) length;
         final long headerReceivedNanos = System.nanoTime();
-        final Optional<byte[]> reservation = reserveBody.apply(size);
-        if (reservation.isEmpty()) {
+        final byte[] body = reserveBody.apply(size);
+        if (body.length == 0) {
             return FrameReadStatus.BODY_UNAVAILABLE;
         }
-        final byte[] body = reservation.orElseThrow();
         if (body.length != size) {
             throw new IllegalArgumentException(MeshErrors.INVALID_RESERVED_BUFFER);
         }

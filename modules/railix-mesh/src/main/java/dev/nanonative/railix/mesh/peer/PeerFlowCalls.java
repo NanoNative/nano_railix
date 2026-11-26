@@ -3,6 +3,7 @@ package dev.nanonative.railix.mesh.peer;
 import dev.nanonative.railix.core.project.FlowContinuation;
 import dev.nanonative.railix.core.runtime.RunFailure;
 import dev.nanonative.railix.core.runtime.RunResult;
+import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.mesh.MeshErrors;
 
@@ -120,11 +121,10 @@ public final class PeerFlowCalls implements AutoCloseable {
             if (deadline - System.nanoTime() <= 0) {
                 return false;
             }
-            final Optional<byte[]> encoded = invocation.encode(build);
-            if (encoded.isEmpty() || Thread.currentThread().isInterrupted()) {
+            final byte[] frame = invocation.encode(build);
+            if (frame.length == 0 || Thread.currentThread().isInterrupted()) {
                 return false;
             }
-            final byte[] frame = encoded.orElseThrow();
             outgoing.put(invocation.id, call);
             call.write = new PeerWrite(() -> call.prepare(frame),
                     PeerFrames.MAX_DATA_BODY_BYTES, writeDeadline(deadline),
@@ -156,13 +156,16 @@ public final class PeerFlowCalls implements AutoCloseable {
         return reply;
     }
 
-    Optional<PeerMessage> read() throws IOException, InterruptedException {
-        final FrameRead frame = channel.read(PeerFrames.MAX_DATA_BODY_BYTES, size -> Optional.of(new byte[size]));
+    FrameRead read() throws IOException, InterruptedException {
+        final FrameRead frame = channel.read(PeerFrames.MAX_DATA_BODY_BYTES, byte[]::new);
         if (!(frame instanceof FrameBody body)) {
-            return Optional.empty();
+            return frame;
         }
-        return PeerProtocol.decode(body)
-                .map(value -> new PeerMessage(value, body.bytes().length, body.headerReceivedNanos()));
+        if (PeerProtocol.parse(body) instanceof RailixJson.Parsed parsed
+                && parsed.value() instanceof RailixValue.ObjectValue message) {
+            return new PeerMessage(message, body.bytes().length, body.headerReceivedNanos());
+        }
+        return FrameReadStatus.INVALID_MESSAGE;
     }
 
     boolean receive(final PeerMessage message) {
@@ -257,7 +260,7 @@ public final class PeerFlowCalls implements AutoCloseable {
                 return;
             }
             if (Thread.currentThread().isInterrupted()
-                    && result.filter(RunResult.Cancelled.class::isInstance).isEmpty()) {
+                    && (result.isEmpty() || !(result.orElseThrow() instanceof RunResult.Cancelled))) {
                 return;
             }
             queued = queueReply(id, result, deadline);
@@ -272,9 +275,9 @@ public final class PeerFlowCalls implements AutoCloseable {
     }
 
     private boolean queueReply(final String id, final Optional<RunResult> result, final long deadline) {
-        final byte[] frame = result.map(outcome -> FlowWire.encodeOutcome(id, outcome))
-                .orElseGet(() -> PeerProtocol.refusal(id, "unavailable"));
-        return writer.offer(new PeerWrite(() -> Optional.of(frame), PeerFrames.MAX_DATA_BODY_BYTES,
+        final byte[] frame = result.isPresent()
+                ? FlowWire.encodeOutcome(id, result.orElseThrow()) : PeerProtocol.refusal(id, "unavailable");
+        return writer.offer(new PeerWrite(() -> frame, PeerFrames.MAX_DATA_BODY_BYTES,
                 writeDeadline(deadline), ignored -> releaseReply(id)));
     }
 
@@ -338,7 +341,7 @@ public final class PeerFlowCalls implements AutoCloseable {
             return;
         }
         final long deadline = System.nanoTime() + PeerChannel.WRITE_NANOS;
-        final PeerWrite write = new PeerWrite(() -> Optional.of(frame.get()), PeerFrames.MAX_CONTROL_BODY_BYTES,
+        final PeerWrite write = new PeerWrite(frame, PeerFrames.MAX_CONTROL_BODY_BYTES,
                 deadline, ignored -> slots.release());
         if (!writer.offer(write)) {
             slots.release();
@@ -363,18 +366,18 @@ public final class PeerFlowCalls implements AutoCloseable {
     private static final class InvocationFrame {
         private final String id = UUID.randomUUID().toString();
         private Supplier<FlowContinuation> continuation;
-        private byte[] frame;
+        private byte[] frame = PeerFrames.NO_BODY;
 
         private InvocationFrame(final Supplier<FlowContinuation> continuation) {
             this.continuation = continuation;
         }
 
-        private Optional<byte[]> encode(final String build) {
+        private byte[] encode(final String build) {
             if (continuation != null) {
-                frame = FlowWire.encodeInvocation(continuation.get(), id, build).orElse(null);
+                frame = FlowWire.encodeInvocation(continuation.get(), id, build);
                 continuation = null;
             }
-            return Optional.ofNullable(frame);
+            return frame;
         }
     }
 
@@ -391,12 +394,12 @@ public final class PeerFlowCalls implements AutoCloseable {
             this.deadline = deadline;
         }
 
-        private synchronized Optional<byte[]> prepare(final byte[] frame) {
+        private synchronized byte[] prepare(final byte[] frame) {
             if (abandoned) {
-                return Optional.empty();
+                return PeerFrames.NO_BODY;
             }
             writeStarted = true;
-            return Optional.of(FlowWire.stampInvocation(frame, deadline - System.nanoTime()));
+            return FlowWire.stampInvocation(frame, deadline - System.nanoTime());
         }
 
         private synchronized void receive(final Reply received) {

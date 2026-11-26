@@ -87,7 +87,7 @@ class PeerChannelTest {
              ScheduledExecutorService timers = Executors.newSingleThreadScheduledExecutor();
              ExecutorService tasks = Executors.newVirtualThreadPerTaskExecutor()) {
             final byte[] state = readyState();
-            final Future<Boolean> heartbeat = tasks.submit(() -> channel.writeBefore(() -> Optional.of(state),
+            final Future<Boolean> heartbeat = tasks.submit(() -> channel.writeBefore(() -> state,
                     PeerFrames.MAX_CONTROL_BODY_BYTES, System.nanoTime() + MILLISECONDS.toNanos(500),
                     timers, aborted::countDown));
             try {
@@ -251,7 +251,7 @@ class PeerChannelTest {
             try {
                 assertTrue(output.headerWritten.await(2, SECONDS));
                 final AtomicBoolean aborted = new AtomicBoolean();
-                assertFalse(channel.writeBefore(() -> Optional.of(new byte[]{9}), 3,
+                assertFalse(channel.writeBefore(() -> new byte[]{9}, 3,
                         System.nanoTime() + MILLISECONDS.toNanos(100),
                         timers, () -> aborted.set(true)));
                 assertFalse(aborted.get());
@@ -262,7 +262,7 @@ class PeerChannelTest {
                 });
                 assertTrue(secondStarted.await(2, SECONDS));
 
-                final Future<FrameRead> read = tasks.submit(() -> channel.read(1, size -> Optional.of(new byte[size])));
+                final Future<FrameRead> read = tasks.submit(() -> channel.read(1, byte[]::new));
                 assertArrayEquals(new byte[]{42}, assertInstanceOf(FrameBody.class, read.get(2, SECONDS)).bytes());
                 assertThrows(TimeoutException.class, () -> second.get(100, MILLISECONDS));
 
@@ -291,8 +291,8 @@ class PeerChannelTest {
             try {
                 assertTrue(output.headerWritten.await(1, SECONDS));
                 final Future<RailixValue.ObjectValue> next = tasks.submit(() -> {
-                    assertTrue(calls.receive(calls.read().orElseThrow()));
-                    return calls.read().orElseThrow().value();
+                    assertTrue(calls.receive(assertInstanceOf(PeerMessage.class, calls.read())));
+                    return assertInstanceOf(PeerMessage.class, calls.read()).value();
                 });
                 assertTrue(PeerProtocol.validState(next.get(1, SECONDS)));
             } finally {
@@ -319,7 +319,7 @@ class PeerChannelTest {
                      "test-build", ignored -> Optional.of(new AdmittedFlow(step::run, () -> {})),
                      timers, new Semaphore(1024))) {
             try {
-                assertTrue(calls.receive(calls.read().orElseThrow()));
+                assertTrue(calls.receive(assertInstanceOf(PeerMessage.class, calls.read())));
                 assertTrue(step.running.await(1, SECONDS));
                 assertFalse(step.finished.await(1, SECONDS));
             } finally {
@@ -342,7 +342,7 @@ class PeerChannelTest {
                     "test-build", ignored -> Optional.of(new AdmittedFlow(step::run, () -> {})), timers, retainedBytes);
             try {
                 try (calls) {
-                    assertTrue(calls.receive(calls.read().orElseThrow()));
+                    assertTrue(calls.receive(assertInstanceOf(PeerMessage.class, calls.read())));
                     assertTrue(step.running.await(1, SECONDS));
                 }
                 assertFalse(step.finished.await(200, MILLISECONDS));
@@ -383,13 +383,26 @@ class PeerChannelTest {
             final String secondId = PeerProtocol.text(response(requests).values().get("id"));
 
             assertTrue(PeerFrames.write(peer, FlowWire.encodeOutcome(secondId, secondResult), PeerFrames.MAX_DATA_BODY_BYTES));
-            assertTrue(calls.receive(calls.read().orElseThrow()));
+            assertTrue(calls.receive(assertInstanceOf(PeerMessage.class, calls.read())));
             assertEquals(Optional.of(secondResult), second.get(1, SECONDS));
             assertFalse(first.isDone());
             assertTrue(PeerFrames.write(peer, FlowWire.encodeOutcome(firstId, firstResult), PeerFrames.MAX_DATA_BODY_BYTES));
-            assertTrue(calls.receive(calls.read().orElseThrow()));
+            assertTrue(calls.receive(assertInstanceOf(PeerMessage.class, calls.read())));
             assertEquals(Optional.of(firstResult), first.get(1, SECONDS));
         }
+    }
+
+    @Test
+    void anOversizedChildResultBecomesOneTerminalFailure() throws IOException {
+        final RunResult child = success("x".repeat(PeerFrames.MAX_DATA_BODY_BYTES));
+        final RunResult completed = new RunResult.Completed(RailixValue.object(Map.of()),
+                List.of(new RunResult.PathResult("branch", "next", child)));
+        final byte[] encoded = FlowWire.encodeOutcome(UUID.randomUUID().toString(), completed);
+        final RailixValue payload = response(frameStream(encoded)).values().get("payload");
+
+        final RunResult.Failed outcome = assertInstanceOf(RunResult.Failed.class,
+                FlowWire.decodeOutcome(payload).orElseThrow());
+        assertEquals(MeshErrors.FLOW_RESULT_INVALID, outcome.failure().code());
     }
 
     private static RunResult success(final String value) {
@@ -431,7 +444,7 @@ class PeerChannelTest {
                 final String invocationId = PeerProtocol.text(response(output).values().get("id"));
                 final RunResult outcome = success("received");
                 assertTrue(PeerFrames.write(peer, FlowWire.encodeOutcome(invocationId, outcome), PeerFrames.MAX_DATA_BODY_BYTES));
-                assertTrue(calls.receive(calls.read().orElseThrow()));
+                assertTrue(calls.receive(assertInstanceOf(PeerMessage.class, calls.read())));
                 assertEquals(Optional.of(outcome), call.get(1, SECONDS));
                 assertTrue(acknowledged.get());
             } finally {
@@ -450,7 +463,7 @@ class PeerChannelTest {
              PeerFlowCalls calls = new PeerFlowCalls(channel, () -> { throw new AssertionError("Peer disconnected."); },
                      "test-build", ignored -> Optional.of(new AdmittedFlow(Optional::empty, released::countDown)),
                      timers, new Semaphore(1024))) {
-            assertTrue(calls.receive(calls.read().orElseThrow()));
+            assertTrue(calls.receive(assertInstanceOf(PeerMessage.class, calls.read())));
             assertTrue(released.await(1, SECONDS));
             assertTrue(output.flushed.tryAcquire(1, SECONDS));
             final Map<String, RailixValue> reply = response(output.bytes).values();
@@ -476,7 +489,7 @@ class PeerChannelTest {
                          }));
                      }, timers, new Semaphore(1024))) {
             try {
-                assertTrue(calls.receive(calls.read().orElseThrow()));
+                assertTrue(calls.receive(assertInstanceOf(PeerMessage.class, calls.read())));
                 assertTrue(output.headerWritten.await(1, SECONDS));
                 assertTrue(released.await(1, SECONDS));
                 assertTrue(execution.tryAcquire());
@@ -516,7 +529,7 @@ class PeerChannelTest {
                 });
                 awaitTimedWait(queued.get(1, SECONDS));
 
-                assertTrue(toHealthy.receive(toHealthy.read().orElseThrow()));
+                assertTrue(toHealthy.receive(assertInstanceOf(PeerMessage.class, toHealthy.read())));
                 assertTrue(healthy.flushed.tryAcquire(1, SECONDS));
                 assertEquals(1, stalled.resume.getCount());
                 assertEquals(result, FlowWire.decodeOutcome(response(healthy.bytes).values().get("payload")).orElseThrow());
@@ -544,10 +557,10 @@ class PeerChannelTest {
                          return Optional.of(new AdmittedFlow(() -> Optional.of(success("accepted")), () -> {}));
                      }, timers, new Semaphore(4096))) {
             try {
-                assertTrue(calls.receive(calls.read().orElseThrow()));
+                assertTrue(calls.receive(assertInstanceOf(PeerMessage.class, calls.read())));
                 assertTrue(output.headerWritten.await(1, SECONDS));
-                assertTrue(calls.receive(calls.read().orElseThrow()));
-                assertTrue(calls.receive(calls.read().orElseThrow()));
+                assertTrue(calls.receive(assertInstanceOf(PeerMessage.class, calls.read())));
+                assertTrue(calls.receive(assertInstanceOf(PeerMessage.class, calls.read())));
                 assertEquals(2, admissions.get());
             } finally {
                 output.resume.countDown();
@@ -575,7 +588,7 @@ class PeerChannelTest {
     }
 
     private static byte[] invocationFrame(final UUID id, final long budget) {
-        final byte[] frame = FlowWire.encodeInvocation(emptyContinuation(), id.toString(), "test-build").orElseThrow();
+        final byte[] frame = FlowWire.encodeInvocation(emptyContinuation(), id.toString(), "test-build");
         return FlowWire.stampInvocation(frame, budget);
     }
 
@@ -594,7 +607,7 @@ class PeerChannelTest {
 
     private static RailixValue.ObjectValue response(final InputStream input) throws IOException {
         final FrameRead frame = PeerFrames.read(input, PeerFrames.MAX_CONTROL_BODY_BYTES,
-                size -> Optional.of(new byte[size]));
+                byte[]::new);
         final byte[] bytes = assertInstanceOf(FrameBody.class, frame).bytes();
         final RailixJson.Result document = RailixJson.parseDocument(new String(bytes, StandardCharsets.UTF_8));
         return assertInstanceOf(RailixValue.ObjectValue.class, assertInstanceOf(RailixJson.Parsed.class, document).value());
@@ -617,7 +630,7 @@ class PeerChannelTest {
         try (PeerChannel channel = new PeerChannel(socket)) {
             assertEquals(reason, channel.read(PeerFrames.MAX_CONTROL_BODY_BYTES, size -> {
                 requests.add(size);
-                return Optional.of(new byte[size]);
+                return new byte[size];
             }));
             assertEquals(requestedBytes == null ? List.of() : List.of(requestedBytes), requests);
             assertEquals(unreadBytes, input.available());
@@ -632,7 +645,7 @@ class PeerChannelTest {
         try (PeerChannel channel = new PeerChannel(socket)) {
             assertEquals(FrameReadStatus.BODY_UNAVAILABLE, channel.read(2, size -> {
                 assertEquals(2, size);
-                return Optional.empty();
+                return PeerFrames.NO_BODY;
             }));
             assertEquals(2, input.available());
             assertTrue(socket.isClosed());

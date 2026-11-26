@@ -211,7 +211,8 @@ public final class MeshRuntime implements AutoCloseable {
     }
 
     private boolean isOffloadFlow(final String trigger) {
-        return config.offloadFlow().filter(trigger::equals).isPresent();
+        final Optional<String> configured = config.offloadFlow();
+        return configured.isPresent() && trigger.equals(configured.orElseThrow());
     }
 
     private Optional<AdmittedFlow> admitRemote(final FlowContinuation continuation) {

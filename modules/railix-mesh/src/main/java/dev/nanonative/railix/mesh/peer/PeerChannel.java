@@ -11,7 +11,6 @@ import java.net.SocketException;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
@@ -64,7 +63,7 @@ final class PeerChannel implements Closeable {
     }
 
     /** Reads one frame using a caller-reserved buffer. An incomplete frame closes the channel. */
-    FrameRead read(final int bodyLimit, final IntFunction<Optional<byte[]>> reserveBody)
+    FrameRead read(final int bodyLimit, final IntFunction<byte[]> reserveBody)
             throws IOException, InterruptedException {
         final int limit = PeerFrames.checkedBodyLimit(bodyLimit);
         Objects.requireNonNull(reserveBody, "reserveBody");
@@ -86,8 +85,8 @@ final class PeerChannel implements Closeable {
         }
     }
 
-    /** Prepares the final body after acquiring the channel. Empty skips the write. */
-    boolean writeBefore(final Supplier<Optional<byte[]>> prepare, final int bodyLimit, final long deadline,
+    /** Prepares the final body after acquiring the channel. A zero-length body skips the write. */
+    boolean writeBefore(final Supplier<byte[]> prepare, final int bodyLimit, final long deadline,
                         final ScheduledExecutorService timers, final Runnable abort)
             throws IOException, InterruptedException {
         final long remaining = deadline - System.nanoTime();
@@ -98,11 +97,11 @@ final class PeerChannel implements Closeable {
             if (deadline - System.nanoTime() <= 0) {
                 return false;
             }
-            final Optional<byte[]> body = prepare.get();
-            if (body.isEmpty()) {
+            final byte[] body = prepare.get();
+            if (body.length == 0) {
                 return false;
             }
-            return writeWithWatchdog(body.orElseThrow(), bodyLimit, deadline, timers, abort);
+            return writeWithWatchdog(body, bodyLimit, deadline, timers, abort);
         } finally {
             writeLock.unlock();
         }
@@ -156,7 +155,7 @@ final class PeerChannel implements Closeable {
         }
     }
 
-    private FrameRead receiveFrame(final int bodyLimit, final IntFunction<Optional<byte[]>> reserveBody)
+    private FrameRead receiveFrame(final int bodyLimit, final IntFunction<byte[]> reserveBody)
             throws IOException {
         final FrameRead result;
         try {
