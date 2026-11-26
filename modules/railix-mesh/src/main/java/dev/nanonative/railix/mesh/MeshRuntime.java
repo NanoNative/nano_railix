@@ -1,7 +1,7 @@
 package dev.nanonative.railix.mesh;
 
-import dev.nanonative.railix.core.project.Diagnostic;
 import dev.nanonative.railix.core.project.FlowContinuation;
+import dev.nanonative.railix.core.project.WorkflowRuntime;
 import dev.nanonative.railix.core.runtime.RunResult;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.mesh.peer.AdmittedFlow;
@@ -180,7 +180,7 @@ public final class MeshRuntime implements AutoCloseable {
             }
         }
         if (!isOffloadFlow(trigger) || !pendingFlows.tryAcquire()) {
-            return unavailable(trigger);
+            return WorkflowRuntime.sourceUnavailable(trigger);
         }
         try {
             return offload(trigger, outcome, input, recordOffload);
@@ -194,7 +194,7 @@ public final class MeshRuntime implements AutoCloseable {
         final long deadline = System.nanoTime() + INVOCATION_NANOS;
         final List<PeerConnection> targets = rankEligiblePeers(trigger);
         return PeerFlowCalls.offload(targets, () -> new FlowContinuation(trigger, outcome, input.get()), deadline, recordOffload)
-                .orElseGet(() -> unavailable(trigger));
+                .orElseGet(() -> WorkflowRuntime.sourceUnavailable(trigger));
     }
 
     private synchronized List<PeerConnection> rankEligiblePeers(final String trigger) {
@@ -239,11 +239,6 @@ public final class MeshRuntime implements AutoCloseable {
         if (draining) {
             notifyAll();
         }
-    }
-
-    private static RunResult unavailable(final String trigger) {
-        return new RunResult.Rejected(List.of(Diagnostic.atPath(MeshErrors.FLOW_UNAVAILABLE,
-                "No eligible replica can admit this Flow.", trigger)));
     }
 
     /** Stops new admission while allowing admitted work to return outcomes. */

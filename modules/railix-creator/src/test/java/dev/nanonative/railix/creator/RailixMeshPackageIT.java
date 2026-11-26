@@ -99,6 +99,12 @@ final class RailixMeshPackageIT {
                                 && (name.equalsString("offload_ack") || name.equalsString("offload_no_ack")))
                         .isEmpty();
             }
+            try (InputStream http = ordinary.getInputStream(ordinary.getJarEntry(
+                    "dev/nanonative/railix/stdlib/HttpStepHandlers$Trigger.class"))) {
+                assertThat(ClassFile.of().parse(http.readAllBytes()).constantPool())
+                        .filteredOn(entry -> entry instanceof Utf8Entry name && name.stringValue().startsWith("MESH_"))
+                        .isEmpty();
+            }
             assertThat(enabled.getEntry("dev/nanonative/railix/mesh/MeshRuntime.class")).isNotNull();
             assertThat(enabled.stream().map(entry -> entry.getName()))
                     .noneMatch(name -> name.endsWith(".p12") || name.endsWith(".password"));
@@ -220,7 +226,7 @@ final class RailixMeshPackageIT {
             // Both slots are occupied, including the peer's slot used by the remote continuation.
             final HttpResponse<String> refused = pair.request(pair.peer(), "refused").get(5, TimeUnit.SECONDS);
             assertThat(refused.statusCode()).as(refused.body()).isEqualTo(503);
-            assertThat(refused.body()).contains("MESH_FLOW_UNAVAILABLE");
+            assertThat(refused.body()).contains("APPLICATION_SOURCE_INACTIVE", "Source is not accepting work.");
             final ObservationServer.Connection peer = connection(pair.peerProcess(), "peer");
             assertSingleFlowExecution(pair.client(), pair.seedObservation(), 1, 0, 0);
             assertSingleFlowExecution(pair.client(), peer, 1, 0, 0);

@@ -21,7 +21,6 @@ public final class MeshErrors {
             "Each bootstrap endpoint requires a host and a port from 1 to 65535.";
     public static final String INVALID_FLOW_CAPACITY = "flowCapacity must be a positive integer.";
     public static final String INVALID_OFFLOAD_FLOW = "offloadFlow must name a compiled Trigger.";
-    public static final String FLOW_UNAVAILABLE = "MESH_FLOW_UNAVAILABLE";
     public static final String FLOW_UNCERTAIN = "MESH_FLOW_UNCERTAIN";
     public static final String FLOW_RESULT_INVALID = "MESH_FLOW_RESULT_INVALID";
     public static final String INVALID_INVOCATION_FRAME_LAYOUT = "Invocation budget and attempt must be the first JSON fields.";

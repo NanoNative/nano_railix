@@ -451,8 +451,7 @@ public final class WorkflowRuntime {
                     accepted = active && !completed && enter();
                 }
                 if (!accepted) {
-                    final SourceResult rejected = new SourceResult(rejectedResult("APPLICATION_SOURCE_INACTIVE",
-                            "Source is not accepting work.", name), Map.of());
+                    final SourceResult rejected = new SourceResult(sourceUnavailable(name), Map.of());
                     response.accept(rejected);
                     return rejected;
                 }
@@ -527,6 +526,15 @@ public final class WorkflowRuntime {
 
     private static RunResult missingResult(final String name) {
         return rejected("RUN_RESULT_REQUIRED", "Trigger result is missing: " + name + ".", "context." + name);
+    }
+
+    /**
+     * Rejects a source request that could not be admitted.
+     * @param path the affected source or Trigger
+     * @return the source admission rejection
+     */
+    public static RunResult sourceUnavailable(final String path) {
+        return rejected("APPLICATION_SOURCE_INACTIVE", "Source is not accepting work.", path);
     }
 
     static RunResult rejectedResult(
