@@ -641,12 +641,13 @@ final class RailixMeshPackageIT {
         final Path jar = build(project("bootstrap-address-fallback"), "--mesh");
         final List<Path> configurations = configurations();
         final Path peerConfig = configurations.getLast();
-        final String host = "fallback.railix.test";
         final JsonObject document = json(Files.readString(peerConfig));
-        document.getAsJsonArray("bootstrapEndpoints").get(0).getAsJsonObject().addProperty("host", host);
+        document.getAsJsonArray("bootstrapEndpoints").get(0).getAsJsonObject().addProperty("host", "bücher.railix.test");
         Files.writeString(peerConfig, document.toString());
-        final Path hosts = Files.writeString(directory.resolve("hosts"),
-                "127.0.0.2 " + host + "\n127.0.0.1 " + host + "\n");
+        final Path hosts = Files.writeString(directory.resolve("hosts"), """
+                127.0.0.2 xn--bcher-kva.railix.test
+                127.0.0.1 xn--bcher-kva.railix.test
+                """);
 
         final Process seed = launch(jar, "seed", configurations.getFirst());
         try (HttpClient client = HttpClient.newHttpClient()) {

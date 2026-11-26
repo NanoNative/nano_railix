@@ -625,7 +625,7 @@ public final class WorkflowRuntime {
                 final InputResolver resolver
         ) {
             if (shared != null) {
-                frame = new EventFrame(new LinkedHashMap<>(shared.snapshot().values()));
+                frame = new EventFrame(new LinkedHashMap<>(shared.snapshot(null).values()));
                 frozenContext = null;
             }
             return process(plan, implementation, received, resolver);
@@ -724,17 +724,19 @@ public final class WorkflowRuntime {
         }
 
         RailixValue.ObjectValue context() {
-            if (shared != null) return shared.snapshot();
-            return localContext();
+            return context(null);
         }
 
-        RailixValue.ObjectValue continuationInput() {
-            return shared == null ? frame.continuationInput() : shared.continuationInput();
+        RailixValue.ObjectValue context(final String excludedField) {
+            if (shared != null) {
+                return shared.snapshot(excludedField);
+            }
+            return excludedField == null ? localContext() : frame.snapshot(excludedField);
         }
 
         RailixValue.ObjectValue localContext() {
             if (frozenContext == null) {
-                frozenContext = frame.snapshot();
+                frozenContext = frame.snapshot(null);
             }
             return frozenContext;
         }
@@ -796,13 +798,14 @@ public final class WorkflowRuntime {
             this.frame = frame;
         }
 
-        synchronized RailixValue.ObjectValue snapshot() {
-            if (cached == null) cached = frame.snapshot();
+        synchronized RailixValue.ObjectValue snapshot(final String excludedField) {
+            if (excludedField != null) {
+                return frame.snapshot(excludedField);
+            }
+            if (cached == null) {
+                cached = frame.snapshot(null);
+            }
             return cached;
-        }
-
-        private synchronized RailixValue.ObjectValue continuationInput() {
-            return frame.continuationInput();
         }
     }
 
@@ -1727,12 +1730,9 @@ public final class WorkflowRuntime {
             return value;
         }
 
-        private RailixValue.ObjectValue snapshot() {
-            return (RailixValue.ObjectValue) freeze(context);
-        }
-
-        private RailixValue.ObjectValue continuationInput() {
-            return freezeObjectFields(context, true);
+        private RailixValue.ObjectValue snapshot(final String excludedField) {
+            return excludedField == null ? (RailixValue.ObjectValue) freeze(context)
+                    : freezeObjectFields(context, excludedField);
         }
 
         private static boolean object(final Object value) {
@@ -1780,7 +1780,7 @@ public final class WorkflowRuntime {
                 if (object.frozen != null) {
                     return object.frozen;
                 }
-                object.frozen = freezeObjectFields(object, false);
+                object.frozen = freezeObjectFields(object, null);
                 return object.frozen;
             }
             final FrameArray array = (FrameArray) value;
@@ -1795,11 +1795,11 @@ public final class WorkflowRuntime {
             return array.frozen;
         }
 
-        private static RailixValue.ObjectValue freezeObjectFields(final FrameObject object, final boolean omitRuntime) {
+        private static RailixValue.ObjectValue freezeObjectFields(final FrameObject object, final String excludedField) {
             final Map<String, RailixValue> values = new LinkedHashMap<>(object.values.size());
             for (final Map.Entry<String, Object> entry : object.values.entrySet()) {
                 final String key = entry.getKey();
-                if (!omitRuntime || !"runtime".equals(key)) {
+                if (excludedField == null || !excludedField.equals(key)) {
                     values.put(key, freeze(entry.getValue()));
                 }
             }

@@ -27,7 +27,8 @@ public record PeerEndpoint(String host, int port) {
      * @throws IllegalArgumentException if the host is invalid or the port is outside 1–65535
      */
     public PeerEndpoint {
-        if (!validHost(host) || port < MIN_PORT || port > MAX_PORT) {
+        host = normalizeHost(host);
+        if (host.isEmpty() || port < MIN_PORT || port > MAX_PORT) {
             throw new IllegalArgumentException(MeshErrors.INVALID_ENDPOINT);
         }
     }
@@ -38,8 +39,8 @@ public record PeerEndpoint(String host, int port) {
      */
     public static Optional<PeerEndpoint> read(final RailixValue value) {
         final Map<String, RailixValue> fields = endpointFields(value);
-        final String host = hostname(fields);
-        if (!validHost(host)) {
+        final String host = normalizeHost(hostname(fields));
+        if (host.isEmpty()) {
             return Optional.empty();
         }
         final OptionalInt port = port(fields);
@@ -56,7 +57,7 @@ public record PeerEndpoint(String host, int port) {
     public static boolean isValid(final RailixValue value) {
         final Map<String, RailixValue> fields = endpointFields(value);
         final String host = hostname(fields);
-        return validHost(host) && port(fields).isPresent();
+        return !normalizeHost(host).isEmpty() && port(fields).isPresent();
     }
 
     private static Map<String, RailixValue> endpointFields(final RailixValue value) {
@@ -92,22 +93,25 @@ public record PeerEndpoint(String host, int port) {
         return RailixValue.object(Map.of("host", RailixValue.string(host), "port", RailixValue.number(port)));
     }
 
-    private static boolean validHost(final String host) {
+    private static String normalizeHost(final String host) {
         if (host == null || host.isBlank() || host.length() > MAX_HOST_LENGTH
                 || host.codePoints().anyMatch(c -> Character.isWhitespace(c) || Character.isISOControl(c))) {
-            return false;
+            return "";
         }
         try {
             if (host.indexOf(':') >= 0) {
-                return validIpv6Host(host);
+                return validIpv6Host(host) ? host : "";
             }
             final String name = IDN.toASCII(host, IDN.USE_STD3_ASCII_RULES);
+            if (name.equals(".") || name.length() > MAX_HOST_LENGTH) {
+                return "";
+            }
             if (DOTTED_IPV4.matcher(name).matches()) {
                 Inet4Address.ofLiteral(name);
             }
-            return !name.isEmpty() && !name.equals(".") && name.length() <= MAX_HOST_LENGTH;
+            return name;
         } catch (final IllegalArgumentException invalid) {
-            return false;
+            return "";
         }
     }
 

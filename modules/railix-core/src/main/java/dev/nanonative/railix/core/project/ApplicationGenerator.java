@@ -792,7 +792,7 @@ final class ApplicationGenerator {
                         } else if (destination == END) {
                             result = executeMeasured(execution, destination);
                         } else {
-                            result = placement.place(%s, outcome, execution::continuationInput,
+                            result = placement.place(%s, outcome, () -> execution.context("runtime"),
                                     () -> executeMeasured(execution, destination),
                                     acknowledged -> METRICS.recordOffload(%s, acknowledged));
                         }
