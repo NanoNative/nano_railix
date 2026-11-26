@@ -29,6 +29,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -307,15 +308,19 @@ final class LiveApplicationE2eTest {
                     changed.getAsJsonArray("links").add(JsonParser.parseString("{\"from\":\"extra-"+index
                             +".next\",\"to\":\""+(index==511?"return-text":"extra-"+(index+1))+"\"}"));
                 }
-                final Path builds=directory.resolve(".railix/build");
-                final var pending=executor.submit(()->CreatorServerE2eSupport.request(uri,"POST","/api/project",changed.toString()));
-                final var rejected=new java.util.concurrent.atomic.AtomicReference<Path>();
-                await(()->{
-                    try(var paths=Files.list(builds)) {
-                        final var staging=paths.filter(path->path.getFileName().toString().startsWith(".building-")).findFirst();
-                        assertThat(staging).as("The real build has entered staging: %s",pending.isDone()?pending.get().body():"pending").isPresent();
-                        final String name=staging.orElseThrow().getFileName().toString();
-                        rejected.set(builds.resolve(name.substring(name.lastIndexOf("sha256-"))));
+                final Path builds = directory.resolve(".railix/build");
+                final List<Path> existingBuilds;
+                try (Stream<Path> paths = Files.list(builds)) {
+                    existingBuilds = paths.toList();
+                }
+                final Future<HttpResponse<String>> pending = executor.submit(() ->
+                        CreatorServerE2eSupport.request(uri, "POST", "/api/project", changed.toString()));
+                await(() -> {
+                    try (Stream<Path> paths = Files.list(builds)) {
+                        final boolean staging = paths.anyMatch(path -> path.getFileName().toString().startsWith(".building-"));
+                        assertThat(staging)
+                                .as("The real build has entered staging: %s", pending.isDone() ? pending.get().body() : "pending")
+                                .isTrue();
                     }
                 });
                 final var outside=JsonParser.parseString(original).getAsJsonObject();
@@ -325,7 +330,9 @@ final class LiveApplicationE2eTest {
                 assertThat(response.statusCode()).as(response.body()).isEqualTo(409);
                 assertThat(response.body()).contains("\"state\":\"ready\"");
                 assertThat(Files.readString(project)).isEqualTo(outside.toString());
-                assertThat(rejected.get()).doesNotExist();
+                try (Stream<Path> paths = Files.list(builds)) {
+                    assertThat(paths.toList()).containsExactlyInAnyOrderElementsOf(existingBuilds);
+                }
                 assertThat(observed.isAlive()).isTrue();
             }
         } finally {ProjectSourceArtifactsE2eTest.stop(observed);}
