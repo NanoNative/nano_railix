@@ -18,7 +18,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLongArray;
-import java.util.stream.Stream;
 
 /**
  * Dense application, flow, and graph-Step metrics owned by one generated application.
@@ -131,9 +130,8 @@ public final class RuntimeMetrics {
     private static final int DURATION_MAX = 4;
     private static final int DURATION_SAMPLES = 5;
     private static final int STRIDE = 6;
-    private static final int ACKNOWLEDGED = 0;
-    private static final int UNACKNOWLEDGED = 1;
-    private static final int OFFLOAD_STRIDE = 2;
+    private static final int FIRST_REGISTERED_VALUE = 7;
+    private static final long[] NO_REGISTERED_COUNTS = new long[0];
     private static final long UNSAMPLED = Long.MIN_VALUE;
     private static final long STEP_SAMPLE_MASK = 1_023;
     private static final String APPLICATION = "application";
@@ -186,12 +184,6 @@ public final class RuntimeMetrics {
             new MetricDescriptor("metric_primitive_bytes", "Metric primitive storage", "bytes", "gauge", "none", -1,
                     "metric_primitive_bytes", false, 0, null, PROCESS)
     };
-    private static final MetricDescriptor[] METRICS_WITH_OFFLOADS = Stream.concat(Arrays.stream(METRICS), Stream.of(
-            new MetricDescriptor("offload_ack", "Acknowledged offloads", "count", "counter", "sum", 7,
-                    "offload_ack_total", false, 0, null, APPLICATION, FLOW),
-            new MetricDescriptor("offload_no_ack", "Unacknowledged offloads", "count", "counter", "sum", 8,
-                    "offload_no_ack_total", false, 0, null, APPLICATION, FLOW)
-    )).toArray(MetricDescriptor[]::new);
     private final String project;
     private final long startedNanos;
     private final String[] flows;
@@ -199,7 +191,7 @@ public final class RuntimeMetrics {
     private final AtomicLongArray flowCounters;
     private final AtomicLongArray stepCounters;
     private final AtomicIntegerArray flowInFlight;
-    private volatile AtomicLongArray flowOffloads;
+    private volatile MetricDescriptor[] publishedMetrics = METRICS;
     private final IdentifierIndex flowIndex;
     private final IdentifierIndex stepIndex;
     private final CustomMetrics custom;
@@ -284,26 +276,41 @@ public final class RuntimeMetrics {
         return startFlow(flowCounters, flowInFlight, flow);
     }
 
-    /** Publishes the offload counters when Flow offloading is configured at startup. */
-    public synchronized void enableOffloadMetrics() {
-        if (flowOffloads == null) {
-            flowOffloads = new AtomicLongArray(flows.length * OFFLOAD_STRIDE);
-        }
-    }
-
     /**
-     * Records one Flow offload at the ingress replica.
-     * @param flow ordinal of the compiled Flow
-     * @param acknowledged whether the ingress received the peer's terminal outcome
-     * @throws IllegalStateException if offload metrics have not been enabled
+     * Binds a counter to a compiled Flow at startup and publishes the sum across Flows.
+     * Each Flow that increments the same metric supplies the same definition.
+     * @param flow identifier of the Flow that increments the counter
+     * @param definition declaration of a summed counter
+     * @return a thread-safe increment operation bound to the Flow
+     * @throws IllegalArgumentException for an unknown Flow or an invalid or conflicting metric definition
+     * @throws NullPointerException if the definition is missing
      */
-    public void recordOffload(final int flow, final boolean acknowledged) {
-        final AtomicLongArray counts = flowOffloads;
-        if (counts == null) {
-            throw new IllegalStateException("Offload metrics have not been enabled.");
+    public synchronized Runnable registerFlowCounter(final String flow, final MetricDefinition definition) {
+        final int ordinal = flowIndex.find(flow, flows);
+        if (ordinal < 0) {
+            throw new IllegalArgumentException("Unknown Flow for metric registration: " + flow);
         }
-        final int outcome = acknowledged ? ACKNOWLEDGED : UNACKNOWLEDGED;
-        counts.incrementAndGet(flow * OFFLOAD_STRIDE + outcome);
+        if (definition.kind() != MetricDefinition.Kind.COUNTER
+                || definition.aggregation() != MetricDefinition.Aggregation.SUM) {
+            throw new IllegalArgumentException("A Flow counter requires sum aggregation.");
+        }
+        final MetricDescriptor existing = metric(definition.name());
+        final AtomicLongArray counts;
+        if (existing == null) {
+            counts = new AtomicLongArray(flows.length);
+            final int index = publishedMetrics.length;
+            final int value = FIRST_REGISTERED_VALUE + index - METRICS.length;
+            final MetricDescriptor[] descriptors = Arrays.copyOf(publishedMetrics, index + 1);
+            descriptors[index] = new MetricDescriptor(definition.name(), definition.label(), definition.unit(),
+                    "counter", "sum", value, definition.name() + "_total", false, 0, null, counts, APPLICATION, FLOW);
+            publishedMetrics = descriptors;
+        } else {
+            counts = existing.flowCounts;
+            if (counts == null || !existing.label.equals(definition.label()) || !existing.unit.equals(definition.unit())) {
+                throw new IllegalArgumentException("Conflicting Flow metric definition: " + definition.name());
+            }
+        }
+        return () -> counts.incrementAndGet(ordinal);
     }
 
     /**
@@ -381,7 +388,7 @@ public final class RuntimeMetrics {
      */
     public RuntimeMetrics writeCatalogJson(final OutputStream destination) throws IOException {
         final Map<String, RailixValue> catalog = new LinkedHashMap<>();
-        for (final MetricDescriptor metric : publishedMetrics()) {
+        for (final MetricDescriptor metric : publishedMetrics) {
             catalog.put(metric.id, metric.definition());
         }
         for (final MetricDescriptor metric : custom.descriptors.values()) catalog.put(metric.id, metric.definition());
@@ -437,7 +444,7 @@ public final class RuntimeMetrics {
                 stepCounters, null, ranges, STEP, requestedMetrics
         )));
         selectedFlows.forEach((id, index) -> groups.put(id, selected(
-                flowValues(index), FLOW, requestedMetrics
+                flowValues(index, publishedMetrics), FLOW, requestedMetrics
         )));
         if (application != null) {
             groups.put(application, selected(flowCounters, flowInFlight, new int[]{0, flows.length - 1},
@@ -460,7 +467,7 @@ public final class RuntimeMetrics {
             final List<MetricDescriptor> requested
     ) {
         final Map<String, RailixValue> result = new LinkedHashMap<>();
-        for (final MetricDescriptor metric : publishedMetrics()) {
+        for (final MetricDescriptor metric : publishedMetrics) {
             if ((requested == null || requested.contains(metric)) && metric.supports(scope) && metric.value >= 0) {
                 result.put(metric.id, RailixValue.number(values.value(metric.value)));
             }
@@ -476,7 +483,7 @@ public final class RuntimeMetrics {
             final List<MetricDescriptor> requested
     ) {
         final Map<String, RailixValue> result = new LinkedHashMap<>();
-        for (final MetricDescriptor metric : publishedMetrics()) {
+        for (final MetricDescriptor metric : publishedMetrics) {
             if ((requested != null && !requested.contains(metric)) || !metric.supports(scope) || metric.value < 0) {
                 continue;
             }
@@ -484,7 +491,9 @@ public final class RuntimeMetrics {
             long value = 0;
             for (int range = 0; range < ranges.length; range += 2) {
                 for (int index = ranges[range]; index <= ranges[range + 1]; index++) {
-                    final long current = counterValue(counters, inFlight, index, metric.value);
+                    final long current = metric.flowCounts == null
+                            ? counterValue(counters, inFlight, index, metric.value)
+                            : metric.flowCounts.get(index);
                     value = observed ? metric.reduce(value, current) : current;
                     observed = true;
                 }
@@ -495,7 +504,7 @@ public final class RuntimeMetrics {
         return RailixValue.object(result);
     }
 
-    private long counterValue(
+    private static long counterValue(
             final AtomicLongArray counters,
             final AtomicIntegerArray inFlight,
             final int index,
@@ -510,8 +519,6 @@ public final class RuntimeMetrics {
             case 4 -> counters.get(offset + DURATION_TOTAL);
             case 5 -> counters.get(offset + DURATION_MAX);
             case 6 -> counters.get(offset + DURATION_SAMPLES);
-            case 7 -> offloadCount(index, ACKNOWLEDGED);
-            case 8 -> offloadCount(index, UNACKNOWLEDGED);
             default -> throw new IllegalArgumentException("Unknown metric value index.");
         };
     }
@@ -551,16 +558,12 @@ public final class RuntimeMetrics {
     }
 
     private MetricDescriptor metric(final String id) {
-        for (final MetricDescriptor metric : publishedMetrics()) {
+        for (final MetricDescriptor metric : publishedMetrics) {
             if (metric.id.equals(id)) {
                 return metric;
             }
         }
         return custom.descriptors.get(id);
-    }
-
-    private MetricDescriptor[] publishedMetrics() {
-        return flowOffloads == null ? METRICS : METRICS_WITH_OFFLOADS;
     }
 
     private RuntimeMetrics writeJson(
@@ -569,10 +572,7 @@ public final class RuntimeMetrics {
             final boolean all
     ) throws IOException {
         final BufferedWriter output = writer(destination);
-        Values application = Values.EMPTY;
-        for (int index = 0; index < flows.length; index++) {
-            application = application.add(flowValues(index));
-        }
+        final Values application = applicationValues();
         output.append("{\"application_pid\":")
                 .append(Long.toString(ProcessHandle.current().pid()))
                 .append(",\"application\":{\"metrics\":");
@@ -585,7 +585,7 @@ public final class RuntimeMetrics {
                         output,
                         separator,
                         flows[index],
-                        flowValues(index), FLOW, -1
+                        flowValues(index, publishedMetrics), FLOW, -1
                 );
             }
         } else {
@@ -594,7 +594,7 @@ public final class RuntimeMetrics {
                     output,
                     separator,
                     flows[index],
-                    flowValues(index), FLOW, -1
+                    flowValues(index, publishedMetrics), FLOW, -1
             );
         }
         output.append("],\"metric_counter_bytes\":").append(Long.toString(counterBytes()))
@@ -626,17 +626,14 @@ public final class RuntimeMetrics {
     /** Streams Prometheus text exposition using only fixed project, flow, and Step labels. */
     public RuntimeMetrics writePrometheus(final OutputStream destination) throws IOException {
         final BufferedWriter output = writer(destination);
-        Values application = Values.EMPTY;
-        for (int index = 0; index < flows.length; index++) {
-            application = application.add(flowValues(index));
-        }
+        final Values application = applicationValues();
         prometheusTypes(output, APPLICATION);
         prometheusTypes(output, FLOW);
         prometheusTypes(output, STEP);
         prometheus(output, APPLICATION, "project=\"" + prom(project) + "\"", application);
         for (int index = 0; index < flows.length; index++) {
             prometheus(output, FLOW, "project=\"" + prom(project) + "\",flow=\""
-                    + prom(flows[index]) + "\"", flowValues(index));
+                    + prom(flows[index]) + "\"", flowValues(index, publishedMetrics));
         }
         for (int index = 0; index < steps.length; index++) {
             prometheus(output, STEP, "project=\"" + prom(project) + "\",step=\""
@@ -679,14 +676,11 @@ public final class RuntimeMetrics {
     /** Streams Influx line protocol using only fixed project, flow, and Step tags. */
     public RuntimeMetrics writeInflux(final OutputStream destination) throws IOException {
         final BufferedWriter output = writer(destination);
-        Values application = Values.EMPTY;
-        for (int index = 0; index < flows.length; index++) {
-            application = application.add(flowValues(index));
-        }
+        final Values application = applicationValues();
         influx(output, APPLICATION, "project=" + influxTag(project), application);
         for (int index = 0; index < flows.length; index++) {
             influx(output, FLOW, "project=" + influxTag(project) + ",flow="
-                    + influxTag(flows[index]), flowValues(index));
+                    + influxTag(flows[index]), flowValues(index, publishedMetrics));
         }
         for (int index = 0; index < steps.length; index++) {
             influx(output, STEP, "project=" + influxTag(project) + ",step="
@@ -797,7 +791,16 @@ public final class RuntimeMetrics {
         }
     }
 
-    private Values flowValues(final int index) {
+    private Values applicationValues() {
+        final MetricDescriptor[] metrics = publishedMetrics;
+        Values application = Values.EMPTY;
+        for (int index = 0; index < flows.length; index++) {
+            application = application.add(flowValues(index, metrics));
+        }
+        return application;
+    }
+
+    private Values flowValues(final int index, final MetricDescriptor[] metrics) {
         final int offset = index * STRIDE;
         return new Values(
                 flowCounters.get(offset + EXECUTIONS),
@@ -807,14 +810,23 @@ public final class RuntimeMetrics {
                 flowCounters.get(offset + DURATION_TOTAL),
                 flowCounters.get(offset + DURATION_MAX),
                 flowCounters.get(offset + DURATION_SAMPLES),
-                offloadCount(index, ACKNOWLEDGED),
-                offloadCount(index, UNACKNOWLEDGED)
+                registeredCounts(index, metrics)
         );
     }
 
-    private long offloadCount(final int index, final int outcome) {
-        final AtomicLongArray counts = flowOffloads;
-        return counts == null ? 0 : counts.get(index * OFFLOAD_STRIDE + outcome);
+    private static long[] registeredCounts(final int flow, final MetricDescriptor[] metrics) {
+        long[] counts = NO_REGISTERED_COUNTS;
+        for (int index = METRICS.length; index < metrics.length; index++) {
+            final long count = metrics[index].flowCounts.get(flow);
+            if (count == 0) {
+                continue;
+            }
+            if (counts.length == 0) {
+                counts = new long[metrics.length - METRICS.length];
+            }
+            counts[index - METRICS.length] = count;
+        }
+        return counts;
     }
 
     private static Values values(final AtomicLongArray counters, final int index) {
@@ -827,8 +839,7 @@ public final class RuntimeMetrics {
                 counters.get(offset + DURATION_TOTAL),
                 counters.get(offset + DURATION_MAX),
                 counters.get(offset + DURATION_SAMPLES),
-                0,
-                0
+                NO_REGISTERED_COUNTS
         );
     }
 
@@ -869,7 +880,7 @@ public final class RuntimeMetrics {
     private void json(final BufferedWriter output, final Values values, final String scope) throws IOException {
         boolean separator = false;
         output.append('{');
-        for (final MetricDescriptor metric : publishedMetrics()) {
+        for (final MetricDescriptor metric : publishedMetrics) {
             if (metric.value < 0 || !metric.supports(scope)) {
                 continue;
             }
@@ -888,10 +899,9 @@ public final class RuntimeMetrics {
     }
 
     private long counterBytes() {
-        final AtomicLongArray counts = flowOffloads;
-        return ((long) flowCounters.length() + stepCounters.length()) * Long.BYTES
-                + (long) flowInFlight.length() * Integer.BYTES
-                + (counts == null ? 0 : (long) counts.length() * Long.BYTES) + custom.counterBytes;
+        final long registeredCounters = (long) (publishedMetrics.length - METRICS.length) * flows.length;
+        return ((long) flowCounters.length() + stepCounters.length() + registeredCounters) * Long.BYTES
+                + (long) flowInFlight.length() * Integer.BYTES + custom.counterBytes;
     }
 
     private long lookupBytes() {
@@ -977,19 +987,20 @@ public final class RuntimeMetrics {
             final String labels,
             final Values values
     ) throws IOException {
-        for (final MetricDescriptor metric : publishedMetrics()) {
+        for (final MetricDescriptor metric : publishedMetrics) {
             if (metric.value < 0 || !metric.supports(scope)) {
                 continue;
             }
+            final long value = values.value(metric.value);
             output.append("railix_").append(scope).append('_').append(metric.prometheus)
                     .append('{').append(labels).append("} ")
-                    .append(metric.seconds ? seconds(values.value(metric.value)) : Long.toString(values.value(metric.value)))
+                    .append(metric.seconds ? seconds(value) : Long.toString(value))
                     .append('\n');
         }
     }
 
     private void prometheusTypes(final BufferedWriter output, final String scope) throws IOException {
-        for (final MetricDescriptor metric : publishedMetrics()) {
+        for (final MetricDescriptor metric : publishedMetrics) {
             if (metric.value >= 0 && metric.supports(scope)) {
                 output.append("# TYPE railix_").append(scope).append('_').append(metric.prometheus)
                         .append(' ').append(metric.kind).append('\n');
@@ -1005,7 +1016,7 @@ public final class RuntimeMetrics {
     ) throws IOException {
         output.append("railix_").append(scope).append(',').append(tags).append(' ');
         boolean separator = false;
-        for (final MetricDescriptor metric : publishedMetrics()) {
+        for (final MetricDescriptor metric : publishedMetrics) {
             if (metric.value < 0 || !metric.supports(scope)) {
                 continue;
             }
@@ -1042,8 +1053,16 @@ public final class RuntimeMetrics {
             boolean seconds,
             int stepSamplingInterval,
             String sampleCount,
+            AtomicLongArray flowCounts,
             String... scopes
     ) {
+        MetricDescriptor(final String id, final String label, final String unit, final String kind,
+                         final String aggregation, final int value, final String prometheus, final boolean seconds,
+                         final int stepSamplingInterval, final String sampleCount, final String... scopes) {
+            this(id, label, unit, kind, aggregation, value, prometheus, seconds, stepSamplingInterval, sampleCount,
+                    null, scopes);
+        }
+
         private boolean supports(final String scope) {
             for (final String candidate : scopes) {
                 if (candidate.equals(scope)) {
@@ -1091,10 +1110,9 @@ public final class RuntimeMetrics {
             long durationTotal,
             long durationMax,
             long durationSamples,
-            long offloadAck,
-            long offloadNoAck
+            long[] registeredCounts
     ) {
-        private static final Values EMPTY = new Values(0, 0, 0, 0, 0, 0, 0, 0, 0);
+        private static final Values EMPTY = new Values(0, 0, 0, 0, 0, 0, 0, NO_REGISTERED_COUNTS);
 
         private Values add(final Values other) {
             return new Values(
@@ -1105,9 +1123,22 @@ public final class RuntimeMetrics {
                     saturated(durationTotal, other.durationTotal),
                     Math.max(durationMax, other.durationMax),
                     saturated(durationSamples, other.durationSamples),
-                    saturated(offloadAck, other.offloadAck),
-                    saturated(offloadNoAck, other.offloadNoAck)
+                    sumRegistered(registeredCounts, other.registeredCounts)
             );
+        }
+
+        private static long[] sumRegistered(final long[] left, final long[] right) {
+            if (left.length == 0) {
+                return right;
+            }
+            if (right.length == 0) {
+                return left;
+            }
+            final long[] total = new long[left.length];
+            for (int slot = 0; slot < total.length; slot++) {
+                total[slot] = saturated(left[slot], right[slot]);
+            }
+            return total;
         }
 
         private long value(final int index) {
@@ -1119,9 +1150,13 @@ public final class RuntimeMetrics {
                 case 4 -> durationTotal;
                 case 5 -> durationMax;
                 case 6 -> durationSamples;
-                case 7 -> offloadAck;
-                case 8 -> offloadNoAck;
-                default -> throw new IllegalArgumentException("Unknown metric value index.");
+                default -> {
+                    final int slot = index - FIRST_REGISTERED_VALUE;
+                    if (slot < 0) {
+                        throw new IllegalArgumentException("Unknown metric value index.");
+                    }
+                    yield slot < registeredCounts.length ? registeredCounts[slot] : 0;
+                }
             };
         }
 

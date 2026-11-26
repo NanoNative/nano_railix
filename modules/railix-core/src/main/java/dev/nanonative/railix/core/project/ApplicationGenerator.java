@@ -750,7 +750,7 @@ final class ApplicationGenerator {
                     .append(quote(node.id())).append("), Map.of());\n        }\n");
             final String execute = "execute_" + trigger.node() + "(execution, destination)";
             if (includePeerContinuations) {
-                appendFlowPlacement(source, execute, node.id(), flow);
+                appendFlowPlacement(source, execute, node.id());
             } else {
                 source.append("        final RunResult result = ").append(execute).append(";\n");
             }
@@ -783,8 +783,7 @@ final class ApplicationGenerator {
         }
     }
 
-    private static void appendFlowPlacement(final StringBuilder source, final String execute,
-                                            final String trigger, final int flow) {
+    private static void appendFlowPlacement(final StringBuilder source, final String execute, final String trigger) {
         source.append("""
                         final RunResult result;
                         if (placement == null) {
@@ -793,10 +792,9 @@ final class ApplicationGenerator {
                             result = executeMeasured(execution, destination);
                         } else {
                             result = placement.place(%s, outcome, () -> execution.context("runtime"),
-                                    () -> executeMeasured(execution, destination),
-                                    acknowledged -> METRICS.recordOffload(%s, acknowledged));
+                                    () -> executeMeasured(execution, destination));
                         }
-                """.formatted(execute, quote(trigger), flow));
+                """.formatted(execute, quote(trigger)));
     }
 
     private static void appendContinuationSelector(final StringBuilder source, final StringBuilder classes,

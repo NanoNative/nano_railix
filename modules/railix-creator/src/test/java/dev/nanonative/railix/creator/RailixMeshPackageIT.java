@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassTransform;
+import java.lang.classfile.constantpool.Utf8Entry;
 import java.lang.constant.ConstantDescs;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -90,6 +91,13 @@ final class RailixMeshPackageIT {
                     ordinary.getJarEntry(projectPackage + "RailixApplication.class"))) {
                 assertThat(ClassFile.of().parse(compiled.readAllBytes()).methods())
                         .noneMatch(method -> method.methodName().equalsString("runContinuation"));
+            }
+            try (InputStream metrics = ordinary.getInputStream(ordinary.getJarEntry(
+                    "dev/nanonative/railix/core/runtime/RuntimeMetrics.class"))) {
+                assertThat(ClassFile.of().parse(metrics.readAllBytes()).constantPool())
+                        .filteredOn(entry -> entry instanceof Utf8Entry name
+                                && (name.equalsString("offload_ack") || name.equalsString("offload_no_ack")))
+                        .isEmpty();
             }
             assertThat(enabled.getEntry("dev/nanonative/railix/mesh/MeshRuntime.class")).isNotNull();
             assertThat(enabled.stream().map(entry -> entry.getName()))
@@ -225,6 +233,20 @@ final class RailixMeshPackageIT {
             assertThat(pair.arrivals()).isEmpty();
             assertSingleFlowExecution(pair.client(), pair.seedObservation(), 0, 1, 0);
             assertSingleFlowExecution(pair.client(), peer, 0, 0, 0);
+            final ObservationServer.Connection ingress = pair.seedObservation();
+            final HttpResponse<String> query = pair.client().send(
+                    HttpRequest.newBuilder(ingress.origin().resolve("/v1/metrics/query"))
+                            .header("Authorization", "Bearer " + ingress.token())
+                            .header("Content-Type", "application/json").timeout(Duration.ofSeconds(2))
+                            .POST(HttpRequest.BodyPublishers.ofString("""
+                                    {"application":"total","flows":{"selected":"http"},"steps":{},
+                                     "metrics":["offload_ack"]}
+                                    """)).build(), HttpResponse.BodyHandlers.ofString());
+            assertThat(query.statusCode()).as(query.body()).isEqualTo(200);
+            assertThat(json(query.body()).get("groups"))
+                    .isEqualTo(json("""
+                            {"total":{"offload_ack":1},"selected":{"offload_ack":1}}
+                            """));
         });
     }
 

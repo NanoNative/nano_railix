@@ -160,6 +160,11 @@ public final class MeshRuntime implements AutoCloseable {
         return config.offloadFlow().isPresent();
     }
 
+    /** @return the Flow selected for offloading, or empty for membership-only operation */
+    public Optional<String> offloadFlow() {
+        return config.offloadFlow();
+    }
+
     /** Selects local admission or places the selected Flow at one connected replica. */
     public RunResult place(final String trigger, final int outcome, final Supplier<RailixValue.ObjectValue> input,
                            final Supplier<RunResult> local, final Consumer<Boolean> recordOffload) {

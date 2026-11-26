@@ -66,9 +66,11 @@ final class ApplicationBuilder {
     private static final String MESH_LAUNCHER = """
             package dev.nanonative.railix.core.project;
 
+            import dev.nanonative.railix.core.runtime.MetricDefinition;
             import dev.nanonative.railix.mesh.MeshRuntime;
             import java.io.IOException;
             import java.util.Map;
+            import java.util.function.Consumer;
 
             public final class RailixMeshApplication {
                 public static void main(final String[] arguments) {
@@ -86,10 +88,21 @@ final class ApplicationBuilder {
                         return;
                     }
                     final MeshRuntime mesh = configured.get();
-                    if (mesh.offloadEnabled()) {
-                        RailixApplication.METRICS.enableOffloadMetrics();
-                        RailixApplication.placement = mesh::place;
-                    }
+                    mesh.offloadFlow().ifPresent(flow -> {
+                        final Runnable ack = RailixApplication.METRICS.registerFlowCounter(flow,
+                                MetricDefinition.counter("offload_ack", "Acknowledged offloads", "count"));
+                        final Runnable noAck = RailixApplication.METRICS.registerFlowCounter(flow,
+                                MetricDefinition.counter("offload_no_ack", "Unacknowledged offloads", "count"));
+                        final Consumer<Boolean> record = acknowledged -> {
+                            if (acknowledged) {
+                                ack.run();
+                            } else {
+                                noAck.run();
+                            }
+                        };
+                        RailixApplication.placement = (trigger, outcome, input, local) ->
+                                mesh.place(trigger, outcome, input, local, record);
+                    });
                     RailixApplication.run(arguments, mesh::start, mesh::drain, mesh::close,
                             () -> Map.of("mesh", mesh.status()));
                 }
