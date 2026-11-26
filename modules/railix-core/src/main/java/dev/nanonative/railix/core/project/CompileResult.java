@@ -82,11 +82,11 @@ public sealed interface CompileResult permits CompileResult.Compiled, CompileRes
 
         /**
          * @param sourceIdentity canonical project revision returned by {@link #functionalIdentity()}
-         * @param coreRuntimeDigest fingerprint of the core classes packaged with the application
+         * @param runtimeDigest fingerprint of the core and mesh classes packaged with the application
          * @return the platform-independent identity for peers executing this production build
          */
-        public String logicalBuildId(final String sourceIdentity, final String coreRuntimeDigest) {
-            return "sha256-" + Sha256.hexDigest("railix-execution-v2\n" + sourceIdentity + "\n" + coreRuntimeDigest
+        public String logicalBuildId(final String sourceIdentity, final String runtimeDigest) {
+            return "sha256-" + Sha256.hexDigest("railix-execution-v3\n" + sourceIdentity + "\n" + runtimeDigest
                     + "\n" + applicationClass + "\n" + productionApplicationSource);
         }
     }

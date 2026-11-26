@@ -2,14 +2,16 @@
 
 A replica is a running copy of a built Railix application. Today you can connect several replicas
 of the same build using configured seed addresses and inspect their status in Creator. Each
-replica runs the requests it receives. Automatic peer discovery and Flow offload are planned.
+replica can run requests locally. The Flow offload pilot can place one configured Flow on
+a peer when local capacity is full. Automatic peer discovery is planned.
 
 ## How It Works
 
 ### Join And Track Peers
 
 A **seed** is a running replica that another replica contacts to join. Give the joining replica
-the seed's mesh address. In this example, B contacts A.
+the seed's mesh address. Here B opens the socket to A. A has the lower replica ID, so A chooses
+which socket the pair keeps.
 
 ```mermaid
 sequenceDiagram
@@ -20,24 +22,27 @@ sequenceDiagram
     B->>A: hello.v1
     A->>B: hello.v1
     Note over A,B: Check replica identity, mesh, and logical build ID
-    B->>A: Initial state
-    A->>B: Initial state
-    Note over A,B: First valid state completes join
+    A->>A: Reserve the socket locally
+    A->>B: Initial state proposes this socket
+    B->>B: Validate A's state and reserve the socket locally
+    B->>A: Initial state confirms the socket
+    Note over A,B: Each side joins after sending and validating initial state
     loop While connected
         B->>A: State heartbeat
         A->>B: State heartbeat
     end
 ```
 
-State carries readiness and the advertised mesh address. An identity or build mismatch closes
-the connection before state is exchanged. A disconnect or heartbeat timeout removes the peer.
+State carries readiness, available Flow capacity, and the advertised mesh address. An identity
+or build mismatch closes the connection before state is exchanged. A duplicate closes while the
+agreed socket stays available for offloads. A disconnect or heartbeat timeout removes the peer.
 Failed attempts to a configured seed are retried with backoff.
 
 If a third replica, C, has both addresses, it connects directly to A and B. B and C can stay
 connected if A leaves, and new replicas can join through either survivor. With automatic
 discovery, replicas will be able to learn addresses from peers.
 
-### Run A Flow (Planned)
+### Offload A Flow
 
 The replica whose Trigger receives the event owns the original request and sends the response.
 It runs the Flow locally when it has a free slot. When full, it can ask a ready, eligible peer.
@@ -66,11 +71,16 @@ sequenceDiagram
     A-->>Client: Complete the original HTTP request
 ```
 
-After a refusal, A can try another eligible peer within the original deadline and attempt limit.
-If B may already have admitted the Flow and the connection drops, A reports uncertain completion
-and stops retrying.
+After a refusal, A can try another eligible peer. A can try up to three peers within the
+original deadline.
+If B may already have admitted the Flow and A loses the connection or runs out of time, A
+reports uncertain completion and stops retrying.
 
-The first offload test will send an HTTP request directly to a replica. For a stable public URL
+The HTTP pilot gives A five seconds to place the offload and receive its outcome. Once B admits
+the Flow, B owns its execution. It keeps running if A stops waiting or the peer connection closes.
+A discards late outcomes. B holds the execution slot until the Flow exits.
+
+The first checkpoint sends HTTP directly to a replica. For a stable public URL
 across replica changes, deployment can put an HTTP reverse proxy in front of ready replicas.
 The proxy routes HTTP requests. Railix tracks its peers and places offloaded Flows.
 
@@ -90,10 +100,21 @@ The script builds the application once and starts two loopback replicas with tem
 long-running Trigger, such as `text-normalization-http-app`. Set `RAILIX_CLI_JAR` to reuse an
 existing packaged CLI.
 
+This command enables offload for the `request` HTTP Trigger in `auth-http-app` and gives each
+replica one execution slot.
+
+```sh
+DEMO_OFFLOAD_FLOW=request DEMO_FLOW_CAPACITY=1 ./run-mesh.sh auth-http-app
+```
+
+Set `DEMO_OFFLOAD_FLOW` to the Trigger node ID for the example you run. Leaving it unset starts
+the membership demo. `DEMO_FLOW_CAPACITY` defaults to 2.
+
 While the launcher is running, paste the printed `join` command into another terminal. The script
 reuses the same JAR, issues a certificate for the new replica, and gives it the addresses of the
-other demo replicas. Use a different free mesh port as the last argument each time. The signing
-key stays in the private demo directory until the launcher exits.
+other demo replicas. It inherits the original demo's offload Flow and capacity. Use a different
+free mesh port as the last argument each time. The signing key stays in the private demo directory
+until the launcher exits.
 
 Run the printed Creator command in another terminal. Choose **Project actions > Connect live app**
 and select a replica. In the runtime details, **Mesh** shows the connection state and **Peer**
@@ -136,6 +157,13 @@ an empty `bootstrapEndpoints` list and give B `[{"host":"127.0.0.1","port":7401}
 the application's Trigger listeners independently, for example with an ephemeral HTTP port.
 On separate hosts, advertise addresses that the other replica can reach through the deployment's
 network or VPN.
+
+To enable the offload pilot, set `offloadFlow` to the same Trigger node ID in both replicas'
+mesh JSON. Choose a Flow whose Steps can use equivalent resources on either host. Set
+`flowCapacity` to the number of Flows each replica can execute at once, including work it accepts
+from peers. With one slot on each of three replicas, A can run one request locally and offload
+two more to B and C. A can have up to 12 offloads in flight. The HTTP Trigger responds with
+503 when that limit is reached or no eligible replica admits the Flow.
 
 The [mesh specification](specs/mesh.md) defines the runtime contract. [ADR 0024](adr/0024-optional-mesh-module-and-peer-channel.md)
 explains the architecture. The [roadmap](roadmap.md#7-decentralised-execution-state-sharding-and-replication)

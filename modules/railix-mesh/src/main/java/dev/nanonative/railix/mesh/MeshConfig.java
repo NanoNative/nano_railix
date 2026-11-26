@@ -19,10 +19,11 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 
 record MeshConfig(UUID meshId, PeerEndpoint listen, PeerEndpoint advertised, List<PeerEndpoint> bootstrap,
-                  int flowCapacity, MeshStore identity, MeshStore trust) {
+                  int flowCapacity, MeshStore identity, MeshStore trust, Optional<String> offloadFlow) {
     private static final int MAX_BYTES = 64 * 1024;
     private static final Set<String> FIELDS = Set.of("meshId", "listenEndpoint", "advertisedEndpoint",
             "bootstrapEndpoints", "flowCapacity", "identityStore", "trustStore");
+    private static final String OFFLOAD_FLOW = "offloadFlow";
     private static final Pattern UUID_TEXT = Pattern.compile("[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}");
 
     static MeshConfig load(final Path path) throws IOException {
@@ -40,7 +41,8 @@ record MeshConfig(UUID meshId, PeerEndpoint listen, PeerEndpoint advertised, Lis
                 StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString());
         if (!(parsed instanceof RailixJson.Parsed document)
                 || !(document.value() instanceof RailixValue.ObjectValue config)
-                || !config.values().keySet().equals(FIELDS)) {
+                || !config.values().keySet().containsAll(FIELDS)
+                || config.values().keySet().stream().anyMatch(key -> !FIELDS.contains(key) && !OFFLOAD_FLOW.equals(key))) {
             throw new IOException(MeshErrors.INVALID_CONFIG);
         }
         final Map<String, RailixValue> values = config.values();
@@ -71,7 +73,17 @@ record MeshConfig(UUID meshId, PeerEndpoint listen, PeerEndpoint advertised, Lis
         final Path directory = path.toAbsolutePath().getParent();
         final MeshStore identity = MeshStore.read(directory, values.get("identityStore"), "identityStore");
         final MeshStore trust = MeshStore.read(directory, values.get("trustStore"), "trustStore");
-        return new MeshConfig(UUID.fromString(id.value()), listen, advertised, bootstrap, capacity.getAsInt(), identity, trust);
+        final RailixValue offload = values.get(OFFLOAD_FLOW);
+        final Optional<String> offloadFlow;
+        if (offload == null) {
+            offloadFlow = Optional.empty();
+        } else if (offload instanceof RailixValue.StringValue trigger && !trigger.value().isBlank()) {
+            offloadFlow = Optional.of(trigger.value());
+        } else {
+            throw new IOException(MeshErrors.INVALID_OFFLOAD_FLOW);
+        }
+        return new MeshConfig(UUID.fromString(id.value()), listen, advertised, bootstrap, capacity.getAsInt(),
+                identity, trust, offloadFlow);
     }
 
     private static boolean uuid(final String text) {

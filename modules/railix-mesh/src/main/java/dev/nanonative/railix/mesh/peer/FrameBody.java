@@ -1,5 +1,5 @@
 package dev.nanonative.railix.mesh.peer;
 
-/** A complete frame body in the caller's reserved buffer. */
-record FrameBody(byte[] bytes) implements FrameRead {
+/** A complete frame body and the time its length prefix was accepted. */
+record FrameBody(byte[] bytes, long headerReceivedNanos) implements FrameRead {
 }

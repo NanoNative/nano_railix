@@ -9,7 +9,6 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -18,39 +17,35 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 
 final class PeerProtocol {
-    private static final Set<String> ACCEPTOR_HELLO = Set.of(
+    static final int MAX_NODES = 65_536;
+    private static final Set<String> HELLO_FIELDS = Set.of(
             "type", "logicalBuildId", "meshId", "replicaId", "incarnationId");
-    private static final Set<String> DIALER_HELLO = Set.of(
-            "type", "logicalBuildId", "meshId", "replicaId", "incarnationId", "connectionId");
     private static final Set<String> STATE_FIELDS = Set.of(
-            "type", "status", "advertisedEndpoint", "availableFlowSlots", "peerHints");
+            "type", "status", "advertisedEndpoint", "availableFlowSlots", "peerHints", "offloadFlow");
     private static final Set<String> PEER_STATUSES = Set.of("starting", "ready", "draining");
     private static final Pattern UUID_TEXT = Pattern.compile("[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}");
+    private static final Pattern FLOW_ID = Pattern.compile("[a-z][a-z0-9-]{0,63}");
     private static final BigDecimal MAX_FLOW_SLOTS = BigDecimal.valueOf(Integer.MAX_VALUE);
     private static final int LIMIT = PeerFrames.MAX_CONTROL_BODY_BYTES;
 
     private PeerProtocol() {
     }
 
-    static byte[] hello(final String build, final UUID mesh, final UUID replica, final UUID incarnation,
-                        final Optional<UUID> connectionId) {
-        final Map<String, RailixValue> fields = new LinkedHashMap<>(Map.of(
+    static byte[] hello(final String build, final UUID mesh, final UUID replica, final UUID incarnation) {
+        return encode(RailixValue.object(Map.of(
                 "type", RailixValue.string("hello.v1"),
                 "logicalBuildId", RailixValue.string(build),
                 "meshId", RailixValue.string(mesh.toString()),
                 "replicaId", RailixValue.string(replica.toString()),
-                "incarnationId", RailixValue.string(incarnation.toString())));
-        connectionId.ifPresent(id -> fields.put("connectionId", RailixValue.string(id.toString())));
-        return encode(RailixValue.object(fields));
+                "incarnationId", RailixValue.string(incarnation.toString()))));
     }
 
     static Optional<String> rejectHello(final RailixValue.ObjectValue hello, final String build, final UUID mesh,
-                                        final UUID peer, final UUID local, final boolean dialer) {
+                                        final UUID peer, final UUID local) {
         final Map<String, RailixValue> fields = hello.values();
-        if (!fields.keySet().equals(dialer ? DIALER_HELLO : ACCEPTOR_HELLO)
+        if (!fields.keySet().equals(HELLO_FIELDS)
                 || !"hello.v1".equals(text(fields.get("type")))
-                || !uuid(fields.get("incarnationId"))
-                || dialer && !uuid(fields.get("connectionId"))) {
+                || !uuid(fields.get("incarnationId"))) {
             return Optional.of(MeshErrors.INVALID_HELLO);
         }
         if (peer.equals(local) || !peer.toString().equals(text(fields.get("replicaId")))
@@ -63,14 +58,20 @@ final class PeerProtocol {
         return Optional.empty();
     }
 
-    static byte[] state(final PeerEndpoint advertised, final int flowCapacity) {
+    static byte[] state(final PeerEndpoint advertised, final int flowCapacity, final String status,
+                        final RailixValue offloadFlow) {
         return encode(RailixValue.object(Map.of(
                 "type", RailixValue.string("state"),
-                "status", RailixValue.string("ready"),
+                "status", RailixValue.string(status),
                 "advertisedEndpoint", advertised.value(),
-                "availableFlowSlots", RailixValue.number(flowCapacity),
+                "availableFlowSlots", RailixValue.number(flowCapacity), "offloadFlow", offloadFlow,
                 "peerHints", RailixValue.array(List.of())
         )));
+    }
+
+    static byte[] refusal(final String id, final String reason) {
+        return encode(RailixValue.object(Map.of("type", RailixValue.string("refused"),
+                "id", RailixValue.string(id), "reason", RailixValue.string(reason))));
     }
 
     static boolean validState(final RailixValue.ObjectValue state) {
@@ -80,17 +81,20 @@ final class PeerProtocol {
                 && PEER_STATUSES.contains(text(fields.get("status")))
                 && PeerEndpoint.isValid(fields.get("advertisedEndpoint"))
                 && validFlowSlots(fields.get("availableFlowSlots"))
+                && (fields.get("offloadFlow") instanceof RailixValue.NullValue
+                        || FLOW_ID.matcher(text(fields.get("offloadFlow"))).matches())
                 && fields.get("peerHints") instanceof RailixValue.ArrayValue hints
                 && hints.values().isEmpty();
     }
 
     static Optional<RailixValue.ObjectValue> read(final PeerChannel channel) throws IOException, InterruptedException {
         final FrameRead frame = channel.read(LIMIT, size -> Optional.of(new byte[size]));
-        if (!(frame instanceof FrameBody body)) {
-            return Optional.empty();
-        }
+        return frame instanceof FrameBody body ? decode(body) : Optional.empty();
+    }
+
+    static Optional<RailixValue.ObjectValue> decode(final FrameBody body) throws IOException {
         final String document = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(body.bytes())).toString();
-        if (RailixJson.parseDocument(document) instanceof RailixJson.Parsed parsed
+        if (RailixJson.parseDocument(document, MAX_NODES) instanceof RailixJson.Parsed parsed
                 && parsed.value() instanceof RailixValue.ObjectValue object) {
             return Optional.of(object);
         }
@@ -111,7 +115,7 @@ final class PeerProtocol {
         return value instanceof RailixValue.StringValue string ? string.value() : "";
     }
 
-    private static boolean uuid(final RailixValue value) {
+    static boolean uuid(final RailixValue value) {
         return UUID_TEXT.matcher(text(value)).matches();
     }
 

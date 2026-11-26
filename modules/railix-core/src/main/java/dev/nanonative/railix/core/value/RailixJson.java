@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /** Standard-library JSON normalization for canonical Railix values. */
 public final class RailixJson {
@@ -23,10 +24,12 @@ public final class RailixJson {
     private int line = 1;
     private int column = 1;
     private int depth;
+    private int remainingNodes;
 
-    private RailixJson(final String source, final int maxDepth) {
+    private RailixJson(final String source, final int maxDepth, final int maxNodes) {
         this.source = source;
         this.maxDepth = maxDepth;
+        this.remainingNodes = maxNodes;
     }
 
     public static Result parse(final String source) {
@@ -43,11 +46,27 @@ public final class RailixJson {
         return parse(source, MAX_DOCUMENT_DEPTH);
     }
 
+    /**
+     * @param source complete JSON message with its byte bound enforced by the caller
+     * @param maxNodes maximum total field names, containers and JSON primitives
+     * @return parsed document or a structured rejection
+     */
+    public static Result parseDocument(final String source, final int maxNodes) {
+        if (maxNodes < 1) {
+            throw new IllegalArgumentException("Maximum JSON nodes must be positive.");
+        }
+        return parse(source, MAX_DOCUMENT_DEPTH, maxNodes);
+    }
+
     static Result parse(final String source, final int maxDepth) {
+        return parse(source, maxDepth, Integer.MAX_VALUE);
+    }
+
+    private static Result parse(final String source, final int maxDepth, final int maxNodes) {
         if (source == null) {
             return new Invalid("JSON source is missing.", 1, 1);
         }
-        final RailixJson parser = new RailixJson(source, maxDepth);
+        final RailixJson parser = new RailixJson(source, maxDepth, maxNodes);
         try {
             parser.skipWhitespace();
             final RailixValue value = parser.value();
@@ -96,6 +115,18 @@ public final class RailixJson {
     }
 
     /**
+     * Writes a transfer document preserving decimal scale and object field order.
+     * @param value message to transfer
+     * @param maxBytes maximum complete UTF-8 bytes
+     * @param maxNodes maximum field names, containers and primitives
+     * @return complete JSON, or empty when a transfer limit is exceeded
+     */
+    public static Optional<String> writeTransferDocument(final RailixValue value, final int maxBytes, final int maxNodes) {
+        final JsonOutput json = bounded(value, maxBytes, true, MAX_DOCUMENT_DEPTH, maxNodes, true);
+        return json.exceeded() ? Optional.empty() : Optional.of(json.value());
+    }
+
+    /**
      * Writes canonical JSON only when its UTF-8 representation fits the supplied byte limit.
      *
      * @param value canonical value to write
@@ -120,21 +151,51 @@ public final class RailixJson {
         return !bounded(value, maxBytes, false, RailixData.DEFAULT_MAX_DEPTH).exceeded();
     }
 
+    /** JSON size, including object field names in the node count. */
+    public record Size(int bytes, int nodes) { }
+
+    /**
+     * Measures the same representation written by {@link #writeTransferDocument}.
+     * @param value value or document component to measure
+     * @param maxBytes remaining UTF-8 bytes
+     * @param maxNodes remaining field names, containers and primitives
+     * @param maxDepth remaining container depth
+     * @return its transfer size, or empty when a transfer limit is exceeded
+     * @throws IllegalArgumentException for an invalid value, depth or budget
+     */
+    public static Optional<Size> measureTransfer(final RailixValue value, final int maxBytes, final int maxNodes,
+                                                 final int maxDepth) {
+        if (maxDepth < 1 || maxDepth > MAX_DOCUMENT_DEPTH) {
+            throw new IllegalArgumentException("Maximum JSON depth must be between 1 and " + MAX_DOCUMENT_DEPTH + ".");
+        }
+        final JsonOutput json = bounded(value, maxBytes, false, maxDepth, maxNodes, true);
+        return json.exceeded() ? Optional.empty() : Optional.of(new Size(json.bytes, maxNodes - json.remainingNodes));
+    }
+
     private static JsonOutput bounded(final RailixValue value, final int maxBytes,
                                       final boolean capture, final int maxDepth) {
+        return bounded(value, maxBytes, capture, maxDepth, Integer.MAX_VALUE, false);
+    }
+
+    private static JsonOutput bounded(final RailixValue value, final int maxBytes,
+                                      final boolean capture, final int maxDepth, final int maxNodes,
+                                      final boolean preserveValues) {
         if (value == null) {
             throw new IllegalArgumentException("Railix JSON value cannot be Java null.");
         }
         if (maxBytes < 1) {
             throw new IllegalArgumentException("Maximum JSON bytes must be at least 1.");
         }
-        final JsonOutput json = new JsonOutput(maxBytes, capture, maxDepth);
+        if (maxNodes < 1) {
+            throw new IllegalArgumentException("Maximum JSON nodes must be positive.");
+        }
+        final JsonOutput json = new JsonOutput(maxBytes, capture, maxDepth, maxNodes, preserveValues);
         writeValue(value, json, 0);
         return json;
     }
 
     private static void writeValue(final RailixValue value, final JsonOutput json, final int depth) {
-        if (json.exceeded()) {
+        if (!json.tryConsumeNode()) {
             return;
         }
         switch (value) {
@@ -147,6 +208,10 @@ public final class RailixJson {
                             "Number exceeds the " + RailixData.MAX_CANONICAL_NUMBER_CHARACTERS
                                     + "-character canonical limit."
                     );
+                }
+                if (json.preserveValues) {
+                    writeTransferNumber(source, json);
+                    return;
                 }
                 final BigDecimal canonical =
                         source.signum() == 0 ? BigDecimal.ZERO : source.stripTrailingZeros();
@@ -166,10 +231,17 @@ public final class RailixJson {
             }
             case RailixValue.ObjectValue object -> {
                 checkWriteDepth(depth, json.maxDepth);
+                // Every field needs at least one node for its key and one for its value.
+                if (object.values().size() > json.remainingNodes / 2) {
+                    json.exceeded = true;
+                    return;
+                }
                 json.append('{');
                 boolean first = true;
-                for (final String key : object.values().keySet().stream().sorted().toList()) {
-                    if (json.exceeded()) {
+                final Set<String> keys = object.values().keySet();
+                final Iterable<String> ordered = json.preserveValues ? keys : keys.stream().sorted().toList();
+                for (final String key : ordered) {
+                    if (!json.tryConsumeNode()) {
                         break;
                     }
                     if (!first) {
@@ -183,6 +255,20 @@ public final class RailixJson {
                 json.append('}');
             }
         }
+    }
+
+    private static void writeTransferNumber(final BigDecimal number, final JsonOutput json) {
+        final int limit = RailixData.MAX_CANONICAL_NUMBER_CHARACTERS;
+        if (number.precision() > limit || number.scale() == Integer.MIN_VALUE) {
+            json.exceeded = true;
+            return;
+        }
+        final String text = number.toString();
+        if (text.length() - (number.signum() < 0 ? 1 : 0) > limit) {
+            json.exceeded = true;
+            return;
+        }
+        json.append(text);
     }
 
     private static void checkWriteDepth(final int depth, final int maxDepth) {
@@ -227,7 +313,9 @@ public final class RailixJson {
         private final int maxBytes;
         private final boolean capture;
         private final int maxDepth;
+        private final boolean preserveValues;
         private int bytes;
+        private int remainingNodes;
         private boolean exceeded;
 
         private JsonOutput(final int maxBytes) {
@@ -235,9 +323,25 @@ public final class RailixJson {
         }
 
         private JsonOutput(final int maxBytes, final boolean capture, final int maxDepth) {
+            this(maxBytes, capture, maxDepth, Integer.MAX_VALUE, false);
+        }
+
+        private JsonOutput(final int maxBytes, final boolean capture, final int maxDepth, final int maxNodes,
+                           final boolean preserveValues) {
             this.maxBytes = maxBytes;
             this.capture = capture;
             this.maxDepth = maxDepth;
+            this.remainingNodes = maxNodes;
+            this.preserveValues = preserveValues;
+        }
+
+        private boolean tryConsumeNode() {
+            if (exceeded || remainingNodes == 0) {
+                exceeded = true;
+                return false;
+            }
+            remainingNodes--;
+            return true;
         }
 
         private void append(final boolean source) {
@@ -281,6 +385,7 @@ public final class RailixJson {
         if (atEnd()) {
             throw failure("Expected a JSON value.");
         }
+        consumeNode();
         return switch (current()) {
             case '{' -> container(true);
             case '[' -> container(false);
@@ -295,6 +400,12 @@ public final class RailixJson {
                 yield number();
             }
         };
+    }
+
+    private void consumeNode() {
+        if (remainingNodes-- == 0) {
+            throw failure("JSON exceeds the maximum node count.");
+        }
     }
 
     private RailixValue container(final boolean object) {
@@ -322,6 +433,7 @@ public final class RailixJson {
             }
             final int keyLine = line;
             final int keyColumn = column;
+            consumeNode();
             final String key = string();
             if (values.containsKey(key)) {
                 throw new JsonFailure("Duplicate object field: " + key, keyLine, keyColumn);

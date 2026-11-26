@@ -1,5 +1,6 @@
 package dev.nanonative.railix.mesh.peer;
 
+import dev.nanonative.railix.core.runtime.RunResult;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
 import dev.nanonative.railix.mesh.MeshRuntime;
@@ -40,6 +41,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -53,7 +56,6 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.TrustManagerFactory;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -64,8 +66,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class PeerTlsTest {
     private static final UUID MESH_ID = UUID.randomUUID();
     private static final UUID OTHER_MESH = UUID.randomUUID();
-    private static final UUID SERVER_ID = UUID.randomUUID();
-    private static final UUID CLIENT_ID = UUID.randomUUID();
+    private static final UUID SERVER_ID = UUID.fromString("10000000-0000-4000-8000-000000000001");
+    private static final UUID CLIENT_ID = UUID.fromString("20000000-0000-4000-8000-000000000002");
     private static final String PASSWORD = UUID.randomUUID().toString();
     private static final String TRUST_PASSWORD = UUID.randomUUID().toString();
 
@@ -90,38 +92,245 @@ class PeerTlsTest {
     }
 
     @Test
-    void authenticatesBothReplicasAndExchangesFrames() throws Exception {
-        final PeerTls server = tls("server");
-        final PeerTls client = tls("client");
-        assertEquals(SERVER_ID, server.replicaId());
-        assertEquals(CLIENT_ID, client.replicaId());
+    void letsTheReceiverAdmitWorkWhenItsAdvertisedCapacityIsZero() throws Exception {
+        final InetSocketAddress address;
+        try (ServerSocket port = listener()) {
+            address = endpoint(port);
+        }
+        final String build = "sha256-" + "a".repeat(64);
+        final RailixValue.ObjectValue input = RailixValue.object(Map.of());
+        final RunResult completed = new RunResult.Succeeded(input);
+        final Path config = meshConfig(address.getPort(), "server", List.of(), 1, Optional.of("http"));
+        try (ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor();
+             PeerSession receiver = PeerSession.open(MESH_ID, build, new PeerEndpoint("127.0.0.1", 7401),
+                     1, Optional.of("http"), store("client"), passwordFile("client"),
+                     store("trust"), passwordFile("trust"));
+             MeshRuntime ingress = MeshRuntime.open(config.toString(), build, "http"::equals,
+                     ignored -> Optional.empty()).orElseThrow()) {
+            receiver.updateState("ready", 0);
+            receiver.setFlowAdmission(ignored -> Optional.of(new AdmittedFlow(() -> Optional.of(completed), () -> {})));
+            ingress.start();
+            threads.submit(() -> receiver.dial(address, deadline(), ignored -> {}, () -> true,
+                    ignored -> true, ignored -> {}));
 
-        try (ServerSocket listener = listener(); ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor()) {
-            final Future<Object> incoming = threads.submit(() -> {
-                try (PeerTlsConnection connection = accept(server, listener)) {
-                    assertEquals(CLIENT_ID, connection.replicaId());
-                    assertArrayEquals(new byte[]{1, 2, 3}, read(connection.channel()));
-                    assertTrue(connection.channel().write(new byte[]{4, 5}, 64));
-                }
-                return null;
-            });
+            final RailixValue.ObjectValue peer = awaitObservedPeer(ingress);
+            assertEquals(RailixValue.number(0), peer.values().get("availableFlowSlots"));
 
-            final Future<Object> outgoing = threads.submit(() -> {
-                try (PeerTlsConnection connection = client.dial(endpoint(listener), deadline())) {
-                    assertEquals(SERVER_ID, connection.replicaId());
-                    assertTrue(connection.channel().write(new byte[]{1, 2, 3}, 64));
-                    assertArrayEquals(new byte[]{4, 5}, read(connection.channel()));
-                }
-                return null;
-            });
+            final CountDownLatch localStarted = new CountDownLatch(1);
+            final CompletableFuture<RunResult> finishLocal = new CompletableFuture<>();
+            final Future<RunResult> local = threads.submit(() -> ingress.place("http", 0, () -> input, () -> {
+                localStarted.countDown();
+                return finishLocal.join();
+            }, ignored -> {}));
             try {
-                outgoing.get(8, SECONDS);
-                incoming.get(8, SECONDS);
+                assertTrue(localStarted.await(2, SECONDS));
+                final RunResult offloaded = ingress.place("http", 0, () -> input,
+                        () -> { throw new AssertionError("Local slot was already taken."); }, ignored -> {});
+                assertEquals(completed, offloaded);
             } finally {
-                outgoing.cancel(true);
-                incoming.cancel(true);
+                finishLocal.complete(completed);
+                local.get(2, SECONDS);
             }
         }
+    }
+
+    private static List<RailixValue> observedPeers(final MeshRuntime runtime) {
+        return assertInstanceOf(RailixValue.ArrayValue.class, runtime.status().values().get("peers")).values();
+    }
+
+    @Test
+    void duplicateConnectionLeavesAnInFlightOffloadOnItsOriginalSocket() throws Exception {
+        final InetSocketAddress address;
+        try (ServerSocket listener = listener()) {
+            address = endpoint(listener);
+        }
+        final String build = "sha256-" + "a".repeat(64);
+        final UUID incarnation = UUID.randomUUID();
+        final PeerTls client = tls("client");
+        final Path config = meshConfig(address.getPort(), "server", List.of(), 1, Optional.of("http"));
+        final RailixValue.ObjectValue input = RailixValue.object(Map.of());
+        final RunResult completed = new RunResult.Succeeded(input);
+        final CompletableFuture<RunResult> finishLocal = new CompletableFuture<>();
+        try (ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor();
+             MeshRuntime ingress = MeshRuntime.open(config.toString(), build, "http"::equals,
+                     ignored -> Optional.empty()).orElseThrow()) {
+            ingress.start();
+            try (PeerTlsConnection original = client.dial(address, deadline())) {
+                exchangeClientHello(original.channel(), build, incarnation);
+                assertTrue(PeerProtocol.read(original.channel()).filter(PeerProtocol::validState).isPresent());
+                PeerProtocol.write(original.channel(), PeerProtocol.state(new PeerEndpoint("127.0.0.1", 7401),
+                        1, "ready", RailixValue.string("http")));
+                awaitObservedPeer(ingress);
+
+                final CountDownLatch localStarted = new CountDownLatch(1);
+                final Future<RunResult> local = threads.submit(() -> ingress.place("http", 0, () -> input, () -> {
+                    localStarted.countDown();
+                    return finishLocal.join();
+                }, ignored -> {}));
+                try {
+                    assertTrue(localStarted.await(2, SECONDS));
+                    final Future<RunResult> offloaded = threads.submit(() -> ingress.place("http", 0, () -> input,
+                            () -> { throw new AssertionError("Local slot was already taken."); }, ignored -> {}));
+                    RailixValue.ObjectValue invocation;
+                    do {
+                        invocation = PeerProtocol.read(original.channel()).orElseThrow();
+                    } while (PeerProtocol.validState(invocation));
+                    assertEquals(RailixValue.string("invoke"), invocation.values().get("type"));
+
+                    try (PeerTlsConnection duplicate = client.dial(address, deadline())) {
+                        exchangeClientHello(duplicate.channel(), build, incarnation);
+                        assertEquals(FrameReadStatus.END_OF_STREAM, duplicate.channel().read(
+                                PeerFrames.MAX_CONTROL_BODY_BYTES, size -> Optional.of(new byte[size])));
+                    }
+                    final String id = PeerProtocol.text(invocation.values().get("id"));
+                    PeerProtocol.write(original.channel(), FlowWire.encodeOutcome(id, completed));
+                    assertEquals(completed, offloaded.get(2, SECONDS));
+                    assertEquals(1, observedPeers(ingress).size());
+                } finally {
+                    finishLocal.complete(completed);
+                    local.get(2, SECONDS);
+                }
+            }
+        }
+    }
+
+    private static void exchangeClientHello(final PeerChannel channel, final String build, final UUID incarnation)
+            throws IOException, InterruptedException {
+        assertEquals(RailixValue.string("hello.v1"), PeerProtocol.read(channel).orElseThrow().values().get("type"));
+        PeerProtocol.write(channel, PeerProtocol.hello(build, MESH_ID, CLIENT_ID, incarnation));
+    }
+
+    private static RailixValue.ObjectValue awaitObservedPeer(final MeshRuntime runtime) throws InterruptedException {
+        final long joinedBy = deadline();
+        List<RailixValue> peers = observedPeers(runtime);
+        while (peers.isEmpty() && joinedBy - System.nanoTime() > 0) {
+            Thread.sleep(Duration.ofMillis(10));
+            peers = observedPeers(runtime);
+        }
+        assertEquals(1, peers.size());
+        return assertInstanceOf(RailixValue.ObjectValue.class, peers.getFirst());
+    }
+
+    @Test
+    void crossedDialsReserveOneSocketAndRetryWhenItsConfirmationFails() throws Exception {
+        final InetSocketAddress address;
+        try (ServerSocket listener = listener()) {
+            address = endpoint(listener);
+        }
+        final String build = "sha256-" + "a".repeat(64);
+        final UUID incarnation = UUID.randomUUID();
+        final PeerTls client = tls("client");
+        try (ServerSocket seedListener = listener()) {
+            final PeerEndpoint seed = new PeerEndpoint("127.0.0.1", seedListener.getLocalPort());
+            final Path config = meshConfig(address.getPort(), "server", List.of(seed.value()));
+            try (MeshRuntime runtime = openMembership(config, build)) {
+                runtime.start();
+                try (PeerTlsConnection first = accept(client, seedListener)) {
+                    receiveProposal(first.channel(), build, incarnation);
+                    assertTrue(observedPeers(runtime).isEmpty());
+                    try (PeerTlsConnection crossed = client.dial(address, deadline())) {
+                        exchangeClientHello(crossed.channel(), build, incarnation);
+                        assertEquals(FrameReadStatus.END_OF_STREAM, crossed.channel().read(
+                                PeerFrames.MAX_CONTROL_BODY_BYTES, size -> Optional.of(new byte[size])));
+                    }
+                }
+
+                try (PeerTlsConnection retry = accept(client, seedListener)) {
+                    receiveProposal(retry.channel(), build, incarnation);
+                    PeerProtocol.write(retry.channel(), PeerProtocol.state(seed, 2, "ready", RailixValue.nullValue()));
+                    assertEquals(RailixValue.string(CLIENT_ID.toString()),
+                            awaitObservedPeer(runtime).values().get("replicaId"));
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(CrossedDialOrder.class)
+    void crossedDialRetriesWithoutBackoffAfterTheRetainedConnectionReceivesAHeartbeat(
+            final CrossedDialOrder order) throws Exception {
+        final boolean loserClosesBeforeConfirmation = order != CrossedDialOrder.WINNER_CONFIRMS_FIRST;
+        final boolean winnerClosesDuringBackoff = order == CrossedDialOrder.WINNER_CLOSES_DURING_BACKOFF;
+        final InetSocketAddress address;
+        try (ServerSocket listener = listener()) {
+            address = endpoint(listener);
+        }
+        final String build = "sha256-" + "a".repeat(64);
+        final byte[] hello = PeerProtocol.hello(build, MESH_ID, SERVER_ID, UUID.randomUUID());
+        final PeerTls server = tls("server");
+        try (ServerSocket seedListener = listener()) {
+            final PeerEndpoint seed = new PeerEndpoint("127.0.0.1", seedListener.getLocalPort());
+            final Path config = meshConfig(address.getPort(), "client", List.of(seed.value()));
+            try (MeshRuntime runtime = openMembership(config, build)) {
+                runtime.start();
+                if (winnerClosesDuringBackoff) {
+                    try (Socket failed = seedListener.accept()) {
+                        // One failed dial gives the next backoff a minimum of one second.
+                    }
+                }
+                try (PeerTlsConnection losing = accept(server, seedListener)) {
+                    PeerProtocol.read(losing.channel()).orElseThrow();
+                    PeerProtocol.write(losing.channel(), hello);
+
+                    final long disconnectedAt;
+                    try (PeerTlsConnection retained = server.dial(address, deadline())) {
+                        final PeerChannel channel = retained.channel();
+                        PeerProtocol.read(channel).orElseThrow();
+                        PeerProtocol.write(channel, hello);
+                        if (loserClosesBeforeConfirmation) {
+                            losing.close();
+                            // Delay the proposal while the losing dial enters its first backoff.
+                            Thread.sleep(Duration.ofMillis(250));
+                        }
+                        PeerProtocol.write(channel, PeerProtocol.state(seed, 2, "ready", RailixValue.nullValue()));
+                        assertTrue(PeerProtocol.read(channel).filter(PeerProtocol::validState).isPresent());
+                        RailixValue.ObjectValue peer = awaitObservedPeer(runtime);
+                        if (!loserClosesBeforeConfirmation) {
+                            losing.close();
+                        }
+
+                        final RailixValue.NumberValue available = RailixValue.number(1);
+                        PeerProtocol.write(channel, PeerProtocol.state(seed, 1, "ready", RailixValue.nullValue()));
+                        final long heartbeatBy = deadline();
+                        while (!available.equals(peer.values().get("availableFlowSlots"))
+                                && heartbeatBy - System.nanoTime() > 0) {
+                            Thread.sleep(Duration.ofMillis(10));
+                            peer = awaitObservedPeer(runtime);
+                        }
+                        assertEquals(available, peer.values().get("availableFlowSlots"));
+
+                        if (!winnerClosesDuringBackoff) {
+                            // A losing dial must stay parked even past the full first retry interval.
+                            seedListener.setSoTimeout(1_100);
+                            assertThrows(SocketTimeoutException.class, () -> {
+                                try (Socket retry = seedListener.accept()) {
+                                    throw new AssertionError("Redialed while the retained socket was connected.");
+                                }
+                            });
+                        }
+                        disconnectedAt = System.nanoTime();
+                    }
+                    seedListener.setSoTimeout(5_000);
+                    try (Socket retry = seedListener.accept()) {
+                        final Duration elapsed = Duration.ofNanos(System.nanoTime() - disconnectedAt);
+                        assertTrue(elapsed.compareTo(Duration.ofMillis(500)) < 0,
+                                () -> "Redial still waited for failure backoff: " + elapsed);
+                    }
+                }
+            }
+        }
+    }
+
+    private enum CrossedDialOrder {
+        WINNER_CONFIRMS_FIRST,
+        LOSER_CLOSES_FIRST,
+        WINNER_CLOSES_DURING_BACKOFF
+    }
+
+    private static void receiveProposal(final PeerChannel channel, final String build, final UUID incarnation)
+            throws IOException, InterruptedException {
+        exchangeClientHello(channel, build, incarnation);
+        assertTrue(PeerProtocol.read(channel).filter(PeerProtocol::validState).isPresent());
     }
 
     @Test
@@ -131,14 +340,14 @@ class PeerTlsTest {
             endpoint = endpoint(port);
         }
         final Path config = meshConfig(endpoint.getPort(), "server", List.of());
-        try (MeshRuntime runtime = MeshRuntime.open(config.toString(), "sha256-" + "a".repeat(64)).orElseThrow()) {
+        try (MeshRuntime runtime = openMembership(config, "sha256-" + "a".repeat(64))) {
             runtime.start();
             try (PeerTlsConnection peer = tls("client").dial(endpoint, deadline())) {
                 final PeerChannel channel = peer.channel();
                 final RailixValue.ObjectValue opening = PeerProtocol.read(channel).orElseThrow();
                 assertEquals(RailixValue.string("hello.v1"), opening.values().get("type"));
                 final byte[] differentBuild = PeerProtocol.hello("sha256-" + "b".repeat(64), MESH_ID,
-                        CLIENT_ID, UUID.randomUUID(), Optional.of(UUID.randomUUID()));
+                        CLIENT_ID, UUID.randomUUID());
                 PeerProtocol.write(channel, differentBuild);
                 assertEquals(FrameReadStatus.END_OF_STREAM,
                         channel.read(PeerFrames.MAX_CONTROL_BODY_BYTES, size -> Optional.of(new byte[size])));
@@ -161,16 +370,16 @@ class PeerTlsTest {
             final PeerEndpoint seedAlias = new PeerEndpoint("::ffff:127.0.0.1", seedPort);
             final List<RailixValue> bootstrap = List.of(seedEndpoint.value(), seedAlias.value());
             final Path config = meshConfig(localPort, "client", bootstrap);
-            try (MeshRuntime runtime = MeshRuntime.open(config.toString(), build).orElseThrow()) {
+            try (MeshRuntime runtime = openMembership(config, build)) {
                 runtime.start();
                 final long initialStateSent;
                 try (PeerTlsConnection connection = accept(seed, seedListener)) {
                     final PeerChannel channel = connection.channel();
                     assertTrue(PeerProtocol.read(channel).isPresent());
                     PeerProtocol.write(channel, PeerProtocol.hello(build, MESH_ID,
-                            SERVER_ID, UUID.randomUUID(), Optional.empty()));
+                            SERVER_ID, UUID.randomUUID()));
+                    PeerProtocol.write(channel, PeerProtocol.state(seedEndpoint, 2, "ready", RailixValue.nullValue()));
                     assertTrue(PeerProtocol.read(channel).filter(PeerProtocol::validState).isPresent());
-                    PeerProtocol.write(channel, PeerProtocol.state(seedEndpoint, 2));
                     initialStateSent = System.nanoTime();
                 }
                 try (Socket retry = seedListener.accept()) {
@@ -190,22 +399,20 @@ class PeerTlsTest {
         }
         final String build = "sha256-" + "a".repeat(64);
         final Path config = meshConfig(address.getPort(), "server", List.of());
-        try (MeshRuntime runtime = MeshRuntime.open(config.toString(), build).orElseThrow()) {
+        try (MeshRuntime runtime = openMembership(config, build)) {
             runtime.start();
             try (PeerTlsConnection healthy = tls("client").dial(address, deadline())) {
                 final PeerChannel channel = healthy.channel();
-                assertTrue(PeerProtocol.read(channel).isPresent());
-                PeerProtocol.write(channel, PeerProtocol.hello(build, MESH_ID, CLIENT_ID,
-                        UUID.randomUUID(), Optional.of(UUID.randomUUID())));
+                exchangeClientHello(channel, build, UUID.randomUUID());
                 final PeerEndpoint advertised = new PeerEndpoint("127.0.0.1", healthy.transport().getLocalPort());
-                PeerProtocol.write(channel, PeerProtocol.state(advertised, 2));
                 assertTrue(PeerProtocol.read(channel).filter(PeerProtocol::validState).isPresent());
+                PeerProtocol.write(channel, PeerProtocol.state(advertised, 2, "ready", RailixValue.nullValue()));
                 assertTrue(PeerProtocol.read(channel).filter(PeerProtocol::validState).isPresent());
 
                 try (PeerTlsConnection wrongIdentity = tls("server").dial(address, deadline())) {
                     assertTrue(PeerProtocol.read(wrongIdentity.channel()).isPresent());
                     PeerProtocol.write(wrongIdentity.channel(), PeerProtocol.hello(build, MESH_ID, SERVER_ID,
-                            UUID.randomUUID(), Optional.of(UUID.randomUUID())));
+                            UUID.randomUUID()));
                     assertTrue(PeerProtocol.read(wrongIdentity.channel()).isEmpty());
                 }
                 assertEquals(RailixValue.string("identity-mismatch"), runtime.status().values().get("rejection"));
@@ -427,10 +634,6 @@ class PeerTlsTest {
         return server.accept(listener.accept(), deadline());
     }
 
-    private static byte[] read(final PeerChannel channel) throws IOException, InterruptedException {
-        return assertInstanceOf(FrameBody.class, channel.read(64, size -> Optional.of(new byte[size]))).bytes();
-    }
-
     private static ServerSocket listener() throws IOException {
         final ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
         listener.setSoTimeout(5_000);
@@ -445,17 +648,28 @@ class PeerTlsTest {
         return System.nanoTime() + Duration.ofSeconds(5).toNanos();
     }
 
+    private static MeshRuntime openMembership(final Path config, final String build) throws IOException {
+        return MeshRuntime.open(config.toString(), build, ignored -> false, ignored -> Optional.empty()).orElseThrow();
+    }
+
     private static Path meshConfig(final int port, final String identity, final List<RailixValue> bootstrap)
             throws IOException {
+        return meshConfig(port, identity, bootstrap, 2, Optional.empty());
+    }
+
+    private static Path meshConfig(final int port, final String identity, final List<RailixValue> bootstrap,
+                                   final int capacity, final Optional<String> offloadFlow) throws IOException {
         final Path config = Files.createTempFile(credentials, "mesh-", ".json");
+        final String offload = offloadFlow.map(flow -> "\"offloadFlow\":" + RailixJson.write(RailixValue.string(flow)) + ",")
+                .orElse("");
         return Files.writeString(config, """
                 {"meshId":"%s",
                  "listenEndpoint":{"host":"127.0.0.1","port":%d},
                  "advertisedEndpoint":{"host":"127.0.0.1","port":%d},
-                 "bootstrapEndpoints":%s,"flowCapacity":2,
+                 "bootstrapEndpoints":%s,"flowCapacity":%d,%s
                  "identityStore":{"path":"%s.p12","passwordFile":"identity-password"},
                  "trustStore":{"path":"trust.p12","passwordFile":"trust-password"}}
-                """.formatted(MESH_ID, port, port, RailixJson.write(RailixValue.array(bootstrap)), identity));
+                """.formatted(MESH_ID, port, port, RailixJson.write(RailixValue.array(bootstrap)), capacity, offload, identity));
     }
 
     private static PeerTls tls(final String alias) throws Exception {

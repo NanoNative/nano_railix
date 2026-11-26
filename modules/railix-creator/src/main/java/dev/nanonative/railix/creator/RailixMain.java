@@ -96,13 +96,14 @@ public final class RailixMain {
                 return reject("PROJECT_SOURCE_REQUIRED: Select an existing project file: " + project);
             }
             final boolean includeProject = arguments.contains("--include-project");
-            final var source = ProjectFiles.build(project, Path.of(System.getProperty("user.home"), ".railix"), includeProject);
+            final ProjectFiles.Build source = ProjectFiles.build(project,
+                    Path.of(System.getProperty("user.home"), ".railix"), includeProject, arguments.contains("--mesh"));
             if (source.result() instanceof CompileResult.Rejected rejected) {
                 final Diagnostic diagnostic = rejected.diagnostics().getFirst();
                 return reject(diagnostic.code() + " " + diagnostic.path() + " " + diagnostic.message());
             }
-            final var artifact = ApplicationBuilder.buildProduction(project, source,
-                    !arguments.contains("--no-observation"), arguments.contains("--mesh"));
+            final ApplicationBuilder.Artifact artifact = ApplicationBuilder.buildProduction(project, source,
+                    !arguments.contains("--no-observation"));
             System.out.println(artifact.jar());
             return 0;
         } catch (final IOException | IllegalArgumentException exception) {

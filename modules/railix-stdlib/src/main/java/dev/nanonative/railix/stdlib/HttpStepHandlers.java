@@ -151,7 +151,8 @@ public final class HttpStepHandlers {
                         source.responses().getOrDefault("body", RailixValue.nullValue()),
                         source.responses().getOrDefault("headers", RailixValue.object(Map.of())));
                 case RunResult.Rejected rejected -> send(exchange,
-                        rejected.diagnostics().stream().anyMatch(diagnostic -> diagnostic.code().equals("APPLICATION_SOURCE_INACTIVE"))
+                        rejected.diagnostics().stream().anyMatch(diagnostic -> diagnostic.code().equals("APPLICATION_SOURCE_INACTIVE")
+                                || diagnostic.code().equals("MESH_FLOW_UNAVAILABLE"))
                                 ? 503 : 400, RailixValue.object(Map.of(
                         "diagnostics", diagnostics(rejected.diagnostics())
                 )), RailixValue.object(Map.of()));

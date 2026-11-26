@@ -51,6 +51,11 @@ final class ProjectFiles {
 
     /** Compiles and optionally packages one captured set of ordinary source documents. */
     static Build build(final Path project, final Path home, final boolean includeProject) throws IOException {
+        return build(project, home, includeProject, false);
+    }
+
+    static Build build(final Path project, final Path home, final boolean includeProject, final boolean mesh)
+            throws IOException {
         if (Files.exists(journal(project.toAbsolutePath().normalize())))
             return new Build.Rejected(new CompileResult.Rejected(List.of(Diagnostic.atPath("PROJECT_EDIT_PENDING",
                     "Finish or recover the editor action before building.", ""))));
@@ -71,7 +76,7 @@ final class ProjectFiles {
         final StepCatalog base = lock == null ? defaults : defaults.installSource(lock, home.resolve("artifacts"));
         final String custom = documents.get(ARCHIVE_ROOT + CustomSteps.FILE);
         final StepCatalog catalog = custom == null ? base : CustomSteps.compileAndInstall(base, project, custom);
-        final var result = ProjectCompiler.compileApplication(snapshot.source(), catalog);
+        final CompileResult result = ProjectCompiler.compileApplication(snapshot.source(), catalog, mesh);
         if (result instanceof CompileResult.Rejected rejected) {
             return new Build.Rejected(new CompileResult.Rejected(snapshot.locations(rejected.diagnostics())));
         }
@@ -87,14 +92,15 @@ final class ProjectFiles {
                         "Project files changed during compilation. Build again.", ""))));
         }
         return new Build.Compiled((CompileResult.Compiled) result,
-                includeProject ? java.util.Collections.unmodifiableMap(documents) : Map.of(), catalog);
+                includeProject ? java.util.Collections.unmodifiableMap(documents) : Map.of(), catalog, mesh);
     }
 
     sealed interface Build {
         CompileResult result();
         Map<String, String> documents();
 
-        record Compiled(CompileResult.Compiled result, Map<String, String> documents, StepCatalog catalog) implements Build { }
+        record Compiled(CompileResult.Compiled result, Map<String, String> documents, StepCatalog catalog,
+                        boolean mesh) implements Build { }
 
         record Rejected(CompileResult.Rejected result) implements Build {
             @Override public Map<String, String> documents() { return Map.of(); }

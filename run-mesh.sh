@@ -15,11 +15,13 @@ DEMO_MESH_HOST=127.0.0.1
 DEMO_SEED_PORT=${DEMO_SEED_PORT:-7401}
 DEMO_PEER_PORT=${DEMO_PEER_PORT:-7402}
 DEMO_FLOW_CAPACITY=${DEMO_FLOW_CAPACITY:-2}
+DEMO_OFFLOAD_FLOW=${DEMO_OFFLOAD_FLOW:-}
 DEMO_USER_HOME=${DEMO_USER_HOME:-}
 
 # Deployment settings. Copy the same build output to each host.
 # Set RAILIX_MESH_CONFIG per replica. Its JSON carries the shared meshId,
 # listenEndpoint, advertisedEndpoint, bootstrapEndpoints, and flowCapacity.
+# Set offloadFlow to the compiled Trigger ID on replicas that participate in offload.
 # In identityStore and trustStore, set each PKCS12 path and passwordFile.
 APPLICATION_JAR=${APPLICATION_JAR:-}
 RAILIX_MESH_CONFIG=${RAILIX_MESH_CONFIG:-}
@@ -45,6 +47,9 @@ deploy        Check the JAR with unzip and start one replica with provisioned cr
 
 Use RAILIX_CLI_JAR to reuse a packaged Railix CLI. For a custom demo project
 that uses installed Steps, set DEMO_USER_HOME to the account's existing home.
+Set DEMO_OFFLOAD_FLOW to a Trigger node ID to enable offload in the local demo.
+Set DEMO_FLOW_CAPACITY to the execution slots per replica (default: 2).
+Replicas started with join inherit both settings from the running demo.
 USAGE
 }
 
@@ -117,13 +122,18 @@ write_config() {
     local port=$3
     local bootstrap=$4
     local flow_capacity=$5
+    local offload_flow=$6
+    local offload_setting=
+    if [[ -n $offload_flow ]]; then
+        printf -v offload_setting '\n  "offloadFlow": "%s",' "$offload_flow"
+    fi
     cat > "$config" <<JSON
 {
   "meshId": "$mesh_id",
   "listenEndpoint": {"host": "$DEMO_MESH_HOST", "port": $port},
   "advertisedEndpoint": {"host": "$DEMO_MESH_HOST", "port": $port},
   "bootstrapEndpoints": $bootstrap,
-  "flowCapacity": $flow_capacity,
+  "flowCapacity": $flow_capacity,$offload_setting
   "identityStore": {"path": "identity.p12", "passwordFile": "identity.password"},
   "trustStore": {"path": "../trust.p12", "passwordFile": "../trust.password"}
 }
@@ -137,7 +147,8 @@ write_demo_settings() {
     local home=$3
     local jar=$4
     local flow_capacity=$5
-    printf '%s\n' "$mesh_id" "$home" "$jar" "$flow_capacity" > "$settings"
+    local offload_flow=$6
+    printf '%s\n' "$mesh_id" "$home" "$jar" "$flow_capacity" "$offload_flow" > "$settings"
 }
 
 read_demo_settings() {
@@ -145,7 +156,8 @@ read_demo_settings() {
         IFS= read -r mesh_id &&
         IFS= read -r demo_home &&
         IFS= read -r app &&
-        IFS= read -r DEMO_FLOW_CAPACITY
+        IFS= read -r DEMO_FLOW_CAPACITY || return 1
+        IFS= read -r DEMO_OFFLOAD_FLOW || DEMO_OFFLOAD_FLOW=
     } < "$1"
 }
 
@@ -186,7 +198,7 @@ join_demo() {
     issue_replica "$mesh_dir" "$mesh_id" "$port" "$port"
     replica_config="$replica_dir/mesh.json"
     bootstrap=$(bootstrap_endpoints "$mesh_dir" "$port")
-    write_config "$replica_config" "$mesh_id" "$port" "$bootstrap" "$DEMO_FLOW_CAPACITY"
+    write_config "$replica_config" "$mesh_id" "$port" "$bootstrap" "$DEMO_FLOW_CAPACITY" "$DEMO_OFFLOAD_FLOW"
     printf 'Starting mesh replica on %s:%s. Ctrl+C stops this replica.\n' "$DEMO_MESH_HOST" "$port"
     run_replica "$replica_config" "$app" "$demo_home" &
     replica_pid=$!
@@ -239,6 +251,8 @@ for port in "$DEMO_SEED_PORT" "$DEMO_PEER_PORT"; do
 done
 [[ $DEMO_SEED_PORT != "$DEMO_PEER_PORT" ]] || fail 'The seed and peer need distinct mesh ports.'
 [[ $DEMO_FLOW_CAPACITY =~ ^[1-9][0-9]*$ ]] || fail 'DEMO_FLOW_CAPACITY must be a positive integer.'
+[[ -z $DEMO_OFFLOAD_FLOW || $DEMO_OFFLOAD_FLOW =~ ^[a-z][a-z0-9-]{0,63}$ ]] ||
+    fail 'DEMO_OFFLOAD_FLOW must be a Trigger node ID.'
 
 if [[ -z $RAILIX_CLI_JAR ]]; then
     ./mvnw -pl modules/railix-creator -am -DskipTests package >&2
@@ -297,10 +311,10 @@ issue_replica "$mesh_dir" "$mesh_id" "$DEMO_PEER_PORT" peer
 seed_config="$mesh_dir/$DEMO_SEED_PORT/mesh.json"
 peer_config="$mesh_dir/$DEMO_PEER_PORT/mesh.json"
 peer_bootstrap=$(bootstrap_endpoints "$mesh_dir" "$DEMO_PEER_PORT")
-write_config "$seed_config" "$mesh_id" "$DEMO_SEED_PORT" '[]' "$DEMO_FLOW_CAPACITY"
-write_config "$peer_config" "$mesh_id" "$DEMO_PEER_PORT" "$peer_bootstrap" "$DEMO_FLOW_CAPACITY"
+write_config "$seed_config" "$mesh_id" "$DEMO_SEED_PORT" '[]' "$DEMO_FLOW_CAPACITY" "$DEMO_OFFLOAD_FLOW"
+write_config "$peer_config" "$mesh_id" "$DEMO_PEER_PORT" "$peer_bootstrap" "$DEMO_FLOW_CAPACITY" "$DEMO_OFFLOAD_FLOW"
 app=$("$JAVA" "-Duser.home=$demo_home" -jar "$RAILIX_CLI_JAR" build "$demo_project" --mesh)
-write_demo_settings "$mesh_dir/demo" "$mesh_id" "$demo_home" "$app" "$DEMO_FLOW_CAPACITY"
+write_demo_settings "$mesh_dir/demo" "$mesh_id" "$demo_home" "$app" "$DEMO_FLOW_CAPACITY" "$DEMO_OFFLOAD_FLOW"
 
 touch "$run_dir/seed.log" "$run_dir/peer.log"
 run_replica "$seed_config" "$app" "$demo_home" > "$run_dir/seed.log" 2>&1 &

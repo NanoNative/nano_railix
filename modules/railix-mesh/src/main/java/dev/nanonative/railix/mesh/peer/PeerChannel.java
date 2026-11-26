@@ -13,14 +13,22 @@ import java.util.IdentityHashMap;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.IntFunction;
+import java.util.function.Supplier;
 
 /**
  * Owns one connected peer socket with exclusive access to each direction.
  * Callers bound pending calls and provide socket I/O deadlines.
  */
 final class PeerChannel implements Closeable {
+    static final long WRITE_NANOS = TimeUnit.SECONDS.toNanos(2);
+
     private static final Set<Socket> CLAIMED_SOCKETS =
             Collections.synchronizedSet(Collections.newSetFromMap(new IdentityHashMap<>()));
 
@@ -72,6 +80,61 @@ final class PeerChannel implements Closeable {
     boolean write(final byte[] body, final int bodyLimit) throws IOException, InterruptedException {
         writeLock.lockInterruptibly();
         try {
+            return writeHeld(body, bodyLimit);
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    /** Prepares the final body after acquiring the channel. Empty skips the write. */
+    boolean writeBefore(final Supplier<Optional<byte[]>> prepare, final int bodyLimit, final long deadline,
+                        final ScheduledExecutorService timers, final Runnable abort)
+            throws IOException, InterruptedException {
+        final long remaining = deadline - System.nanoTime();
+        if (remaining <= 0 || !writeLock.tryLock(remaining, TimeUnit.NANOSECONDS)) {
+            return false;
+        }
+        try {
+            if (deadline - System.nanoTime() <= 0) {
+                return false;
+            }
+            final Optional<byte[]> body = prepare.get();
+            if (body.isEmpty()) {
+                return false;
+            }
+            return writeWithWatchdog(body.orElseThrow(), bodyLimit, deadline, timers, abort);
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    private boolean writeWithWatchdog(final byte[] body, final int bodyLimit, final long deadline,
+                                      final ScheduledExecutorService timers, final Runnable abort) throws IOException {
+        final long writeBudget = deadline - System.nanoTime();
+        if (writeBudget <= 0) {
+            return false;
+        }
+        final AtomicBoolean writing = new AtomicBoolean(true);
+        final ScheduledFuture<?> timeout;
+        try {
+            timeout = timers.schedule(() -> {
+                if (writing.compareAndSet(true, false)) {
+                    abort.run();
+                }
+            }, writeBudget, TimeUnit.NANOSECONDS);
+        } catch (final RejectedExecutionException stopped) {
+            return false;
+        }
+        try {
+            return writeHeld(body, bodyLimit);
+        } finally {
+            writing.set(false);
+            timeout.cancel(false);
+        }
+    }
+
+    private boolean writeHeld(final byte[] body, final int bodyLimit) throws IOException {
+        try {
             final boolean written = PeerFrames.write(output, body, bodyLimit);
             if (written) {
                 output.flush();
@@ -79,8 +142,6 @@ final class PeerChannel implements Closeable {
             return written;
         } catch (final IOException failure) {
             throw closeAfterFailure(failure);
-        } finally {
-            writeLock.unlock();
         }
     }
 

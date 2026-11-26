@@ -7,6 +7,7 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
@@ -37,15 +38,33 @@ final class BootstrapRetries {
             return false;
         }
         target.dialing = true;
+        target.healthySessionEnded = false;
         return true;
     }
 
-    synchronized void finish(final Target target, final boolean heartbeatReceived) {
-        target.retryAt = System.nanoTime();
-        if (heartbeatReceived) {
-            target.backoff.reset();
-        } else {
-            target.retryAt += TimeUnit.MILLISECONDS.toNanos(target.backoff.nextDelayMillis());
+    synchronized void identify(final Target target, final UUID replica) {
+        if (!replica.equals(target.replicaId)) {
+            target.replicaId = replica;
+            target.healthySessionEnded = false;
+        }
+    }
+
+    synchronized void healthySessionEnded(final UUID replica) {
+        final long now = System.nanoTime();
+        for (final Target target : targets.values()) {
+            if (replica.equals(target.replicaId)) {
+                target.backoff.reset();
+                target.retryAt = now;
+                target.healthySessionEnded = true;
+            }
+        }
+        notifyAll();
+    }
+
+    synchronized void finish(final Target target) {
+        // A healthy connection can close while its competing dial still owns the target.
+        if (!target.healthySessionEnded) {
+            target.retryAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(target.backoff.nextDelayMillis());
         }
         target.dialing = false;
         notifyAll();
@@ -89,6 +108,8 @@ final class BootstrapRetries {
         private long retryAt = System.nanoTime();
         private int references;
         private boolean dialing;
+        private boolean healthySessionEnded;
+        private UUID replicaId;
 
         private Target(final String key, final InetSocketAddress address) {
             this.key = key;
@@ -97,6 +118,11 @@ final class BootstrapRetries {
 
         InetSocketAddress address() {
             return address;
+        }
+
+        // The caller holds the dial claim when reading this identity.
+        UUID replicaId() {
+            return replicaId;
         }
     }
 

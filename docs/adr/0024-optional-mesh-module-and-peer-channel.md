@@ -40,9 +40,17 @@ and encryption. Custom cryptography would duplicate those responsibilities.
 ### Direct, persistent peer channel
 
 Use a bounded, length-framed protocol over JDK TLS and TCP. Multiplexing lets one authenticated
-session carry concurrent invocations, outcomes, and cancellation. The opening exchange identifies
-the fixed wire format. Use canonical Railix JSON so the peer boundary can reuse the existing value
-model. Railix owns framing and maps messages to compiled targets.
+session carry concurrent invocations and outcomes. The opening exchange identifies
+the fixed wire format. Use Railix JSON with exact decimal scale and object field order for Flow
+data so Steps see the same values on both replicas. Railix owns framing and maps messages to
+compiled targets.
+
+Each joined connection owns one bounded writer. Invocations, replies, and control frames
+enter its FIFO. A slow peer uses its own write capacity.
+
+Use authenticated replica ID order to pick one socket during join, then keep it until it
+disconnects or expires. Either replica can dial with the address it knows. Ordering the two
+initial state messages lets both sides agree before offloading.
 
 A Flow-specific HTTP endpoint would tie dispatch to a source protocol and require a separate
 design for later Step dispatch and cancellation. An HTTP/2 or HTTP/3 server framework would expand
@@ -91,10 +99,22 @@ eligible peer. That peer owns final admission and shares its execution capacity 
 remote work. Separate limits for pending remote calls preserve local execution slots while
 ingress waits for another replica.
 
+Check Flow eligibility before comparing capacity. The local replica and its peers use the
+same compiled Flow identity. The first proof makes that Flow eligible on both configured
+replicas. The receiver checks its own eligibility and actual capacity before running it.
+This keeps placement separate from the compiled continuation and lets deployment add
+replica or role constraints later. If a Flow is pinned to one replica, spare capacity
+elsewhere cannot override the pin.
+
 Always sending work to the least-loaded peer would add a network hop even when local execution
 has room. A capacity advertisement can be stale by the time work arrives. A receiver queue would
 defer the admission decision and retain another copy of the work. The receiver checks its actual
 resources and refuses immediately when it cannot admit the Flow.
+
+Reserve a terminal reply position on the receiving connection before admitting remote work.
+Execution releases its Flow slot after handing the reply to the connection. Drain waits for
+both execution and replies within one deadline. This keeps network backpressure on the peer
+that caused it and preserves local execution capacity.
 
 ### Single-member ingress and future Smart clients
 
@@ -104,25 +124,27 @@ proxy in front of ready replicas for a stable URL. A dedicated Railix gateway wo
 public request handling in one process.
 
 The ingress replica owns the original transport and completes the response. An execution peer
-returns the Flow outcome to ingress. Keeping completion at ingress preserves the Trigger
-contract and avoids transferring the source transport.
+returns the Flow's `RunResult`. Ingress uses the same compiled response slots for local and
+remote results. This preserves the Trigger contract and sends the final context once.
 
 A future Smart client can learn reachable Trigger endpoints and select a replica before
 sending the event. Both modes use the same Flow placement, receiver admission, and response
 path after the event reaches ingress.
 
-### One deadline and bounded retries
+### Bounded waiting and receiver-owned execution
 
-Keep one ingress deadline across admission, transport, waiting, execution, and result return.
-Send the remaining budget to peers and request cancellation on expiry or caller disconnect.
-Ingress correlates outcomes to their attempts and discards late replies. Known non-admission
-allows a bounded attempt on another eligible peer. A failure after possible admission ends
-placement with an uncertain result. Drain closes new admission and leaves the channel open for
-admitted work to return outcomes.
+Keep one ingress deadline for transfer, admission, and the reply. Send the remaining budget
+to peers. Known non-admission allows a bounded attempt on another eligible peer. A failure
+after possible admission ends placement with an uncertain result. Ingress discards late replies.
+
+The receiver owns an admitted Flow through execution. Caller timeout, interruption, and peer loss
+leave that work running because the receiver has accepted responsibility for its effects. Its
+execution slot stays occupied until it exits. The receiver's application lifecycle owns shutdown.
+Drain closes admission and keeps the peer channels available for outstanding replies within the
+drain and reply deadlines.
 
 Giving each attempt a full timeout can exceed the caller's original budget. Replaying on any lost
-reply can repeat an effect that the first receiver already committed. Keeping outcomes available
-during drain gives accepted work time to complete.
+reply can repeat an effect that the first receiver already committed.
 
 ### Observation and deployment
 

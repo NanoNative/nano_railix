@@ -37,19 +37,23 @@ credential enrollment, and rotation.
   execution frames such as `WorkflowRuntime.FlowRunner`.
 - **MESH-008 — Flow ownership.** Ingress owns source processing, the original transport, and one
   completion obligation. The receiver executes the admitted compiled continuation and returns
-  its outcome to ingress. Ingress alone completes the source response.
+  its `RunResult` to ingress. Ingress applies the compiled response slots and completes the
+  original request.
 - **MESH-009 — Local-first admission.** A ready replica MUST execute eligible work locally while a
   local slot is available, including when peers are stalled or unreachable. If local capacity is
   exhausted, only a fresh, ready peer can be considered for offload. The receiver decides
   admission using authority, compatibility, eligibility, time remaining, and actual capacity.
-  Refuse immediately if any check fails. An admitted invocation returns a terminal outcome.
-- **MESH-010 — Failure distinction.** Distinguish non-admission, admission, success, cancellation
-  requested, and uncertain completion. Retry at another eligible peer only after known
+  Refuse immediately if any check fails. Deliver the terminal outcome within the reply budget if
+  the connection and ingress are still available.
+- **MESH-010 — Failure distinction.** Distinguish known non-admission, a terminal Flow outcome,
+  and uncertain completion. Retry at another eligible peer only after known
   non-admission and within the original attempt and deadline limits. If a failure follows
   possible admission, report uncertain completion and stop placement attempts.
-- **MESH-011 — One operation budget.** Admission, transfer, waiting, execution, and result return
-  consume one ingress deadline. Send remaining duration. The receiver clamps it and uses its own
-  monotonic clock.
+- **MESH-011 — One operation budget.** Transfer, admission, and the reply share one ingress
+  deadline. Stamp the remaining duration after encoding and the writer wait. The receiver
+  validates the bound and starts its local clock budget at the frame header. Admission transfers
+  ownership of execution to the receiver. Expiry or connection loss ends the reply path while
+  the accepted Flow continues under the receiver's application lifecycle.
 - **MESH-012 — Distributed backpressure.** Bound execution, pending invocations, payload
   retention, write queues, and placement attempts independently. Advertised capacity is
   advisory. Only actual admission reserves a slot.
@@ -70,7 +74,8 @@ resolution has a five-second limit. The application passes its arguments to ordi
 | `meshId` | Mesh authority ID. It matches the ID in the local certificate. |
 | `listenEndpoint`, `advertisedEndpoint` | Objects with hostname or IP `host` and integer `port`. The first binds the local socket. Peers dial the second. |
 | `bootstrapEndpoints` | List of endpoints in the same form. |
-| `flowCapacity` | Positive integer. |
+| `flowCapacity` | Positive integer. Execution slots on this replica, shared by local requests and work accepted from peers. |
+| `offloadFlow` | Optional compiled Trigger ID. For the pilot, configure the same ID on participating replicas. Omission leaves the replica in membership-only mode. |
 | `identityStore`, `trustStore` | Objects with PKCS12 `path` and `passwordFile`. Relative paths resolve from the configuration file's directory. |
 
 Configuration, stores, and password files MUST be regular files. Each password file contains one
@@ -83,18 +88,18 @@ credentials and password files. Generate unpredictable keys and passwords.
 ## Peer Transport And Trust
 
 Retain one persistent bidirectional JDK TLS/TCP session per connected pair. The four-byte unsigned
-big-endian length prefixes canonical UTF-8 JSON encoded with `RailixJson`. Version 1 uses
-uncompressed messages. Reject an unsupported opening message. Invocation IDs correlate
+big-endian length prefixes UTF-8 JSON encoded with `RailixJson`. Flow data preserves decimal
+scale and object field order. Version 1 uses uncompressed messages. Reject an unsupported opening
+message. Invocation IDs correlate
 responses that can complete out of order on the same connection.
 
 | Message | Content |
 | --- | --- |
-| `hello` | `type` is `hello.v1`. Carries `logicalBuildId`, `meshId`, `replicaId`, and `incarnationId`. The dialer supplies `connectionId`. |
-| `state` | `type` is `state`. Carries `status` (`starting`, `ready`, or `draining`), `advertisedEndpoint`, `availableFlowSlots`, and `peerHints`. Also serves as the heartbeat. |
-| `invoke` | Compiled continuation, canonical input, invocation ID, remaining duration, attempt, and trace identity. |
+| `hello` | `type` is `hello.v1`. Both replicas send `logicalBuildId`, `meshId`, `replicaId`, and `incarnationId`. |
+| `state` | `type` is `state`. Carries `status` (`starting`, `ready`, or `draining`), `advertisedEndpoint`, `availableFlowSlots`, `offloadFlow` (a Trigger ID or `null`), and `peerHints`. Also serves as the heartbeat. |
+| `invoke` | Compiled continuation, canonical input, and invocation ID. The invocation ID correlates all messages for the call. `admissionNanos` is a ten-digit decimal string (up to five seconds) stamped when the writer is ready. |
 | `refused` | Terminal before admission. Structured reason includes build mismatch, saturation, drain, ineligibility, or expiry. |
-| `outcome` | Terminal after admission. Preserves applicable Flow outcome and branch semantics. |
-| `cancel` | Best-effort cancellation request for an in-flight invocation. |
+| `outcome` | Terminal after admission. `payload` contains the `RunResult` with its context and branch outcomes where applicable. |
 
 Both peers verify key possession, certificate trust, and the peer's TLS role. The certificate
 URI Subject Alternative Name binds mesh and stable replica identity. Match this URI locally
@@ -105,12 +110,15 @@ with lower-case UUIDs:
 Startup requires a currently valid trust anchor. Validate new handshakes against anchors valid
 at join. Each process creates a random incarnation ID. Check `hello` claims against the
 certificate, mesh authority, and logical build. Close on mismatch before sending `state`.
-Keep the authenticated build ID for the session. The first valid `state` completes join.
+Keep the authenticated build ID for the session. The replica with the lexicographically smaller
+certificate-bound ID reserves a socket and sends `state` first. Its peer validates that state,
+reserves the same socket locally and replies with `state`. Each side publishes the peer after
+sending and validating initial state.
 
 | Prototype timing | Contract |
 | --- | --- |
-| Join | One internal 5-second deadline from dial or accept covers DNS, TCP, TLS, `hello`, and first valid `state`. Reserve outbound connection capacity after DNS so inbound joins can proceed. Try resolved addresses in resolver order. Divide remaining time among untried addresses and carry unused time forward. Close on expiry and apply the discovery retry policy. |
-| Heartbeat | Send `state` every 2 seconds. Measure freshness locally with a monotonic clock. Close and remove a peer after 8 seconds without valid `state`. Remove it immediately on disconnect. |
+| Join | One internal 5-second deadline from dial or accept covers DNS, TCP, TLS, `hello`, and the initial `state` exchange. Reserve outbound connection capacity after DNS so inbound joins can proceed. Try resolved addresses in resolver order. Divide remaining time among untried addresses and carry unused time forward. Close on expiry and apply the discovery retry policy. |
+| Heartbeat | Send `state` every 2 seconds with a 2-second send deadline. Skip on queue expiry. Abort on active write expiry. Close and remove a peer after 8 seconds without valid `state` or immediately on disconnect. |
 
 ## Discovery And Peer Knowledge
 
@@ -122,10 +130,9 @@ Keep the authenticated build ID for the session. The first valid `state` complet
   handshake concurrently per replica.
 - Publish all connected peers in `peers`. Publish one entry in `peer` for Creator's summary, or
   `null` when empty. Advertise configured Flow capacity and empty `peerHints` in `state`.
-- For simultaneous dials, keep the connection initiated by the lexicographically smaller
-  certificate-bound replica ID. Use shared connection IDs to break same-direction ties.
-  Authenticate a replacement and require readiness before retiring a ready connection.
-  Reject overlapping incarnations. Allow a restart to join after the previous connection ends.
+- Either replica can dial. Count reservations toward the peer limit and release them when join
+  fails. Reject duplicate sockets and overlapping incarnations while a reservation or session
+  owns the replica ID. Allow a new join after the prior connection ends.
 - Hostname lookups wait for one resolver slot within the join deadline.
 - Try configured seeds immediately. Seeds that resolve to the same socket address share one
   attempt and retry history. After failure, retry after a random delay from half the ceiling to
@@ -146,7 +153,8 @@ Keep the authenticated build ID for the session. The first valid `state` complet
 The build embeds a versioned SHA-256 logical ID. Inputs are the canonical functional project
 with compiled configuration, deterministic production entrypoints, used Step implementations
 and contracts with locked artifact digests, and the Railix execution contract, including the
-packaged core runtime. Core owns this calculation. Artifact caching uses a separate package key.
+packaged core and mesh classes. Fingerprint sorted class paths and contents. Core owns this
+calculation. Artifact caching uses a separate package key.
 Artifacts with incompatible peer message contracts must have distinct logical build IDs.
 
 Examples, Creator presentation, platform packaging, listener addresses, credentials, startup
@@ -158,9 +166,32 @@ host-specific resources stay local. General host-capability declarations belong 
 
 Share one configured execution pool between local and remote work. Check admission before
 consuming a permit and refuse without queuing. Each `invoke` receives only its terminal
-`refused` or `outcome`. Ingress uses a separate pending-invocation pool of the same configured
-size and holds no execution permit while placing or waiting for remote work. Permit at most two
-sequential remote attempts, excluding the local attempt. Only ingress can place an invocation.
+`refused` or `outcome`. Ingress holds no execution permit while placing or waiting for remote
+work. Permit at most three sequential remote attempts, excluding the local attempt. Only ingress
+can place an invocation.
+
+The configured pilot uses a five-second admission and reply budget and a two-second write bound.
+Ingress caps pending offloads at 12 per replica independently of `flowCapacity` to bound retained
+data. The deployment selects one Flow with equivalent resources across its replicas.
+Ingress filters for the advertised Flow before counting attempts. Rank ready peers by advertised
+free slots, including peers that reported zero. The receiver checks its current capacity on arrival.
+Each session reads one frame at a time. The peer and handshake limits bound the number of readers.
+The receiver refuses a new invocation when its separate retained-input budget is full.
+
+Each joined connection has one FIFO writer. Bound it to two invocation writes, two terminal
+replies, 12 early refusals, and one heartbeat, including frames in progress.
+Reserve a terminal reply before taking a remote execution slot. Refuse before execution if
+either reservation is unavailable. Return the execution slot when execution exits and any timely
+reply has been handed to the writer. The writer returns a queued reply reservation when it sends,
+expires, or drops the frame.
+
+Prepare input after reserving a writer buffer. Keep at most one prepared frame per pending
+offload. Reuse it across attempts and stamp the remaining duration before each write.
+
+The reader queues early refusals and keeps reading. A worker that the application declines
+hands its refusal to the writer before releasing its slot.
+Terminal writes use the remaining call budget and the two-second write limit. Undelivered
+replies retain the uncertainty rules.
 
 | Limit | v1 |
 | --- | --- |
@@ -173,24 +204,35 @@ sequential remote attempts, excluding the local attempt. Only ingress can place 
 
 Body limits exclude the length prefix. Otherwise valid input over the transfer limit stays
 local. An oversized outcome returns a small terminal failure and ends replay eligibility.
-Reject zero-length, oversized, or truncated frames. Validate length and reserve global inbound
-bytes before allocation. Read within a finite deadline. Reject malformed UTF-8, BOMs, and
-duplicate fields. Enforce JSON node and depth bounds during parsing. Reserve global outbound
-bytes before encoding or queuing. Bound retained decoded data separately from buffers.
+Reject zero-length, oversized, or truncated frames. Validate length before allocation. The
+frame and reader limits bound receive buffers. Read within a finite deadline. Reject malformed
+UTF-8, BOMs, and duplicate fields. Enforce JSON node and depth bounds during parsing. Reserve
+a connection's write capacity before encoding or queuing. Bound retained decoded data separately
+at Flow admission.
 
 ## Deadline, Drain And Failure
 
 | Condition | Required behavior |
 | --- | --- |
 | Delivery was impossible or the peer explicitly refused | A different eligible peer can be tried within the original bounds. |
-| The connection or peer is lost after possible delivery | End with uncertain completion. |
-| The original deadline expires or the caller disconnects after dispatch | Request best-effort cancellation. Discard late results. The receiver may already have completed work. |
+| The source thread is interrupted before the writer claims the invocation | Return `Cancelled`. Drop the invocation. |
+| The connection or peer is lost after possible delivery | End with uncertain completion. The receiver owns any accepted execution. |
+| The original deadline expires or the source thread is interrupted after possible delivery | End with uncertain completion and discard late outcomes. Accepted execution continues. |
 | Ingress exits before receiving an outcome | The outcome loses its owner. Reconnection creates a new session. Invocation takeover and recovery are outside this delivery. |
-| Replica drains | Publish `draining` and refuse new remote admissions. Keep the channel open for outcomes. Finish admitted work within the earlier of the operation deadline and remaining app drain budget (30 seconds by default). Request cancellation at expiry. Preserve resources in use until execution exits. |
+| Replica drains | Publish `draining` and refuse new remote admissions. Wait for execution and outstanding replies within the application drain budget (30 seconds by default). Replies retain their earlier deadlines. At drain expiry the local application lifecycle can interrupt its own work. Preserve resources in use until execution exits. |
 | Network partitions | Remove disconnected or stale peers. Continue locally or use other eligible peers. |
+
+The current HTTP Trigger can wait until the offload deadline after the client disconnects.
+Once the writer claims an invocation, it owns the write until completion or its write deadline.
 
 Expose join state and the latest rejection through [local standalone observation](observation.md#local-standalone-connection).
 Retain the latest rejection across membership changes.
+With Flow offload enabled, report Flow execution metrics on the replica that runs the Flow.
+Ingress records Trigger Step metrics on the replica that received the request.
+Publish offload counters only when `offloadFlow` is configured. Increment `offload_ack` at
+ingress for a terminal peer outcome validated before the reply deadline. Increment
+`offload_no_ack` for uncertain completion after possible delivery. Count each Flow once.
+Explicit refusals and unsent attempts leave both counts unchanged.
 Creator reads status owned by the selected process. Extend existing runtime status and metrics
 with readiness, replica and incarnation IDs, connection and reconnection reasons, active and
 pending counts, admissions, outcomes, and rejections. Correlate diagnostics by invocation, peer,
@@ -211,7 +253,7 @@ reach replicas directly or through a deployment-provided reverse proxy.
 | Requirements | Public-boundary proof |
 | --- | --- |
 | MESH-001/002 | Build offline. Run executable JARs with mesh omitted, inactive, active, and invalid configuration. Inspect the JAR, listeners, normal source execution, and process cleanup. Invalid requested configuration fails before binding. |
-| MESH-003/005 | Run two fixed-peer JVMs with separate credentials. Verify mutual TLS, matching `hello`, first valid `state`, and selected-process status in Creator. Exercise unknown or expired credentials, wrong mesh, replica, or key, and unsupported opening. Different logical builds close before either side publishes `state`. At dispatch, a mismatched invocation is refused before execution or permit acquisition. |
+| MESH-003/005 | Run two fixed-peer JVMs with separate credentials. Verify mutual TLS, matching `hello`, initial `state` exchange, and selected-process status in Creator. Exercise unknown or expired credentials, wrong mesh, replica, or key, and unsupported opening. Different logical builds close before either side publishes `state`. At dispatch, a mismatched invocation is refused before execution or permit acquisition. |
 | MESH-004 | Send a valid `starting` state. Verify the peer joins and stays ineligible for offload until it reports `ready`. In a separate run, complete TLS and `hello` and withhold the first `state` past the join deadline. Verify the session times out while the replica keeps serving local requests. |
 | MESH-004 | Join four configured replicas. Stop the original seed. Verify the survivors stay connected and a restarted replica joins through a survivor. Exercise a two-host bootstrap. |
 | MESH-004 | Start with the seed down. Verify bounded retries, local responses, and reconnection. Verify that aliases share backoff, DNS contention respects the join deadline, and stale or disconnected peers are removed. |
@@ -220,7 +262,7 @@ reach replicas directly or through a deployment-provided reverse proxy.
 | MESH-005/007 | Join equivalent macOS and Linux/ARM packages. Execute an eligible Flow and exercise an ineligible host-specific target. |
 | MESH-006/007/012 | Exercise UTF-8, byte, node, and depth limits, aggregate outcomes, and simultaneous slow frames. Verify early rejection, bounded memory, and recovery. |
 | MESH-008/009 | While A is saturated, send an HTTP request directly to A. B executes the eligible Flow and returns one terminal outcome. A completes one original response with the same result as local execution. Saturate B with local and remote work and verify immediate refusal. With A below capacity, verify local source responses through peer stall, disconnect, and reconnect. |
-| MESH-010/011 | Exercise explicit refusal, disconnect after possible admission, late results, and draining with admitted work. Verify bounded attempts, the ingress deadline, and no replay. |
+| MESH-010/011 | Verify a third eligible peer can return the outcome after two explicit refusals within the original deadline. Exercise disconnect after possible admission, late results, and drain. Verify continued receiver execution after reply expiry or ingress loss and no replay. |
 | MESH-013 | Complete concurrent Flow invocations out of order on one channel. Exercise Step invocation only at its later milestone. |
 
 Run the fixed-peer proof on a compatible installed Java runtime. Use
@@ -232,7 +274,7 @@ later packaged native proof. See [fixed-peer evidence](../verification.md#fixed-
 - **Discovery.** Measure join, heartbeat, staleness, and retry timings under load on Raspberry Pi
   to set finite peer and handshake caps and learned-hint lifetime before enabling learned peers.
 - **Flow execution.** Establish build-time eligibility for portable providers. Measure and set the
-  source operation budget, receiver clamp, frame deadlines, and aggregate inbound, outbound, and
+  admission and reply budget, frame deadlines, and aggregate inbound, outbound, and
   retained-value limits.
 - **Native distribution.** Repeat the MESH-001/002 activation cases and MESH-003/005 peer checks
   on the self-contained distributions from Item 8.

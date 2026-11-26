@@ -36,6 +36,7 @@ final class PeerFrames {
             return FrameReadStatus.INVALID_LENGTH;
         }
         final int size = (int) length;
+        final long headerReceivedNanos = System.nanoTime();
         final Optional<byte[]> reservation = reserveBody.apply(size);
         if (reservation.isEmpty()) {
             return FrameReadStatus.BODY_UNAVAILABLE;
@@ -44,7 +45,8 @@ final class PeerFrames {
         if (body.length != size) {
             throw new IllegalArgumentException(MeshErrors.INVALID_RESERVED_BUFFER);
         }
-        return input.readNBytes(body, 0, size) == size ? new FrameBody(body) : FrameReadStatus.TRUNCATED_BODY;
+        return input.readNBytes(body, 0, size) == size
+                ? new FrameBody(body, headerReceivedNanos) : FrameReadStatus.TRUNCATED_BODY;
     }
 
     /**
