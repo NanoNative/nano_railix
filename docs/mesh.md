@@ -1,0 +1,179 @@
+# Railix Mesh
+
+A replica is a running copy of a built Railix application. Today you can connect several replicas
+of the same build using configured seed addresses and inspect their status in Creator. Each
+replica can run requests locally. The Flow offload pilot can place one configured Flow on
+a peer when local capacity is full. Automatic peer discovery is planned.
+
+## How It Works
+
+### Join And Track Peers
+
+A **seed** is a running replica that another replica contacts to join. Give the joining replica
+the seed's mesh address. Here B opens the socket to A. A has the lower replica ID, so A chooses
+which socket the pair keeps.
+
+```mermaid
+sequenceDiagram
+    participant A as Replica A (seed)
+    participant B as Replica B (joining)
+    B->>A: Connect to seed address
+    Note over A,B: Authenticate each other with mutual TLS
+    B->>A: hello.v1
+    A->>B: hello.v1
+    Note over A,B: Check replica identity, mesh, and logical build ID
+    A->>A: Reserve the socket locally
+    A->>B: Initial state proposes this socket
+    B->>B: Validate A's state and reserve the socket locally
+    B->>A: Initial state confirms the socket
+    Note over A,B: Each side joins after sending and validating initial state
+    loop While connected
+        B->>A: State heartbeat
+        A->>B: State heartbeat
+    end
+```
+
+State carries readiness, available Flow capacity, and the advertised mesh address. An identity
+or build mismatch closes the connection before state is exchanged. A duplicate closes while the
+agreed socket stays available for offloads. A disconnect or heartbeat timeout removes the peer.
+Failed attempts to a configured seed are retried with backoff.
+
+If a third replica, C, has both addresses, it connects directly to A and B. B and C can stay
+connected if A leaves, and new replicas can join through either survivor. With automatic
+discovery, replicas will be able to learn addresses from peers.
+
+### Offload A Flow
+
+The replica whose Trigger receives the event owns the original request and sends the response.
+It runs the Flow locally when it has a free slot. When full, it can ask a ready, eligible peer.
+
+```mermaid
+sequenceDiagram
+    participant Client as HTTP caller
+    participant A as Replica A
+    participant B as Replica B
+    Client->>A: HTTP request reaches Trigger
+    A->>A: Prepare Flow input and keep the HTTP request
+    alt A has a free Flow slot
+        A->>A: Run the Flow locally
+    else A is full and B is eligible
+        A->>B: Invoke Flow with input and time remaining
+        B->>B: Check build, eligibility, deadline, and capacity
+        alt B admits the Flow
+            B->>B: Reserve a slot and run the Flow
+            B-->>A: Flow outcome
+        else B refuses admission
+            B-->>A: Refusal
+        end
+    else A is full and no eligible peer is available
+        A->>A: End with an admission failure
+    end
+    A-->>Client: Complete the original HTTP request
+```
+
+After a refusal, A can try another eligible peer. A can try up to three peers within the
+original deadline.
+If B may already have admitted the Flow and A loses the connection or runs out of time, A
+reports uncertain completion and stops retrying.
+
+The HTTP pilot gives A five seconds to place the offload and receive its outcome. Once B admits
+the Flow, B owns its execution. It keeps running if A stops waiting or the peer connection closes.
+A discards late outcomes. B holds the execution slot until the Flow exits.
+
+The first checkpoint sends HTTP directly to a replica. For a stable public URL
+across replica changes, deployment can put an HTTP reverse proxy in front of ready replicas.
+The proxy routes HTTP requests. Railix tracks its peers and places offloaded Flows.
+
+Later, a mesh-aware client could discover reachable application endpoints and choose a replica
+directly. The event would still enter through the same Trigger and follow the same Flow rules.
+
+## Run A Local Mesh
+
+From the repository root on macOS or Linux, run the demo with Bash, JDK 25, and `uuidgen`.
+The first Maven wrapper setup also requires `unzip`.
+
+```sh
+./scripts/run-mesh.sh auth-http-app
+```
+
+The script builds the application once and starts two loopback replicas with temporary credentials.
+`auth-http-app` is the default. You can also pass another directory under `examples/` with a
+long-running Trigger, such as `text-normalization-http-app`. Set `RAILIX_CLI_JAR` to reuse an
+existing packaged CLI.
+
+This command enables offload for the `request` HTTP Trigger in `auth-http-app` and gives each
+replica one execution slot.
+
+```sh
+DEMO_OFFLOAD_FLOW=request DEMO_FLOW_CAPACITY=1 ./scripts/run-mesh.sh auth-http-app
+```
+
+Set `DEMO_OFFLOAD_FLOW` to the Trigger node ID for the example you run. Leaving it unset starts
+the membership demo. `DEMO_FLOW_CAPACITY` defaults to 2.
+
+While the launcher is running, paste the printed `join` command into another terminal. The script
+reuses the same JAR, issues a certificate for the new replica, and gives it the addresses of the
+other demo replicas. It inherits the original demo's offload Flow and capacity. Use a different
+free mesh port as the last argument each time. The signing key stays in the private demo directory
+until the launcher exits.
+
+Run the printed Creator command in another terminal. Choose **Project actions > Connect live app**
+and select a replica. In the runtime details, **Mesh** shows the connection state and **Peer**
+summarizes one authenticated connection. A mismatched build shows **Build mismatch** in the
+rejection details.
+
+With offload enabled, select the configured Trigger in **Live** and scroll to **Flow acknowledged
+offloads** and **Flow unacknowledged offloads**. Select **App** for the replica's totals. The
+counters appear at zero on startup. If A offloads a request to B, check A for the offload count
+and B for the Flow execution count.
+
+Stop added replicas with `Ctrl-C` in their own terminals. Then stop the initial
+launcher with `Ctrl-C` to stop its two replicas and remove the demo credentials.
+
+## Deploy An Application
+
+Build once with the Railix CLI and JDK 25. Copy the printed JAR and
+[scripts/run-mesh.sh](../scripts/run-mesh.sh) to each host.
+On each host, run the copied script from its directory with Bash, Java 25, `unzip`, and the
+replica's mesh configuration.
+
+```sh
+railix build path/to/railix.project.json --mesh
+
+APPLICATION_JAR=/path/to/application.jar RAILIX_MESH_CONFIG=/path/to/mesh.json \
+  ./run-mesh.sh deploy
+```
+
+Add `--include-project` to embed the project documents for Creator attachment. Use the same JAR
+for each replica. Set `APP` to the path printed by the build or to the copied JAR on the host
+where you start it.
+
+```sh
+APP=/path/to/application.jar
+RAILIX_MESH_CONFIG=/path/to/mesh.json java -jar "$APP"
+```
+
+### Startup Configuration
+
+Use the same `meshId` and trust issuer across replicas. Give each replica its own certificate and
+private key. The certificate identifies the replica and its mesh. The configuration also sets the
+listen and advertised mesh endpoints, bootstrap addresses, Flow capacity, and the paths to the
+identity store, trust store, and password files. See the [configuration reference](specs/mesh.md#startup-configuration)
+and [certificate requirements](specs/mesh.md#peer-transport-and-trust).
+
+On one host, give the mesh listeners distinct ports, such as `7401` for A and `7402` for B. Give A
+an empty `bootstrapEndpoints` list and give B `[{"host":"127.0.0.1","port":7401}]`. Configure
+the application's Trigger listeners independently, for example with an ephemeral HTTP port.
+On separate hosts, advertise addresses that the other replica can reach through the deployment's
+network or VPN.
+
+To enable the offload pilot, set `offloadFlow` to the same Trigger node ID in both replicas'
+mesh JSON. Choose a Flow whose Steps can use equivalent resources on either host. Set
+`flowCapacity` to the number of Flows each replica can execute at once, including work it accepts
+from peers. With one slot on each of three replicas, A can run one request locally and offload
+two more to B and C. A can have up to 12 offloads in flight. The HTTP Trigger responds with
+503 when that limit is reached or no eligible replica admits the Flow.
+
+The [mesh specification](specs/mesh.md) defines the runtime contract. [ADR 0024](adr/0024-optional-mesh-module-and-peer-channel.md)
+explains the architecture. The [roadmap](roadmap.md#7-decentralised-execution-state-sharding-and-replication)
+tracks the delivery sequence.

@@ -1,6 +1,9 @@
 package dev.nanonative.railix.creator;
 
 import com.google.gson.JsonParser;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import dev.nanonative.railix.core.value.RailixValue;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -8,22 +11,88 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import dev.nanonative.railix.core.runtime.ObservationServer;
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @Timeout(120)
 final class LiveApplicationE2eTest {
     @TempDir Path directory;
+
+    @Test
+    void meshStatusLeavesBothLiveMetricReadSlotsAvailable() throws Exception {
+        final CountDownLatch statusEntered = new CountDownLatch(1);
+        final CountDownLatch metricsEntered = new CountDownLatch(2);
+        final CountDownLatch release = new CountDownLatch(1);
+        final HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        try (ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            server.setExecutor(threads);
+            server.createContext("/v1/status", exchange -> heldResponse(exchange, statusEntered, release,
+                    "{\"mesh\":{\"status\":\"waiting\"}}"));
+            server.createContext("/v1/metrics/application",
+                    exchange -> heldResponse(exchange, metricsEntered, release, "{}"));
+            server.start();
+            final ProcessHandle process = ProcessHandle.current();
+            final ObservationServer.Connection connection = new ObservationServer.Connection("live", process.pid(),
+                    process.info().startInstant().orElseThrow(), server.getAddress().getPort(), "test-token",
+                    "revision", "digest", directory.resolve("application.jar"));
+            final ProjectFiles.Snapshot project = new ProjectFiles.Snapshot(CreatorProjects.grouping(), RailixValue.object(Map.of()),
+                    GeneratedApplicationFixture.catalog());
+            try (LiveApplication live = new LiveApplication(connection, project, HttpClient.newHttpClient())) {
+                final long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
+                final Future<RailixValue> status = threads.submit(() -> live.readMeshStatus(deadline));
+                try {
+                    assertThat(statusEntered.await(5, TimeUnit.SECONDS)).isTrue();
+                    final Future<DevelopmentApplication.ObservationResponse> first =
+                            threads.submit(() -> live.read("/v1/metrics/application", null, deadline));
+                    final Future<DevelopmentApplication.ObservationResponse> second =
+                            threads.submit(() -> live.read("/v1/metrics/application", null, deadline));
+                    assertThat(metricsEntered.await(5, TimeUnit.SECONDS)).isTrue();
+                    release.countDown();
+                    assertThat(first.get(5, TimeUnit.SECONDS).status()).isEqualTo(200);
+                    assertThat(second.get(5, TimeUnit.SECONDS).status()).isEqualTo(200);
+                    assertThat(status.get(5, TimeUnit.SECONDS)).isInstanceOf(RailixValue.ObjectValue.class);
+                } finally {
+                    release.countDown();
+                }
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private static void heldResponse(final HttpExchange exchange, final CountDownLatch entered,
+                                     final CountDownLatch release, final String body) throws IOException {
+        try (exchange) {
+            entered.countDown();
+            if (!release.await(15, TimeUnit.SECONDS)) {
+                return;
+            }
+            final byte[] response = body.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
 
     @Test
     void ordinaryJarPublishesOnlyAuthenticatedReadAccessAndRemovesDiscoveryOnExit() throws Exception {
@@ -239,15 +308,19 @@ final class LiveApplicationE2eTest {
                     changed.getAsJsonArray("links").add(JsonParser.parseString("{\"from\":\"extra-"+index
                             +".next\",\"to\":\""+(index==511?"return-text":"extra-"+(index+1))+"\"}"));
                 }
-                final Path builds=directory.resolve(".railix/build");
-                final var pending=executor.submit(()->CreatorServerE2eSupport.request(uri,"POST","/api/project",changed.toString()));
-                final var rejected=new java.util.concurrent.atomic.AtomicReference<Path>();
-                await(()->{
-                    try(var paths=Files.list(builds)) {
-                        final var staging=paths.filter(path->path.getFileName().toString().startsWith(".building-")).findFirst();
-                        assertThat(staging).as("The real build has entered staging: %s",pending.isDone()?pending.get().body():"pending").isPresent();
-                        final String name=staging.orElseThrow().getFileName().toString();
-                        rejected.set(builds.resolve(name.substring(name.lastIndexOf("sha256-"))));
+                final Path builds = directory.resolve(".railix/build");
+                final List<Path> existingBuilds;
+                try (Stream<Path> paths = Files.list(builds)) {
+                    existingBuilds = paths.toList();
+                }
+                final Future<HttpResponse<String>> pending = executor.submit(() ->
+                        CreatorServerE2eSupport.request(uri, "POST", "/api/project", changed.toString()));
+                await(() -> {
+                    try (Stream<Path> paths = Files.list(builds)) {
+                        final boolean staging = paths.anyMatch(path -> path.getFileName().toString().startsWith(".building-"));
+                        assertThat(staging)
+                                .as("The real build has entered staging: %s", pending.isDone() ? pending.get().body() : "pending")
+                                .isTrue();
                     }
                 });
                 final var outside=JsonParser.parseString(original).getAsJsonObject();
@@ -257,7 +330,9 @@ final class LiveApplicationE2eTest {
                 assertThat(response.statusCode()).as(response.body()).isEqualTo(409);
                 assertThat(response.body()).contains("\"state\":\"ready\"");
                 assertThat(Files.readString(project)).isEqualTo(outside.toString());
-                assertThat(rejected.get()).doesNotExist();
+                try (Stream<Path> paths = Files.list(builds)) {
+                    assertThat(paths.toList()).containsExactlyInAnyOrderElementsOf(existingBuilds);
+                }
                 assertThat(observed.isAlive()).isTrue();
             }
         } finally {ProjectSourceArtifactsE2eTest.stop(observed);}

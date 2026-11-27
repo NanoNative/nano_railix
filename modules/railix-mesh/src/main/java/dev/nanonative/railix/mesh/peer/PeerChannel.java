@@ -1,4 +1,6 @@
-package dev.nanonative.railix.mesh;
+package dev.nanonative.railix.mesh.peer;
+
+import dev.nanonative.railix.mesh.MeshErrors;
 
 import java.io.Closeable;
 import java.io.DataOutputStream;
@@ -6,25 +8,34 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.Socket;
 import java.net.SocketException;
+import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.IntFunction;
+import java.util.function.Supplier;
 
 /**
  * Owns one connected peer socket with exclusive access to each direction.
  * Callers bound pending calls and provide socket I/O deadlines.
  */
 final class PeerChannel implements Closeable {
+    static final long WRITE_NANOS = TimeUnit.SECONDS.toNanos(2);
+
     private static final Set<Socket> CLAIMED_SOCKETS =
             Collections.synchronizedSet(Collections.newSetFromMap(new IdentityHashMap<>()));
 
     private final Socket socket;
     private final InputStream input;
     private final DataOutputStream output;
+    private final ByteBuffer readHeader = ByteBuffer.allocate(Integer.BYTES);
     private final ReentrantLock readLock = new ReentrantLock();
     private final ReentrantLock writeLock = new ReentrantLock();
 
@@ -36,12 +47,12 @@ final class PeerChannel implements Closeable {
     PeerChannel(final Socket socket) throws IOException {
         this.socket = Objects.requireNonNull(socket, "socket");
         if (!CLAIMED_SOCKETS.add(socket)) {
-            throw new IllegalStateException("Socket already has a peer channel.");
+            throw new IllegalStateException(MeshErrors.SOCKET_ALREADY_CLAIMED);
         }
         boolean opened = false;
         try {
             if (socket.isClosed()) {
-                throw new SocketException("Peer socket is closed.");
+                throw new SocketException(MeshErrors.SOCKET_CLOSED);
             }
             input = socket.getInputStream();
             output = new DataOutputStream(socket.getOutputStream());
@@ -54,7 +65,7 @@ final class PeerChannel implements Closeable {
     }
 
     /** Reads one frame using a caller-reserved buffer. An incomplete frame closes the channel. */
-    FrameRead read(final int bodyLimit, final IntFunction<Optional<byte[]>> reserveBody)
+    FrameRead read(final int bodyLimit, final IntFunction<byte[]> reserveBody)
             throws IOException, InterruptedException {
         final int limit = PeerFrames.checkedBodyLimit(bodyLimit);
         Objects.requireNonNull(reserveBody, "reserveBody");
@@ -70,6 +81,61 @@ final class PeerChannel implements Closeable {
     boolean write(final byte[] body, final int bodyLimit) throws IOException, InterruptedException {
         writeLock.lockInterruptibly();
         try {
+            return writeHeld(body, bodyLimit);
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    /** Prepares the final body after acquiring the channel. A zero-length body skips the write. */
+    boolean writeBefore(final Supplier<byte[]> prepare, final int bodyLimit, final long deadline,
+                        final ScheduledExecutorService timers, final Runnable abort)
+            throws IOException, InterruptedException {
+        final long remaining = deadline - System.nanoTime();
+        if (remaining <= 0 || !writeLock.tryLock(remaining, TimeUnit.NANOSECONDS)) {
+            return false;
+        }
+        try {
+            if (deadline - System.nanoTime() <= 0) {
+                return false;
+            }
+            final byte[] body = prepare.get();
+            if (body.length == 0) {
+                return false;
+            }
+            return writeWithWatchdog(body, bodyLimit, deadline, timers, abort);
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    private boolean writeWithWatchdog(final byte[] body, final int bodyLimit, final long deadline,
+                                      final ScheduledExecutorService timers, final Runnable abort) throws IOException {
+        final long writeBudget = deadline - System.nanoTime();
+        if (writeBudget <= 0) {
+            return false;
+        }
+        final AtomicBoolean writing = new AtomicBoolean(true);
+        final ScheduledFuture<?> timeout;
+        try {
+            timeout = timers.schedule(() -> {
+                if (writing.compareAndSet(true, false)) {
+                    abort.run();
+                }
+            }, writeBudget, TimeUnit.NANOSECONDS);
+        } catch (final RejectedExecutionException stopped) {
+            return false;
+        }
+        try {
+            return writeHeld(body, bodyLimit);
+        } finally {
+            writing.set(false);
+            timeout.cancel(false);
+        }
+    }
+
+    private boolean writeHeld(final byte[] body, final int bodyLimit) throws IOException {
+        try {
             final boolean written = PeerFrames.write(output, body, bodyLimit);
             if (written) {
                 output.flush();
@@ -77,8 +143,6 @@ final class PeerChannel implements Closeable {
             return written;
         } catch (final IOException failure) {
             throw closeAfterFailure(failure);
-        } finally {
-            writeLock.unlock();
         }
     }
 
@@ -93,11 +157,11 @@ final class PeerChannel implements Closeable {
         }
     }
 
-    private FrameRead receiveFrame(final int bodyLimit, final IntFunction<Optional<byte[]>> reserveBody)
+    private FrameRead receiveFrame(final int bodyLimit, final IntFunction<byte[]> reserveBody)
             throws IOException {
         final FrameRead result;
         try {
-            result = PeerFrames.read(input, bodyLimit, reserveBody);
+            result = PeerFrames.read(input, readHeader, bodyLimit, reserveBody);
         } catch (final IOException | RuntimeException failure) {
             closeAfterFailure(failure);
             throw failure;

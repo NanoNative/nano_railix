@@ -30,7 +30,8 @@ final class ApplicationGenerator {
 
     static Result generate(
             final ApplicationPlan plan,
-            final StepCatalog catalog
+            final StepCatalog catalog,
+            final boolean includePeerContinuations
     ) {
         final List<ApplicationPlan.NodePlan> nodes = plan.nodes();
         final List<ApplicationPlan.TriggerPlan> triggers = plan.triggers();
@@ -93,9 +94,9 @@ final class ApplicationGenerator {
                 : lifecycleOrder(nodes).stream().flatMap(index -> lifecycle.getOrDefault(index, List.of()).stream()).toList();
         return new Result(
                 source(plan.projectId(), nodes, triggers, implementations, handlerIndexes,
-                        compiledNodes, orderedLifecycle, customMetrics, false),
+                        compiledNodes, orderedLifecycle, customMetrics, false, includePeerContinuations),
                 source(plan.projectId(), nodes, triggers, implementations, handlerIndexes,
-                        compiledNodes, orderedLifecycle, customMetrics, true),
+                        compiledNodes, orderedLifecycle, customMetrics, true, false),
                 developmentLauncherSource(),
                 Map.of(DEVELOPMENT_EXAMPLES_RESOURCE, developmentExamples),
                 List.of(),
@@ -290,7 +291,8 @@ final class ApplicationGenerator {
             final String[] compiledNodes,
             final List<String> lifecycle,
             final List<String> customMetrics,
-            final boolean examples
+            final boolean examples,
+            final boolean includePeerContinuations
     ) {
         final int[] metricIndexes = metricIndexes(nodes);
         final StringBuilder source = new StringBuilder(8_192);
@@ -316,6 +318,9 @@ final class ApplicationGenerator {
                 import java.util.Map;
                 import static dev.nanonative.railix.core.project.RailixApplication.*;
                 """);
+        if (includePeerContinuations) {
+            source.append("import java.util.Optional;\n");
+        }
         if (examples) {
             source.append("import dev.nanonative.railix.development.DevelopmentRuntime;\n");
         }
@@ -332,11 +337,11 @@ final class ApplicationGenerator {
                 .append("    private static final String PROJECT_ID =\n")
                 .append(indent(quote(projectId), 3)).append(";\n");
         {
-            source.append("    static final RuntimeMetrics METRICS = ")
-                    .append("new RuntimeMetrics(PROJECT_ID, ")
-                    .append(array(classes, "Flows", "String", triggers.stream()
-                            .map(trigger -> quote(nodes.get(trigger.node()).id())).toList()))
-                    .append(", ")
+            final String flowIds = array(classes, "Flows", "String", triggers.stream()
+                    .map(trigger -> quote(nodes.get(trigger.node()).id())).toList());
+            source.append("    private static final String[] FLOW_IDS = ").append(flowIds).append(";\n")
+                    .append("    static final RuntimeMetrics METRICS = ")
+                    .append("new RuntimeMetrics(PROJECT_ID, FLOW_IDS, ")
                     .append(array(classes, "Steps", "String", IntStream.range(0, nodes.size())
                             .filter(index -> metricIndexes[index] >= 0)
                             .mapToObj(index -> quote(nodes.get(index).id())).toList()))
@@ -372,6 +377,9 @@ final class ApplicationGenerator {
                 .append("    @Override public RunResult start() { return lifecycle.start(); }\n")
                 .append("    @Override public RunResult launch(final List<String> arguments) { return lifecycle.launch(arguments); }\n")
                 .append("    @Override public RunResult stop(final java.time.Duration budget) { return lifecycle.stop(budget); }\n\n");
+        if (includePeerContinuations) {
+            source.append("    static volatile FlowPlacement placement;\n\n");
+        }
         if (examples) {
             appendDevelopmentExecution(source);
         }
@@ -382,37 +390,75 @@ final class ApplicationGenerator {
                         ? "ObservedApplication"
                         : "DevelopmentRuntime.Application")
                 .append(" runtime() {\n        return APPLICATION;\n    }\n\n")
-                .append("    public static void main(final String[] arguments) {\n");
-        source.append("        final var observation = dev.nanonative.railix.core.runtime.ObservationServer.open(RailixApplication.class, METRICS);\n")
-                .append("        final Thread shutdown = new Thread(() -> {\n")
-                .append("            try {\n")
-                .append("                final RunResult stopped = APPLICATION.stop();\n")
-                .append("                if (!(stopped instanceof RunResult.Succeeded)) {\n")
-                .append("                    reportLifecycleFailure(stopped);\n")
-                .append("                    observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close);\n")
-                .append("                    Runtime.getRuntime().halt(1);\n                }\n")
-                .append("            } catch (final RuntimeException | Error failure) {\n")
-                .append("                failure.printStackTrace(System.err);\n")
-                .append("                observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close);\n")
-                .append("                Runtime.getRuntime().halt(1);\n")
-                .append("            } finally { observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close); }\n")
-                .append("        }, \"railix-shutdown\");\n")
-                .append("        Runtime.getRuntime().addShutdownHook(shutdown);\n")
-                .append("        try {\n")
-                .append("        final RunResult launched = APPLICATION.launch(List.of(arguments));\n")
-                .append("        if (!(launched instanceof RunResult.Succeeded)) {\n")
-                .append("            reportLifecycleFailure(launched);\n")
-                .append("            System.exit(1);\n            return;\n        }\n")
-                .append("        final int status = APPLICATION.lifecycle.awaitSources();\n");
-        source.append("        final RunResult stopped = APPLICATION.stop();\n")
-                .append("        try {\n")
-                .append("            Runtime.getRuntime().removeShutdownHook(shutdown);\n")
-                .append("        } catch (final IllegalStateException shutdownInProgress) {\n")
-                .append("            return; // The JVM shutdown hook already owns termination.\n        }\n")
-                .append("        if (!(stopped instanceof RunResult.Succeeded)) reportLifecycleFailure(stopped);\n")
-                .append("        if (status != 0 || !(stopped instanceof RunResult.Succeeded)) {\n")
-                .append("            System.exit(status == 0 ? 1 : status);\n        }\n")
-                .append("        } finally { observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close); }\n    }\n\n")
+                .append("""
+                    public static void main(final String[] arguments) {
+                        run(arguments, () -> {}, () -> {}, () -> {}, Map::of);
+                    }
+
+                    static void run(final String[] arguments, final Runnable ready, final Runnable drain, final Runnable close,
+                                    final java.util.function.Supplier<Map<String, RailixValue>> details) {
+                        final var observation = dev.nanonative.railix.core.runtime.ObservationServer.open(
+                                RailixApplication.class, METRICS, details);
+                        final Runnable cleanup = () -> {
+                            try {
+                                close.run();
+                            } finally {
+                                observation.ifPresent(dev.nanonative.railix.core.runtime.ObservationServer::close);
+                            }
+                        };
+                        final Thread shutdown = new Thread(() -> {
+                            boolean failed = false;
+                            try {
+                                drain.run();
+                                final RunResult stopped = APPLICATION.stop();
+                                if (!(stopped instanceof RunResult.Succeeded)) {
+                                    reportLifecycleFailure(stopped);
+                                    failed = true;
+                                }
+                            } catch (final RuntimeException | Error failure) {
+                                failure.printStackTrace(System.err);
+                                failed = true;
+                            } finally {
+                                cleanup.run();
+                            }
+                            if (failed)
+                                Runtime.getRuntime().halt(1);
+                        }, "railix-shutdown");
+                        Runtime.getRuntime().addShutdownHook(shutdown);
+
+                        int exitCode;
+                        try {
+                            final RunResult launched = APPLICATION.launch(List.of(arguments));
+                            if (!(launched instanceof RunResult.Succeeded)) {
+                                reportLifecycleFailure(launched);
+                                System.exit(1);
+                                return;
+                            }
+                            ready.run();
+                            exitCode = APPLICATION.lifecycle.awaitSources();
+                            drain.run();
+                            final RunResult stopped = APPLICATION.stop();
+                            try {
+                                Runtime.getRuntime().removeShutdownHook(shutdown);
+                            } catch (final IllegalStateException shutdownInProgress) {
+                                // The JVM shutdown hook already owns termination.
+                                return;
+                            }
+                            if (!(stopped instanceof RunResult.Succeeded)) {
+                                reportLifecycleFailure(stopped);
+                                if (exitCode == 0) {
+                                    exitCode = 1;
+                                }
+                            }
+                        } finally {
+                            cleanup.run();
+                        }
+                        if (exitCode != 0) {
+                            System.exit(exitCode);
+                        }
+                    }
+
+                """)
                 .append("    @Override\n")
                 .append("    public String projectId() {\n        return PROJECT_ID;\n    }\n\n");
             source.append("    @Override\n")
@@ -422,7 +468,7 @@ final class ApplicationGenerator {
             appendDevelopmentRun(source, classes, nodes, triggers);
             appendTrace(source, classes, flows, nodes, triggers);
         }
-        appendSources(source, classes, flows, nodes, triggers, handlerIndexes, metricIndexes);
+        appendSources(source, classes, flows, nodes, triggers, handlerIndexes, metricIndexes, includePeerContinuations);
         appendExecutors(flows, nodes, triggers, examples);
         appendDispatch(source, flows, classes, nodes, handlerIndexes, metricIndexes);
         flows.values().forEach(flow -> classes.append(flow).append("}\n"));
@@ -604,7 +650,8 @@ final class ApplicationGenerator {
             final List<ApplicationPlan.NodePlan> nodes,
             final List<ApplicationPlan.TriggerPlan> triggers,
             final Map<String, Integer> handlers,
-            final int[] metricIndexes
+            final int[] metricIndexes,
+            final boolean includePeerContinuations
     ) {
         root.append("    @Override\n")
                 .append("    public WorkflowRuntime.SourceResult runSource(final String source,\n")
@@ -624,23 +671,37 @@ final class ApplicationGenerator {
                 .append("            final String source, final Map<String, RailixValue> values) {\n")
                 .append("        return ");
         final Map<String, String> cases = new TreeMap<>();
+        final Map<String, String> continuationCases = includePeerContinuations ? new TreeMap<>() : Map.of();
         for (final ApplicationPlan.TriggerPlan trigger : triggers) {
-            final ApplicationPlan.NodePlan node = nodes.get(trigger.node());
-            cases.put(node.step().source().orElseThrow().name(), "Flow_" + trigger.node() + "."
-                    + "measuredSource_" + trigger.node() + "(values, lifecycle)");
+            final int index = trigger.node();
+            final ApplicationPlan.NodePlan node = nodes.get(index);
+            final String flowClass = "Flow_" + index;
+            cases.put(node.step().source().orElseThrow().name(),
+                    flowClass + ".measuredSource_" + index + "(values, lifecycle)");
+            if (includePeerContinuations) {
+                continuationCases.put(node.id(), flowClass + ".resume(continuation, lifecycle)");
+            }
         }
         root.append(keySelector(classes, "source", "WorkflowRuntime.SourceResult",
                 "final String source, final Map<String, RailixValue> values, final WorkflowRuntime.Lifecycle lifecycle", "source, values, lifecycle", "source", cases,
                 "new WorkflowRuntime.SourceResult(WorkflowRuntime.rejectedResult(\"RUN_SOURCE_UNKNOWN\", \"Project has no Trigger for source: \" + source + \".\", \"source\"), Map.of())"))
                 .append(";\n    }\n\n");
+        if (includePeerContinuations) {
+            appendContinuationSelector(root, classes, continuationCases);
+        }
 
         for (int flow = 0; flow < triggers.size(); flow++) {
             final ApplicationPlan.TriggerPlan trigger = triggers.get(flow);
             final StringBuilder source = flows.get(trigger.node());
             final ApplicationPlan.NodePlan node = nodes.get(trigger.node());
             final int handler = handlers.get(node.step().id());
-            source.append("    static WorkflowRuntime.SourceResult source_").append(trigger.node())
-                    .append("(final Map<String, RailixValue> values, final WorkflowRuntime.Lifecycle lifecycle) {\n")
+            final String sourceMethod = "source_" + trigger.node();
+            final String sourceCall = sourceMethod + (includePeerContinuations
+                    ? "(values, lifecycle, placement)" : "(values, lifecycle)");
+            source.append("    static WorkflowRuntime.SourceResult ").append(sourceMethod)
+                    .append("(final Map<String, RailixValue> values, final WorkflowRuntime.Lifecycle lifecycle")
+                    .append(includePeerContinuations ? ", final FlowPlacement placement" : "")
+                    .append(") {\n")
                     .append("        final var invalid = WorkflowRuntime.validateSource(")
                     .append(planReference(trigger.node())).append(", values, ")
                     .append(quote(node.path())).append(");\n")
@@ -686,21 +747,32 @@ final class ApplicationGenerator {
                     .append("                    \"STEP_OUTCOME_UNROUTED\", \"Trigger returned an outcome without a connection: \"\n")
                     .append("                            + ").append(planReference(trigger.node()))
                     .append(".outcomes().get(outcome) + \".\", ")
-                    .append(quote(node.id())).append("), Map.of());\n        }\n")
-                    .append("        final RunResult result = execute_").append(trigger.node())
-                    .append("(execution, destination);\n")
-                    .append("        return result instanceof RunResult.Succeeded || result instanceof RunResult.Completed\n")
-                    .append("                ? new WorkflowRuntime.SourceResult(result, execution.responses(")
-                    .append(responseSlotsReference(trigger)).append("))\n")
-                    .append("                : new WorkflowRuntime.SourceResult(result, Map.of());\n")
+                    .append(quote(node.id())).append("), Map.of());\n        }\n");
+            final String execute = "execute_" + trigger.node() + "(execution, destination)";
+            if (includePeerContinuations) {
+                appendFlowPlacement(source, execute, node.id());
+            } else {
+                source.append("        final RunResult result = ").append(execute).append(";\n");
+            }
+            source.append("        return WorkflowRuntime.mapSourceResult(result, ")
+                    .append(responseSlotsReference(trigger)).append(");\n")
                     .append("    }\n\n");
+            if (includePeerContinuations) {
+                appendRemoteContinuation(source, trigger, node, flow);
+            }
             {
                 source.append("    static WorkflowRuntime.SourceResult measuredSource_")
-                        .append(trigger.node()).append("(final Map<String, RailixValue> values, final WorkflowRuntime.Lifecycle lifecycle) {\n")
-                        .append("        final long metric = METRICS.startFlow(").append(flow).append(");\n")
+                        .append(trigger.node()).append("(final Map<String, RailixValue> values, final WorkflowRuntime.Lifecycle lifecycle) {\n");
+                if (includePeerContinuations) {
+                    source.append("        final FlowPlacement placement = RailixApplication.placement;\n")
+                            .append("        if (placement != null) {\n")
+                            .append("            return ").append(sourceCall).append(";\n")
+                            .append("        }\n");
+                }
+                source.append("        final long metric = METRICS.startFlow(").append(flow).append(");\n")
                         .append("        WorkflowRuntime.SourceResult result = null;\n")
                         .append("        try {\n")
-                        .append("            result = source_").append(trigger.node()).append("(values, lifecycle);\n")
+                        .append("            result = ").append(sourceCall).append(";\n")
                         .append("            return result;\n")
                         .append("        } finally {\n")
                         .append("            METRICS.finishFlow(").append(flow).append(", metric,\n")
@@ -709,6 +781,68 @@ final class ApplicationGenerator {
                         .append("    }\n\n");
             }
         }
+    }
+
+    private static void appendFlowPlacement(final StringBuilder source, final String execute, final String trigger) {
+        source.append("""
+                        final RunResult result;
+                        if (placement == null) {
+                            result = %s;
+                        } else if (destination == END) {
+                            result = executeMeasured(execution, destination);
+                        } else {
+                            result = placement.place(%s, outcome, () -> execution.context("runtime"),
+                                    () -> executeMeasured(execution, destination));
+                        }
+                """.formatted(execute, quote(trigger)));
+    }
+
+    private static void appendContinuationSelector(final StringBuilder source, final StringBuilder classes,
+            final Map<String, String> cases) {
+        source.append("""
+                    static boolean hasTrigger(final String trigger) {
+                        return java.util.Arrays.asList(FLOW_IDS).contains(trigger);
+                    }
+
+                    static Optional<RunResult> runContinuation(
+                            final FlowContinuation continuation) {
+                        final String trigger = continuation.trigger();
+                        final WorkflowRuntime.Lifecycle lifecycle = APPLICATION.lifecycle;
+                        return\s""")
+                .append(keySelector(classes, "continuation", "Optional<RunResult>",
+                        "final String trigger, final FlowContinuation continuation, final WorkflowRuntime.Lifecycle lifecycle",
+                        "trigger, continuation, lifecycle", "trigger", cases, "Optional.empty()"))
+                .append(";\n    }\n\n");
+    }
+
+    private static void appendRemoteContinuation(final StringBuilder source,
+            final ApplicationPlan.TriggerPlan trigger, final ApplicationPlan.NodePlan node, final int metric) {
+        source.append("""
+                            static Optional<RunResult> resume(
+                                    final FlowContinuation continuation, final WorkflowRuntime.Lifecycle lifecycle) {
+                                final int outcome = continuation.outcome();
+                        """)
+                .append("        final int destination = ").append(destination(trigger.node(), node)).append(";\n")
+                .append("        if (destination == UNROUTED || destination == END || !lifecycle.enter()) {\n")
+                .append("            return Optional.empty();\n")
+                .append("        }\n")
+                .append("        try {\n")
+                .append("            final WorkflowRuntime.Execution execution = continuation.resume(\n")
+                .append("                    ").append(resultsReference(trigger)).append(",\n")
+                .append("                    ").append(runtime(node.id(), "false")).append(", lifecycle);\n")
+                .append("            return Optional.of(executeMeasured(execution, destination));\n")
+                .append("        } finally {\n")
+                .append("            lifecycle.leave();\n")
+                .append("        }\n    }\n\n")
+                .append("    private static RunResult executeMeasured(final WorkflowRuntime.Execution execution, final int destination) {\n")
+                .append("        final long metric = METRICS.startFlow(").append(metric).append(");\n")
+                .append("        RunResult result = null;\n")
+                .append("        try {\n")
+                .append("            result = execute_").append(trigger.node()).append("(execution, destination);\n")
+                .append("            return result;\n")
+                .append("        } finally {\n")
+                .append("            METRICS.finishFlow(").append(metric).append(", metric, result);\n")
+                .append("        }\n    }\n\n");
     }
 
     private static void appendExecutors(

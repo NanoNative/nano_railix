@@ -148,8 +148,8 @@ class CreatorFirstProjectCompilationE2eTest {
                     assertThat(compiled.source()).contains("\"metrics\":false");
                     assertThat(compiled.developmentApplicationSource().replace('\n',' '))
                             .contains(
-                                    "new RuntimeMetrics(PROJECT_ID, "
-                                            + "new String[]{\"command\"}, "
+                                    "String[] FLOW_IDS = new String[]{\"command\"};",
+                                    "new RuntimeMetrics(PROJECT_ID, FLOW_IDS, "
                                             + "new String[]{\"command\", \"return-name\"})",
                                     "case 2 -> execution.call("
                             )

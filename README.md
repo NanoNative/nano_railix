@@ -28,7 +28,8 @@ for execution contracts and the [roadmap](docs/roadmap.md) for supported and pla
 | [Examples and validation](docs/specs/examples-and-validation.md) | Separate Example ownership, Creator checks and planned field authoring. |
 | [Environments and security](docs/specs/environments-and-security.md) | Typed project configuration fixed at build time; secret-management goals and open identity, recovery and ingress design. |
 | [Database and data access](docs/specs/database-and-data-access.md) | Planned durable database and permission-controlled Creator data administration; no time-series database. |
-| [Railix mesh](docs/specs/mesh.md) | Planned first Flow-dispatch, discovery, trust, cross-platform compatibility. |
+| [Mesh guide](docs/mesh.md) | How replicas connect, how Flow offload will work, and how to run the two-replica demo. |
+| [Mesh specification](docs/specs/mesh.md) | Peer discovery, build compatibility, trust, and Flow execution contracts. |
 | [docs/roadmap.md](docs/roadmap.md) | Delivery sequence, dependencies, progress and unsupported scope. |
 | [docs/adr/](docs/adr/) | Architectural decisions, rationale, alternatives and consequences. |
 | [Verification history](docs/verification.md) | Earlier checks and performance evidence, not current CI status. |
@@ -185,6 +186,19 @@ graphics framework: native Canvas2D renders the factory with a CSS-themed HUD. P
 The printed URL contains a random Creator token in its fragment. Every Creator API request requires
 that token and the exact loopback `Host`; the browser client supplies both without storing the token
 in project files. Treat the complete local URL as a credential while Creator is running.
+
+### Run A Local Mesh
+
+Run [scripts/run-mesh.sh](scripts/run-mesh.sh) from the repository root on macOS or Linux. The demo uses Bash,
+JDK 25 and `uuidgen`. The first Maven wrapper setup also requires `unzip`.
+
+```sh
+./scripts/run-mesh.sh auth-http-app
+```
+
+The script builds the selected example once and starts two loopback replicas with temporary
+credentials. It prints a command to start another replica on the same mesh. See the
+[mesh guide](docs/mesh.md) for inspecting them in Creator or deploying your own application.
 
 ## Create The First Flow
 

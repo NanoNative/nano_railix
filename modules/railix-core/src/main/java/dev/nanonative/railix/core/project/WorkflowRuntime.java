@@ -451,8 +451,7 @@ public final class WorkflowRuntime {
                     accepted = active && !completed && enter();
                 }
                 if (!accepted) {
-                    final SourceResult rejected = new SourceResult(rejectedResult("APPLICATION_SOURCE_INACTIVE",
-                            "Source is not accepting work.", name), Map.of());
+                    final SourceResult rejected = new SourceResult(sourceUnavailable(name), Map.of());
                     response.accept(rejected);
                     return rejected;
                 }
@@ -504,6 +503,40 @@ public final class WorkflowRuntime {
         return validateReceives(step, values, path);
     }
 
+    static SourceResult mapSourceResult(final RunResult result, final Map<String, String> slots) {
+        return switch (result) {
+            case RunResult.Succeeded success -> mapSourceResult(result, success.context(), slots);
+            case RunResult.Completed completed -> mapSourceResult(result, completed.context(), slots);
+            default -> new SourceResult(result, Map.of());
+        };
+    }
+
+    private static SourceResult mapSourceResult(final RunResult result, final RailixValue.ObjectValue context,
+                                                final Map<String, String> slots) {
+        final Map<String, RailixValue> responses = new LinkedHashMap<>();
+        for (final Map.Entry<String, String> slot : slots.entrySet()) {
+            final RailixValue value = context.values().get(slot.getValue());
+            if (value == null) {
+                return new SourceResult(missingResult(slot.getValue()), Map.of());
+            }
+            responses.put(slot.getKey(), value);
+        }
+        return new SourceResult(result, responses);
+    }
+
+    private static RunResult missingResult(final String name) {
+        return rejected("RUN_RESULT_REQUIRED", "Trigger result is missing: " + name + ".", "context." + name);
+    }
+
+    /**
+     * Rejects a source request that could not be admitted.
+     * @param path the affected source or Trigger
+     * @return the source admission rejection
+     */
+    public static RunResult sourceUnavailable(final String path) {
+        return rejected("APPLICATION_SOURCE_INACTIVE", "Source is not accepting work.", path);
+    }
+
     static RunResult rejectedResult(
             final String code,
             final String message,
@@ -544,8 +577,18 @@ public final class WorkflowRuntime {
 
         Execution(final List<ResultPlan> results, final RailixValue.ObjectValue streamContext,
                   final RailixValue.ObjectValue runtime, final Lifecycle lifecycle) {
+            this(results, initialContext(results, streamContext, runtime), lifecycle);
+        }
+
+        Execution(final List<ResultPlan> results, final LinkedHashMap<String, Object> context,
+                  final Lifecycle lifecycle) {
             this.results = results;
             this.lifecycle = lifecycle;
+            frame = new EventFrame(context);
+        }
+
+        private static LinkedHashMap<String, Object> initialContext(final List<ResultPlan> results,
+                final RailixValue.ObjectValue streamContext, final RailixValue.ObjectValue runtime) {
             final LinkedHashMap<String, Object> context = new LinkedHashMap<>(streamContext.values());
             for (final ResultPlan result : results) {
                 context.remove(result.name());
@@ -554,7 +597,7 @@ public final class WorkflowRuntime {
                 }
             }
             context.put("runtime", runtime);
-            frame = new EventFrame(context);
+            return context;
         }
 
         Execution(final Execution parent, final StepInput.ContextMode mode,
@@ -590,7 +633,7 @@ public final class WorkflowRuntime {
                 final InputResolver resolver
         ) {
             if (shared != null) {
-                frame = new EventFrame(new LinkedHashMap<>(shared.snapshot().values()));
+                frame = new EventFrame(new LinkedHashMap<>(shared.snapshot(null).values()));
                 frozenContext = null;
             }
             return process(plan, implementation, received, resolver);
@@ -661,11 +704,7 @@ public final class WorkflowRuntime {
             for (final ResultPlan result : results) {
                 final RailixValue value = context.values().get(result.name());
                 if (value == null) {
-                    return rejected(
-                            "RUN_RESULT_REQUIRED",
-                            "Trigger result is missing: " + result.name() + ".",
-                            "context." + result.name()
-                    );
+                    return missingResult(result.name());
                 }
                 if (!result.shape().accepts(value)) {
                     return rejected(
@@ -688,27 +727,24 @@ public final class WorkflowRuntime {
                     : new RunResult.Completed(context, paths);
         }
 
-        Map<String, RailixValue> responses(final Map<String, String> slots) {
-            final RailixValue.ObjectValue context = context();
-            final Map<String, RailixValue> responses = new LinkedHashMap<>();
-            for (final Map.Entry<String, String> slot : slots.entrySet()) {
-                responses.put(slot.getKey(), context.values().get(slot.getValue()));
-            }
-            return Collections.unmodifiableMap(responses);
-        }
-
         RailixValue resolve(final Path path) {
             return frame.resolve(path);
         }
 
         RailixValue.ObjectValue context() {
-            if (shared != null) return shared.snapshot();
-            return localContext();
+            return context(null);
+        }
+
+        RailixValue.ObjectValue context(final String excludedField) {
+            if (shared != null) {
+                return shared.snapshot(excludedField);
+            }
+            return excludedField == null ? localContext() : frame.snapshot(excludedField);
         }
 
         RailixValue.ObjectValue localContext() {
             if (frozenContext == null) {
-                frozenContext = frame.snapshot();
+                frozenContext = frame.snapshot(null);
             }
             return frozenContext;
         }
@@ -770,8 +806,13 @@ public final class WorkflowRuntime {
             this.frame = frame;
         }
 
-        synchronized RailixValue.ObjectValue snapshot() {
-            if (cached == null) cached = frame.snapshot();
+        synchronized RailixValue.ObjectValue snapshot(final String excludedField) {
+            if (excludedField != null) {
+                return frame.snapshot(excludedField);
+            }
+            if (cached == null) {
+                cached = frame.snapshot(null);
+            }
             return cached;
         }
     }
@@ -1697,8 +1738,9 @@ public final class WorkflowRuntime {
             return value;
         }
 
-        private RailixValue.ObjectValue snapshot() {
-            return (RailixValue.ObjectValue) freeze(context);
+        private RailixValue.ObjectValue snapshot(final String excludedField) {
+            return excludedField == null ? (RailixValue.ObjectValue) freeze(context)
+                    : freezeObjectFields(context, excludedField);
         }
 
         private static boolean object(final Object value) {
@@ -1746,11 +1788,7 @@ public final class WorkflowRuntime {
                 if (object.frozen != null) {
                     return object.frozen;
                 }
-                final Map<String, RailixValue> values = new LinkedHashMap<>(object.values.size());
-                for (final Map.Entry<String, Object> entry : object.values.entrySet()) {
-                    values.put(entry.getKey(), freeze(entry.getValue()));
-                }
-                object.frozen = RailixValue.object(values);
+                object.frozen = freezeObjectFields(object, null);
                 return object.frozen;
             }
             final FrameArray array = (FrameArray) value;
@@ -1763,6 +1801,17 @@ public final class WorkflowRuntime {
             }
             array.frozen = RailixValue.array(values);
             return array.frozen;
+        }
+
+        private static RailixValue.ObjectValue freezeObjectFields(final FrameObject object, final String excludedField) {
+            final Map<String, RailixValue> values = new LinkedHashMap<>(object.values.size());
+            for (final Map.Entry<String, Object> entry : object.values.entrySet()) {
+                final String key = entry.getKey();
+                if (excludedField == null || !excludedField.equals(key)) {
+                    values.put(key, freeze(entry.getValue()));
+                }
+            }
+            return RailixValue.object(values);
         }
 
         private static void invalidate(final Object value) {

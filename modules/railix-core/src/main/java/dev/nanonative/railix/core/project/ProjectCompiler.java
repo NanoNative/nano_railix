@@ -47,10 +47,21 @@ public final class ProjectCompiler {
 
     /** Parses, validates, and lowers one complete project to a directly compilable Java application. */
     public static CompileResult compileApplication(final String source, final StepCatalog catalog) {
-        return new ProjectCompiler().compile(source, catalog);
+        return compileApplication(source, catalog, false);
     }
 
-    private CompileResult compile(final String source, final StepCatalog catalog) {
+    /**
+     * Compiles one project with the requested production entrypoints.
+     * @param source project JSON
+     * @param catalog available Step definitions and implementations
+     * @param includePeerContinuations whether to generate the production entrypoint for peer continuations
+     * @return the complete compilation or deterministic diagnostics
+     */
+    public static CompileResult compileApplication(final String source, final StepCatalog catalog, final boolean includePeerContinuations) {
+        return new ProjectCompiler().compile(source, catalog, includePeerContinuations);
+    }
+
+    private CompileResult compile(final String source, final StepCatalog catalog, final boolean includePeerContinuations) {
         if (source == null || source.isBlank()) {
             return rejected("PROJECT_SOURCE_REQUIRED", "Project source must be supplied.", "");
         }
@@ -170,7 +181,7 @@ public final class ProjectCompiler {
         }).toList());
         final ApplicationGenerator.Result application = ApplicationGenerator.generate(
                 new ApplicationPlan(id.value(), plans, triggers, examples),
-                catalog
+                catalog, includePeerContinuations
         );
         if (!application.diagnostics().isEmpty()) {
             return new CompileResult.Rejected(application.diagnostics());

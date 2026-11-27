@@ -19,13 +19,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Read-only connection. It deliberately has no process, activation, execution or deployment methods. */
 final class LiveApplication implements AutoCloseable {
+    private static final String STATUS_PATH = "/v1/status";
     final ObservationServer.Connection connection;
     final ProjectFiles.Snapshot project;
     final CreatorScene scene;
     final CreatorEditor editor;
     private final HttpClient client;
-    private final Semaphore readers = new Semaphore(2);
+    private final Semaphore metricReaders = new Semaphore(2);
+    private final Semaphore statusReader = new Semaphore(1);
     private final AtomicBoolean open = new AtomicBoolean(true);
+    private volatile boolean runtimeDetailsAvailable = true;
     private String comparedSource = "";
     private RailixValue.ObjectValue comparison = RailixValue.object(Map.of());
 
@@ -69,32 +72,69 @@ final class LiveApplication implements AutoCloseable {
 
     DevelopmentApplication.ObservationResponse read(final String path, final RailixValue.ObjectValue query,
                                                    final long deadline) throws IOException {
-        if (!alive() || !readers.tryAcquire()) return new DevelopmentApplication.ObservationResponse(503,
-                "application/json; charset=utf-8", "{\"status\":\"unavailable\"}".getBytes(StandardCharsets.UTF_8));
+        final boolean details = STATUS_PATH.equals(path);
+        if (!details && !path.equals("/v1/metrics") && !path.startsWith("/v1/metrics/")) {
+            throw new IllegalArgumentException("Only runtime status and operational metric reads are permitted.");
+        }
+        final Semaphore readers = details ? statusReader : metricReaders;
+        if (!alive() || !readers.tryAcquire()) {
+            return new DevelopmentApplication.ObservationResponse(503, "application/json; charset=utf-8",
+                    "{\"status\":\"unavailable\"}".getBytes(StandardCharsets.UTF_8));
+        }
         try {
-            if (!path.equals("/v1/metrics") && !path.startsWith("/v1/metrics/"))
-                throw new IllegalArgumentException("Only operational metric reads are permitted.");
             final var request = HttpRequest.newBuilder(connection.origin().resolve(path))
                     .timeout(Duration.ofNanos(Math.max(1, deadline - System.nanoTime())))
                     .header("Authorization", "Bearer " + connection.token());
-            if (query == null) request.GET();
-            else if (path.equals("/v1/metrics/query")) request.header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(RailixJson.write(query)));
-            else throw new IllegalArgumentException("Only metric queries accept bodies.");
-            return ApplicationReads.response(client, request.build(), RailixData.DEFAULT_MAX_SOURCE_BYTES, "Application metrics");
+            if (query == null) {
+                request.GET();
+            } else if (path.equals("/v1/metrics/query")) {
+                request.header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(RailixJson.write(query)));
+            } else {
+                throw new IllegalArgumentException("Only metric queries accept bodies.");
+            }
+            return ApplicationReads.response(client, request.build(), details ? 16_384 : RailixData.DEFAULT_MAX_SOURCE_BYTES,
+                    details ? "Application runtime status" : "Application metrics");
         } catch (final InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IOException("Live observation interrupted.", interrupted);
-        } finally { readers.release(); }
+        } finally {
+            readers.release();
+        }
+    }
+
+    RailixValue readMeshStatus(final long deadline) throws IOException {
+        if (!runtimeDetailsAvailable) {
+            return RailixValue.nullValue();
+        }
+        final DevelopmentApplication.ObservationResponse response = read(STATUS_PATH, null, deadline);
+        if (response.status() == 404) {
+            runtimeDetailsAvailable = false;
+        }
+        if (response.status() != 200) {
+            return RailixValue.nullValue();
+        }
+        final RailixJson.Result document = RailixJson.parse(new String(response.body(), StandardCharsets.UTF_8));
+        if (document instanceof RailixJson.Parsed(RailixValue.ObjectValue status)
+                && status.values().get("mesh") instanceof RailixValue.ObjectValue mesh) {
+            return mesh;
+        }
+        return RailixValue.nullValue();
     }
 
     RailixValue.ObjectValue snapshot() {
-        final var fields = new LinkedHashMap<>(connection.identity().values());
+        return snapshot(RailixValue.nullValue());
+    }
+
+    RailixValue.ObjectValue snapshot(final RailixValue mesh) {
+        final boolean running = alive();
+        final LinkedHashMap<String, RailixValue> fields = new LinkedHashMap<>(connection.identity().values());
         fields.put("pid", RailixValue.number(connection.pid()));
-        fields.put("state", RailixValue.string(alive() ? "running" : "stopped"));
+        fields.put("state", RailixValue.string(running ? "running" : "stopped"));
         fields.put("fingerprint", RailixValue.string(connection.instance() + "/" + connection.fingerprint()));
         fields.put("readonly", RailixValue.bool(true));
         fields.put("build_path", RailixValue.string(connection.artifact().toString()));
+        fields.put("mesh", running ? mesh : RailixValue.nullValue());
         return RailixValue.object(fields);
     }
 

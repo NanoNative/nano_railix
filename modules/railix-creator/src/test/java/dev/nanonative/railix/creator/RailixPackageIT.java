@@ -95,6 +95,9 @@ final class RailixPackageIT {
     }
 
     @Test
+    // Sixteen packaged processes start concurrently. A cold hosted runner can need
+    // longer than the class default while still making normal forward progress.
+    @Timeout(90)
     void concurrentPackagedRunsShareOneAtomicApplicationBuild() throws Exception {
         Files.writeString(
                 directory.resolve("railix.project.json"),
@@ -673,7 +676,7 @@ final class RailixPackageIT {
                 2,
                 "Usage: railix creator [project-file] [port] [--application application.jar]\n"
                         + "       railix run [arguments...]\n"
-                        + "       railix build [project-file] [--include-project] [--no-observation]"
+                        + "       railix build [project-file] [--include-project] [--no-observation] [--mesh]"
         ));
     }
 
@@ -1321,12 +1324,11 @@ final class RailixPackageIT {
         final int separator = agent.indexOf(',', value);
         final int end = separator < 0 ? agent.length() : separator;
         final Path current = Path.of(agent.substring(value, end));
-        final Path isolated = current.resolveSibling(
-                "jacoco-child-" + ProcessHandle.current().pid() + "-"
-                        + COVERAGE_CHILD.incrementAndGet() + ".exec"
-        );
+        final String child = "child-" + ProcessHandle.current().pid() + "-" + COVERAGE_CHILD.incrementAndGet();
+        final Path isolated = current.resolveSibling("jacoco-" + child + ".exec");
+        // JaCoCo otherwise resolves the local hostname while the child JVM is starting.
         return (agent.substring(0, value) + isolated + agent.substring(end))
-                .replace(",append=false", ",append=true");
+                .replace(",append=false", ",append=true") + ",sessionid=" + child;
     }
 
     private record ProcessResult(int status, String output) {

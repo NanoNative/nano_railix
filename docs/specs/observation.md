@@ -128,11 +128,16 @@ digest captured at startup. Project data then use the same bounded local/embedde
 Step catalog. Matching local documents are preferred. Embedded originals can supply an older
 observed version while the local draft is newer. Otherwise the user selects the matching local file.
 
-The connection exposes only identity and the common metric reads/queries. It has no Example, run,
+The connection exposes identity and the common metric reads/queries. It has no Example, run,
 activation, shutdown or deployment routes. Creator uses the same bounded/deadline-controlled HTTP
 body reader for owned and independent applications. A detached reader only closes its own HTTP
 client. Closing Creator never stops an independently started process. This first connection is
 same-user, POSIX-filesystem and loopback only, not a remote access or deployment contract.
+
+For replicas with mesh and observation active, `GET /v1/status` includes read-only mesh join status
+or a join rejection reason from the [selected replica](../mesh.md#run-a-local-mesh).
+Creator admits one status read per connection independently of metric reads.
+Creator's Live view uses the existing instance selection and authentication.
 
 Live reads carry `X-Railix-Live-Instance` with the selected listener nonce. An outdated selection
 receives a conflict, never a different instance's data. One candidate connection may be prepared

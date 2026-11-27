@@ -53,6 +53,49 @@ class RailixJsonComponentTest {
     }
 
     @Test
+    void boundedDocumentsCountFieldNamesContainersAndValues() {
+        final RailixValue.ObjectValue message = RailixValue.object(Map.of(
+                "items", RailixValue.array(List.of(RailixValue.bool(true), RailixValue.nullValue()))));
+        final String document = "{\"items\":[true,null]}";
+
+        assertThat(RailixJson.writeTransferDocument(message, 100, 5)).isEqualTo(document);
+        assertThat(RailixJson.writeTransferDocument(message, 100, 4)).isEmpty();
+        assertThat(RailixJson.parseDocument(document, 5)).isEqualTo(new RailixJson.Parsed(message));
+        assertThat(RailixJson.parseDocument(document, 4)).isInstanceOfSatisfying(
+                RailixJson.Invalid.class, rejection ->
+                        assertThat(rejection.message()).contains("maximum node count"));
+    }
+
+    @Test
+    void boundedDocumentsRejectImpossibleObjectsBeforeVisitingFields() {
+        final RailixValue.ObjectValue value = RailixValue.object(Map.of(
+                "a", RailixValue.string("\ud800"), "b", RailixValue.nullValue()));
+
+        assertThat(RailixJson.writeTransferDocument(value, 100, 3)).isEmpty();
+    }
+
+    @Test
+    void transferDocumentsPreserveDecimalScaleAndNestedFieldOrder() {
+        final Map<String, RailixValue> fields = new LinkedHashMap<>();
+        fields.put("z", RailixValue.number(new BigDecimal("1.00")));
+        fields.put("a", RailixValue.number(new BigDecimal("1.2E+3")));
+        final RailixValue.ObjectValue message = RailixValue.object(Map.of("data", RailixValue.object(fields)));
+        final String expected = "{\"data\":{\"z\":1.00,\"a\":1.2E+3}}";
+
+        assertThat(RailixJson.writeTransferDocument(message, expected.length(), 7)).isEqualTo(expected);
+        assertThat(RailixJson.parseDocument(expected, 7)).isEqualTo(new RailixJson.Parsed(message));
+    }
+
+    @Test
+    void transferDocumentsRejectDecimalsWhoseExactTextExceedsTheParserLimit() {
+        final RailixValue.NumberValue value = RailixValue.number(new BigDecimal("1." + "0".repeat(1_024)));
+
+        assertThat(RailixJson.fitsUtf8(value, 1)).isTrue();
+        assertThat(RailixJson.measureTransfer(value, 2_048, 1, 1).exceeded()).isTrue();
+        assertThat(RailixJson.writeTransferDocument(value, 2_048, 1)).isEmpty();
+    }
+
+    @Test
     void utf8FitCheckAcceptsTheExactCanonicalLimitWithoutWritingJson() {
         assertThat(RailixJson.fitsUtf8(RailixValue.string("\u20ac"), 5)).isTrue();
     }
@@ -60,6 +103,16 @@ class RailixJsonComponentTest {
     @Test
     void utf8FitCheckRejectsCanonicalJsonOneByteOverTheLimit() {
         assertThat(RailixJson.fitsUtf8(RailixValue.string("\u20ac"), 4)).isFalse();
+    }
+
+    @Test
+    void canonicalSizingStopsAtTheOversizedFieldInCanonicalKeyOrder() {
+        final Map<String, RailixValue> fields = new LinkedHashMap<>();
+        fields.put("z", RailixValue.string("\ud800"));
+        fields.put("a", RailixValue.string("x".repeat(32)));
+        final RailixValue.ObjectValue value = RailixValue.object(fields);
+
+        assertThat(RailixJson.fitsUtf8(value, 20)).isFalse();
     }
 
     @Test
@@ -105,13 +158,25 @@ class RailixJsonComponentTest {
                 .isEqualTo(source);
     }
 
-    @Test
-    void boundedJsonWriterCountsTheMinusAsATransportByte() {
-        final String source = "-" + "1".repeat(1_024);
+    @ParameterizedTest
+    @MethodSource("signedNumbers")
+    void boundedJsonWriterAndMeasurementCountTheEmittedNumber(final String source, final String expected) {
         final RailixValue.NumberValue value = RailixValue.number(new BigDecimal(source));
+        final int bytes = expected.length();
 
-        assertThat(RailixJson.write(value, 1_024)).isEmpty();
-        assertThat(RailixJson.write(value, 1_025)).contains(source);
+        assertThat(RailixJson.write(value, bytes - 1)).isEmpty();
+        assertThat(RailixJson.write(value, bytes)).contains(expected);
+        assertThat(RailixJson.measureTransfer(value, source.length() - 1, 1, 1).exceeded()).isTrue();
+        final RailixJson.TransferMeasurement exact = RailixJson.measureTransfer(value, source.length(), 1, 1);
+        assertThat(exact.exceeded()).isFalse();
+        assertThat(exact.remainingBytes()).isZero();
+        assertThat(exact.remainingNodes()).isZero();
+    }
+
+    static Stream<Arguments> signedNumbers() {
+        final String signedMaximum = "-" + "1".repeat(1_024);
+        return Stream.of(Arguments.of(signedMaximum, signedMaximum),
+                Arguments.of("-0.001200", "-0.0012"));
     }
 
     @Test

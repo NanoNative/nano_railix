@@ -3,6 +3,7 @@ package dev.nanonative.railix.development;
 import dev.nanonative.railix.core.runtime.RuntimeMetrics;
 
 import dev.nanonative.railix.core.project.Diagnostic;
+import dev.nanonative.railix.core.runtime.MetricDefinition;
 import dev.nanonative.railix.core.runtime.RunResult;
 import dev.nanonative.railix.core.value.RailixJson;
 import dev.nanonative.railix.core.value.RailixValue;
@@ -182,6 +183,24 @@ final class DevelopmentMetricsContractTest {
                 "cancelled", 0L,
                 "in_flight", 0L
         ));
+    }
+
+    @Test
+    void registeredFlowCounterContributesEachFlowToTheApplicationTotal() {
+        final RuntimeMetrics metrics = new RuntimeMetrics("metrics-project",
+                new String[]{"checkout", "refund", "status"}, new String[]{});
+        final MetricDefinition accepted = MetricDefinition.counter("accepted", "Accepted", "count");
+        final Runnable checkout = metrics.registerFlowCounter("checkout", accepted);
+        final Runnable refund = metrics.registerFlowCounter("refund", accepted);
+        checkout.run();
+        checkout.run();
+        refund.run();
+
+        final RailixValue.ObjectValue published = snapshot(metrics);
+        assertThat(values(published, "flows"))
+                .extracting(flow -> metric((RailixValue.ObjectValue) flow).get("accepted"))
+                .containsExactly(2L, 1L, 0L);
+        assertThat(metric(object(published, "application"))).containsEntry("accepted", 3L);
     }
 
     @Test

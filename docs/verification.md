@@ -1787,3 +1787,86 @@ Raw regressions, review outputs, performance probes and results are retained und
 ended. Grype is unavailable on this host. Local checks do not establish public CI or release
 evidence. Public CI must validate the published commit before merging. No production,
 cross-platform or Native Image certification follows from these local checks.
+
+## Fixed-Peer Mesh Membership
+
+Recorded on 2026-11-21 for two independent JVMs on fixed loopback endpoints.
+
+- `RailixMeshPackageIT` checked mesh class inclusion, inactive startup, invalid configuration
+  rejection, and two authenticated replicas. It checked that Creator reads the selected replica's
+  peer and that different logical builds reject the join without publishing peer state.
+- `PeerTlsTest` exercised mutual TLS, credential rejection, the join timeout, and build rejection
+  before the first state exchange. `PeerFramesTest` covered frame lengths, byte bounds, and partial
+  reads. `PeerChannelTest` covered malformed frames, whole-frame writes, and socket closure after
+  failure.
+- The packaged CLI built and ran a mesh-capable command-line project with network access restricted.
+  The Creator browser check showed peer readiness and build rejection.
+
+The [mesh acceptance scenarios](specs/mesh.md#acceptance) cover the remaining discovery, remote
+Flow, and cross-platform proofs.
+
+## Configured Flow Offload Pilot
+
+Recorded on 2026-11-24 with a packaged CLI and two independent JVMs on loopback. Both replicas
+selected the same HTTP Flow and had one execution slot each. The existing HTTP Client Step
+called a shared test service so the test could hold each Flow in progress.
+
+- The first request used the local slot. A second request to the same HTTP endpoint reached
+  the service through the peer. While both requests were held, a third received HTTP 503.
+  Both admitted requests returned their original payloads.
+- Stopping the peer after its call reached the service returned `MESH_FLOW_UNCERTAIN` to the
+  original HTTP caller. The locally admitted request could still finish.
+- Different logical builds continued to reject membership before publishing peer state.
+
+All three focused `RailixMeshPackageIT` cases passed. The proof covers configured loopback
+replicas and one eligible Flow. See the remaining [acceptance scenarios](specs/mesh.md#acceptance).
+
+Follow-up checks used two membership-only peers ahead of the eligible peer in selection order.
+The same eligible Flow still offloaded. The standalone JAR omitted the offload types and
+receiver entrypoint. Peer channel tests exercised retained-input refusal, occupied result
+buffers, and an expired queued write while keeping the channel open.
+
+The deadline follow-up exercised an active control write timeout and checked the budget on a
+queued invocation after the writer became available. Seven packaged mesh cases passed,
+including rejection at `hello` when only the packaged mesh classes differed.
+
+The admission follow-up verified that a queued refusal leaves the reader available, a
+cancelled worker sends its outcome, and a worker writes an application refusal before
+releasing its slot. Five packaged mesh cases passed. The graceful drain case sent SIGTERM
+to a replica with an offloaded HTTP Flow in progress and verified that the original caller
+received the response and the replica exited.
+
+The cancellation follow-up verified that an active Flow still receives an interrupt and
+returns a cancelled outcome with all data buffers occupied. A loopback TLS probe sent a
+cancel during a blocked reply, then received the complete reply and finished a second call on
+the same connection. Three packaged offload cases passed, including abrupt peer loss and
+graceful drain.
+
+The sender follow-up verified that interrupting a queued invocation returns `Cancelled`
+and releases the data buffer without writing a frame. In a loopback TLS probe, interrupting
+the source during an invocation write left the complete invocation on the stream, followed
+by its cancellation frame. An unrelated call on the same connection also completed.
+
+The deadline isolation checks held a Step's interruptible resource close open. A peer read
+and another connection's write watchdog both completed during the hold. A channel test
+delivered two replies in reverse order and verified the result for each caller. The packaged
+retry case used an authenticated peer that declined its admission and verified that a second
+eligible replica supplied the original HTTP response.
+
+The per-connection writer checks held one peer's write open while another peer returned a
+Flow result. A finished Flow returned its execution slot while drain still waited for its
+reply. A connection with both reply reservations occupied refused the next invocation
+before execution. The focused unit run passed 111 cases across `PeerChannelTest`,
+`PeerFramesTest`, and `RailixJsonComponentTest`. Five packaged `RailixMeshPackageIT`
+cases passed over loopback, covering join and observation, eligible offload, retry after
+refusal, uncertain completion after peer loss, and graceful drain.
+
+The reply format check sent the same 320 KiB echo through local and offloaded execution.
+Both returned HTTP 200 with the original payload. A separate offloaded result that exceeded
+the 1 MiB limit returned `MESH_FLOW_RESULT_INVALID`. The generated application checks also
+passed for standalone response mapping and missing required Trigger results.
+
+After removing mesh cancellation, channel tests held admitted work past the reply deadline and
+across session closure. In each case the work finished without interruption and released its
+reply reservation. Five packaged cases passed for eligible offload, retry after explicit refusal,
+uncertain completion after execution peer loss, graceful drain, and mesh build mismatch.

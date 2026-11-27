@@ -2784,8 +2784,39 @@ function appInspector(issues) {
     ${runtimeDetails()}`;
 }
 
+function meshFacts() {
+  const mesh = state.application.mesh;
+  if (!mesh || !state.liveView) {
+    return "";
+  }
+  const readiness = { waiting: "Waiting for peer", rejected: "Peer rejected" };
+  const status = readiness[mesh.status] || inputLabel(mesh.status);
+  const peer = mesh.peers?.[0];
+  const peerDetails = peer
+    ? `<div><dt>Peer</dt><dd>${html(peer.replicaId)} · ${html(inputLabel(peer.status))}</dd></div>`
+    : "";
+  const rejection = mesh.rejection
+    ? `<div><dt>Rejection</dt><dd>${html(inputLabel(mesh.rejection))}</dd></div>`
+    : "";
+  return `<div><dt>Mesh</dt><dd>${html(status)}</dd></div>
+    ${peerDetails}
+    ${rejection}`;
+}
+
 function buildDetails() {
-  if(state.liveView) return `<header><strong>Live application / Read-only</strong><button type="button" popovertarget="application-status" popovertargetaction="hide" aria-label="Close build details">Close</button></header><dl class="facts"><div><dt>Artifact</dt><dd>${html(state.application.build_path || '')}</dd></div><div><dt>Source revision</dt><dd>${html(state.application.source_revision || '')}</dd></div><div><dt>Artifact digest</dt><dd>${html(state.application.artifact_digest || '')}</dd></div></dl>`;
+  if (state.liveView) {
+    return `<header>
+        <strong>Live application / Read-only</strong>
+        <button type="button" popovertarget="application-status" popovertargetaction="hide"
+                aria-label="Close build details">Close</button>
+      </header>
+      <dl class="facts">
+        <div><dt>Artifact</dt><dd>${html(state.application.build_path || '')}</dd></div>
+        <div><dt>Source revision</dt><dd>${html(state.application.source_revision || '')}</dd></div>
+        <div><dt>Artifact digest</dt><dd>${html(state.application.artifact_digest || '')}</dd></div>
+      </dl>
+      <dl id="live-mesh-facts" class="facts" ${state.application.mesh ? '' : 'hidden'}>${meshFacts()}</dl>`;
+  }
   const builtAt = Number(state.application.built_at || 0);
   return `<header><strong>Application and build</strong>
       <button type="button" popovertarget="application-status" popovertargetaction="hide" aria-label="Close build details">Close</button></header>
@@ -5809,6 +5840,14 @@ function selectedExampleId() {
 
 function refreshApplicationFacts() {
   renderExampleContext();
+  const mesh = document.getElementById('live-mesh-facts');
+  if (mesh) {
+    const facts = meshFacts();
+    if (mesh.innerHTML !== facts) {
+      mesh.innerHTML = facts;
+    }
+    mesh.hidden = !facts;
+  }
   const builtAt = Number(state.application.built_at || 0);
   const values = {
     "application-pid": state.application.pid || "",
