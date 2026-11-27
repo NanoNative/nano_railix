@@ -119,7 +119,14 @@ until the launcher exits.
 Run the printed Creator command in another terminal. Choose **Project actions > Connect live app**
 and select a replica. In the runtime details, **Mesh** shows the connection state and **Peer**
 summarizes one authenticated connection. A mismatched build shows **Build mismatch** in the
-rejection details. Stop added replicas with `Ctrl-C` in their own terminals. Then stop the initial
+rejection details.
+
+With offload enabled, select the configured Trigger in **Live** and scroll to **Flow acknowledged
+offloads** and **Flow unacknowledged offloads**. Select **App** for the replica's totals. The
+counters appear at zero on startup. If A offloads a request to B, check A for the offload count
+and B for the Flow execution count.
+
+Stop added replicas with `Ctrl-C` in their own terminals. Then stop the initial
 launcher with `Ctrl-C` to stop its two replicas and remove the demo credentials.
 
 ## Deploy An Application

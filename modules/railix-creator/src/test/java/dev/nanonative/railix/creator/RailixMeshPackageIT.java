@@ -58,12 +58,15 @@ final class RailixMeshPackageIT {
     private static final UUID MESH = UUID.randomUUID();
     private static final UUID SEED = UUID.randomUUID();
     private static final UUID PEER = new UUID(0, 1);
+    private static Path startupJar;
 
     @TempDir static Path credentials;
+    @TempDir static Path startupDirectory;
     @TempDir Path directory;
 
     @BeforeAll
     static void provisionTrust() throws Exception {
+        startupJar = null;
         for (String store : List.of("issuer", "trust", "seed", "peer")) {
             Files.writeString(credentials.resolve(store + ".password"), UUID.randomUUID() + "\n");
         }
@@ -131,7 +134,9 @@ final class RailixMeshPackageIT {
                     final HttpResponse<String> selected = LiveApplicationE2eTest.readLive(
                             uri, "/api/live/application", seedConnection.instance());
                     assertThat(selected.statusCode()).isEqualTo(200);
-                    assertReady(json(selected.body()).getAsJsonObject("mesh"), PEER);
+                    final JsonObject meshStatus = json(selected.body()).getAsJsonObject("mesh");
+                    assertReady(meshStatus, PEER);
+                    assertThat(meshStatus.keySet()).doesNotContain("peer");
                     final HttpResponse<String> metrics = LiveApplicationE2eTest.readLive(
                             uri, "/api/live/metrics", seedConnection.instance());
                     final HttpResponse<String> catalog = LiveApplicationE2eTest.readLive(
@@ -146,7 +151,7 @@ final class RailixMeshPackageIT {
             } finally {
                 stop(peer);
             }
-            await(() -> assertThat(status(client, seedConnection).get("peer").isJsonNull()).isTrue());
+            await(() -> assertThat(status(client, seedConnection).getAsJsonArray("peers")).isEmpty());
         } finally {
             stop(seed);
         }
@@ -571,8 +576,7 @@ final class RailixMeshPackageIT {
 
     @Test
     void startsWithMeshInactiveWhenConfigurationIsAbsent() throws Exception {
-        final Path jar = build(project("activation"), "--mesh");
-        final Process disabled = launch(jar, "disabled", null);
+        final Process disabled = launch(startupApplication(), "disabled", null);
         try (HttpClient client = HttpClient.newHttpClient()) {
             final ObservationServer.Connection app = connection(disabled, "disabled");
             final HttpResponse<String> response = client.send(HttpRequest.newBuilder(app.origin().resolve("/v1/status"))
@@ -592,31 +596,28 @@ final class RailixMeshPackageIT {
 
     @Test
     void rejectsAMissingMeshConfigurationBeforeStartup() throws Exception {
-        final Path jar = build(project("missing-configuration"), "--mesh");
-        assertInvalidStartup(jar, directory.resolve("missing-mesh-config.json"), "missing-mesh-config.json");
+        assertInvalidStartup(startupApplication(), directory.resolve("missing-mesh-config.json"), "missing-mesh-config.json");
     }
 
     @Test
     void rejectsAUrlAsAnAdvertisedHost() throws Exception {
-        final Path jar = build(project("invalid-advertised-host"), "--mesh");
         final Path config = configurations().getFirst();
         final JsonObject settings = json(Files.readString(config));
         settings.getAsJsonObject("advertisedEndpoint").addProperty("host", "https://127.0.0.1:7401/");
         Files.writeString(config, settings.toString());
-        assertInvalidStartup(jar, config, "advertisedEndpoint requires a host");
+        assertInvalidStartup(startupApplication(), config, "advertisedEndpoint requires a host");
     }
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
     void rejectsANamedPipeAsTheStartupConfiguration() throws Exception {
-        final Path jar = build(project("invalid-config-type"), "--mesh");
-        assertInvalidStartup(jar, fifo("mesh-config"), "requires a regular file");
+        assertInvalidStartup(startupApplication(), fifo("mesh-config"), "requires a regular file");
     }
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
     void timesOutAnUnresponsiveListenHostLookupBeforeStartup() throws Exception {
-        final Path jar = build(project("blocked-listen"), "--mesh");
+        final Path jar = startupApplication();
         final Path seedConfig = configurations().getFirst();
         final JsonObject document = json(Files.readString(seedConfig));
         document.getAsJsonObject("listenEndpoint").addProperty("host", "listen.railix.test");
@@ -631,7 +632,7 @@ final class RailixMeshPackageIT {
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
     void boundsABlockedBootstrapLookupAndStillAcceptsAnInboundPeer() throws Exception {
-        final Path jar = build(project("blocked-lookup"), "--mesh");
+        final Path jar = startupApplication();
         final List<Path> configurations = configurations();
         final Path seedConfig = configurations.getFirst();
         final JsonObject document = json(Files.readString(seedConfig));
@@ -666,7 +667,7 @@ final class RailixMeshPackageIT {
 
     @Test
     void joinsThroughTheSecondAddressOfABootstrapHostname() throws Exception {
-        final Path jar = build(project("bootstrap-address-fallback"), "--mesh");
+        final Path jar = startupApplication();
         final List<Path> configurations = configurations();
         final Path peerConfig = configurations.getLast();
         final JsonObject document = json(Files.readString(peerConfig));
@@ -738,7 +739,7 @@ final class RailixMeshPackageIT {
                 assertThat(peerStatus.get("logicalBuildId")).as(name).isNotEqualTo(seedStatus.get("logicalBuildId"));
                 for (final JsonObject view : List.of(seedStatus, peerStatus)) {
                     assertThat(view.get("rejection").getAsString()).as(name).isEqualTo("build-mismatch");
-                    assertThat(view.get("peer").isJsonNull()).as(name).isTrue();
+                    assertThat(view.getAsJsonArray("peers")).as(name).isEmpty();
                 }
             });
         } finally {
@@ -765,7 +766,9 @@ final class RailixMeshPackageIT {
 
     private static void assertReady(final JsonObject status, final UUID remote, final int capacity) {
         assertThat(status.get("status").getAsString()).isEqualTo("joined");
-        final JsonObject peer = status.getAsJsonObject("peer");
+        final JsonArray peers = status.getAsJsonArray("peers");
+        assertThat(peers).hasSize(1);
+        final JsonObject peer = peers.get(0).getAsJsonObject();
         assertThat(peer.get("replicaId").getAsString()).isEqualTo(remote.toString());
         assertThat(peer.get("status").getAsString()).isEqualTo("ready");
         assertThat(peer.get("availableFlowSlots").getAsInt()).isEqualTo(capacity);
@@ -786,7 +789,19 @@ final class RailixMeshPackageIT {
         }
     }
 
+    private static synchronized Path startupApplication() throws Exception {
+        if (startupJar == null) {
+            final Path source = project(startupDirectory, "mesh-startup");
+            startupJar = build(CLI, source, startupDirectory, "--mesh");
+        }
+        return startupJar;
+    }
+
     private Path project(final String id) throws Exception {
+        return project(directory, id);
+    }
+
+    private static Path project(final Path directory, final String id) throws Exception {
         final Path path = Files.createDirectories(directory.resolve(id)).resolve("railix.project.json");
         Files.writeString(path, """
                 {"format":1,"id":"%s","nodes":[
@@ -803,7 +818,11 @@ final class RailixMeshPackageIT {
     }
 
     private Path build(final Path cli, final Path project, final String... flags) throws Exception {
-        final ArrayList<String> command = new ArrayList<>(List.of(BIN.resolve("java").toString(), "-Duser.home=" + home(),
+        return build(cli, project, directory, flags);
+    }
+
+    private static Path build(final Path cli, final Path project, final Path directory, final String... flags) throws Exception {
+        final ArrayList<String> command = new ArrayList<>(List.of(BIN.resolve("java").toString(), "-Duser.home=" + directory.resolve("home"),
                 "-jar", cli.toString(), "build", project.toString()));
         command.addAll(List.of(flags));
         String output = run(command, directory, directory.resolve("build.log"));

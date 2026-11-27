@@ -463,7 +463,6 @@ public final class MeshRuntime implements AutoCloseable {
                 "status", RailixValue.string(draining ? "draining" : phase),
                 "logicalBuildId", RailixValue.string(build),
                 "replicaId", RailixValue.string(peerSession.replicaId().toString()),
-                "peer", observed.isEmpty() ? ABSENT : observed.getFirst(),
                 "peers", RailixValue.array(observed),
                 "rejection", lastRejection
         ));

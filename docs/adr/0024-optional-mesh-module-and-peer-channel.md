@@ -32,18 +32,32 @@ can issue temporary credentials under a temporary trust root. Both peers prove t
 An address or a configured mesh ID on its own establishes neither identity nor key possession.
 A Railix-specific cryptography layer would duplicate the JDK's responsibilities.
 
-A Flow-specific HTTP endpoint would tie remote dispatch to the Trigger's source protocol. An
-HTTP/2 or HTTP/3 server framework would expand the JDK-only runtime boundary. MQTT or another
-broker would introduce queue and session ownership while leaving admission with the execution
-replica. The direct channel was chosen to support multiple invocations on one connection and leave
-room for later Step dispatch.
+### Rejected transport alternatives
+
+- **HTTP request/response endpoint.** An endpoint per Flow could serve the first offload use case.
+  It would tie peer dispatch to HTTP controllers. Later Step dispatch needs concurrent
+  invocations, correlated replies, and lifecycle messages on a channel independent of the
+  Trigger's source protocol.
+- **HTTP/2 or HTTP/3 server framework.** A framework would supply multiplexing but add a
+  third-party server to the JDK-only runtime. The Java 25 boundary favored the JDK's TLS and
+  socket APIs for the peer channel.
+- **MQTT or another broker.** A broker could route and queue messages. It could accept a message
+  while every replica was full. Railix would still need receiver-side admission and would also
+  need to operate the broker and define who owns queued work and sessions.
+
+The direct channel supports concurrent calls on one authenticated connection and allows later
+Step dispatch to reuse it. The cost is maintaining a bounded peer protocol in Railix, including
+framing, correlation, backpressure, and failure handling.
+
+### Execution scope and build identity
 
 Start with complete eligible Flows. Ingress runs the Trigger and sends the compiled continuation
 identity and canonical inputs when it needs a peer. Repeating the Trigger on the receiver could
 repeat source effects. Moving live Java objects, resource handles, or authored graphs would couple
 the request to process state or require another execution model. The receiver uses its own
 initialized resources. Ingress keeps the source transport and completes the request. Individual
-Step placement was deferred until the complete-Flow boundary had been proven.
+Step placement was deferred. It would introduce network boundaries inside a Flow before the
+complete-Flow execution contract had been proven.
 
 The first placement policy was local-first with immediate receiver admission and a shared execution
 pool for local and remote work. Advertised capacity was advisory. Another peer could be tried only
@@ -52,8 +66,9 @@ after known non-admission. The early protocol proposed a separate `admitted` ack
 pending-invocation pool from the local execution capacity. These choices are amended below.
 
 Logical compatibility was defined by the compiled application's behavior and required capabilities.
-Hashing the entire OS package would separate equivalent builds with different launchers or runtime
-images. Cross-platform placement was scoped to portable Java Flows with equivalent resources.
+Matching by project name could group builds whose behavior or dependencies differed. Hashing
+the entire OS package would separate equivalent builds with different launchers or runtime images.
+Cross-platform placement was scoped to portable Java Flows with equivalent resources.
 [Original ADR and specification](https://github.com/NanoNative/nano_railix/commit/aba7c832cd0e7e40389c5991faf88b7b97e77f58)
 
 ## 2026-11-21 — Compatibility at join and admission
@@ -73,9 +88,11 @@ as uncertain. Replaying could repeat an effect already committed by the first re
 
 The fixed-peer proof was scoped to two loopback processes with explicit addresses. The broader
 discovery plan used configured cross-host seeds, a bounded loopback range, and hints from matching peers.
-Each suggested peer would still authenticate directly. An arbitrary subnet scan would expand the
-search beyond intended hosts. A central registry or permanent seed would add a service the
-deployment would need to keep available.
+Each suggested peer would still authenticate directly. Keeping an exhaustive address list on
+every replica would require updating that list as replicas come and go. An arbitrary subnet scan
+would expand the search beyond intended hosts. A central registry or permanent seed would add a
+service the deployment would need to keep available. The direct connections allow already-joined
+replicas to keep coordinating when a seed leaves.
 
 The certificate's URI Subject Alternative Name binds the mesh and stable replica identity
 independently of the network address. A process incarnation ID distinguishes a restart from two
@@ -99,11 +116,12 @@ placement to host management. Deployment retains responsibility for starting and
 
 ## 2026-11-23 — Direct ingress and optional proxy
 
-The first HTTP proof would send the request directly to one replica's Trigger. The seed remains
-a bootstrap address. Deployment may put a reverse proxy in front of ready replicas when it needs
-a stable public URL. A dedicated Railix gateway would concentrate ingress in one process. Letting
-the execution peer reply directly would require transferring the original transport or arranging
-another request from the caller.
+The first HTTP proof would send the request directly to one replica's Trigger. Any reachable
+replica can receive the request. The seed's role is to provide a bootstrap address. Deployment may
+put a reverse proxy in front of ready replicas when it needs a stable public URL as replicas come
+and go. Building a dedicated Railix gateway would add a component to operate and concentrate
+ingress in that process. Letting the execution peer reply directly would require transferring the
+original transport or arranging another request from the caller.
 
 A future Smart client may learn reachable Trigger endpoints and select a replica before sending
 an event. Either client mode can follow the same placement, admission, and response path after
@@ -123,7 +141,9 @@ connections when the original seed left. Bootstrap aliases resolving to the same
 retry state. A follow-up heartbeat established a healthy session for resetting backoff. The peer
 count was bounded to fit the existing observation response.
 
-This revision named the first ingress topology single-member mode.
+This revision named the first ingress topology single-member mode. The caller uses one ingress
+address. The planned Smart mode would move replica selection to the client while preserving the
+same Trigger and execution contract.
 
 The initial multi-peer rule preferred the socket initiated by the lower certificate-bound replica
 ID and used the connection ID to break same-direction ties. A preferred, authenticated socket
@@ -131,18 +151,20 @@ could replace an existing one, with a readiness check to protect a ready connect
 resolved duplicate dials deterministically. The offload pilot exposed the risk of replacing a socket
 that still owned a reply.
 
-The logical build fingerprint was extended to cover the packaged core runtime. A change in local
-execution could otherwise leave two different artifacts claiming the same execution contract.
-The version-specific artifact cache key stayed separate from this platform-independent identity.
 [Configured multi-peer decisions](https://github.com/NanoNative/nano_railix/commit/41d979e51e1b3a38ae51ba3746b8706e53b2d1aa)
 
 ### Eligibility, capacity, and retries
 
 Deployment selects one compiled Trigger continuation whose resources are equivalent across the
-participating replicas. Filter by eligibility before ranking peers. A zero-capacity advertisement
-can be stale, so the last reported capacity ranks candidates and the receiving replica decides
-admission from its current resources. This leaves room for future replica or role restrictions on
-where individual Flows can run.
+participating replicas. The compiler identifies the continuation. Deployment supplies the
+knowledge of which replicas have equivalent resources. Filter by eligibility before ranking
+peers so spare capacity on a replica cannot override future Flow or role restrictions.
+
+Sending every request to the least-loaded replica would add a network hop even when a local
+slot was free. A capacity advertisement can be stale in either direction. Use it to rank candidates
+and let the receiver check available slots when the invocation arrives. A receiver queue could
+absorb a burst, but would retain pending work and make ingress wait for an admission decision.
+An immediate refusal lets ingress try another eligible replica.
 
 The ingress pending-offload limit became independent of its local execution capacity. With both
 limits tied to one slot, a replica could run one local request and wait for one peer while a third
@@ -150,15 +172,18 @@ replica sat idle. Separate limits let ingress use spare capacity on more than on
 how much input it holds. The remote attempt limit changed from two to three sequential candidates
 within one original deadline. Only known non-admission permits trying another peer. Giving every
 candidate a fresh timeout would extend that deadline. A central work registry for work stealing
-remained a separate proposal with its own claim, result, and recovery responsibilities.
+would let idle replicas pull eligible work. It would also need to track exclusive claims and
+result delivery and decide how to recover after a claimant fails. The pilot kept placement and
+the reply path with the ingress replica.
 
 ### Replies, deadlines, and execution ownership
 
 Use one bounded FIFO writer for each authenticated connection. Reserve space for a terminal reply
-before admitting remote work. Release the execution slot after the worker hands its reply to the
-writer. Keep the reply reservation until the writer sends or drops it. This separates a slow peer's
-write pressure from the capacity to run Flows. Drain waits for admitted execution and pending
-replies within their applicable budgets.
+before admitting remote work. Reserving after execution could leave a completed Flow with no
+space for its result. Requiring the worker to finish writing would hold an execution slot while
+the network stalled. Release the execution slot after the worker hands its reply to the writer.
+Keep the reply reservation until the writer sends or drops it. Drain waits for admitted execution
+and pending replies within their applicable budgets.
 
 The pilot removed the remote `cancel` frame and the rule that the ingress deadline ends accepted
 execution. The ingress deadline now covers transfer, admission, and the return of the outcome.
@@ -166,29 +191,39 @@ Once the receiver accepts work, its application lifecycle owns execution and shu
 interruption, or disconnect at ingress may end its wait while the receiver continues to run. The
 receiver may still interrupt its own work when its shutdown budget expires. The HTTP Trigger can
 wait until the deadline when its HTTP server provides no disconnect notification during the Flow.
+Retaining remote cancellation would give ingress a way to request interruption, but the receiver
+could already have committed a side effect. The chosen ownership rule lets accepted work finish
+even when the original caller can no longer receive the result. A disconnect-aware HTTP transport
+was deferred.
 
 ### Wire fidelity and compatibility
 
-The early design chose canonical Railix JSON to reuse the existing value model. The pilot kept
-that model and preserved field order and decimal scale for transferred values so a Step sees the
-same input locally and remotely. Ingress derives the Trigger response from the returned final
-context using its existing compiled response slots. Encoding both the context and the response
-map duplicated large values and could push an otherwise valid outcome over the frame limit.
+The early design chose canonical Railix JSON to reuse the existing value model. Its canonical
+writer sorts object keys and normalizes decimal scale. Using that output for transfer could
+change values a Step can observe. The pilot kept the value model and chose one transfer encoding
+that preserves field order and decimal scale. Ingress derives the Trigger response from the
+returned final context using its existing compiled response slots. Encoding both the context and
+the response map duplicated large values and could push an otherwise valid outcome over the
+frame limit.
 
 The early invocation envelope listed an attempt number and a separate trace identity. The pilot
 kept retry counting at ingress and used the invocation ID on the session to correlate replies.
 The writer stamps the remaining admission time when it can send the frame, so encoding and
-queueing consume the same budget. The logical build fingerprint also gained the packaged mesh
-classes so applications with different peer contracts have different identities.
+queueing consume the same budget. The logical build fingerprint gained the packaged core
+runtime and mesh classes. Otherwise an execution or peer contract change could leave two
+different artifacts claiming compatibility. The artifact cache key still serves a separate
+purpose and includes toolchain and packaging inputs.
 
 ### Connection selection
 
 An offloaded Flow can finish after a competing dial completes. Replacing the original socket
-could lose that reply while both replicas were healthy. The lower authenticated replica ID now
-chooses which socket to reserve by sending initial state first, regardless of who opened the
-socket. Its peer confirms on that socket. Retain the agreed connection until it disconnects or
-expires. The connection ID and replacement rule became unnecessary once the pair agreed before
-exposing the socket to offloads.
+could lose that reply while both replicas were healthy. Letting each side keep its first socket
+independently could leave each side choosing a different one when the dials cross. The lower
+authenticated replica ID now chooses which socket to reserve by sending initial state first,
+regardless of who opened the socket. Its peer confirms on that socket. This lets a joining
+replica dial the seed even when only the joining replica knows the address. Retain the agreed
+connection until it disconnects or expires. The connection ID and replacement rule became
+unnecessary once the pair agreed before exposing the socket to offloads.
 
 ### Execution and offload metrics
 
@@ -198,6 +233,19 @@ execution and in-flight metrics. Count a Flow execution on the replica that ran 
 delivery was possible but the outcome is unavailable. The terminal outcome can carry success or
 failure. The transport still uses one terminal reply per attempt, and an explicit refusal leaves
 both counters unchanged.
+
+The mesh launcher registers these counters for the configured Flow at startup. Flow snapshots
+own the counters and the application snapshot sums them. Dedicated fields in Core would make
+mesh metric names part of the shared runtime. Keeping only application-wide counters would lose
+which Flow was offloaded. The existing metric interface supports both scopes and lets the
+launcher bind the recorder once, outside dispatch.
+[Metrics follow-up](https://github.com/NanoNative/nano_railix/commit/4bfd1027b20058bd2222476f22d14d31e1019a40)
+
+## 2026-11-27 — Observation boundaries
+
+Mesh observation originally included a peer list and a copy of one peer for Creator's summary.
+Creator now selects the summary from the list. Publishing both fields repeated the same peer
+data and made the runtime carry a presentation choice.
 
 ## Relationship To ADR 0013
 

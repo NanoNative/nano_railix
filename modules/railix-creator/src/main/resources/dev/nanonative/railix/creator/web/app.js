@@ -2791,14 +2791,15 @@ function meshFacts() {
   }
   const readiness = { waiting: "Waiting for peer", rejected: "Peer rejected" };
   const status = readiness[mesh.status] || inputLabel(mesh.status);
-  const peer = mesh.peer
-    ? `<div><dt>Peer</dt><dd>${html(mesh.peer.replicaId)} · ${html(inputLabel(mesh.peer.status))}</dd></div>`
+  const peer = mesh.peers?.[0];
+  const peerDetails = peer
+    ? `<div><dt>Peer</dt><dd>${html(peer.replicaId)} · ${html(inputLabel(peer.status))}</dd></div>`
     : "";
   const rejection = mesh.rejection
     ? `<div><dt>Rejection</dt><dd>${html(inputLabel(mesh.rejection))}</dd></div>`
     : "";
   return `<div><dt>Mesh</dt><dd>${html(status)}</dd></div>
-    ${peer}
+    ${peerDetails}
     ${rejection}`;
 }
 

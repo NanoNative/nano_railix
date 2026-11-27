@@ -128,8 +128,8 @@ sending and validating initial state.
   seed endpoints. Run joins and retries independently of source requests.
 - Retain one connection per replica ID, up to 12 peers. Allow one inbound and one outbound
   handshake concurrently per replica.
-- Publish all connected peers in `peers`. Publish one entry in `peer` for Creator's summary, or
-  `null` when empty. Advertise configured Flow capacity and empty `peerHints` in `state`.
+- Publish all connected peers in `peers`. Creator uses the first entry for its summary when one
+  exists. Advertise configured Flow capacity and empty `peerHints` in `state`.
 - Either replica can dial. Count reservations toward the peer limit and release them when join
   fails. Reject duplicate sockets and overlapping incarnations while a reservation or session
   owns the replica ID. Allow a new join after the prior connection ends.
