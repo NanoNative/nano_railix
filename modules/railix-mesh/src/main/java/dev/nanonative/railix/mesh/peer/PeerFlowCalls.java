@@ -70,6 +70,9 @@ public final class PeerFlowCalls implements AutoCloseable {
     public static Optional<RunResult> offload(final List<PeerConnection> targets,
                                               final Supplier<FlowContinuation> continuation, final long deadline,
                                               final Consumer<Boolean> recordOffload) {
+        if (targets.isEmpty()) {
+            return Optional.empty();
+        }
         final InvocationFrame invocation = new InvocationFrame(continuation);
         for (int index = 0; index < Math.min(MAX_OFFLOAD_ATTEMPTS, targets.size()); index++) {
             final Reply reply = targets.get(index).flows().call(invocation, deadline);
@@ -87,12 +90,31 @@ public final class PeerFlowCalls implements AutoCloseable {
         if (Thread.currentThread().isInterrupted()) {
             return Reply.CANCELLED;
         }
-        final String id = invocation.id;
-        final OutgoingCall call = new OutgoingCall(deadline);
+        if (closed || !invocationWrites.tryAcquire()) {
+            return Thread.currentThread().isInterrupted() ? Reply.CANCELLED : Reply.NOT_ADMITTED;
+        }
+        boolean queued = false;
+        OutgoingCall call = null;
         try {
-            if (!queueInvocation(invocation, deadline, call)) {
-                return Thread.currentThread().isInterrupted() ? Reply.CANCELLED : Reply.NOT_ADMITTED;
+            call = new OutgoingCall(deadline);
+            queued = queueInvocation(invocation, call);
+            if (queued) {
+                return awaitReply(call);
             }
+            return Thread.currentThread().isInterrupted() ? Reply.CANCELLED : Reply.NOT_ADMITTED;
+        } finally {
+            if (call != null) {
+                outgoing.remove(invocation.id, call);
+            }
+            if (!queued) {
+                invocationWrites.release();
+            }
+        }
+    }
+
+    private Reply awaitReply(final OutgoingCall call) {
+        final long deadline = call.deadline;
+        try {
             final Reply reply =
                     call.reply.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
             if (reply == Reply.NOT_ADMITTED) {
@@ -107,35 +129,22 @@ public final class PeerFlowCalls implements AutoCloseable {
             return abandonInvocation(call, Reply.CANCELLED);
         } catch (final TimeoutException expired) {
             return abandonInvocation(call, Reply.NOT_ADMITTED);
-        } finally {
-            outgoing.remove(id, call);
         }
     }
 
-    private boolean queueInvocation(final InvocationFrame invocation, final long deadline, final OutgoingCall call) {
-        if (closed || !invocationWrites.tryAcquire()) {
+    private boolean queueInvocation(final InvocationFrame invocation, final OutgoingCall call) {
+        if (call.deadline - System.nanoTime() <= 0) {
             return false;
         }
-        boolean queued = false;
-        try {
-            if (deadline - System.nanoTime() <= 0) {
-                return false;
-            }
-            final byte[] frame = invocation.encode(build);
-            if (frame.length == 0 || Thread.currentThread().isInterrupted()) {
-                return false;
-            }
-            outgoing.put(invocation.id, call);
-            call.write = new PeerWrite(() -> call.prepare(frame),
-                    PeerFrames.MAX_DATA_BODY_BYTES, writeDeadline(deadline),
-                    status -> completeInvocationWrite(call, status));
-            queued = writer.offer(call.write);
-            return queued;
-        } finally {
-            if (!queued) {
-                invocationWrites.release();
-            }
+        final byte[] frame = invocation.encode(build);
+        if (frame.length == 0 || Thread.currentThread().isInterrupted()) {
+            return false;
         }
+        outgoing.put(invocation.id, call);
+        call.write = new PeerWrite(() -> call.prepare(frame),
+                PeerFrames.MAX_DATA_BODY_BYTES, writeDeadline(call.deadline),
+                status -> completeInvocationWrite(call, status));
+        return writer.offer(call.write);
     }
 
     private void completeInvocationWrite(final OutgoingCall call, final PeerWrite.Status status) {

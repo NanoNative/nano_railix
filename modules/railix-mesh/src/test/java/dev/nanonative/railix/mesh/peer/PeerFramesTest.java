@@ -9,6 +9,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.SequenceInputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
@@ -37,14 +38,15 @@ class PeerFramesTest {
 
         final int headerSplit = 2;
         final int bodySplit = Integer.BYTES + 3;
+        final ByteBuffer header = ByteBuffer.allocate(Integer.BYTES);
         try (SequenceInputStream input = new SequenceInputStream(Collections.enumeration(List.of(
                 new ByteArrayInputStream(wire, 0, headerSplit),
                 new ByteArrayInputStream(wire, headerSplit, bodySplit - headerSplit),
                 new ByteArrayInputStream(wire, bodySplit, wire.length - bodySplit)
         )))) {
-            final FrameRead firstRead = PeerFrames.read(input, limit, byte[]::new);
+            final FrameRead firstRead = PeerFrames.read(input, header, limit, byte[]::new);
             assertArrayEquals(first, assertInstanceOf(FrameBody.class, firstRead).bytes());
-            final FrameRead secondRead = PeerFrames.read(input, limit, byte[]::new);
+            final FrameRead secondRead = PeerFrames.read(input, header, limit, byte[]::new);
             assertArrayEquals(second, assertInstanceOf(FrameBody.class, secondRead).bytes());
         }
     }

@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.Socket;
 import java.net.SocketException;
+import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Objects;
@@ -34,6 +35,7 @@ final class PeerChannel implements Closeable {
     private final Socket socket;
     private final InputStream input;
     private final DataOutputStream output;
+    private final ByteBuffer readHeader = ByteBuffer.allocate(Integer.BYTES);
     private final ReentrantLock readLock = new ReentrantLock();
     private final ReentrantLock writeLock = new ReentrantLock();
 
@@ -159,7 +161,7 @@ final class PeerChannel implements Closeable {
             throws IOException {
         final FrameRead result;
         try {
-            result = PeerFrames.read(input, bodyLimit, reserveBody);
+            result = PeerFrames.read(input, readHeader, bodyLimit, reserveBody);
         } catch (final IOException | RuntimeException failure) {
             closeAfterFailure(failure);
             throw failure;

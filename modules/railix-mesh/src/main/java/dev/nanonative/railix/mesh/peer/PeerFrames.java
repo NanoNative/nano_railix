@@ -21,18 +21,19 @@ final class PeerFrames {
      * Requests an exact-size body buffer only after validating the length prefix.
      * A zero-length buffer declines the reservation and leaves the body unread.
      * The caller owns the reservation's lifetime.
+     * The reader supplies a reusable four-byte, big-endian heap buffer.
      * The connection owner supplies a checked body limit, handles terminal outcomes and enforces the read deadline.
      */
-    static FrameRead read(final InputStream input, final int bodyLimit,
+    static FrameRead read(final InputStream input, final ByteBuffer header, final int bodyLimit,
                           final IntFunction<byte[]> reserveBody) throws IOException {
-        final byte[] header = input.readNBytes(Integer.BYTES);
-        if (header.length == 0) {
+        final int headerBytes = input.readNBytes(header.array(), 0, Integer.BYTES);
+        if (headerBytes == 0) {
             return FrameReadStatus.END_OF_STREAM;
         }
-        if (header.length != Integer.BYTES) {
+        if (headerBytes != Integer.BYTES) {
             return FrameReadStatus.TRUNCATED_HEADER;
         }
-        final long length = Integer.toUnsignedLong(ByteBuffer.wrap(header).getInt());
+        final long length = Integer.toUnsignedLong(header.getInt(0));
         if (!fitsBody(length, bodyLimit)) {
             return FrameReadStatus.INVALID_LENGTH;
         }

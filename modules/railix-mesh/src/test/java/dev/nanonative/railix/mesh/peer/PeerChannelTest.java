@@ -20,6 +20,7 @@ import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.net.Socket;
 import java.net.SocketException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -606,7 +607,7 @@ class PeerChannelTest {
     }
 
     private static RailixValue.ObjectValue response(final InputStream input) throws IOException {
-        final FrameRead frame = PeerFrames.read(input, PeerFrames.MAX_CONTROL_BODY_BYTES,
+        final FrameRead frame = PeerFrames.read(input, ByteBuffer.allocate(Integer.BYTES), PeerFrames.MAX_CONTROL_BODY_BYTES,
                 byte[]::new);
         final byte[] bytes = assertInstanceOf(FrameBody.class, frame).bytes();
         final RailixJson.Result document = RailixJson.parseDocument(new String(bytes, StandardCharsets.UTF_8));
