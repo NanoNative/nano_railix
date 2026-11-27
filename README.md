@@ -189,11 +189,11 @@ in project files. Treat the complete local URL as a credential while Creator is 
 
 ### Run A Local Mesh
 
-Run [run-mesh.sh](run-mesh.sh) from the repository root on macOS or Linux. The demo uses Bash,
-JDK 25 and `uuidgen`.
+Run [scripts/run-mesh.sh](scripts/run-mesh.sh) from the repository root on macOS or Linux. The demo uses Bash,
+JDK 25 and `uuidgen`. The first Maven wrapper setup also requires `unzip`.
 
 ```sh
-./run-mesh.sh auth-http-app
+./scripts/run-mesh.sh auth-http-app
 ```
 
 The script builds the selected example once and starts two loopback replicas with temporary

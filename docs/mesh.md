@@ -90,9 +90,10 @@ directly. The event would still enter through the same Trigger and follow the sa
 ## Run A Local Mesh
 
 From the repository root on macOS or Linux, run the demo with Bash, JDK 25, and `uuidgen`.
+The first Maven wrapper setup also requires `unzip`.
 
 ```sh
-./run-mesh.sh auth-http-app
+./scripts/run-mesh.sh auth-http-app
 ```
 
 The script builds the application once and starts two loopback replicas with temporary credentials.
@@ -104,7 +105,7 @@ This command enables offload for the `request` HTTP Trigger in `auth-http-app` a
 replica one execution slot.
 
 ```sh
-DEMO_OFFLOAD_FLOW=request DEMO_FLOW_CAPACITY=1 ./run-mesh.sh auth-http-app
+DEMO_OFFLOAD_FLOW=request DEMO_FLOW_CAPACITY=1 ./scripts/run-mesh.sh auth-http-app
 ```
 
 Set `DEMO_OFFLOAD_FLOW` to the Trigger node ID for the example you run. Leaving it unset starts
@@ -131,9 +132,10 @@ launcher with `Ctrl-C` to stop its two replicas and remove the demo credentials.
 
 ## Deploy An Application
 
-Build once with the Railix CLI and JDK 25. Copy the printed JAR and [run-mesh.sh](../run-mesh.sh)
-to each host.
-Use Bash, Java 25, and `unzip` to start each replica with its own mesh configuration.
+Build once with the Railix CLI and JDK 25. Copy the printed JAR and
+[scripts/run-mesh.sh](../scripts/run-mesh.sh) to each host.
+On each host, run the copied script from its directory with Bash, Java 25, `unzip`, and the
+replica's mesh configuration.
 
 ```sh
 railix build path/to/railix.project.json --mesh

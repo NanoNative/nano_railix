@@ -33,12 +33,9 @@ fail() {
 }
 
 usage() {
+    printf 'Usage\n  %q [example-name]\n  %q join /path/to/run-directory mesh-port\n' "$0" "$0"
+    printf '  APPLICATION_JAR=/path/to/application.jar RAILIX_MESH_CONFIG=/path/to/mesh.json %q deploy\n\n' "$0"
     cat <<'USAGE'
-Usage
-  ./run-mesh.sh [example-name]
-  ./run-mesh.sh join /path/to/run-directory mesh-port
-  APPLICATION_JAR=/path/to/application.jar RAILIX_MESH_CONFIG=/path/to/mesh.json ./run-mesh.sh deploy
-
 example-name  Start two loopback replicas of an app under examples/ with temporary certificates.
               Defaults to auth-http-app. Select an app with a long-running source.
 join          Start one more replica in a running local demo on the given free mesh port.
@@ -240,7 +237,7 @@ case "$mode" in
         ;;
 esac
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 [[ -f $PROJECT_FILE && -r $PROJECT_FILE ]] || fail "Cannot read project file $PROJECT_FILE."
 project_dir=$(CDPATH= cd -- "$(dirname -- "$PROJECT_FILE")" && pwd)
@@ -283,6 +280,18 @@ trap cleanup_demo EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+replica_stopped() {
+    local name=$1 port=$2 pid=$3 status=0
+    local log="$run_dir/$name.log"
+    wait "$pid" || status=$?
+    # The launcher emits these diagnostics before mesh peer processing starts.
+    if grep -Eq '^(MESH_STARTUP_FAILED:|SOURCE_START_FAILED |STEP_PRE_(FAILED|RESULT_INVALID) )' "$log"; then
+        fail "The $name replica failed to start (exit $status). Logs are in $run_dir."
+    fi
+    printf 'The %s replica stopped (exit %s). See %s.\n' "$name" "$status" "$log" >&2
+    rm -rf -- "$mesh_dir/$port"
+}
 
 demo_home=${DEMO_USER_HOME:-$run_dir/home}
 mkdir -p "$mesh_dir" "$demo_home"
@@ -327,8 +336,8 @@ while [[ $join_port == "$DEMO_SEED_PORT" || $join_port == "$DEMO_PEER_PORT" ]]; 
     join_port=$((join_port + 1))
 done
 printf '\nRun directory %s\nSeed PID %s | Peer PID %s\n' "$run_dir" "$seed_pid" "$peer_pid"
-printf 'To start another replica, paste this command into another terminal\n'
-printf '%q join %q %q\n' "$root/run-mesh.sh" "$run_dir" "$join_port"
+printf 'After both replicas start, use this command to add another replica\n'
+printf '%q join %q %q\n' "$root/scripts/run-mesh.sh" "$run_dir" "$join_port"
 printf 'Use a different free mesh port for each replica.\n\n'
 printf 'To open Creator, paste this command into another terminal\n'
 printf '%q %q -jar %q creator %q\n' "$JAVA" "-Duser.home=$demo_home" "$RAILIX_CLI_JAR" "$demo_project"
@@ -340,12 +349,14 @@ logs_pid=$!
 while [[ -n $seed_pid || -n $peer_pid ]]; do
     sleep 1
     if [[ -n $seed_pid ]] && ! kill -0 "$seed_pid" 2>/dev/null; then
+        stopped_pid=$seed_pid
         seed_pid=
-        rm -rf -- "$mesh_dir/$DEMO_SEED_PORT"
+        replica_stopped seed "$DEMO_SEED_PORT" "$stopped_pid"
     fi
     if [[ -n $peer_pid ]] && ! kill -0 "$peer_pid" 2>/dev/null; then
+        stopped_pid=$peer_pid
         peer_pid=
-        rm -rf -- "$mesh_dir/$DEMO_PEER_PORT"
+        replica_stopped peer "$DEMO_PEER_PORT" "$stopped_pid"
     fi
 done
 fail "Both initial demo replicas stopped. Logs are in $run_dir."

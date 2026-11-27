@@ -90,8 +90,7 @@ credentials and password files. Generate unpredictable keys and passwords.
 Retain one persistent bidirectional JDK TLS/TCP session per connected pair. The four-byte unsigned
 big-endian length prefixes UTF-8 JSON encoded with `RailixJson`. Flow data preserves decimal
 scale and object field order. Version 1 uses uncompressed messages. Reject an unsupported opening
-message. Invocation IDs correlate
-responses that can complete out of order on the same connection.
+message. Invocation IDs correlate responses that can complete out of order on the same connection.
 
 | Message | Content |
 | --- | --- |
